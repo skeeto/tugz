@@ -18,9 +18,9 @@
 #define INF_CHUNK   (1 << 18)
 #define INF_SLACK   (258 + 32)  // room for one match plus wide-copy overrun
 #define INF_WINCAP  (INF_HIST + INF_CHUNK + INF_SLACK)
-#define LIT_ROOT    10
+#define LIT_ROOT    11
 #define DIST_ROOT   8
-#define LIT_ENOUGH  1332  // zlib's enough for 286 symbols, 10-bit root
+#define LIT_ENOUGH  2342  // zlib's enough for 286 symbols, 11-bit root
 #define DIST_ENOUGH 402   // zlib's enough for 30 symbols, 8-bit root
 
 enum {
@@ -31,12 +31,16 @@ enum {
 
 // Table entry layout:
 //   bits  0..4   total bits: code length plus extra bits
-//   bits  5..7   entry kind
+//   bit   6      F_LINK: subtable link
+//   bit   7      F_LIT: literal
 //   bits  8..11  code length (root bits for a subtable link)
 //   bits 12..15  subtable index bits (links only)
-//   bits 16..31  value: literal, base length/distance, or subtable offset
-// Subtable entries hold the full code length, so a lookup never needs to
-// consume the root bits separately.
+//   bits 16..30  value: literal, base length/distance, or subtable offset
+//   bit  30      F_EOB: end of block (only with F_SPECIAL)
+//   bit  31      F_SPECIAL: end of block or invalid code
+// Length and distance entries have no flags. Flags make the common tests
+// single-bit tests. Subtable entries hold the full code length, so a
+// lookup never needs to consume the root bits separately.
 enum {
     ENT_LIT,
     ENT_LEN,  // also distances
@@ -44,16 +48,25 @@ enum {
     ENT_SUB,
     ENT_BAD,
 };
+#define F_LINK      (1u << 6)
+#define F_LIT       (1u << 7)
+#define F_EOB       (1u << 30)
+#define F_SPECIAL   (1u << 31)
+#define ENT_FLAGS(kind) \
+    ((kind)==ENT_LIT ? F_LIT : (kind)==ENT_SUB ? F_LINK : \
+     (kind)==ENT_EOB ? F_SPECIAL|F_EOB : (kind)==ENT_BAD ? F_SPECIAL : 0)
 #define ENT(len, kind, extra, val) \
-    ((u32)((len) + (extra)) | (u32)(kind)<<5 | (u32)(len)<<8 | (u32)(val)<<16)
+    ((u32)((len) + (extra)) | ENT_FLAGS(kind) | (u32)(len)<<8 | (u32)(val)<<16)
 #define ENT_LINK(root, bits, off) \
-    ((u32)ENT_SUB<<5 | (u32)(root)<<8 | (u32)(bits)<<12 | (u32)(off)<<16)
+    (F_LINK | (u32)(root)<<8 | (u32)(bits)<<12 | (u32)(off)<<16)
 #define ENT_TOTAL(e)    ((i32)((e) & 31))
-#define ENT_KIND(e)     ((i32)((e)>>5 & 7))
 #define ENT_CODELEN(e)  ((i32)((e)>>8 & 15))
 #define ENT_SUBBITS(e)  ((i32)((e)>>12 & 15))
 #define ENT_EXTRA(e)    (ENT_TOTAL(e) - ENT_CODELEN(e))
-#define ENT_VAL(e)      ((i32)((e) >> 16))
+#define ENT_VAL(e)      ((i32)((e)>>16 & 0x7fff))
+#define ENT_KIND(e) \
+    ((e) & F_LINK ? ENT_SUB : (e) & F_LIT ? ENT_LIT : \
+     !((e) & F_SPECIAL) ? ENT_LEN : (e) & F_EOB ? ENT_EOB : ENT_BAD)
 
 typedef struct {
     u32 *entries;
@@ -302,7 +315,7 @@ static u32 inf_bits(inflator *s, i32 n)
 static u32 lookup(u32 const *t, u32 mask, u64 bb)
 {
     u32 e = t[bb & mask];
-    if (ENT_KIND(e) == ENT_SUB) {
+    if (e & F_LINK) {
         u32 sub = (u32)(bb >> ENT_CODELEN(e)) & ((1u << ENT_SUBBITS(e)) - 1);
         e = t[ENT_VAL(e) + sub];
     }
@@ -379,7 +392,7 @@ static void store64(u8 *p, u64 v)
     __builtin_memcpy(p, &v, 8);
 }
 
-// Copy a match of len bytes from dist back, writing up to 15 bytes past
+// Copy a match of len bytes from dist back, writing up to 31 bytes past
 // the end (requires slack).
 static u8 *copy_match(u8 *out, iz dist, iz len)
 {
@@ -387,9 +400,10 @@ static u8 *copy_match(u8 *out, iz dist, iz len)
     u8 *end = out + len;
     if (dist >= 16) {
         do {
-            __builtin_memcpy(out, src, 16);
-            out += 16;
-            src += 16;
+            __builtin_memcpy(out+ 0, src+ 0, 16);
+            __builtin_memcpy(out+16, src+16, 16);
+            out += 32;
+            src += 32;
         } while (out < end);
     } else if (dist >= 8) {
         do {
@@ -400,13 +414,24 @@ static u8 *copy_match(u8 *out, iz dist, iz len)
     } else if (dist == 1) {
         u64 v = 0x0101010101010101u * src[0];
         do {
-            store64(out, v);
+            store64(out+0, v);
             store64(out+8, v);
             out += 16;
         } while (out < end);
     } else {
+        // Short period: expand it into a pattern buffer, then store 8
+        // bytes at a time, rotating the phase within the period.
+        u8 pat[16];
+        for (i32 i = 0, j = 0; i < 16; i++, j = j+1==dist ? 0 : j+1) {
+            pat[i] = src[j];
+        }
+        iz step  = 8 % dist;
+        iz phase = 0;
         do {
-            *out++ = *src++;
+            store64(out, load64(pat + phase));
+            out += 8;
+            phase += step;
+            phase -= phase>=dist ? dist : 0;
         } while (out < end);
     }
     return end;
@@ -452,26 +477,26 @@ static b32 decode_fast(inflator *s, htable const *lt, htable const *dt)
         REFILL();
         u32 e = lookup(lte, lmask, bb);
         for (;;) {
-            if (ENT_KIND(e) == ENT_LIT) {
+            if (e & F_LIT) {
                 CONSUME(e);
                 *out++ = (u8)ENT_VAL(e);
                 e = lookup(lte, lmask, bb);
-                if (ENT_KIND(e) == ENT_LIT) {
+                if (e & F_LIT) {
                     CONSUME(e);
                     *out++ = (u8)ENT_VAL(e);
                     e = lookup(lte, lmask, bb);
-                    if (ENT_KIND(e) == ENT_LIT) {
+                    if (e & F_LIT) {
                         CONSUME(e);
                         *out++ = (u8)ENT_VAL(e);
                         e = lookup(lte, lmask, bb);
                     }
                 }
-            } else if (ENT_KIND(e) == ENT_LEN) {
+            } else if (!(e & F_SPECIAL)) {
                 iz len = ENT_VAL(e) + EXTRA(e);
                 CONSUME(e);
 
                 e = lookup(dte, dmask, bb);
-                if (ENT_KIND(e) != ENT_LEN) {
+                if (e & F_SPECIAL) {
                     s->err = GZ_EDATA;
                     break;
                 }
@@ -485,7 +510,7 @@ static b32 decode_fast(inflator *s, htable const *lt, htable const *dt)
                 e = lookup(lte, lmask, bb);
                 out = copy_match(out, dist, len);
             } else {
-                eob = ENT_KIND(e) == ENT_EOB;
+                eob = !!(e & F_EOB);
                 if (!eob) {
                     s->err = GZ_EDATA;
                     break;
