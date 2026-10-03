@@ -32,7 +32,7 @@ static i32 gzip_compress(i32 in, i32 out, i32 level, arena scratch)
 {
     reader  *r = newreader(&scratch, in, GZ_RDBUF);
     writer  *w = newwriter(&scratch, out, GZ_WRBUF);
-    deflate *d = deflate_new(&scratch, level, w);
+    deflator *d = deflate_new(&scratch, level, w);
 
     static u8 const header[10] = {0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3};
     writer_write(w, header, countof(header));
@@ -149,7 +149,7 @@ static i32 gzip_decompress(i32 in, i32 out, arena scratch)
         }
 
         arena temp = scratch;
-        inflate *s = inflate_new(&temp, r, w);
+        inflator *s = inflate_new(&temp, r, w);
         status = inflate_run(s);
         if (status) {
             break;

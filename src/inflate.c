@@ -35,7 +35,7 @@ typedef struct {
 
     hdecode fixlit;
     hdecode fixdist;
-} inflate;
+} inflator;
 
 static u16 const inf_len_base[29] = {
     3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51,
@@ -100,9 +100,9 @@ static b32 hdecode_build(hdecode *h, u16 const *lens, i32 n, i32 kind)
     return 1;
 }
 
-static inflate *inflate_new(arena *a, reader *in, writer *out)
+static inflator *inflate_new(arena *a, reader *in, writer *out)
 {
-    inflate *s = new(a, 1, inflate);
+    inflator *s = new(a, 1, inflator);
     s->in  = in;
     s->out = out;
     s->win = newbytes(a, INF_WSIZE2);
@@ -124,14 +124,14 @@ static inflate *inflate_new(arena *a, reader *in, writer *out)
     return s;
 }
 
-static void inf_fail(inflate *s)
+static void inf_fail(inflator *s)
 {
     if (!s->err) {
         s->err = s->in->err ? GZ_EREAD : GZ_ETRUNC;
     }
 }
 
-static u32 inf_bits(inflate *s, i32 n)
+static u32 inf_bits(inflator *s, i32 n)
 {
     while (s->bitcnt < n) {
         i32 c = reader_byte(s->in);
@@ -149,7 +149,7 @@ static u32 inf_bits(inflate *s, i32 n)
 }
 
 // Read the next byte-aligned byte following the stream, or -1.
-static i32 inflate_byte(inflate *s)
+static i32 inflate_byte(inflator *s)
 {
     i32 drop = s->bitcnt & 7;
     s->bitbuf >>= drop;
@@ -163,7 +163,7 @@ static i32 inflate_byte(inflate *s)
     return reader_byte(s->in);
 }
 
-static void inf_flush(inflate *s)
+static void inf_flush(inflator *s)
 {
     iz len = s->wpos - s->wflushed;
     s->crc = crc32_update(s->crc, s->win+s->wflushed, len);
@@ -171,7 +171,7 @@ static void inf_flush(inflate *s)
     s->wflushed = s->wpos;
 }
 
-static void out_byte(inflate *s, u8 b)
+static void out_byte(inflator *s, u8 b)
 {
     if (s->wpos == INF_WSIZE2) {
         inf_flush(s);
@@ -182,7 +182,7 @@ static void out_byte(inflate *s, u8 b)
     s->total++;
 }
 
-static i32 hdecode_sym(inflate *s, hdecode const *h)
+static i32 hdecode_sym(inflator *s, hdecode const *h)
 {
     i32 code  = 0;
     i32 first = 0;
@@ -204,7 +204,7 @@ static i32 hdecode_sym(inflate *s, hdecode const *h)
     return -1;
 }
 
-static void decode_symbols(inflate *s, hdecode const *lit, hdecode const *dist)
+static void decode_symbols(inflator *s, hdecode const *lit, hdecode const *dist)
 {
     for (;;) {
         i32 sym = hdecode_sym(s, lit);
@@ -245,7 +245,7 @@ static void decode_symbols(inflate *s, hdecode const *lit, hdecode const *dist)
     }
 }
 
-static void stored_block(inflate *s)
+static void stored_block(inflator *s)
 {
     inf_bits(s, s->bitcnt & 7);
     u32 len  = inf_bits(s, 16);
@@ -266,7 +266,7 @@ static void stored_block(inflate *s)
     }
 }
 
-static void dynamic_block(inflate *s)
+static void dynamic_block(inflator *s)
 {
     i32 hlit  = (i32)inf_bits(s, 5) + 257;
     i32 hdist = (i32)inf_bits(s, 5) + 1;
@@ -341,7 +341,7 @@ static void dynamic_block(inflate *s)
 }
 
 // Decode a complete stream, then flush output. Returns a GZ_* status.
-static i32 inflate_run(inflate *s)
+static i32 inflate_run(inflator *s)
 {
     for (b32 final = 0; !final && !s->err;) {
         final = (b32)inf_bits(s, 1);

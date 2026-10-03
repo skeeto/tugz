@@ -5,7 +5,7 @@ CC       = cc
 CROSS    = x86_64-w64-mingw32-
 OPT      = -O2
 WARN     = -Wall -Wextra -Wconversion -Wno-sign-conversion
-DEBUG    = -g3 $(WARN) -fsanitize=address,undefined \
+DEBUG    = -g3 -O1 $(WARN) -fsanitize=address,undefined \
            -fno-sanitize-recover=all
 FUZZCC   = clang
 FUZZ     = -g3 -O1 $(WARN) -fsanitize=fuzzer,address,undefined \
@@ -28,11 +28,11 @@ gzip.exe: main_windows.c $(SRC)
 	$(CROSS)gcc $(OPT) $(WARN) $(WIN32_CFLAGS) -o $@ main_windows.c $(WIN32_LIBS)
 
 tests: main_test.c $(SRC)
-	$(CC) $(DEBUG) -Wno-clobbered -o $@ main_test.c $(REFLIBS)
+	$(CC) $(DEBUG) -o $@ main_test.c $(REFLIBS)
 
 check: tests gzip
 	./tests
-	sh tests/cli.sh ./gzip
+	sh test/cli.sh ./gzip
 
 fuzz-inflate: main_fuzz_inflate.c $(SRC)
 	$(FUZZCC) $(FUZZ) -o $@ main_fuzz_inflate.c

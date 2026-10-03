@@ -80,7 +80,7 @@ typedef struct {
 
     htree fixlit;
     htree fixdist;
-} deflate;
+} deflator;
 
 static u16 const def_len_base[29] = {
     3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51,
@@ -278,9 +278,9 @@ static void huff_build(htree *t, u32 const *freq, i32 n, i32 maxlen)
     huff_codes(t, n);
 }
 
-static deflate *deflate_new(arena *a, i32 level, writer *out)
+static deflator *deflate_new(arena *a, i32 level, writer *out)
 {
-    deflate *d = new(a, 1, deflate);
+    deflator *d = new(a, 1, deflator);
     d->out   = out;
     d->lvl   = deflate_levels[MAX(1, MIN(level, 9))];
     d->win   = newbytes(a, WIN_CAP);
@@ -301,7 +301,7 @@ static deflate *deflate_new(arena *a, i32 level, writer *out)
     return d;
 }
 
-static void bw_put(deflate *d, u32 v, i32 n)
+static void bw_put(deflator *d, u32 v, i32 n)
 {
     d->bitbuf |= (u64)(v & ((1u<<n) - 1)) << d->bitcnt;
     d->bitcnt += n;
@@ -312,7 +312,7 @@ static void bw_put(deflate *d, u32 v, i32 n)
     }
 }
 
-static void bw_align(deflate *d)
+static void bw_align(deflator *d)
 {
     if (d->bitcnt) {
         bw_put(d, 0, 8 - d->bitcnt);
@@ -375,7 +375,7 @@ typedef struct {
     u8    rextra[NLIT+NDIST];
 } dynblock;
 
-static void build_dyn(deflate *d, dynblock *b)
+static void build_dyn(deflator *d, dynblock *b)
 {
     u32 lf[NLIT];
     for (i32 i = 0; i < NLIT; i++) {
@@ -408,7 +408,7 @@ static void build_dyn(deflate *d, dynblock *b)
     b->hclen = hclen;
 }
 
-static u64 cost_tokens(deflate *d, htree *lt, htree *dt)
+static u64 cost_tokens(deflator *d, htree *lt, htree *dt)
 {
     u64 bits = lt->len[256];
     for (iz i = 0; i < d->ntok; i++) {
@@ -425,7 +425,7 @@ static u64 cost_tokens(deflate *d, htree *lt, htree *dt)
     return bits;
 }
 
-static u64 cost_dyn(deflate *d, dynblock *b)
+static u64 cost_dyn(deflator *d, dynblock *b)
 {
     u64 bits = 3 + 5 + 5 + 4 + 3*(u64)b->hclen;
     for (i32 i = 0; i < b->nrle; i++) {
@@ -434,7 +434,7 @@ static u64 cost_dyn(deflate *d, dynblock *b)
     return bits + cost_tokens(d, &b->lt, &b->dt);
 }
 
-static u64 cost_stored(deflate *d)
+static u64 cost_stored(deflator *d)
 {
     u64 n = d->blk_len;
     u64 nchunks = (n + 65534) / 65535;
@@ -442,7 +442,7 @@ static u64 cost_stored(deflate *d)
     return 3 + pad + 32 + 8*n + (nchunks - 1)*40;
 }
 
-static void emit_stored_chunk(deflate *d, iz start, iz len, b32 final)
+static void emit_stored_chunk(deflator *d, iz start, iz len, b32 final)
 {
     assert(len>=0 && len<=65535);
     bw_put(d, (u32)final, 1);
@@ -453,7 +453,7 @@ static void emit_stored_chunk(deflate *d, iz start, iz len, b32 final)
     writer_write(d->out, d->win+start, len);
 }
 
-static void flush_pending(deflate *d, b32 final)
+static void flush_pending(deflator *d, b32 final)
 {
     iz start = (iz)(d->pend_start - d->base);
     iz len = d->pend_len;
@@ -468,7 +468,7 @@ static void flush_pending(deflate *d, b32 final)
     }
 }
 
-static void emit_stored(deflate *d, b32 final)
+static void emit_stored(deflator *d, b32 final)
 {
     u64 start = d->blk_start;
     iz  len   = (iz)d->blk_len;
@@ -495,7 +495,7 @@ static void emit_stored(deflate *d, b32 final)
     }
 }
 
-static void emit_tokens(deflate *d, htree *lt, htree *dt)
+static void emit_tokens(deflator *d, htree *lt, htree *dt)
 {
     for (iz i = 0; i < d->ntok; i++) {
         token t = d->toks[i];
@@ -513,7 +513,7 @@ static void emit_tokens(deflate *d, htree *lt, htree *dt)
     bw_put(d, lt->code[256], lt->len[256]);
 }
 
-static void emit_dynamic(deflate *d, dynblock *b)
+static void emit_dynamic(deflator *d, dynblock *b)
 {
     bw_put(d, 2, 2);
     bw_put(d, (u32)(b->hlit - 257), 5);
@@ -530,7 +530,7 @@ static void emit_dynamic(deflate *d, dynblock *b)
     emit_tokens(d, &b->lt, &b->dt);
 }
 
-static void flush_block(deflate *d, b32 final)
+static void flush_block(deflator *d, b32 final)
 {
     if (!d->ntok) {
         if (final) {
@@ -575,7 +575,7 @@ static void flush_block(deflate *d, b32 final)
     bytefill(d->dist_freq, 0, sizeof(d->dist_freq));
 }
 
-static void tok_lit(deflate *d, iz p)
+static void tok_lit(deflator *d, iz p)
 {
     if (!d->ntok) {
         d->blk_start = d->base + (u64)p;
@@ -589,7 +589,7 @@ static void tok_lit(deflate *d, iz p)
     }
 }
 
-static void tok_match(deflate *d, iz p, i32 len, i32 dist)
+static void tok_match(deflator *d, iz p, i32 len, i32 dist)
 {
     if (!d->ntok) {
         d->blk_start = d->base + (u64)p;
@@ -604,7 +604,7 @@ static void tok_match(deflate *d, iz p, i32 len, i32 dist)
 }
 
 // Index into prev tables for window position p.
-static u32 chain_slot(deflate *d, iz p)
+static u32 chain_slot(deflator *d, iz p)
 {
     return (u32)(d->base + (u64)p) & DEF_WMASK;
 }
@@ -627,7 +627,7 @@ static u32 hash3(u32 v)
 }
 
 // Insert position p, returning the previous 3-byte hash chain head.
-static u32 hash_insert(deflate *d, iz p)
+static u32 hash_insert(deflator *d, iz p)
 {
     u32 v = load32(d->win + p);
     u32 slot = chain_slot(d, p);
@@ -645,7 +645,7 @@ static u32 hash_insert(deflate *d, iz p)
 }
 
 // Insert all positions through q, returning the 3-byte chain for q.
-static u32 ensure_insert(deflate *d, iz q)
+static u32 ensure_insert(deflator *d, iz q)
 {
     u32 c3 = 0;
     if (q >= d->ins) {
@@ -678,7 +678,7 @@ typedef struct {
     i32 dist;
 } match;
 
-static match find_match(deflate *d, iz p, u32 cand, u32 cand3, i32 depth)
+static match find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth)
 {
     u8 *win = d->win;
     i32 maxlen = (i32)MIN(d->win_len - p, MAX_MATCH);
@@ -730,7 +730,7 @@ static match find_match(deflate *d, iz p, u32 cand, u32 cand3, i32 depth)
 }
 
 // Find the best match at p, inserting p into the hash chains.
-static match match_at(deflate *d, iz p, i32 depth)
+static match match_at(deflator *d, iz p, i32 depth)
 {
     u32 c3 = ensure_insert(d, p);
     if (p+HASH_LEN <= d->win_len) {
@@ -744,7 +744,7 @@ static match match_at(deflate *d, iz p, i32 depth)
 
 // Decide whether 3-byte matching is worthwhile by sampling how often
 // 4-byte hashes collide in the first part of the input.
-static void sample(deflate *d)
+static void sample(deflator *d)
 {
     d->sampled = 1;
     iz n = MIN(d->win_len, 32768);
@@ -761,7 +761,7 @@ static void sample(deflate *d)
     d->use3 = (u64)hits*10 < (u64)(n - 3)*7;
 }
 
-static void parse(deflate *d, iz end)
+static void parse(deflator *d, iz end)
 {
     if (!d->sampled) {
         sample(d);
@@ -801,7 +801,7 @@ static u32 slide_entry(u32 v, u32 shift)
 }
 
 // Discard window contents more than WSIZE behind the parse position.
-static void slide(deflate *d)
+static void slide(deflator *d)
 {
     iz shift = d->pos - DEF_WSIZE;
     if (shift <= 0) {
@@ -833,7 +833,7 @@ static void slide(deflate *d)
     }
 }
 
-static void deflate_push(deflate *d, u8 const *data, iz len)
+static void deflate_push(deflator *d, u8 const *data, iz len)
 {
     while (len) {
         if (d->win_len == WIN_CAP) {
@@ -848,7 +848,7 @@ static void deflate_push(deflate *d, u8 const *data, iz len)
     }
 }
 
-static void deflate_finish(deflate *d)
+static void deflate_finish(deflator *d)
 {
     parse(d, d->win_len);
     flush_block(d, 1);
