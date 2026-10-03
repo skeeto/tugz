@@ -382,7 +382,23 @@ void mainCRTStartup(void)
 
     i32 argc = 0;
     c16 **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    conf.nargs = argv ? argc-1 : 0;
+    if (argv && argc>0) {
+        // Drop the directory and an .exe extension
+        s8 name = towtf8(&conf.perm, argv[0]);
+        for (iz i = name.len; i > 0; i--) {
+            if (name.s[i-1]=='/' || name.s[i-1]=='\\' || name.s[i-1]==':') {
+                name.s += i;
+                name.len -= i;
+                break;
+            }
+        }
+        if (name.len > 4) {
+            s8 ext = {name.s + name.len - 4, 4};
+            name.len -= ascii_iequals(ext, S(".exe")) ? 4 : 0;
+        }
+        conf.name = name;
+    }
+    conf.nargs = argv && argc>0 ? argc-1 : 0;
     conf.args = new(&conf.perm, conf.nargs, s8);
     for (i32 i = 0; i < conf.nargs; i++) {
         conf.args[i] = towtf8(&conf.perm, argv[i+1]);

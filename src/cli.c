@@ -5,6 +5,7 @@
 
 typedef struct {
     arena perm;
+    s8    name;   // program name without directory or extension
     s8   *args;   // excluding the program name
     i32   nargs;
 } config;
@@ -335,11 +336,32 @@ static i32 apply_option(options *o, i32 c, arena scratch)
     return EXIT_ERR;
 }
 
+static b32 ascii_iprefix(s8 s, s8 prefix)
+{
+    s8 head = {s.s, MIN(s.len, prefix.len)};
+    return ascii_iequals(head, prefix);
+}
+
+// Like GNU gzip, the program name selects a default mode: gunzip (or
+// any un* name) decompresses, and zcat or gzcat decompress to standard
+// output.
+static void apply_name(options *o, s8 name)
+{
+    if (ascii_iprefix(name, S("un")) || ascii_iprefix(name, S("gun"))) {
+        o->decompress = 1;
+    } else if (ascii_iequals(name, S("zcat")) ||
+               ascii_iequals(name, S("gzcat"))) {
+        o->decompress = 1;
+        o->to_stdout = 1;
+    }
+}
+
 static i32 gzip_main(config *conf)
 {
     arena *perm = &conf->perm;
     options o = {0};
     o.level = 6;
+    apply_name(&o, conf->name);
 
     s8 *files = new(perm, conf->nargs+1, s8);
     i32 nfiles = 0;

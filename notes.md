@@ -85,6 +85,10 @@ Fuzzers:
   ignored with a warning (exit 2) unless it starts with the gzip magic, in
   which case it must be a valid member. Matches GNU gzip.
 - Exit status: 0 success, 1 error, 2 warning; errors take precedence.
+- As in GNU gzip, the program name sets the default mode: names starting
+  with `un` or `gun` decompress, and `zcat` or `gzcat` decompress to
+  standard output (case-insensitive; Windows drops `.exe`). Platform
+  layers pass the name in `config.name`.
 - In-place operation (no `-c`/`-t`) deletes its input, so its input must
   be a regular file: symbolic links and hard-linked files are skipped with
   a warning unless `-f` (then links are followed); FIFOs, devices, and

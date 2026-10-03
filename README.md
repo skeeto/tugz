@@ -39,6 +39,9 @@ builds use the CRC instructions automatically where available.
 | `-h`, `-V` | help, version |
 
 Long forms (`--stdout`, `--decompress`, `--best`, ...) are accepted.
+Installed (or linked) as `gunzip` it decompresses, and as `zcat` or
+`gzcat` it decompresses to standard output.
+
 Behavior follows GNU gzip: concatenated members, warnings for trailing
 garbage, exit status 0/1/2 for success/error/warning, metadata copied to
 outputs, no partial outputs on failure or interruption, and refusal to

@@ -98,6 +98,21 @@ expect_status 1 "$GZIP" -d bad.gz
 mkdir d
 expect_status 2 "$GZIP" d
 
+# The program name selects a default mode
+ext=
+case "$GZIP" in *.exe) ext=.exe;; esac
+mkdir names
+for n in gunzip zcat gzcat; do
+    ln -s "$GZIP" names/$n$ext 2>/dev/null || cp "$GZIP" names/$n$ext
+done
+"$GZIP" -c text >n.gz
+names/gunzip$ext -c n.gz | cmp -s - text || fail "gunzip -c"
+names/zcat$ext n.gz | cmp -s - text || fail "zcat"
+names/gzcat$ext <n.gz | cmp -s - text || fail "gzcat stdin"
+[ -e n.gz ] || fail "zcat removed its input"
+names/gunzip$ext n.gz
+[ -e n ] && [ ! -e n.gz ] && cmp -s n text || fail "gunzip in place"
+
 # Metadata: timestamps everywhere, permissions where they mean something
 windows=
 [ "$(uname -s)" = Windows_NT ] && windows=1

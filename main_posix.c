@@ -267,7 +267,18 @@ int main(int argc, char **argv)
     conf.perm.end = mem + cap;
     conf.perm.ctx = &ctx;
 
-    conf.nargs = argc - 1;
+    if (argc > 0) {
+        s8 name = cstr(argv[0]);
+        for (iz i = name.len; i > 0; i--) {
+            if (name.s[i-1] == '/') {
+                name.s += i;
+                name.len -= i;
+                break;
+            }
+        }
+        conf.name = name;
+    }
+    conf.nargs = argc>0 ? argc-1 : 0;
     conf.args = new(&conf.perm, conf.nargs, s8);
     for (i32 i = 0; i < conf.nargs; i++) {
         conf.args[i] = cstr(argv[i+1]);

@@ -1531,8 +1531,9 @@ static void test_io_errors(os *ctx, arena a)
     free(p);
 }
 
-// Run the command line with a space-separated argument string.
-static i32 run(os *ctx, arena a, char *cmdline)
+// Run the command line with a space-separated argument string, under
+// the given program name.
+static i32 run_as(os *ctx, arena a, char *name, char *cmdline)
 {
     s8 args[32];
     i32 nargs = 0;
@@ -1550,9 +1551,15 @@ static i32 run(os *ctx, arena a, char *cmdline)
     ctx->fds[0].off = 0;
     config conf = {0};
     conf.perm = a;
+    conf.name = cstrs8(name);
     conf.args = args;
     conf.nargs = nargs;
     return gzip_main(&conf);
+}
+
+static i32 run(os *ctx, arena a, char *cmdline)
+{
+    return run_as(ctx, a, "gzip", cmdline);
 }
 
 static b32 has(os *ctx, char *name)
@@ -1716,6 +1723,52 @@ static void test_cli(os *ctx, arena a)
     free(text);
 }
 
+static void test_program_names(os *ctx, arena a)
+{
+    u8 *text = randbytes(5000, 2);
+    s8 gz;
+    TEST(do_gzip(ctx, a, text, 5000, 6, &gz) == GZ_OK);
+    mfs_reset(ctx);
+
+    static char *const unzips[] = {"gunzip", "GUNZIP", "ungzip", "unpack"};
+    for (i32 i = 0; i < countof(unzips); i++) {
+        mfs_put(ctx, "u.gz", gz.s, gz.len);
+        TEST(run_as(ctx, a, unzips[i], "u.gz") == EXIT_OK);
+        TEST(equals(mfs_get(ctx, "u"), text, 5000));
+        TEST(!has(ctx, "u.gz"));
+        mfs_create(ctx, S("u"))->live = 0;
+    }
+
+    static char *const cats[] = {"zcat", "gzcat", "ZCat"};
+    for (i32 i = 0; i < countof(cats); i++) {
+        mfs_put(ctx, "z.gz", gz.s, gz.len);
+        mfs_put(ctx, "z", gz.s, gz.len);  // no suffix needed with -c
+        TEST(run_as(ctx, a, cats[i], "z.gz z") == EXIT_OK);
+        s8 o = mfs_get(ctx, "<stdout>");
+        TEST(o.len == 10000);
+        TEST(!memcmp(o.s, text, 5000) && !memcmp(o.s+5000, text, 5000));
+        TEST(has(ctx, "z.gz") && has(ctx, "z"));
+    }
+
+    // Other names compress
+    static char *const zips[] = {"gzip", "", "tugz", "cat", "u"};
+    for (i32 i = 0; i < countof(zips); i++) {
+        mfs_put(ctx, "c", text, 5000);
+        TEST(run_as(ctx, a, zips[i], "c") == EXIT_OK);
+        TEST(has(ctx, "c.gz") && !has(ctx, "c"));
+        mfs_find(ctx, S("c.gz"))->live = 0;
+    }
+
+    // Options still apply on top of the name's mode
+    mfs_put(ctx, "c", text, 5000);
+    TEST(run_as(ctx, a, "gunzip", "-t c") == EXIT_ERR);  // not gzip data
+    mfs_put(ctx, "c.gz", gz.s, gz.len);
+    TEST(run_as(ctx, a, "gunzip", "-t c.gz") == EXIT_OK);
+
+    free(gz.s);
+    free(text);
+}
+
 static void test_cli_safety(os *ctx, arena a)
 {
     u8 *text = randbytes(20000, 2);
@@ -1873,6 +1926,7 @@ int main(void)
     test_io_errors(&ctx, a);
     test_cli(&ctx, a);
     test_cli_safety(&ctx, a);
+    test_program_names(&ctx, a);
     test_oom(&ctx, a);
     test_push_invariance(&ctx, a);
     test_large_offset(&ctx, a);
