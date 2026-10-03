@@ -8,8 +8,8 @@ WARN     = -Wall -Wextra -Wconversion -Wno-sign-conversion
 DEBUG    = -g3 -O1 $(WARN) -fsanitize=address,undefined \
            -fno-sanitize-recover=all
 FUZZCC   = clang
-FUZZ     = -g3 -O1 $(WARN) -Wno-unused-function -fsanitize=fuzzer,address,undefined \
-           -fno-sanitize-recover=all
+FUZZ     = -g3 -O1 $(WARN) -Wno-unused-function \
+           -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all
 PREFIX   = /opt/homebrew
 REFLIBS  = -I$(PREFIX)/include -L$(PREFIX)/lib -ldeflate -lz
 
@@ -34,19 +34,22 @@ check: tests gzip
 	./tests
 	sh test/cli.sh ./gzip
 
-fuzz-inflate: main_fuzz_inflate.c $(SRC)
+fuzz-inflate: main_fuzz_inflate.c test/fuzzos.c $(SRC)
 	$(FUZZCC) $(FUZZ) -o $@ main_fuzz_inflate.c
 
-fuzz-roundtrip: main_fuzz_roundtrip.c $(SRC)
+fuzz-roundtrip: main_fuzz_roundtrip.c test/fuzzos.c $(SRC)
 	$(FUZZCC) $(FUZZ) -o $@ main_fuzz_roundtrip.c $(REFLIBS)
 
-fuzz-diff-inflate: main_fuzz_diff_inflate.c $(SRC)
+fuzz-diff-inflate: main_fuzz_diff_inflate.c test/fuzzos.c $(SRC)
 	$(FUZZCC) $(FUZZ) -o $@ main_fuzz_diff_inflate.c $(REFLIBS)
 
-fuzz-diff-deflate: main_fuzz_diff_deflate.c $(SRC)
+fuzz-diff-deflate: main_fuzz_diff_deflate.c test/fuzzos.c $(SRC)
 	$(FUZZCC) $(FUZZ) -o $@ main_fuzz_diff_deflate.c $(REFLIBS)
 
 fuzz: fuzz-inflate fuzz-roundtrip fuzz-diff-inflate fuzz-diff-deflate
+
+fuzz-seeds:
+	uv run --no-project python test/seeds.py
 
 bench: main_bench.c $(SRC)
 	$(CC) -O2 $(WARN) -Wno-unused-function -o $@ main_bench.c $(REFLIBS)
@@ -55,4 +58,4 @@ clean:
 	rm -rf gzip gzip-debug gzip.exe tests bench *.dSYM \
 	       fuzz-inflate fuzz-roundtrip fuzz-diff-inflate fuzz-diff-deflate
 
-.PHONY: check fuzz clean
+.PHONY: check fuzz fuzz-seeds clean

@@ -13,7 +13,7 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     i32 status = fuzz_inflate(env, data, (iz)size);
     CHECK(status==GZ_OK || status==GZ_ETRUNC || status==GZ_EDATA ||
           status==GZ_EWRITE);
-    CHECK(status!=GZ_EWRITE || env->ctx.outlen>env->ctx.outcap-(1<<16));
+    CHECK(status!=GZ_EWRITE || env->ctx.overflow);
 
     status = fuzz_gunzip(env, data, (iz)size);
     CHECK(status>=GZ_OK && status<=GZ_EWRITE && status!=GZ_EREAD);

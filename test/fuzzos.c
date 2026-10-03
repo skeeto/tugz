@@ -22,6 +22,7 @@ struct os {
     u8       *out;
     iz        outlen;
     iz        outcap;
+    b32       overflow;  // a write was refused for exceeding outcap
 };
 
 static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
@@ -59,6 +60,7 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
     if (fd == 2) {
         return 1;
     } else if (len > ctx->outcap - ctx->outlen) {
+        ctx->overflow = 1;
         return 0;
     }
     memcpy(ctx->out + ctx->outlen, buf, (uz)len);
@@ -97,6 +99,7 @@ static void fuzz_io(fuzzenv *env, u8 const *in, iz len)
     env->ctx.inlen = len;
     env->ctx.inoff = 0;
     env->ctx.outlen = 0;
+    env->ctx.overflow = 0;
 }
 
 static i32 fuzz_inflate(fuzzenv *env, u8 const *in, iz len)
