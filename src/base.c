@@ -57,24 +57,43 @@ enum {
 // Platform interface. File descriptors 0, 1, and 2 are standard input,
 // output, and error. Paths are UTF-8 (WTF-8 on Windows).
 enum {
-    OS_READ,    // open existing file for reading
-    OS_CREATE,  // create new file for writing, fail if it exists
-    OS_FORCE,   // create or truncate file for writing
+    // Open an existing file for reading. Directories are always refused.
+    OS_READ     = 0,
+    OS_REGULAR  = 1 << 0,  // refuse anything but a regular file
+    OS_NOFOLLOW = 1 << 1,  // refuse symbolic links (and reparse points)
+    OS_ONELINK  = 1 << 2,  // refuse files with multiple hard links
+
+    // Create a file for writing. It is created inaccessible to others
+    // until os_copymeta, and it is discarded when closed, or if the
+    // process is interrupted, unless os_keep was called first.
+    OS_CREATE   = 1 << 3,  // fail if it exists
+    OS_FORCE    = 1 << 4,  // replace if it exists
 };
 enum {
-    OS_ERR    = -1,
-    OS_EEXIST = -2,
-    OS_EISDIR = -3,
+    OS_ERR      = -1,
+    OS_EEXIST   = -2,
+    OS_EISDIR   = -3,
+    OS_ESYMLINK = -4,
+    OS_ENOTREG  = -5,
+    OS_ELINKS   = -6,
 };
 
 // Returns a non-negative descriptor or a negative OS_E* code.
 static i32  os_open(os *, s8 path, i32 mode, arena scratch);
-static void os_close(os *, i32 fd);
+// Returns false if the file could not be closed cleanly, meaning written
+// data may be lost.
+static b32  os_close(os *, i32 fd);
 // Returns the number of bytes read, 0 at end of file, or -1 on error.
 static iz   os_read(os *, i32 fd, u8 *buf, iz cap);
 // Writes all bytes or returns false.
 static b32  os_write(os *, i32 fd, u8 *buf, iz len);
 static b32  os_remove(os *, s8 path, arena scratch);
+static b32  os_isatty(os *, i32 fd);
+// Keep a created file when it is closed instead of discarding it.
+static void os_keep(os *, i32 fd);
+// Best effort: give an open output file the input file's permissions,
+// ownership, and timestamps, as far as the platform supports.
+static void os_copymeta(os *, i32 from, i32 to);
 static void os_fail(os *) __attribute((noreturn));
 
 static void *bytecopy(void *dst, void const *src, iz len)

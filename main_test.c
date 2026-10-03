@@ -34,6 +34,11 @@ typedef struct {
     iz  cap;
     b32 live;
     b32 isdir;
+    b32 issymlink;  // followed unless OS_NOFOLLOW
+    b32 isspecial;  // e.g. FIFO or device
+    i32 nlinks;     // extra hard links
+    u32 mode;       // metadata copied by os_copymeta
+    i64 mtime;
 } mfile;
 
 enum { MAX_FILES = 64, MAX_FDS = 16 };
@@ -45,10 +50,14 @@ struct os {
         i32 file;
         iz  off;
         b32 open;
+        b32 created;  // discarded on close unless kept
+        b32 keep;
     } fds[MAX_FDS];
     iz  readlimit;   // max bytes per read, to exercise short reads
     b32 failread;    // reads of non-standard descriptors fail
     b32 failwrite;   // writes to descriptors other than stderr fail
+    b32 failclose;   // closing created files fails
+    b32 tty[3];      // standard descriptors attached to a terminal
 };
 
 static s8 cstrs8(char *z)
@@ -94,7 +103,10 @@ static mfile *mfs_create(os *ctx, s8 name)
     }
     TEST(f);
     f->len = 0;
-    f->isdir = 0;
+    f->isdir = f->issymlink = f->isspecial = 0;
+    f->nlinks = 0;
+    f->mode = 0600;  // as created by a platform layer
+    f->mtime = 0;
     return f;
 }
 
@@ -138,7 +150,8 @@ static void mfs_reset(os *ctx)
         ctx->fds[i].open = 0;
     }
     ctx->readlimit = 0;
-    ctx->failread = ctx->failwrite = 0;
+    ctx->failread = ctx->failwrite = ctx->failclose = 0;
+    ctx->tty[0] = ctx->tty[1] = ctx->tty[2] = 0;
     static char *std[] = {"<stdin>", "<stdout>", "<stderr>"};
     for (i32 i = 0; i < 3; i++) {
         ctx->fds[i].file = (i32)(mfs_create(ctx, cstrs8(std[i])) - ctx->files);
@@ -155,34 +168,67 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
     TEST(fd < MAX_FDS);
 
     mfile *f = mfs_find(ctx, path);
-    switch (mode) {
-    case OS_READ:
-        if (!f) {
-            return OS_ERR;
-        } else if (f->isdir) {
-            return OS_EISDIR;
-        }
-        break;
-    case OS_CREATE:
+    b32 created = 0;
+    if (mode & OS_CREATE) {
         if (f) {
             return OS_EEXIST;
         }
         f = mfs_create(ctx, path);
-        break;
-    case OS_FORCE:
+        created = 1;
+    } else if (mode & OS_FORCE) {
         f = mfs_create(ctx, path);
-        break;
+        created = 1;
+    } else if (!f) {
+        return OS_ERR;
+    } else if (f->isdir) {
+        return OS_EISDIR;
+    } else if ((mode & OS_NOFOLLOW) && f->issymlink) {
+        return OS_ESYMLINK;
+    } else if ((mode & OS_REGULAR) && f->isspecial) {
+        return OS_ENOTREG;
+    } else if ((mode & OS_ONELINK) && f->nlinks) {
+        return OS_ELINKS;
     }
     ctx->fds[fd].file = (i32)(f - ctx->files);
     ctx->fds[fd].off = 0;
     ctx->fds[fd].open = 1;
+    ctx->fds[fd].created = created;
+    ctx->fds[fd].keep = 0;
     return fd;
 }
 
-static void os_close(os *ctx, i32 fd)
+static b32 os_close(os *ctx, i32 fd)
 {
     TEST(fd>2 && fd<MAX_FDS && ctx->fds[fd].open);
     ctx->fds[fd].open = 0;
+    if (ctx->fds[fd].created) {
+        if (!ctx->fds[fd].keep) {
+            ctx->files[ctx->fds[fd].file].live = 0;
+        }
+        return !ctx->failclose;
+    }
+    return 1;
+}
+
+static void os_keep(os *ctx, i32 fd)
+{
+    TEST(fd>2 && fd<MAX_FDS && ctx->fds[fd].open && ctx->fds[fd].created);
+    ctx->fds[fd].keep = 1;
+}
+
+static b32 os_isatty(os *ctx, i32 fd)
+{
+    TEST(fd>=0 && fd<3);
+    return ctx->tty[fd];
+}
+
+static void os_copymeta(os *ctx, i32 from, i32 to)
+{
+    TEST(ctx->fds[from].open && ctx->fds[to].open && ctx->fds[to].created);
+    mfile *src = ctx->files + ctx->fds[from].file;
+    mfile *dst = ctx->files + ctx->fds[to].file;
+    dst->mode  = src->mode;
+    dst->mtime = src->mtime;
 }
 
 static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
@@ -686,25 +732,31 @@ static void test_inflate_vectors(os *ctx, arena a)
     static u8 const stored[] = {1, 3, 0, 0xfc, 0xff, 'a', 'b', 'c'};
     TEST(do_inflate(ctx, a, stored, countof(stored), &out) == GZ_OK);
     TEST(equals(out, (u8 *)"abc", 3));
+    free(out.s);
 
     // Empty stored block
     static u8 const empty[] = {1, 0, 0, 0xff, 0xff};
     TEST(do_inflate(ctx, a, empty, countof(empty), &out) == GZ_OK);
     TEST(out.len == 0);
+    free(out.s);
 
     // NLEN mismatch
     static u8 const badlen[] = {1, 3, 0, 0xfc, 0xfe, 'a', 'b', 'c'};
     TEST(do_inflate(ctx, a, badlen, countof(badlen), &out) == GZ_EDATA);
+    free(out.s);
 
     // Truncated stored data
     TEST(do_inflate(ctx, a, stored, countof(stored)-1, &out) == GZ_ETRUNC);
+    free(out.s);
 
     // Reserved block type
     static u8 const type3[] = {7};
     TEST(do_inflate(ctx, a, type3, 1, &out) == GZ_EDATA);
+    free(out.s);
 
     // Empty input
     TEST(do_inflate(ctx, a, 0, 0, &out) == GZ_ETRUNC);
+    free(out.s);
 
     // Fixed: "a" plus a match of length 3 at distance 1
     b = (bits){0};
@@ -716,6 +768,7 @@ static void test_inflate_vectors(os *ctx, arena a)
     bfixed(&b, 256);
     TEST(inflate_bits(ctx, a, &b, &out) == GZ_OK);
     TEST(equals(out, (u8 *)"aaaa", 4));
+    free(out.s);
 
     // Fixed: run of a high byte (regression: signed overflow in the
     // distance-1 fill)
@@ -733,6 +786,7 @@ static void test_inflate_vectors(os *ctx, arena a)
     for (iz i = 0; i < out.len; i++) {
         TEST(out.s[i] == 0xff);
     }
+    free(out.s);
 
     // Fixed: distance too far back
     b = (bits){0};
@@ -743,6 +797,7 @@ static void test_inflate_vectors(os *ctx, arena a)
     bcode(&b, 1, 5);
     bfixed(&b, 256);
     TEST(inflate_bits(ctx, a, &b, &out) == GZ_EDATA);
+    free(out.s);
 
     // Fixed: invalid literal/length symbols 286 and 287
     for (i32 sym = 286; sym <= 287; sym++) {
@@ -754,6 +809,7 @@ static void test_inflate_vectors(os *ctx, arena a)
         bcode(&b, 0, 5);
         bfixed(&b, 256);
         TEST(inflate_bits(ctx, a, &b, &out) == GZ_EDATA);
+        free(out.s);
     }
 
     // Fixed: invalid distance symbols 30 and 31
@@ -766,6 +822,7 @@ static void test_inflate_vectors(os *ctx, arena a)
         bcode(&b, sym, 5);
         bfixed(&b, 256);
         TEST(inflate_bits(ctx, a, &b, &out) == GZ_EDATA);
+        free(out.s);
     }
 
     // Fixed: length 258 via symbol 285 and via 284 + 31 (zlib allows)
@@ -784,6 +841,7 @@ static void test_inflate_vectors(os *ctx, arena a)
         bfixed(&b, 256);
         TEST(inflate_bits(ctx, a, &b, &out) == GZ_OK);
         TEST(out.len == 259);
+        free(out.s);
     }
 
     // Fixed: maximum distance 32768
@@ -820,12 +878,14 @@ static void test_inflate_vectors(os *ctx, arena a)
         TEST(out.len == 32771);
         TEST(!memcmp(out.s, data, 32768));
         TEST(!memcmp(out.s+32768, data, 3));
+        free(out.s);
 
         // One byte short of history: distance too far
         stream[1] = 0xff; stream[2] = 0x7f;  // LEN 32767
         stream[3] = 0x00; stream[4] = 0x80;
         memmove(stream+5+32767, stream+5+32768, (uz)b.len);
         TEST(do_inflate(ctx, a, stream, len-1, &out) == GZ_EDATA);
+        free(out.s);
         free(stream);
     }
 
@@ -845,6 +905,7 @@ static void test_inflate_vectors(os *ctx, arena a)
     dyn_lit(&b, &c, 256);
     TEST(inflate_bits(ctx, a, &b, &out) == GZ_OK);
     TEST(equals(out, (u8 *)"aaaa", 4));
+    free(out.s);
 
     // Lone 1-bit distance code, unused codeword decoded
     b = (bits){0};
@@ -854,6 +915,7 @@ static void test_inflate_vectors(os *ctx, arena a)
     bcode(&b, 1, 1);
     dyn_lit(&b, &c, 256);
     TEST(inflate_bits(ctx, a, &b, &out) != GZ_OK);
+    free(out.s);
 
     // Empty distance code is fine when unused
     c.lens[c.hlit+0] = 0;
@@ -863,6 +925,7 @@ static void test_inflate_vectors(os *ctx, arena a)
     dyn_lit(&b, &c, 256);
     TEST(inflate_bits(ctx, a, &b, &out) == GZ_OK);
     TEST(equals(out, (u8 *)"a", 1));
+    free(out.s);
 
     // ... but not when used
     b = (bits){0};
@@ -871,6 +934,7 @@ static void test_inflate_vectors(os *ctx, arena a)
     dyn_lit(&b, &c, 257);
     bput(&b, 0, 16);
     TEST(inflate_bits(ctx, a, &b, &out) != GZ_OK);
+    free(out.s);
 
     // Lone 1-bit literal/length code (end-of-block only)
     dyncode e = {0};
@@ -882,6 +946,7 @@ static void test_inflate_vectors(os *ctx, arena a)
     dyn_lit(&b, &e, 256);
     TEST(inflate_bits(ctx, a, &b, &out) == GZ_OK);
     TEST(out.len == 0);
+    free(out.s);
 
     // Incomplete literal/length code
     e.lens['a'] = 2;
@@ -889,6 +954,7 @@ static void test_inflate_vectors(os *ctx, arena a)
     dyn_begin(&b, &e);
     bput(&b, 0, 16);
     TEST(inflate_bits(ctx, a, &b, &out) == GZ_EDATA);
+    free(out.s);
 
     // Over-subscribed literal/length code
     e.lens['a'] = 1;
@@ -897,6 +963,7 @@ static void test_inflate_vectors(os *ctx, arena a)
     dyn_begin(&b, &e);
     bput(&b, 0, 16);
     TEST(inflate_bits(ctx, a, &b, &out) == GZ_EDATA);
+    free(out.s);
 
     // Missing end-of-block code
     dyncode m = {0};
@@ -908,6 +975,7 @@ static void test_inflate_vectors(os *ctx, arena a)
     dyn_begin(&b, &m);
     bput(&b, 0, 16);
     TEST(inflate_bits(ctx, a, &b, &out) == GZ_EDATA);
+    free(out.s);
 
     // Incomplete distance code with more than one codeword
     c.lens[c.hlit+0] = 2;
@@ -917,6 +985,7 @@ static void test_inflate_vectors(os *ctx, arena a)
     dyn_begin(&b, &c);
     bput(&b, 0, 16);
     TEST(inflate_bits(ctx, a, &b, &out) == GZ_EDATA);
+    free(out.s);
 
     // HLIT > 286 and HDIST > 30
     for (i32 v = 0; v < 2; v++) {
@@ -927,6 +996,7 @@ static void test_inflate_vectors(os *ctx, arena a)
         bput(&b, v ? 30 : 0, 5);
         bput(&b, 0, 32);
         TEST(inflate_bits(ctx, a, &b, &out) == GZ_EDATA);
+        free(out.s);
     }
 
     // HDIST = 30 is the maximum allowed
@@ -942,6 +1012,7 @@ static void test_inflate_vectors(os *ctx, arena a)
     dyn_lit(&b, &h, 256);
     TEST(inflate_bits(ctx, a, &b, &out) == GZ_OK);
     TEST(equals(out, (u8 *)"x", 1));
+    free(out.s);
 
     // Code length code: incomplete, over-subscribed, empty
     static u8 const clcases[][4] = {
@@ -961,6 +1032,7 @@ static void test_inflate_vectors(os *ctx, arena a)
         }
         bput(&b, 0, 32);
         TEST(inflate_bits(ctx, a, &b, &out) == GZ_EDATA);
+        free(out.s);
     }
 
 }
@@ -1643,6 +1715,112 @@ static void test_cli(os *ctx, arena a)
     free(text);
 }
 
+static void test_cli_safety(os *ctx, arena a)
+{
+    u8 *text = randbytes(20000, 2);
+    s8 out;
+
+    // Metadata follows the data in both directions
+    mfs_reset(ctx);
+    mfile *f = mfs_create(ctx, S("m"));
+    mfs_append(f, text, 20000);
+    f->mode = 0640;
+    f->mtime = 1234567890;
+    TEST(run(ctx, a, "m") == EXIT_OK);
+    f = mfs_find(ctx, S("m.gz"));
+    TEST(f && f->mode==0640 && f->mtime==1234567890);
+    f->mode = 0604;
+    f->mtime = 42;
+    TEST(run(ctx, a, "-d m.gz") == EXIT_OK);
+    f = mfs_find(ctx, S("m"));
+    TEST(f && f->mode==0604 && f->mtime==42);
+    TEST(equals(mfs_get(ctx, "m"), text, 20000));
+
+    // Symbolic links are skipped in place unless forced
+    f = mfs_create(ctx, S("lnk"));
+    mfs_append(f, text, 100);
+    f->issymlink = 1;
+    TEST(run(ctx, a, "lnk") == EXIT_WARN);
+    TEST(stderr_has(ctx, "is a symbolic link"));
+    TEST(has(ctx, "lnk") && !has(ctx, "lnk.gz"));
+    TEST(run(ctx, a, "-c lnk") == EXIT_OK);
+    TEST(mfs_get(ctx, "<stdout>").len > 0);
+    TEST(run(ctx, a, "-f lnk") == EXIT_OK);
+    TEST(!has(ctx, "lnk") && has(ctx, "lnk.gz"));
+
+    // Hard-linked files likewise
+    f = mfs_create(ctx, S("hard"));
+    mfs_append(f, text, 100);
+    f->nlinks = 1;
+    TEST(run(ctx, a, "hard") == EXIT_WARN);
+    TEST(stderr_has(ctx, "has other links"));
+    TEST(has(ctx, "hard") && !has(ctx, "hard.gz"));
+    TEST(run(ctx, a, "-f hard") == EXIT_OK);
+    TEST(has(ctx, "hard.gz"));
+
+    // Special files are never replaced, but may be read
+    f = mfs_create(ctx, S("fifo"));
+    mfs_append(f, text, 100);
+    f->isspecial = 1;
+    TEST(run(ctx, a, "fifo") == EXIT_WARN);
+    TEST(stderr_has(ctx, "not a directory or a regular file"));
+    TEST(run(ctx, a, "-f fifo") == EXIT_WARN);
+    TEST(has(ctx, "fifo") && !has(ctx, "fifo.gz"));
+    TEST(run(ctx, a, "-c fifo") == EXIT_OK);
+    s8 o = mfs_get(ctx, "<stdout>");
+    TEST(do_gunzip(ctx, a, o.s, o.len, &out) == GZ_OK);
+    TEST(equals(out, text, 100));
+    free(out.s);
+
+    // Failure to close the output keeps the input and removes the output
+    mfs_put(ctx, "c", text, 20000);
+    ctx->failclose = 1;
+    TEST(run(ctx, a, "c") == EXIT_ERR);
+    TEST(stderr_has(ctx, "write error"));
+    ctx->failclose = 0;
+    TEST(equals(mfs_get(ctx, "c"), text, 20000));
+    TEST(!has(ctx, "c.gz"));
+
+    // Write failure mid-stream: nothing partial left behind
+    ctx->failwrite = 1;
+    TEST(run(ctx, a, "c") == EXIT_ERR);
+    ctx->failwrite = 0;
+    TEST(has(ctx, "c") && !has(ctx, "c.gz"));
+
+    // Terminals: no compressed data written to or read from one
+    mfs_put(ctx, "t", text, 1000);
+    ctx->tty[1] = 1;
+    set_stdin(ctx, text, 1000);
+    TEST(run(ctx, a, "") == EXIT_ERR);
+    TEST(stderr_has(ctx, "not written to a terminal"));
+    TEST(!mfs_get(ctx, "<stdout>").len);
+    TEST(run(ctx, a, "-c t") == EXIT_ERR);
+    TEST(!mfs_get(ctx, "<stdout>").len);
+    TEST(run(ctx, a, "-cf t") == EXIT_OK);
+    TEST(mfs_get(ctx, "<stdout>").len > 0);
+    TEST(run(ctx, a, "-k t") == EXIT_OK);  // in place: terminal irrelevant
+    s8 tgz = dup8(mfs_get(ctx, "t.gz"));
+    TEST(run(ctx, a, "-dc t.gz") == EXIT_OK);  // plain output is fine
+    TEST(equals(mfs_get(ctx, "<stdout>"), text, 1000));
+    ctx->tty[1] = 0;
+
+    ctx->tty[0] = 1;
+    set_stdin(ctx, tgz.s, tgz.len);
+    TEST(run(ctx, a, "-d") == EXIT_ERR);
+    TEST(stderr_has(ctx, "not read from a terminal"));
+    TEST(run(ctx, a, "-t") == EXIT_ERR);
+    TEST(run(ctx, a, "-t t.gz") == EXIT_OK);  // files are fine
+    set_stdin(ctx, tgz.s, tgz.len);
+    TEST(run(ctx, a, "-df") == EXIT_OK);
+    TEST(equals(mfs_get(ctx, "<stdout>"), text, 1000));
+    set_stdin(ctx, text, 1000);
+    TEST(run(ctx, a, "") == EXIT_OK);  // compressing from a terminal is fine
+    ctx->tty[0] = 0;
+
+    free(tgz.s);
+    free(text);
+}
+
 static void test_oom(os *ctx, arena a)
 {
     // Every truncation of the arena must fail cleanly via os_fail
@@ -1692,6 +1870,7 @@ int main(void)
     test_container(&ctx, a);
     test_io_errors(&ctx, a);
     test_cli(&ctx, a);
+    test_cli_safety(&ctx, a);
     test_oom(&ctx, a);
     test_push_invariance(&ctx, a);
     test_large_offset(&ctx, a);

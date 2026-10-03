@@ -20,12 +20,18 @@ W32(void)   ExitProcess(u32) __attribute((noreturn));
 W32(c16 *)  GetCommandLineW(void);
 W32(u32)    GetCurrentDirectoryW(u32, c16 *);
 W32(u32)    GetFileAttributesW(c16 *);
+W32(b32)    GetConsoleMode(iptr, u32 *);
+W32(b32)    GetFileInformationByHandle(iptr, void *);
+W32(b32)    GetFileInformationByHandleEx(iptr, i32, void *, u32);
+W32(u32)    GetFileType(iptr);
 W32(u32)    GetLastError(void);
 W32(iptr)   GetStdHandle(u32);
 W32(b32)    ReadFile(iptr, void *, u32, u32 *, uptr);
+W32(b32)    SetFileInformationByHandle(iptr, i32, void *, u32);
 W32(void *) VirtualAlloc(uptr, iz, u32, u32);
 W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 
+#define DELETE                     0x00010000u
 #define GENERIC_READ               0x80000000u
 #define GENERIC_WRITE              0x40000000u
 #define FILE_SHARE_ALL             7u
@@ -34,6 +40,11 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define OPEN_EXISTING              3u
 #define FILE_ATTRIBUTE_NORMAL      0x80u
 #define FILE_ATTRIBUTE_DIRECTORY   0x10u
+#define FILE_ATTRIBUTE_REPARSE     0x400u
+#define FILE_FLAG_OPEN_REPARSE     0x00200000u
+#define FILE_TYPE_DISK             1u
+#define IO_REPARSE_TAG_MOUNT_POINT 0xa0000003u
+#define IO_REPARSE_TAG_SYMLINK     0xa000000cu
 #define INVALID_FILE_ATTRIBUTES    0xffffffffu
 #define INVALID_HANDLE_VALUE       ((iptr)-1)
 #define ERROR_FILE_EXISTS          80u
@@ -42,6 +53,31 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define MEM_COMMIT                 0x1000u
 #define MEM_RESERVE                0x2000u
 #define PAGE_READWRITE             4u
+
+enum {
+    FileBasicInfo        = 0,
+    FileDispositionInfo  = 4,
+    FileAttributeTagInfo = 9,
+};
+
+typedef struct {
+    u32 attributes;
+    u32 created[2], accessed[2], written[2];
+    u32 volume;
+    u32 size_hi, size_lo;
+    u32 links;
+    u32 index_hi, index_lo;
+} by_handle_info;
+
+typedef struct {
+    i64 created, accessed, written, changed;  // zero means unchanged
+    u32 attributes;                           // zero means unchanged
+} basic_info;
+
+typedef struct {
+    u32 attributes;
+    u32 reparse_tag;
+} attribute_tag_info;
 
 enum { MAX_HANDLES = 8 };
 
@@ -149,9 +185,9 @@ static c16 *winpath(arena *a, s8 path)
     b32 drive = p.len>=3 && p.s[1]==':' && p.s[2]=='\\' &&
         ((p.s[0]>='A' && p.s[0]<='Z') || (p.s[0]>='a' && p.s[0]<='z'));
     if (!drive) {
-        u32 cap = GetCurrentDirectoryW(0, 0);
+        iz  cap = GetCurrentDirectoryW(0, 0);
         s16 cwd = {new(a, cap+1, c16), 0};
-        cwd.len = GetCurrentDirectoryW(cap+1, cwd.s);
+        cwd.len = GetCurrentDirectoryW((u32)cap+1, cwd.s);
         if (!cwd.len || cwd.len>cap) {
             return 0;
         }
@@ -164,6 +200,75 @@ static c16 *winpath(arena *a, s8 path)
     return s16cat(a, s16lit(L"\\\\?\\"), p);
 }
 
+// Returns zero and a handle, or an OS_E* code.
+static i32 open_input(c16 *wpath, i32 mode, iptr *out)
+{
+    u32 flags = FILE_ATTRIBUTE_NORMAL;
+    flags |= mode & OS_NOFOLLOW ? FILE_FLAG_OPEN_REPARSE : 0;
+    iptr h = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_ALL, 0,
+                         OPEN_EXISTING, flags, 0);
+    if (h == INVALID_HANDLE_VALUE) {
+        u32 attr = GetFileAttributesW(wpath);
+        b32 dir = attr!=INVALID_FILE_ATTRIBUTES &&
+                  (attr & FILE_ATTRIBUTE_DIRECTORY);
+        return dir ? OS_EISDIR : OS_ERR;
+    }
+
+    if (mode & OS_NOFOLLOW) {
+        // Refuse links, but other reparse points (e.g. cloud placeholder
+        // files) are ordinary files: reopen those normally.
+        attribute_tag_info tag = {0};
+        GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof(tag));
+        if (tag.attributes & FILE_ATTRIBUTE_REPARSE) {
+            CloseHandle(h);
+            if (tag.reparse_tag==IO_REPARSE_TAG_SYMLINK ||
+                tag.reparse_tag==IO_REPARSE_TAG_MOUNT_POINT) {
+                return OS_ESYMLINK;
+            }
+            return open_input(wpath, mode & ~OS_NOFOLLOW, out);
+        }
+    }
+
+    i32 err = 0;
+    by_handle_info info = {0};
+    if ((mode & OS_REGULAR) && GetFileType(h)!=FILE_TYPE_DISK) {
+        err = OS_ENOTREG;
+    } else if (!GetFileInformationByHandle(h, &info)) {
+        err = (mode & OS_REGULAR) ? OS_ENOTREG : 0;
+    } else if ((mode & OS_ONELINK) && info.links>1) {
+        err = OS_ELINKS;
+    }
+    if (err) {
+        CloseHandle(h);
+        return err;
+    }
+    *out = h;
+    return 0;
+}
+
+// Created files are marked delete-pending immediately, so that the file
+// system removes them however the process ends, until os_keep.
+static i32 open_output(os *ctx, i32 fd, c16 *wpath, i32 mode)
+{
+    if (mode & OS_FORCE) {
+        DeleteFileW(wpath);  // replace rather than write through a link
+    }
+    iptr h = CreateFileW(wpath, GENERIC_WRITE|DELETE, 0, 0, CREATE_NEW,
+                         FILE_ATTRIBUTE_NORMAL, 0);
+    if (h == INVALID_HANDLE_VALUE) {
+        return GetLastError()==ERROR_FILE_EXISTS ? OS_EEXIST : OS_ERR;
+    }
+    u8 discard = 1;
+    if (!SetFileInformationByHandle(h, FileDispositionInfo,
+                                    &discard, sizeof(discard))) {
+        CloseHandle(h);
+        DeleteFileW(wpath);
+        return OS_ERR;
+    }
+    ctx->handles[fd] = h;
+    return fd;
+}
+
 static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
 {
     i32 fd = 3;
@@ -173,36 +278,52 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
         return OS_ERR;
     }
 
-    iptr h = INVALID_HANDLE_VALUE;
-    switch (mode) {
-    case OS_READ:
-        h = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_ALL, 0,
-                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
-        if (h == INVALID_HANDLE_VALUE) {
-            u32 attr = GetFileAttributesW(wpath);
-            b32 dir = attr!=INVALID_FILE_ATTRIBUTES &&
-                      (attr & FILE_ATTRIBUTE_DIRECTORY);
-            return dir ? OS_EISDIR : OS_ERR;
-        }
-        break;
-    case OS_CREATE:
-    case OS_FORCE:
-        h = CreateFileW(wpath, GENERIC_WRITE, 0, 0,
-                        mode==OS_CREATE ? CREATE_NEW : CREATE_ALWAYS,
-                        FILE_ATTRIBUTE_NORMAL, 0);
-        if (h == INVALID_HANDLE_VALUE) {
-            return GetLastError()==ERROR_FILE_EXISTS ? OS_EEXIST : OS_ERR;
-        }
-        break;
+    if (mode & (OS_CREATE|OS_FORCE)) {
+        return open_output(ctx, fd, wpath, mode);
+    }
+    iptr h = 0;
+    i32 err = open_input(wpath, mode, &h);
+    if (err) {
+        return err;
     }
     ctx->handles[fd] = h;
     return fd;
 }
 
-static void os_close(os *ctx, i32 fd)
+static b32 os_close(os *ctx, i32 fd)
 {
-    CloseHandle(ctx->handles[fd]);
+    b32 ok = CloseHandle(ctx->handles[fd]);
     ctx->handles[fd] = 0;
+    return ok;
+}
+
+static void os_keep(os *ctx, i32 fd)
+{
+    u8 keep = 0;
+    SetFileInformationByHandle(ctx->handles[fd], FileDispositionInfo,
+                               &keep, sizeof(keep));
+}
+
+static b32 os_isatty(os *ctx, i32 fd)
+{
+    u32 mode;
+    return GetConsoleMode(ctx->handles[fd], &mode);
+}
+
+// Windows has no meaningful equivalent of mode bits here: new files
+// inherit their directory's access control, as they would from GNU gzip.
+// Copy the timestamps.
+static void os_copymeta(os *ctx, i32 from, i32 to)
+{
+    basic_info info = {0};
+    if (GetFileInformationByHandleEx(ctx->handles[from], FileBasicInfo,
+                                     &info, sizeof(info))) {
+        basic_info set = {0};
+        set.accessed = info.accessed;
+        set.written  = info.written;
+        SetFileInformationByHandle(ctx->handles[to], FileBasicInfo,
+                                   &set, sizeof(set));
+    }
 }
 
 static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)

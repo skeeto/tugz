@@ -157,11 +157,39 @@ static i32 transform(options *o, i32 in, i32 out, arena scratch)
     return gzip_compress(in, out, o->level, scratch);
 }
 
+// Refuse to write compressed data to a terminal, or to read it from one,
+// unless forced. Returns -1 to continue, or an exit status.
+static i32 check_terminal(options *o, b32 from_stdin, arena scratch)
+{
+    os *ctx = scratch.ctx;
+    b32 compress = !o->decompress && !o->test;
+    if (o->force) {
+        return -1;
+    } else if (compress && os_isatty(ctx, 1)) {
+        message(scratch, (s8){0}, S(
+            "compressed data not written to a terminal. "
+            "Use -f to force compression."
+        ));
+        return EXIT_ERR;
+    } else if (!compress && from_stdin && os_isatty(ctx, 0)) {
+        message(scratch, (s8){0}, S(
+            "compressed data not read from a terminal. "
+            "Use -f to force decompression."
+        ));
+        return EXIT_ERR;
+    }
+    return -1;
+}
+
 static i32 process_file(options *o, s8 path, arena scratch)
 {
     os *ctx = scratch.ctx;
 
     if (s8equals(path, S("-"))) {
+        i32 r = check_terminal(o, 1, scratch);
+        if (r >= 0) {
+            return r;
+        }
         i32 status = transform(o, 0, 1, scratch);
         return report(o, S("stdin"), status, scratch);
     }
@@ -178,12 +206,32 @@ static i32 process_file(options *o, s8 path, arena scratch)
         if (!outpath.s) {
             return warn(o, path, S("unknown suffix -- ignored"), scratch);
         }
+    } else {
+        i32 r = check_terminal(o, 0, scratch);
+        if (r >= 0) {
+            return r;
+        }
     }
 
-    i32 in = os_open(ctx, path, OS_READ, scratch);
-    if (in == OS_EISDIR) {
+    // The input of an in-place operation is deleted afterward, so only
+    // plain files qualify. Forcing permits links, which are followed.
+    i32 mode = OS_READ;
+    if (in_place) {
+        mode |= OS_REGULAR;
+        mode |= o->force ? 0 : OS_NOFOLLOW|OS_ONELINK;
+    }
+    i32 in = os_open(ctx, path, mode, scratch);
+    switch (in) {
+    case OS_EISDIR:
         return warn(o, path, S("is a directory -- ignored"), scratch);
-    } else if (in < 0) {
+    case OS_ESYMLINK:
+        return warn(o, path, S("is a symbolic link -- ignored"), scratch);
+    case OS_ENOTREG:
+        return warn(o, path, S("is not a directory or a regular file -- ignored"), scratch);
+    case OS_ELINKS:
+        return warn(o, path, S("has other links -- file ignored"), scratch);
+    }
+    if (in < 0) {
         message(scratch, path, S("cannot open for reading"));
         return EXIT_ERR;
     }
@@ -204,12 +252,22 @@ static i32 process_file(options *o, s8 path, arena scratch)
         return EXIT_ERR;
     }
 
+    // The output is discarded on close unless explicitly kept, so that
+    // failures and interruptions never leave a partial file behind.
     i32 status = transform(o, in, out, scratch);
-    os_close(ctx, in);
-    os_close(ctx, out);
-
-    if (status!=GZ_OK && status!=GZ_TRAILING) {
+    b32 ok = status==GZ_OK || status==GZ_TRAILING;
+    if (ok) {
+        os_copymeta(ctx, in, out);
+        os_keep(ctx, out);
+    }
+    // A failed close may mean lost data, so the input must survive it
+    if (!os_close(ctx, out) && ok) {
         os_remove(ctx, outpath, scratch);
+        status = GZ_EWRITE;
+        ok = 0;
+    }
+    os_close(ctx, in);
+    if (!ok) {
         return report(o, path, status, scratch);
     }
 

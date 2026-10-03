@@ -32,9 +32,27 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
     __builtin_trap();
 }
 
-static void os_close(os *ctx, i32 fd)
+static b32 os_close(os *ctx, i32 fd)
 {
     (void)ctx; (void)fd;
+    __builtin_trap();
+}
+
+static void os_keep(os *ctx, i32 fd)
+{
+    (void)ctx; (void)fd;
+    __builtin_trap();
+}
+
+static b32 os_isatty(os *ctx, i32 fd)
+{
+    (void)ctx; (void)fd;
+    __builtin_trap();
+}
+
+static void os_copymeta(os *ctx, i32 from, i32 to)
+{
+    (void)ctx; (void)from; (void)to;
     __builtin_trap();
 }
 

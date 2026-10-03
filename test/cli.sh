@@ -98,6 +98,86 @@ expect_status 1 "$GZIP" -d bad.gz
 mkdir d
 expect_status 2 "$GZIP" d
 
+# Metadata: timestamps everywhere, permissions where they mean something
+windows=
+[ "$(uname -s)" = Windows_NT ] && windows=1
+printf 'meta\n' >meta
+touch -t 200102030405 meta ref
+[ -z "$windows" ] && chmod 640 meta
+"$GZIP" meta
+[ meta.gz -nt ref ] || [ meta.gz -ot ref ] && fail "mtime not preserved"
+if [ -z "$windows" ]; then
+    [ "$(ls -l meta.gz | cut -c1-10)" = "-rw-r-----" ] ||
+        fail "mode not preserved: $(ls -l meta.gz | cut -c1-10)"
+    chmod 600 meta.gz
+    "$GZIP" -d meta.gz
+    [ "$(ls -l meta | cut -c1-10)" = "-rw-------" ] ||
+        fail "mode not preserved on decompress"
+else
+    "$GZIP" -d meta.gz
+fi
+[ meta -nt ref ] || [ meta -ot ref ] && fail "mtime not preserved on decompress"
+
+# Symbolic links are skipped in place unless forced
+printf 'target\n' >target
+if ln -s target slink 2>/dev/null; then
+    expect_status 2 "$GZIP" slink
+    [ -e slink ] && [ ! -e slink.gz ] || fail "symlink compressed in place"
+    "$GZIP" -c slink | "$GZIP" -dc | cmp -s - target || fail "-c symlink"
+    "$GZIP" -f slink
+    [ ! -e slink ] && [ -e slink.gz ] && [ -e target ] || fail "-f symlink"
+fi
+
+# Hard-linked files likewise
+printf 'linked\n' >hard1
+if ln hard1 hard2 2>/dev/null; then
+    expect_status 2 "$GZIP" hard1
+    [ -e hard1 ] && [ ! -e hard1.gz ] || fail "hard link compressed"
+    "$GZIP" -f hard1
+    [ -e hard1.gz ] && [ -e hard2 ] || fail "-f hard link"
+fi
+
+# FIFOs are never replaced, and checking one must not block
+if command -v mkfifo >/dev/null && mkfifo fifo 2>/dev/null; then
+    expect_status 2 "$GZIP" fifo
+    expect_status 2 "$GZIP" -f fifo
+    [ ! -e fifo.gz ] || fail "fifo compressed in place"
+    printf 'piped\n' >fifo &
+    "$GZIP" -c fifo | "$GZIP" -dc | grep -q piped || fail "-c fifo"
+    wait
+fi
+
+# Write errors
+if [ -w /dev/full ]; then
+    set +e
+    "$GZIP" -c text >/dev/full 2>/dev/null
+    st=$?
+    set -e
+    [ $st = 1 ] || fail "write to /dev/full: status $st"
+fi
+
+# An interrupted in-place operation leaves no partial output. A
+# non-interactive shell starts background jobs ignoring SIGINT, which
+# gzip honors (as under nohup), so use SIGTERM.
+# (busybox-w32 cannot reliably terminate a background job, so Windows is
+# tested separately with Stop-Process.)
+if [ -z "$windows" ]; then
+head -c 300000000 /dev/urandom >big
+"$GZIP" -9 big &
+pid=$!
+sleep 1
+kill -TERM $pid 2>/dev/null || true
+set +e
+wait $pid
+st=$?
+set -e
+if [ $st -ne 0 ]; then  # otherwise it finished first; nothing to check
+    [ -e big ] || fail "input lost on interrupt"
+    [ ! -e big.gz ] || fail "partial output left on interrupt"
+fi
+rm -f big big.gz
+fi
+
 if [ -n "$SLOW" ]; then
     # 5 GiB stream: exercises 64-bit offsets and ISIZE wraparound
     gen() {

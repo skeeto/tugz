@@ -53,6 +53,14 @@ Fuzzers:
 
 ## Cross-platform verification
 
+- WSL Debian x86-64 (GCC 14): unit tests under ASan/UBSan/LeakSanitizer,
+  `test/cli.sh` for release, sanitized, and `-m32` builds; terminal
+  behavior via `script(1)`. A 32-bit build compresses and decompresses a
+  3 GiB file (and fails to open it without `_FILE_OFFSET_BITS=64`).
+- Windows: the 64-bit and 32-bit (`i686-w64-mingw32`) builds pass
+  `test/cli.sh`; `Stop-Process -Force` mid-compression leaves the input
+  and no output; console detection checked under ConPTY (`ssh -tt`).
+
 - Windows 11, i9-12900, w64devkit GCC 16: `make gzip.exe` with the real
   CRT-free flags (imports only KERNEL32 and SHELL32), `test/cli.sh`
   against busybox gzip, plain and `-mpclmul` builds. Non-ASCII and
@@ -71,6 +79,27 @@ Fuzzers:
   ignored with a warning (exit 2) unless it starts with the gzip magic, in
   which case it must be a valid member. Matches GNU gzip.
 - Exit status: 0 success, 1 error, 2 warning; errors take precedence.
+- In-place operation (no `-c`/`-t`) deletes its input, so its input must
+  be a regular file: symbolic links and hard-linked files are skipped with
+  a warning unless `-f` (then links are followed); FIFOs, devices, and
+  directories are always skipped. With `-c` or `-t`, anything but a
+  directory may be read (e.g. `gzip -c <(cmd)`).
+- Output files are created owner-only, then given the input's mode,
+  ownership (when permitted; set-ID bits dropped otherwise), and
+  timestamps. Timestamps are whole seconds: the POSIX nanosecond field
+  names differ between macOS and Linux. On Windows, timestamps are copied
+  and access control is inherited from the directory, as with GNU gzip.
+- Outputs are discarded unless explicitly kept after success
+  (`os_keep`): on failure, on a failed close (which may mean lost data),
+  and on interruption. POSIX uses a SIGHUP/SIGINT/SIGTERM handler (the
+  only global, in `main_posix.c`; inherited "ignore" dispositions are
+  respected, as under nohup). Windows marks the file delete-pending at
+  creation, so even `TerminateProcess` cleans up.
+- `-f` replaces an existing output by unlinking it first, never writing
+  through a link.
+- Compressed data is not written to, or read from, a terminal without
+  `-f`. Stricter than GNU in one case: `gzip -c file` to a terminal is
+  refused too.
 
 ## Bugs found along the way
 

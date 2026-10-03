@@ -1,5 +1,8 @@
 // POSIX platform layer for gzip
 // $ cc -O2 -o gzip main_posix.c
+#define _POSIX_C_SOURCE 200809L  // sigaction, futimens, O_NOFOLLOW, ...
+#define _DARWIN_C_SOURCE         // macOS hides O_NOFOLLOW otherwise
+#define _FILE_OFFSET_BITS 64     // large files on 32-bit hosts
 #include "src/base.c"
 #include "src/crc32.c"
 #include "src/inflate.c"
@@ -9,12 +12,19 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+// Path of the output file being written, deleted if a signal interrupts
+// the program. The signal handler is why this one variable is global.
+static char *volatile pending_output;
+
 struct os {
-    b32 unused;
+    i32 outfd;  // descriptor of pending_output, or -1
+    b32 keep;   // keep pending_output when closed
 };
 
 static s8 cstr(char *z)
@@ -32,36 +42,121 @@ static char *tocstr(arena *a, s8 s)
     return r;
 }
 
-static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
+static int const cleanup_signals[] = {SIGHUP, SIGINT, SIGTERM};
+
+static void on_signal(int sig)
 {
-    (void)ctx;
-    char *cpath = tocstr(&scratch, path);
-    switch (mode) {
-    case OS_READ:;
-        int fd = open(cpath, O_RDONLY);
-        if (fd < 0) {
-            return OS_ERR;
-        }
-        struct stat st;
-        if (!fstat(fd, &st) && S_ISDIR(st.st_mode)) {
-            close(fd);
-            return OS_EISDIR;
-        }
-        return fd;
-    case OS_CREATE:
-        fd = open(cpath, O_WRONLY|O_CREAT|O_EXCL, 0666);
-        return fd>=0 ? fd : errno==EEXIST ? OS_EEXIST : OS_ERR;
-    case OS_FORCE:
-        fd = open(cpath, O_WRONLY|O_CREAT|O_TRUNC, 0666);
-        return fd>=0 ? fd : OS_ERR;
+    char *path = pending_output;
+    if (path) {
+        unlink(path);
     }
-    return OS_ERR;
+    signal(sig, SIG_DFL);
+    raise(sig);
 }
 
-static void os_close(os *ctx, i32 fd)
+// Block cleanup signals while pending_output changes along with the file.
+static sigset_t block_signals(void)
 {
-    (void)ctx;
-    close(fd);
+    sigset_t set, old;
+    sigemptyset(&set);
+    for (iz i = 0; i < countof(cleanup_signals); i++) {
+        sigaddset(&set, cleanup_signals[i]);
+    }
+    sigprocmask(SIG_BLOCK, &set, &old);
+    return old;
+}
+
+static void restore_signals(sigset_t old)
+{
+    sigprocmask(SIG_SETMASK, &old, 0);
+}
+
+static i32 open_output(os *ctx, char *cpath, i32 mode)
+{
+    if (mode & OS_FORCE) {
+        // Replace rather than truncate, so a link is never written through
+        unlink(cpath);
+    }
+
+    // Exactly one output file is open at a time
+    char *copy = malloc(strlen(cpath) + 1);
+    if (!copy) {
+        return OS_ERR;
+    }
+    strcpy(copy, cpath);
+
+    sigset_t old = block_signals();
+    int fd = open(cpath, O_WRONLY|O_CREAT|O_EXCL, 0600);
+    if (fd >= 0) {
+        ctx->outfd = fd;
+        ctx->keep = 0;
+        pending_output = copy;
+    }
+    restore_signals(old);
+
+    if (fd < 0) {
+        free(copy);
+        return errno==EEXIST ? OS_EEXIST : OS_ERR;
+    }
+    return fd;
+}
+
+static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
+{
+    char *cpath = tocstr(&scratch, path);
+    if (mode & (OS_CREATE|OS_FORCE)) {
+        return open_output(ctx, cpath, mode);
+    }
+
+    // Opening a FIFO would block until it has a writer, so check the type
+    // without blocking when only regular files are wanted.
+    int flags = O_RDONLY;
+    flags |= mode & OS_NOFOLLOW ? O_NOFOLLOW : 0;
+    flags |= mode & OS_REGULAR  ? O_NONBLOCK : 0;
+    int fd = open(cpath, flags);
+    if (fd < 0) {
+        // Refused symbolic links are ELOOP on Linux, EMLINK on FreeBSD
+        b32 link = (mode & OS_NOFOLLOW) && (errno==ELOOP || errno==EMLINK);
+        return link ? OS_ESYMLINK : errno==EISDIR ? OS_EISDIR : OS_ERR;
+    }
+
+    struct stat st;
+    i32 err = 0;
+    if (fstat(fd, &st)) {
+        err = OS_ERR;
+    } else if (S_ISDIR(st.st_mode)) {
+        err = OS_EISDIR;
+    } else if ((mode & OS_REGULAR) && !S_ISREG(st.st_mode)) {
+        err = OS_ENOTREG;
+    } else if ((mode & OS_ONELINK) && st.st_nlink>1) {
+        err = OS_ELINKS;
+    } else if (flags & O_NONBLOCK) {
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK);
+    }
+    if (err) {
+        close(fd);
+        return err;
+    }
+    return fd;
+}
+
+static b32 os_close(os *ctx, i32 fd)
+{
+    if (fd != ctx->outfd) {
+        return !close(fd) || errno==EINTR;
+    }
+
+    sigset_t old = block_signals();
+    b32 ok = !close(fd) || errno==EINTR;
+    char *path = pending_output;
+    if (!ctx->keep) {
+        unlink(path);
+    }
+    pending_output = 0;
+    ctx->outfd = -1;
+    restore_signals(old);
+    free(path);
+    return ok;
 }
 
 static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
@@ -98,6 +193,45 @@ static b32 os_remove(os *ctx, s8 path, arena scratch)
     return !unlink(tocstr(&scratch, path));
 }
 
+static b32 os_isatty(os *ctx, i32 fd)
+{
+    (void)ctx;
+    return isatty(fd);
+}
+
+static void os_keep(os *ctx, i32 fd)
+{
+    if (fd == ctx->outfd) {
+        ctx->keep = 1;
+    }
+}
+
+static void os_copymeta(os *ctx, i32 from, i32 to)
+{
+    (void)ctx;
+    struct stat st;
+    if (fstat(from, &st)) {
+        return;
+    }
+
+    // Ownership first, since changing it may clear set-ID bits. Without
+    // the original owner, keep no set-ID bits at all.
+    mode_t mode = st.st_mode & 07777;
+    if (fchown(to, st.st_uid, st.st_gid)) {
+        mode &= ~(mode_t)(S_ISUID|S_ISGID);
+        if (fchown(to, (uid_t)-1, st.st_gid)) {
+            mode &= ~(mode_t)S_ISGID;
+        }
+    }
+    fchmod(to, mode);
+
+    // Whole seconds: the nanosecond field names differ between systems
+    struct timespec times[2] = {{0}, {0}};
+    times[0].tv_sec = st.st_atime;
+    times[1].tv_sec = st.st_mtime;
+    futimens(to, times);
+}
+
 static void os_fail(os *ctx)
 {
     (void)ctx;
@@ -107,14 +241,27 @@ static void os_fail(os *ctx)
 int main(int argc, char **argv)
 {
     os ctx = {0};
-    iz cap = (iz)1 << 25;
+    ctx.outfd = -1;
 
-    config conf = {0};
-    conf.perm.beg = malloc((uz)cap);
-    if (!conf.perm.beg) {
+    for (iz i = 0; i < countof(cleanup_signals); i++) {
+        struct sigaction sa = {0};
+        sigaction(cleanup_signals[i], 0, &sa);
+        if (sa.sa_handler != SIG_IGN) {  // e.g. under nohup
+            sa.sa_handler = on_signal;
+            sigemptyset(&sa.sa_mask);
+            sa.sa_flags = 0;
+            sigaction(cleanup_signals[i], &sa, 0);
+        }
+    }
+
+    iz cap = (iz)1 << 25;
+    byte *mem = malloc((uz)cap);
+    if (!mem) {
         return EXIT_ERR;
     }
-    conf.perm.end = conf.perm.beg + cap;
+    config conf = {0};
+    conf.perm.beg = mem;
+    conf.perm.end = mem + cap;
     conf.perm.ctx = &ctx;
 
     conf.nargs = argc - 1;
@@ -122,5 +269,7 @@ int main(int argc, char **argv)
     for (i32 i = 0; i < conf.nargs; i++) {
         conf.args[i] = cstr(argv[i+1]);
     }
-    return gzip_main(&conf);
+    i32 status = gzip_main(&conf);
+    free(mem);  // for leak checkers
+    return status;
 }
