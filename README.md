@@ -23,6 +23,11 @@ Windows, CRT-free (w64devkit):
 On x86, add `-mpclmul` (or `-march=native`) for hardware CRC-32. ARMv8
 builds use the CRC instructions automatically where available.
 
+`make amalgamation` produces `gzip.c`, the Windows build as a single
+source file with its build command in the header:
+
+    $ cc -O2 -nostartfiles -o gzip.exe gzip.c -lmemory
+
 ## Usage
 
     gzip [-123456789cdfhkqtV] [FILE]...

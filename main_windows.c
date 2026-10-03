@@ -1,6 +1,5 @@
 // CRT-free Win32 platform layer for tugz
-// $ cc -O2 -fno-builtin -nostartfiles -o gzip.exe main_windows.c
-//      -lmemory -lshell32 -lkernel32
+// $ cc -O2 -nostartfiles -o gzip.exe main_windows.c -lmemory
 #include "src/base.c"
 #include "src/crc32.c"
 #include "src/inflate.c"

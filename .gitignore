@@ -9,3 +9,4 @@ fuzz/
 /bench
 /fuzz-*
 *.dSYM/
+/gzip.c

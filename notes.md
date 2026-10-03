@@ -45,6 +45,7 @@ Windows `gzip -d` 25% faster (607 to 762 MB/s on Silesia).
     make fuzz-seeds            # seed corpora in fuzz/corpus/
     ./fuzz-diff-inflate -fork=3 -max_len=65536 fuzz/corpus/diff-inflate
     make bench && ./bench -l 1,6,9 bench_corpus/silesia/*
+    make amalgamation          # single-file Windows source, gzip.c
 
 Fuzzers:
 

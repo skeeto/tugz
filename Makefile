@@ -27,6 +27,20 @@ gzip-debug: main_posix.c $(SRC)
 gzip.exe: main_windows.c $(SRC)
 	$(CROSS)gcc $(OPT) $(WARN) $(WIN32_CFLAGS) -o $@ main_windows.c $(WIN32_LIBS)
 
+# Single-file Windows source, e.g. for w64devkit. The header carries the
+# version and build command; local includes are dropped.
+amalgamation: gzip.c
+gzip.c: main_windows.c $(SRC)
+	v=$$(sed -n 's/.*gzip (tugz) \([0-9.]*\).*/\1/p' src/cli.c); \
+	{ echo "// tugz $$v: tiny unity gzip, a drop-in gzip for Windows"; \
+	  echo "// Single-file amalgamation of the tugz sources. Build:"; \
+	  echo "//   \$$ cc -O2 -nostartfiles -o gzip.exe gzip.c -lmemory"; \
+	  echo "// On x86, add -mpclmul (or -march=native) for hardware CRC-32."; \
+	  echo "// Copies named gunzip.exe or zcat.exe decompress by default."; \
+	  echo; \
+	  awk 'FNR==1 && NR>1 {print ""} !/^#include "/ && !/^\/\/ +\$$ cc/' \
+	      $(SRC) main_windows.c; } >$@
+
 tests: main_test.c $(SRC)
 	$(CC) $(DEBUG) -o $@ main_test.c $(REFLIBS)
 
@@ -55,7 +69,7 @@ bench: main_bench.c $(SRC)
 	$(CC) -O2 $(WARN) -Wno-unused-function -o $@ main_bench.c $(REFLIBS)
 
 clean:
-	rm -rf gzip gzip-debug gzip.exe tests bench *.dSYM \
+	rm -rf gzip gzip-debug gzip.exe gzip.c tests bench *.dSYM \
 	       fuzz-inflate fuzz-roundtrip fuzz-diff-inflate fuzz-diff-deflate
 
-.PHONY: check fuzz fuzz-seeds clean
+.PHONY: amalgamation check fuzz fuzz-seeds clean
