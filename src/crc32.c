@@ -401,19 +401,20 @@ static u32 crc32_update(u32 crc, u8 const *p, iz len)
     }
     return crc32_slice8(~crc, p, len);
 }
-#elif __PCLMUL__
+#elif __x86_64__ || __i386__
 // Folding with carry-less multiplication (Intel, "Fast CRC Computation
 // for Generic Polynomials Using PCLMULQDQ"), with the constants for the
 // reflected gzip polynomial as used by zlib. Four 128-bit lanes are
 // folded 64 bytes at a time, merged, then Barrett-reduced to 32 bits.
-// Requires PCLMULQDQ (e.g. -mpclmul or -march=native), which no x86-64
-// baseline level includes.
+//
+// No x86 baseline includes PCLMULQDQ, so this one function is compiled
+// for it via the target attribute and selected at run time.
+#include <cpuid.h>
 #include <immintrin.h>
-static u32 crc32_update(u32 crc, u8 const *p, iz len)
+__attribute((target("pclmul,sse2")))
+static u32 crc32_pclmul(u32 crc, u8 const *p, iz len)
 {
-    if (len < 64) {
-        return crc32_slice8(crc, p, len);
-    }
+    assert(len >= 64);
 
     #define LOAD(q)       _mm_loadu_si128((__m128i const *)(q))
     #define CLMUL(a, b, i) _mm_clmulepi64_si128(a, b, i)
@@ -466,6 +467,23 @@ static u32 crc32_update(u32 crc, u8 const *p, iz len)
     #undef LOAD
 
     return crc32_slice8(~crc, p, len);
+}
+
+// Checked on each call rather than cached, keeping the core free of
+// mutable globals: CPUID costs about 100 cycles, and only large updates
+// (typically a 256 KiB output flush) get this far.
+static b32 crc32_has_pclmul(void)
+{
+    u32 a, b, c, d;
+    return __get_cpuid(1, &a, &b, &c, &d) && (c & bit_PCLMUL) && (d & bit_SSE2);
+}
+
+static u32 crc32_update(u32 crc, u8 const *p, iz len)
+{
+    if (len>=64 && crc32_has_pclmul()) {
+        return crc32_pclmul(crc, p, len);
+    }
+    return crc32_slice8(crc, p, len);
 }
 #else
 static u32 crc32_update(u32 crc, u8 const *p, iz len)

@@ -29,12 +29,16 @@ platform layers are not part of that and may use globals and `#ifdef`.
 | `test/cli.sh`            | end-to-end tests of the binary                  |
 | `test/seeds.py`          | fuzzing seed corpus generator                   |
 
-The only conditional compilation in the core is CPU feature tests in
-`src/crc32.c`: `__ARM_FEATURE_CRC32` (on by default for Apple and most
-ARMv8.1+ targets) and `__PCLMUL__` (x86: build with `-mpclmul` or
-`-march=native`; no x86-64 baseline level includes it). On an i9-12900,
-PCLMUL folding runs at 16.8 GB/s versus 3 GB/s for slicing-by-8, making
-Windows `gzip -d` 25% faster (607 to 762 MB/s on Silesia).
+The only conditional compilation in the core is CPU architecture and
+feature tests in `src/crc32.c`. ARMv8 uses its CRC instructions when
+`__ARM_FEATURE_CRC32` is set (by default for Apple and most ARMv8.1+
+targets). On x86 with GCC or Clang, a PCLMULQDQ folding function is
+compiled with `__attribute((target("pclmul,sse2")))` and selected at run
+time via CPUID, so default builds benefit with no flags and still run on
+CPUs without it. On an i9-12900, PCLMUL folding runs at 16.8 GB/s versus
+3 GB/s for slicing-by-8, making Windows `gzip -d` 25% faster (607 to 762
+MB/s on Silesia). Both paths were verified with one binary under QEMU
+CPU models with and without PCLMUL.
 
 ## Workflow
 
@@ -169,8 +173,6 @@ Remaining opportunities:
   chainless, bucketed hash table for the fast levels is the likely fix.
 - High levels: libdeflate's lazy2 and near-optimal parsing reach ~0.2-0.4
   points better ratio.
-- x86 PCLMUL CRC is selected at compile time; runtime CPU detection
-  (cpuid plus a target attribute) would give it to default builds.
 
 Per-file results (final):
 

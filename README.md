@@ -20,8 +20,8 @@ Windows, CRT-free (w64devkit):
 
     $ cc -O2 -fno-builtin -nostartfiles -o gzip.exe main_windows.c -lmemory -lshell32 -lkernel32
 
-On x86, add `-mpclmul` (or `-march=native`) for hardware CRC-32. ARMv8
-builds use the CRC instructions automatically where available.
+Hardware CRC-32 is used automatically: PCLMULQDQ on x86 (detected at run
+time), and the CRC instructions on ARMv8 targets that have them.
 
 `make amalgamation` produces `gzip.c`, the Windows build as a single
 source file with its build command in the header:

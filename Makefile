@@ -35,7 +35,6 @@ gzip.c: main_windows.c $(SRC)
 	{ echo "// tugz $$v: tiny unity gzip, a drop-in gzip for Windows"; \
 	  echo "// Single-file amalgamation of the tugz sources. Build:"; \
 	  echo "//   \$$ cc -O2 -nostartfiles -o gzip.exe gzip.c -lmemory"; \
-	  echo "// On x86, add -mpclmul (or -march=native) for hardware CRC-32."; \
 	  echo "// Copies named gunzip.exe or zcat.exe decompress by default."; \
 	  echo; \
 	  awk 'FNR==1 && NR>1 {print ""} !/^#include "/ && !/^\/\/ +\$$ cc/' \
