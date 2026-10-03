@@ -386,8 +386,9 @@ static u32 crc32_slice8(u32 crc, u8 const *p, iz len)
 }
 
 // Update a CRC with more data. Start with 0, the CRC of empty input.
-// This is a CPU feature test, not a platform test: ARMv8 has instructions
-// for exactly this polynomial, about 4x faster than slicing.
+// These are CPU feature tests, not platform tests: ARMv8 has instructions
+// for exactly this polynomial, and x86 can fold with carry-less multiply.
+// (The SSE4.2 crc32 instruction computes CRC-32C, a different CRC.)
 #if __ARM_FEATURE_CRC32
 #include <arm_acle.h>
 static u32 crc32_update(u32 crc, u8 const *p, iz len)
@@ -398,6 +399,72 @@ static u32 crc32_update(u32 crc, u8 const *p, iz len)
                 (u64)p[4]<<32 | (u64)p[5]<<40 | (u64)p[6]<<48 | (u64)p[7]<<56;
         crc = __crc32d(crc, v);
     }
+    return crc32_slice8(~crc, p, len);
+}
+#elif __PCLMUL__
+// Folding with carry-less multiplication (Intel, "Fast CRC Computation
+// for Generic Polynomials Using PCLMULQDQ"), with the constants for the
+// reflected gzip polynomial as used by zlib. Four 128-bit lanes are
+// folded 64 bytes at a time, merged, then Barrett-reduced to 32 bits.
+// Requires PCLMULQDQ (e.g. -mpclmul or -march=native), which no x86-64
+// baseline level includes.
+#include <immintrin.h>
+static u32 crc32_update(u32 crc, u8 const *p, iz len)
+{
+    if (len < 64) {
+        return crc32_slice8(crc, p, len);
+    }
+
+    #define LOAD(q)       _mm_loadu_si128((__m128i const *)(q))
+    #define CLMUL(a, b, i) _mm_clmulepi64_si128(a, b, i)
+    __m128i k1k2 = _mm_set_epi64x(0x1c6e41596, 0x154442bd4);
+    __m128i k3k4 = _mm_set_epi64x(0x0ccaa009e, 0x1751997d0);
+    __m128i k5   = _mm_set_epi64x(0,           0x163cd6124);
+    __m128i poly = _mm_set_epi64x(0x1f7011641, 0x1db710641);
+    __m128i mask = _mm_setr_epi32(-1, 0, -1, 0);
+
+    __m128i x1 = _mm_xor_si128(LOAD(p), _mm_cvtsi32_si128((i32)~crc));
+    __m128i x2 = LOAD(p+16);
+    __m128i x3 = LOAD(p+32);
+    __m128i x4 = LOAD(p+48);
+    p += 64;
+    len -= 64;
+
+    // Fold 512 bits forward by 512 bits per step
+    for (; len >= 64; p += 64, len -= 64) {
+        __m128i t1 = CLMUL(x1, k1k2, 0x00);
+        __m128i t2 = CLMUL(x2, k1k2, 0x00);
+        __m128i t3 = CLMUL(x3, k1k2, 0x00);
+        __m128i t4 = CLMUL(x4, k1k2, 0x00);
+        x1 = _mm_xor_si128(_mm_xor_si128(CLMUL(x1, k1k2, 0x11), t1), LOAD(p+ 0));
+        x2 = _mm_xor_si128(_mm_xor_si128(CLMUL(x2, k1k2, 0x11), t2), LOAD(p+16));
+        x3 = _mm_xor_si128(_mm_xor_si128(CLMUL(x3, k1k2, 0x11), t3), LOAD(p+32));
+        x4 = _mm_xor_si128(_mm_xor_si128(CLMUL(x4, k1k2, 0x11), t4), LOAD(p+48));
+    }
+
+    // Merge the four lanes, then fold in remaining 16-byte blocks
+    #define FOLD(x, y) \
+        _mm_xor_si128(_mm_xor_si128(CLMUL(x, k3k4, 0x11), CLMUL(x, k3k4, 0x00)), y)
+    x1 = FOLD(x1, x2);
+    x1 = FOLD(x1, x3);
+    x1 = FOLD(x1, x4);
+    for (; len >= 16; p += 16, len -= 16) {
+        x1 = FOLD(x1, LOAD(p));
+    }
+
+    // Reduce 128 bits to 64, then Barrett reduction to 32
+    __m128i t = CLMUL(x1, k3k4, 0x10);
+    x1 = _mm_xor_si128(_mm_srli_si128(x1, 8), t);
+    t  = _mm_srli_si128(x1, 4);
+    x1 = _mm_xor_si128(CLMUL(_mm_and_si128(x1, mask), k5, 0x00), t);
+    t  = CLMUL(_mm_and_si128(x1, mask), poly, 0x10);
+    t  = CLMUL(_mm_and_si128(t, mask), poly, 0x00);
+    x1 = _mm_xor_si128(x1, t);
+    crc = (u32)_mm_cvtsi128_si32(_mm_srli_si128(x1, 4));
+    #undef FOLD
+    #undef CLMUL
+    #undef LOAD
+
     return crc32_slice8(~crc, p, len);
 }
 #else

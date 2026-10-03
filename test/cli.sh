@@ -8,7 +8,7 @@ GZIP=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 REF=${REF:-/usr/bin/gzip}
 LIBDEFLATE=${LIBDEFLATE:-$(command -v libdeflate-gzip || true)}
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'cd / && rm -rf "$tmp"' EXIT
 cd "$tmp"
 
 fail() {

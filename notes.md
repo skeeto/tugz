@@ -10,7 +10,7 @@ is mutable, so the core is ready to become a library.
 | File                     | Purpose                                         |
 |--------------------------|-------------------------------------------------|
 | `src/base.c`             | types, arena, `os_*` interface, reader/writer   |
-| `src/crc32.c`            | CRC-32 (slicing-by-8, ARMv8 CRC instructions)   |
+| `src/crc32.c`            | CRC-32 (slicing-by-8, ARMv8 CRC, x86 PCLMUL)    |
 | `src/inflate.c`          | raw DEFLATE decoder, zlib-exact validation      |
 | `src/deflate.c`          | raw DEFLATE encoder                             |
 | `src/gzip.c`             | gzip container (RFC 1952), multi-member         |
@@ -23,8 +23,12 @@ is mutable, so the core is ready to become a library.
 | `test/cli.sh`            | end-to-end tests of the binary                  |
 | `test/seeds.py`          | fuzzing seed corpus generator                   |
 
-The only conditional compilation in the core is a CPU feature test
-(`__ARM_FEATURE_CRC32`) in `src/crc32.c`.
+The only conditional compilation in the core is CPU feature tests in
+`src/crc32.c`: `__ARM_FEATURE_CRC32` (on by default for Apple and most
+ARMv8.1+ targets) and `__PCLMUL__` (x86: build with `-mpclmul` or
+`-march=native`; no x86-64 baseline level includes it). On an i9-12900,
+PCLMUL folding runs at 16.8 GB/s versus 3 GB/s for slicing-by-8, making
+Windows `gzip -d` 25% faster (607 to 762 MB/s on Silesia).
 
 ## Workflow
 
@@ -46,6 +50,17 @@ Fuzzers:
 - `fuzz-diff-deflate`: zlib (every parameter, flush mode, mid-stream
   parameter change) and libdeflate streams must decode exactly; our output
   must decode under libdeflate
+
+## Cross-platform verification
+
+- Windows 11, i9-12900, w64devkit GCC 16: `make gzip.exe` with the real
+  CRT-free flags (imports only KERNEL32 and SHELL32), `test/cli.sh`
+  against busybox gzip, plain and `-mpclmul` builds. Non-ASCII and
+  non-BMP file names, and 396-character paths, work.
+- Big-endian: `powerpc-linux-gnu` under QEMU user mode. `test/cli.sh`
+  passes under UBSan against GNU gzip 1.14, and compressed output is
+  byte-identical to the little-endian build at every level. The build
+  before the endian fix produced corrupt output.
 
 ## Behavior decisions
 
@@ -116,8 +131,8 @@ Remaining opportunities:
   chainless, bucketed hash table for the fast levels is the likely fix.
 - High levels: libdeflate's lazy2 and near-optimal parsing reach ~0.2-0.4
   points better ratio.
-- x86-64 CRC uses slicing-by-8 (no PCLMUL folding), so decompression there
-  is capped near 2 GB/s of CRC throughput.
+- x86 PCLMUL CRC is selected at compile time; runtime CPU detection
+  (cpuid plus a target attribute) would give it to default builds.
 
 Per-file results (final):
 
