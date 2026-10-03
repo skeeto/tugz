@@ -1,176 +1,309 @@
-#include "deflate.h"
+// gzip core: raw DEFLATE encoder (RFC 1951)
+//
+// Input accumulates in a sliding window and is parsed into tokens once
+// the window fills, so output does not depend on how input is split
+// across deflate_push calls. Hash chains store window-relative positions
+// plus one (zero is "none"), rebased whenever the window slides.
 
-#define WSIZE 32768
-#define WMASK (WSIZE - 1)
-#define MIN_MATCH 3
-#define MAX_MATCH 258
-#define HASH_LEN 4
-#ifndef D3_MAX
-#define D3_MAX 4096
-#endif
-#define HASH_BITS 16
-#define HASH_SIZE (1 << HASH_BITS)
-#define CHUNK_SIZE (1 << 20)
-#define WIN_CAP (CHUNK_SIZE + WSIZE)
-#define TOK_CAP 65535
-#define NLIT 286
-#define NDIST 30
-#define NCL 19
+#define DEF_WSIZE     32768
+#define DEF_WMASK     (DEF_WSIZE - 1)
+#define MIN_MATCH     3
+#define MAX_MATCH     258
+#define HASH_LEN      4
+#define HASH_BITS     16
+#define HASH_SIZE     (1 << HASH_BITS)
+#define D3_MAX        4096
+#define LOOKAHEAD     (MAX_MATCH + 32)
+#define WIN_CAP       ((1 << 20) + DEF_WSIZE)
+#define TOK_CAP       65535
+#define NLIT          286
+#define NDIST         30
+#define NCL           19
 
 typedef struct {
     u16 litlen;
-    u16 dist;
+    u16 dist;  // zero for literals
 } token;
 
 typedef struct {
     i32 depth, nice, lazy, good, depth3;
-} lvl;
+} deflate_level;
 
-static const lvl levels[10] = {
-    {0, 0, 0, 0, 0},
-    {4, 16, 0, 4, 4},
-    {8, 24, 0, 4, 8},
-    {16, 32, 4, 4, 16},
-    {32, 48, 8, 4, 32},
-    {48, 64, 8, 8, 32},
-    {128, 258, 2, 16, 32},
-    {256, 258, 8, 8, 64},
-    {512, 258, 8, 32, 128},
+static deflate_level const deflate_levels[10] = {
+    {   0,   0,  0,  0,   0},
+    {   4,  16,  0,  4,   4},
+    {   8,  24,  0,  4,   8},
+    {  16,  32,  4,  4,  16},
+    {  32,  48,  8,  4,  32},
+    {  48,  64,  8,  8,  32},
+    { 128, 258,  2, 16,  32},
+    { 256, 258,  8,  8,  64},
+    { 512, 258,  8, 32, 128},
     {1024, 258, 16, 32, 256},
 };
 
-struct deflate {
+typedef struct {
+    u8  len[288];
+    u16 code[288];
+} htree;
+
+typedef struct {
     writer *out;
-    i32 level;
-    i32 depth, nice, lazy, good, depth3;
+    deflate_level lvl;
 
     u8 *win;
-    iz win_len;
-    u64 base;
-    iz ins;
+    iz  win_len;
+    u64 base;     // stream offset of win[0]
+    iz  pos;      // next position to parse
+    iz  ins;      // next position to insert into hash chains
+    b32 sampled;
+    b32 use3;
 
     u32 *head;
     u32 *prev;
     u32 *head3;
     u32 *prev3;
-    i32 use3;
-    i32 sampled;
 
     token *toks;
-    iz ntok, tok_cap;
+    iz     ntok;
 
     u64 blk_start;
     u64 blk_len;
     u64 pend_start;
-    iz pend_len;
+    iz  pend_len;
 
     u32 lit_freq[NLIT];
     u32 dist_freq[NDIST];
 
     u64 bitbuf;
     i32 bitcnt;
-};
 
-static const u16 len_base[29] = {
+    htree fixlit;
+    htree fixdist;
+} deflate;
+
+static u16 const def_len_base[29] = {
     3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51,
     59, 67, 83, 99, 115, 131, 163, 195, 227, 258
 };
-static const u8 len_extra[29] = {
+static u8 const def_len_extra[29] = {
     0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4,
     4, 5, 5, 5, 5, 0
 };
-static const u16 dist_base[30] = {
+static u16 const def_dist_base[30] = {
     1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385,
     513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577
 };
-static const u8 dist_extra[30] = {
+static u8 const def_dist_extra[30] = {
     0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9,
     10, 10, 11, 11, 12, 12, 13, 13
 };
-static const u8 cl_order[NCL] = {
+static u8 const def_cl_order[NCL] = {
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
 };
 
-static u8 length_code_tab[259];
-static u8 dist_code_tab[32769];
-static u16 fx_code[288];
-static u8 fx_len[288];
-static u16 fx_dcode[32];
+// Length code index (0..28) for a match length in 3..258.
+static i32 length_code(i32 len)
+{
+    assert(len>=MIN_MATCH && len<=MAX_MATCH);
+    u32 x = (u32)len - 3;
+    if (x < 8) {
+        return (i32)x;
+    } else if (len == 258) {
+        return 28;
+    }
+    i32 b = 31 - __builtin_clz(x);
+    return 4*(b - 1) + (i32)(x>>(b - 2) & 3);
+}
+
+// Distance code (0..29) for a distance in 1..32768.
+static i32 dist_code(i32 dist)
+{
+    assert(dist>=1 && dist<=DEF_WSIZE);
+    u32 x = (u32)dist - 1;
+    if (x < 4) {
+        return (i32)x;
+    }
+    i32 b = 31 - __builtin_clz(x);
+    return 2*b + (i32)(x>>(b - 1) & 1);
+}
 
 static u32 bit_reverse(u32 v, i32 n)
 {
     u32 r = 0;
-    for (i32 i = 0; i < n; i++) {
-        r = (r << 1) | (v & 1);
-        v >>= 1;
+    for (i32 i = 0; i < n; i++, v >>= 1) {
+        r = r<<1 | (v&1);
     }
     return r;
 }
 
-void deflate_init_tables(void)
+// Assign canonical codes from lengths already stored in t.
+static void huff_codes(htree *t, i32 n)
 {
-    for (i32 i = 0; i < 29; i++) {
-        u16 lo = len_base[i];
-        u16 hi = (i == 28) ? 258 : (u16)(len_base[i + 1] - 1);
-        for (u16 l = lo; l <= hi; l++) {
-            length_code_tab[l] = (u8)i;
-        }
+    u32 count[16] = {0};
+    for (i32 i = 0; i < n; i++) {
+        count[t->len[i]]++;
     }
-    for (i32 i = 0; i < 30; i++) {
-        u32 lo = dist_base[i];
-        u32 hi = (i == 29) ? 32768u : (u32)(dist_base[i + 1] - 1);
-        for (u32 d = lo; d <= hi; d++) {
-            dist_code_tab[d] = (u8)i;
-        }
-    }
-
-    for (i32 s = 0; s < 288; s++) {
-        i32 l = s <= 143 ? 8 : s <= 255 ? 9 : s <= 279 ? 7 : 8;
-        fx_len[s] = (u8)l;
-    }
-    u32 bl_count[16] = {0};
-    for (i32 s = 0; s < 288; s++) bl_count[fx_len[s]]++;
+    count[0] = 0;
     u32 next[16];
     u32 code = 0;
-    for (i32 b = 1; b <= 15; b++) {
-        code = (code + bl_count[b - 1]) << 1;
+    for (i32 b = 1; b < 16; b++) {
+        code = (code + count[b-1]) << 1;
         next[b] = code;
     }
-    for (i32 s = 0; s < 288; s++) {
-        fx_code[s] = (u16)bit_reverse(next[fx_len[s]]++, fx_len[s]);
-    }
-    for (i32 d = 0; d < 32; d++) {
-        fx_dcode[d] = (u16)bit_reverse((u32)d, 5);
+    for (i32 i = 0; i < n; i++) {
+        i32 l = t->len[i];
+        t->code[i] = l ? (u16)bit_reverse(next[l]++, l) : 0;
     }
 }
 
-deflate *deflate_create(i32 level, writer *out)
+// Moffat & Katajainen in-place minimum redundancy code. On input, w holds
+// n weights in ascending order. On output it holds code lengths, which
+// are therefore in descending order.
+static void min_redundancy(u32 *w, i32 n)
 {
-    deflate *d = arena_alloc(sizeof(deflate), 16);
-    memset(d, 0, sizeof(*d));
-    if (level < 1) level = 1;
-    if (level > 9) level = 9;
-    d->out = out;
-    d->level = level;
-    d->depth = levels[level].depth;
-    d->nice = levels[level].nice;
-    d->lazy = levels[level].lazy;
-    d->good = levels[level].good;
-    d->depth3 = levels[level].depth3;
-    d->win = arena_alloc(WIN_CAP, 64);
-    d->head = arena_zalloc(HASH_SIZE * (iz)sizeof(u32), 64);
-    d->prev = arena_alloc(WSIZE * (iz)sizeof(u32), 64);
-    d->head3 = arena_zalloc(HASH_SIZE * (iz)sizeof(u32), 64);
-    d->prev3 = arena_alloc(WSIZE * (iz)sizeof(u32), 64);
-    d->toks = arena_alloc(TOK_CAP * (iz)sizeof(token), 64);
-    d->tok_cap = TOK_CAP;
+    if (n == 1) {
+        w[0] = 1;
+        return;
+    }
+
+    w[0] += w[1];
+    i32 root = 0;
+    i32 leaf = 2;
+    for (i32 next = 1; next < n-1; next++) {
+        if (leaf>=n || w[root]<w[leaf]) {
+            w[next] = w[root];
+            w[root++] = (u32)next;
+        } else {
+            w[next] = w[leaf++];
+        }
+        if (leaf>=n || (root<next && w[root]<w[leaf])) {
+            w[next] += w[root];
+            w[root++] = (u32)next;
+        } else {
+            w[next] += w[leaf++];
+        }
+    }
+
+    w[n-2] = 0;
+    for (i32 next = n-3; next >= 0; next--) {
+        w[next] = w[w[next]] + 1;
+    }
+
+    i32 avail = 1;
+    i32 used  = 0;
+    u32 depth = 0;
+    root = n - 2;
+    for (i32 next = n-1; avail > 0; depth++) {
+        for (; root>=0 && w[root]==depth; root--) {
+            used++;
+        }
+        for (; avail > used; avail--) {
+            w[next--] = depth;
+        }
+        avail = 2 * used;
+        used = 0;
+    }
+}
+
+// Build a complete, length-limited Huffman code. At least two symbols
+// always get codes, as zlib does, so every code is complete.
+static void huff_build(htree *t, u32 const *freq, i32 n, i32 maxlen)
+{
+    assert(n <= 288);
+    i32 syms[288];
+    u32 w[288];
+    i32 m = 0;
+
+    for (i32 i = 0; i < n; i++) {
+        t->len[i] = 0;
+        if (freq[i]) {
+            syms[m++] = i;
+        }
+    }
+    for (i32 i = 0; m < 2; i++) {
+        if (!freq[i]) {
+            syms[m++] = i;
+        }
+    }
+
+    // Insertion sort by weight, ties by symbol
+    for (i32 i = 0; i < m; i++) {
+        i32 s  = syms[i];
+        u32 ws = freq[s] ? freq[s] : 1;
+        i32 j  = i;
+        for (; j > 0; j--) {
+            i32 p  = syms[j-1];
+            u32 wp = freq[p] ? freq[p] : 1;
+            if (wp<ws || (wp==ws && p<s)) {
+                break;
+            }
+            syms[j] = p;
+            w[j] = wp;
+        }
+        syms[j] = s;
+        w[j] = ws;
+    }
+
+    min_redundancy(w, m);
+
+    // Clamp to maxlen, then restore the Kraft equality by lengthening
+    // shorter codes until the overflow is absorbed.
+    u32 count[16] = {0};
+    for (i32 i = 0; i < m; i++) {
+        count[MIN(w[i], (u32)maxlen)]++;
+    }
+    u32 total = 0;
+    for (i32 b = 1; b <= maxlen; b++) {
+        total += count[b] << (maxlen - b);
+    }
+    for (; total != 1u<<maxlen; total--) {
+        count[maxlen]--;
+        for (i32 b = maxlen-1; b > 0; b--) {
+            if (count[b]) {
+                count[b]--;
+                count[b+1] += 2;
+                break;
+            }
+        }
+    }
+
+    // Lowest weights first, so assign longest lengths first
+    i32 k = 0;
+    for (i32 b = maxlen; b > 0; b--) {
+        for (u32 j = 0; j < count[b]; j++) {
+            t->len[syms[k++]] = (u8)b;
+        }
+    }
+    huff_codes(t, n);
+}
+
+static deflate *deflate_new(arena *a, i32 level, writer *out)
+{
+    deflate *d = new(a, 1, deflate);
+    d->out   = out;
+    d->lvl   = deflate_levels[MAX(1, MIN(level, 9))];
+    d->win   = newbytes(a, WIN_CAP);
+    d->head  = new(a, HASH_SIZE, u32);
+    d->prev  = new(a, DEF_WSIZE, u32);
+    d->head3 = new(a, HASH_SIZE, u32);
+    d->prev3 = new(a, DEF_WSIZE, u32);
+    d->toks  = new(a, TOK_CAP, token);
+
+    for (i32 i = 0; i < 288; i++) {
+        d->fixlit.len[i] = (u8)(i<144 ? 8 : i<256 ? 9 : i<280 ? 7 : 8);
+    }
+    huff_codes(&d->fixlit, 288);
+    for (i32 i = 0; i < NDIST; i++) {
+        d->fixdist.len[i] = 5;
+    }
+    huff_codes(&d->fixdist, NDIST);
     return d;
 }
 
 static void bw_put(deflate *d, u32 v, i32 n)
 {
-    u64 mask = (n >= 32) ? 0xffffffffull : ((1ull << n) - 1);
-    d->bitbuf |= ((u64)v & mask) << d->bitcnt;
+    d->bitbuf |= (u64)(v & ((1u<<n) - 1)) << d->bitcnt;
     d->bitcnt += n;
     while (d->bitcnt >= 8) {
         writer_byte(d->out, (u8)d->bitbuf);
@@ -186,440 +319,227 @@ static void bw_align(deflate *d)
     }
 }
 
-static void bw_bytes(deflate *d, const u8 *p, iz n)
-{
-    writer_write(d->out, p, n);
-}
-
-typedef struct {
-    u16 len[288];
-    u16 code[288];
-} htree;
-
-static void huff_build(htree *t, const u32 *freq_in, i32 n, i32 maxlen, i32 minsyms)
-{
-    u32 f[288];
-    i32 syms[288];
-    i32 m = 0;
-
-    for (i32 i = 0; i < n; i++) {
-        f[i] = freq_in[i];
-        t->len[i] = 0;
-        t->code[i] = 0;
-        if (f[i]) {
-            syms[m++] = i;
-        }
-    }
-    for (i32 i = 0; i < n && m < minsyms; i++) {
-        if (f[i] == 0) {
-            f[i] = 1;
-            syms[m++] = i;
-        }
-    }
-    for (i32 i = 1; i < m; i++) {
-        i32 k = syms[i];
-        i32 j = i - 1;
-        while (j >= 0 && f[syms[j]] < f[k]) {
-            syms[j + 1] = syms[j];
-            j--;
-        }
-        syms[j + 1] = k;
-    }
-    if (m == 0) {
-        return;
-    }
-    if (m == 1) {
-        t->len[syms[0]] = 1;
-        return;
-    }
-
-    u64 nf[2 * 288];
-    i32 par[2 * 288];
-    for (i32 i = 0; i < m; i++) {
-        nf[i] = f[syms[i]];
-        par[i] = -1;
-    }
-    for (i32 k = m; k < 2 * m - 1; k++) {
-        i32 a = -1, b = -1;
-        for (i32 j = 0; j < k; j++) {
-            if (par[j] < 0) {
-                if (a < 0 || nf[j] < nf[a]) {
-                    b = a;
-                    a = j;
-                } else if (b < 0 || nf[j] < nf[b]) {
-                    b = j;
-                }
-            }
-        }
-        nf[k] = nf[a] + nf[b];
-        par[a] = k;
-        par[b] = k;
-        par[k] = -1;
-    }
-
-    i32 bl_count[16] = {0};
-    i32 overflow = 0;
-    for (i32 i = 0; i < 2 * m - 1; i++) {
-        i32 depth = 0;
-        for (i32 j = i; par[j] >= 0; j = par[j]) {
-            depth++;
-        }
-        if (depth > maxlen) {
-            depth = maxlen;
-            overflow++;
-        }
-        if (i < m) {
-            bl_count[depth]++;
-        }
-    }
-    while (overflow > 0) {
-        i32 bits = maxlen - 1;
-        while (bits > 0 && bl_count[bits] == 0) {
-            bits--;
-        }
-        if (bits == 0) {
-            break;
-        }
-        bl_count[bits]--;
-        bl_count[bits + 1] += 2;
-        bl_count[maxlen]--;
-        overflow -= 2;
-    }
-    i32 idx = 0;
-    for (i32 bits = 1; bits <= maxlen; bits++) {
-        for (i32 j = 0; j < bl_count[bits]; j++) {
-            if (idx < m) {
-                t->len[syms[idx++]] = (u16)bits;
-            }
-        }
-    }
-    for (; idx < m; idx++) {
-        t->len[syms[idx]] = (u16)maxlen;
-    }
-}
-
-static void huff_codes(htree *t, i32 n)
-{
-    u32 bl_count[16] = {0};
-    for (i32 i = 0; i < n; i++) {
-        if (t->len[i]) {
-            bl_count[t->len[i]]++;
-        }
-    }
-    u32 next[16];
-    u32 code = 0;
-    for (i32 b = 1; b <= 15; b++) {
-        code = (code + bl_count[b - 1]) << 1;
-        next[b] = code;
-    }
-    for (i32 i = 0; i < n; i++) {
-        i32 l = t->len[i];
-        t->code[i] = l ? (u16)bit_reverse(next[l]++, l) : 0;
-    }
-}
-
 static i32 cl_extra_bits(i32 s)
 {
-    return s == 16 ? 2 : s == 17 ? 3 : s == 18 ? 7 : 0;
+    return s==16 ? 2 : s==17 ? 3 : s==18 ? 7 : 0;
 }
 
-static i32 rle_lengths(const u16 *lens, i32 n, u8 *sym, u8 *extra)
+// Run-length encode code lengths into code length code symbols.
+static i32 rle_lengths(u8 const *lens, i32 n, u8 *sym, u8 *extra)
 {
     i32 m = 0;
-    i32 i = 0;
-    while (i < n) {
+    for (i32 i = 0; i < n;) {
         i32 l = lens[i];
         i32 j = i + 1;
-        while (j < n && lens[j] == l) {
-            j++;
-        }
+        for (; j<n && lens[j]==l; j++) {}
         i32 run = j - i;
-        if (l == 0) {
-            while (run >= 11) {
-                i32 r = run > 138 ? 138 : run;
+        i = j;
+
+        if (!l) {
+            for (; run >= 11; m++) {
+                i32 r = MIN(run, 138);
                 sym[m] = 18;
                 extra[m] = (u8)(r - 11);
-                m++;
                 run -= r;
             }
-            while (run >= 3) {
-                i32 r = run > 10 ? 10 : run;
+            for (; run >= 3; m++) {
+                i32 r = MIN(run, 10);
                 sym[m] = 17;
                 extra[m] = (u8)(r - 3);
-                m++;
                 run -= r;
-            }
-            while (run > 0) {
-                sym[m] = 0;
-                extra[m] = 0;
-                m++;
-                run--;
             }
         } else {
             sym[m] = (u8)l;
-            extra[m] = 0;
-            m++;
+            extra[m++] = 0;
             run--;
-            while (run >= 3) {
-                i32 r = run > 6 ? 6 : run;
+            for (; run >= 3; m++) {
+                i32 r = MIN(run, 6);
                 sym[m] = 16;
                 extra[m] = (u8)(r - 3);
-                m++;
                 run -= r;
             }
-            while (run > 0) {
-                sym[m] = (u8)l;
-                extra[m] = 0;
-                m++;
-                run--;
-            }
         }
-        i = j;
+        for (; run > 0; run--, m++) {
+            sym[m] = (u8)l;
+            extra[m] = 0;
+        }
     }
     return m;
 }
 
 typedef struct {
     htree lt, dt, cl;
-    i32 hlit, hdist, hclen;
-    i32 nrle;
-    u8 rsym[768], rextra[768];
+    i32   hlit, hdist, hclen;
+    i32   nrle;
+    u8    rsym[NLIT+NDIST];
+    u8    rextra[NLIT+NDIST];
 } dynblock;
-
-#ifdef GZ_DEBUG_HUFF
-#include <stdio.h>
-static void dbg_tree(const char *tag, const htree *t, i32 n, i32 maxlen,
-                     const u32 *freq)
-{
-    u32 kraft = 0;
-    i32 used = 0;
-    for (i32 i = 0; i < n; i++) {
-        if (t->len[i]) {
-            kraft += 1u << (15 - t->len[i]);
-            used++;
-        }
-    }
-    if (used && kraft != 32768) {
-        fprintf(stderr, "%s INVALID kraft=%u used=%d maxlen=%d\n",
-                tag, kraft, used, maxlen);
-        for (i32 i = 0; i < n; i++) {
-            if (t->len[i]) {
-                fprintf(stderr, "  sym=%d freq=%u len=%d\n", i, freq[i], t->len[i]);
-            }
-        }
-    }
-}
-#endif
 
 static void build_dyn(deflate *d, dynblock *b)
 {
-    u32 lf[NLIT], df[NDIST];
-    for (i32 i = 0; i < NLIT; i++) lf[i] = d->lit_freq[i];
-    for (i32 i = 0; i < NDIST; i++) df[i] = d->dist_freq[i];
-    lf[256] += 1;
-
-    huff_build(&b->lt, lf, NLIT, 15, 2);
-    huff_build(&b->dt, df, NDIST, 15, 1);
-    huff_codes(&b->lt, NLIT);
-    huff_codes(&b->dt, NDIST);
+    u32 lf[NLIT];
+    for (i32 i = 0; i < NLIT; i++) {
+        lf[i] = d->lit_freq[i];
+    }
+    lf[256] = 1;
+    huff_build(&b->lt, lf, NLIT, 15);
+    huff_build(&b->dt, d->dist_freq, NDIST, 15);
 
     i32 hlit = NLIT;
-    while (hlit > 257 && b->lt.len[hlit - 1] == 0) hlit--;
+    for (; hlit>257 && !b->lt.len[hlit-1]; hlit--) {}
     i32 hdist = NDIST;
-    while (hdist > 1 && b->dt.len[hdist - 1] == 0) hdist--;
-    b->hlit = hlit;
+    for (; hdist>1 && !b->dt.len[hdist-1]; hdist--) {}
+    b->hlit  = hlit;
     b->hdist = hdist;
 
-    u16 lens[NLIT + NDIST];
-    for (i32 i = 0; i < hlit; i++) lens[i] = b->lt.len[i];
-    for (i32 i = 0; i < hdist; i++) lens[hlit + i] = b->dt.len[i];
-    b->nrle = rle_lengths(lens, hlit + hdist, b->rsym, b->rextra);
+    u8 lens[NLIT+NDIST];
+    bytecopy(lens, b->lt.len, hlit);
+    bytecopy(lens+hlit, b->dt.len, hdist);
+    b->nrle = rle_lengths(lens, hlit+hdist, b->rsym, b->rextra);
 
     u32 clf[NCL] = {0};
-    for (i32 i = 0; i < b->nrle; i++) clf[b->rsym[i]]++;
-    huff_build(&b->cl, clf, NCL, 7, 2);
-    huff_codes(&b->cl, NCL);
-
-#ifdef GZ_DEBUG_HUFF
-    dbg_tree("lt", &b->lt, NLIT, 15, lf);
-    dbg_tree("dt", &b->dt, NDIST, 15, df);
-    dbg_tree("cl", &b->cl, NCL, 7, clf);
-#endif
+    for (i32 i = 0; i < b->nrle; i++) {
+        clf[b->rsym[i]]++;
+    }
+    huff_build(&b->cl, clf, NCL, 7);
 
     i32 hclen = NCL;
-    while (hclen > 4 && b->cl.len[cl_order[hclen - 1]] == 0) hclen--;
+    for (; hclen>4 && !b->cl.len[def_cl_order[hclen-1]]; hclen--) {}
     b->hclen = hclen;
+}
+
+static u64 cost_tokens(deflate *d, htree *lt, htree *dt)
+{
+    u64 bits = lt->len[256];
+    for (iz i = 0; i < d->ntok; i++) {
+        token t = d->toks[i];
+        if (!t.dist) {
+            bits += lt->len[t.litlen];
+        } else {
+            i32 lc = length_code(t.litlen);
+            i32 dc = dist_code(t.dist);
+            bits += lt->len[257+lc] + def_len_extra[lc];
+            bits += dt->len[dc] + def_dist_extra[dc];
+        }
+    }
+    return bits;
 }
 
 static u64 cost_dyn(deflate *d, dynblock *b)
 {
-    u64 bits = 3 + 5 + 5 + 4 + (u64)3 * b->hclen;
+    u64 bits = 3 + 5 + 5 + 4 + 3*(u64)b->hclen;
     for (i32 i = 0; i < b->nrle; i++) {
-        bits += b->cl.len[b->rsym[i]] + cl_extra_bits(b->rsym[i]);
+        bits += b->cl.len[b->rsym[i]] + (u64)cl_extra_bits(b->rsym[i]);
     }
-    for (iz i = 0; i < d->ntok; i++) {
-        token *t = &d->toks[i];
-        if (t->dist == 0) {
-            bits += b->lt.len[t->litlen];
-        } else {
-            i32 lc = length_code_tab[t->litlen];
-            i32 dc = dist_code_tab[t->dist];
-            bits += b->lt.len[257 + lc] + len_extra[lc] + b->dt.len[dc] + dist_extra[dc];
-        }
-    }
-    bits += b->lt.len[256];
-    return bits;
-}
-
-static u64 cost_fixed(deflate *d)
-{
-    u64 bits = 3;
-    for (iz i = 0; i < d->ntok; i++) {
-        token *t = &d->toks[i];
-        if (t->dist == 0) {
-            bits += fx_len[t->litlen];
-        } else {
-            i32 lc = length_code_tab[t->litlen];
-            i32 dc = dist_code_tab[t->dist];
-            bits += fx_len[257 + lc] + len_extra[lc] + 5 + dist_extra[dc];
-        }
-    }
-    bits += fx_len[256];
-    return bits;
+    return bits + cost_tokens(d, &b->lt, &b->dt);
 }
 
 static u64 cost_stored(deflate *d)
 {
     u64 n = d->blk_len;
     u64 nchunks = (n + 65534) / 65535;
-    u64 pad = (8 - ((u64)d->bitcnt + 3) % 8) % 8;
-    return 3 + pad + 32 + 8 * n + (nchunks - 1) * 40;
+    u64 pad = (8 - ((u64)d->bitcnt + 3)%8) % 8;
+    return 3 + pad + 32 + 8*n + (nchunks - 1)*40;
 }
 
-static void emit_stored_chunk(deflate *d, iz start, iz k, b32 final)
+static void emit_stored_chunk(deflate *d, iz start, iz len, b32 final)
 {
-    bw_put(d, final ? 1 : 0, 1);
+    assert(len>=0 && len<=65535);
+    bw_put(d, (u32)final, 1);
     bw_put(d, 0, 2);
     bw_align(d);
-    bw_put(d, (u32)k & 0xff, 8);
-    bw_put(d, ((u32)k >> 8) & 0xff, 8);
-    u16 nl = (u16)~(u16)k;
-    bw_put(d, nl & 0xff, 8);
-    bw_put(d, (nl >> 8) & 0xff, 8);
-    bw_bytes(d, d->win + start, k);
+    bw_put(d, (u32)len, 16);
+    bw_put(d, ~(u32)len, 16);
+    writer_write(d->out, d->win+start, len);
 }
 
 static void flush_pending(deflate *d, b32 final)
 {
-    if (!d->pend_len) {
-        return;
-    }
     iz start = (iz)(d->pend_start - d->base);
-    iz n = d->pend_len;
+    iz len = d->pend_len;
     d->pend_len = 0;
-    iz off = 0;
-    while (off < n) {
-        iz k = n - off;
-        if (k > 65535) {
-            k = 65535;
-        }
-        emit_stored_chunk(d, start + off, k, final && off + k == n);
-        off += k;
+    if (!len && final) {
+        emit_stored_chunk(d, 0, 0, 1);
+    }
+    for (iz off = 0; off < len;) {
+        iz n = MIN(len-off, 65535);
+        emit_stored_chunk(d, start+off, n, final && off+n==len);
+        off += n;
     }
 }
 
 static void emit_stored(deflate *d, b32 final)
 {
-    u64 s = d->blk_start;
-    iz n = (iz)d->blk_len;
+    u64 start = d->blk_start;
+    iz  len   = (iz)d->blk_len;
     if (d->pend_len) {
-        if (d->pend_start + d->pend_len == s) {
-            s = d->pend_start;
-            n += d->pend_len;
+        if (d->pend_start+(u64)d->pend_len == start) {
+            start = d->pend_start;
+            len += d->pend_len;
+            d->pend_len = 0;
         } else {
             flush_pending(d, 0);
         }
-        d->pend_len = 0;
     }
-    iz start = (iz)(s - d->base);
+
+    // Hold back the final partial chunk so that it may merge with the
+    // next stored block.
     iz off = 0;
-    while (n - off >= 65535) {
-        emit_stored_chunk(d, start + off, 65535, 0);
-        off += 65535;
+    for (; len-off > 65535; off += 65535) {
+        emit_stored_chunk(d, (iz)(start-d->base)+off, 65535, 0);
     }
-    iz rem = n - off;
-    if (rem) {
-        if (final) {
-            emit_stored_chunk(d, start + off, rem, 1);
-        } else {
-            d->pend_start = s + (u64)off;
-            d->pend_len = rem;
-        }
+    d->pend_start = start + (u64)off;
+    d->pend_len = len - off;
+    if (final) {
+        flush_pending(d, 1);
     }
 }
 
-static void emit_fixed(deflate *d, b32 final)
+static void emit_tokens(deflate *d, htree *lt, htree *dt)
 {
-    bw_put(d, final ? 1 : 0, 1);
-    bw_put(d, 1, 2);
     for (iz i = 0; i < d->ntok; i++) {
-        token *t = &d->toks[i];
-        if (t->dist == 0) {
-            bw_put(d, fx_code[t->litlen], fx_len[t->litlen]);
+        token t = d->toks[i];
+        if (!t.dist) {
+            bw_put(d, lt->code[t.litlen], lt->len[t.litlen]);
         } else {
-            i32 lc = length_code_tab[t->litlen];
-            i32 dc = dist_code_tab[t->dist];
-            bw_put(d, fx_code[257 + lc], fx_len[257 + lc]);
-            if (len_extra[lc]) bw_put(d, t->litlen - len_base[lc], len_extra[lc]);
-            bw_put(d, fx_dcode[dc], 5);
-            if (dist_extra[dc]) bw_put(d, t->dist - dist_base[dc], dist_extra[dc]);
+            i32 lc = length_code(t.litlen);
+            i32 dc = dist_code(t.dist);
+            bw_put(d, lt->code[257+lc], lt->len[257+lc]);
+            bw_put(d, t.litlen - def_len_base[lc], def_len_extra[lc]);
+            bw_put(d, dt->code[dc], dt->len[dc]);
+            bw_put(d, t.dist - def_dist_base[dc], def_dist_extra[dc]);
         }
     }
-    bw_put(d, fx_code[256], fx_len[256]);
+    bw_put(d, lt->code[256], lt->len[256]);
 }
 
-static void emit_dynamic(deflate *d, b32 final, dynblock *b)
+static void emit_dynamic(deflate *d, dynblock *b)
 {
-    bw_put(d, final ? 1 : 0, 1);
     bw_put(d, 2, 2);
     bw_put(d, (u32)(b->hlit - 257), 5);
     bw_put(d, (u32)(b->hdist - 1), 5);
     bw_put(d, (u32)(b->hclen - 4), 4);
-    for (i32 k = 0; k < b->hclen; k++) {
-        bw_put(d, b->cl.len[cl_order[k]], 3);
+    for (i32 i = 0; i < b->hclen; i++) {
+        bw_put(d, b->cl.len[def_cl_order[i]], 3);
     }
     for (i32 i = 0; i < b->nrle; i++) {
         i32 s = b->rsym[i];
         bw_put(d, b->cl.code[s], b->cl.len[s]);
-        i32 eb = cl_extra_bits(s);
-        if (eb) bw_put(d, b->rextra[i], eb);
+        bw_put(d, b->rextra[i], cl_extra_bits(s));
     }
-    for (iz i = 0; i < d->ntok; i++) {
-        token *t = &d->toks[i];
-        if (t->dist == 0) {
-            bw_put(d, b->lt.code[t->litlen], b->lt.len[t->litlen]);
-        } else {
-            i32 lc = length_code_tab[t->litlen];
-            i32 dc = dist_code_tab[t->dist];
-            bw_put(d, b->lt.code[257 + lc], b->lt.len[257 + lc]);
-            if (len_extra[lc]) bw_put(d, t->litlen - len_base[lc], len_extra[lc]);
-            bw_put(d, b->dt.code[dc], b->dt.len[dc]);
-            if (dist_extra[dc]) bw_put(d, t->dist - dist_base[dc], dist_extra[dc]);
-        }
-    }
-    bw_put(d, b->lt.code[256], b->lt.len[256]);
+    emit_tokens(d, &b->lt, &b->dt);
 }
 
 static void flush_block(deflate *d, b32 final)
 {
-    if (d->ntok == 0) {
+    if (!d->ntok) {
         if (final) {
             if (d->pend_len) {
                 flush_pending(d, 1);
             } else {
                 bw_put(d, 1, 1);
                 bw_put(d, 1, 2);
-                bw_put(d, fx_code[256], fx_len[256]);
+                bw_put(d, d->fixlit.code[256], d->fixlit.len[256]);
             }
         }
         return;
@@ -629,83 +549,108 @@ static void flush_block(deflate *d, b32 final)
     build_dyn(d, &b);
 
     u64 cd = cost_dyn(d, &b);
-    u64 cf = cost_fixed(d);
-    b32 can_store = d->blk_start >= d->base &&
-        (d->blk_start - d->base) + d->blk_len <= d->win_len;
-    u64 cs = can_store ? cost_stored(d) : ~(u64)0;
+    u64 cf = 3 + cost_tokens(d, &d->fixlit, &d->fixdist);
+    b32 can_store = d->blk_start>=d->base &&
+                    d->blk_start-d->base+d->blk_len <= (u64)d->win_len;
+    u64 cs = can_store ? cost_stored(d) : (u64)-1;
 
-    if (cs <= cd && cs <= cf) {
+    if (cs<=cd && cs<=cf) {
         emit_stored(d, final);
     } else {
-        flush_pending(d, 0);
+        if (d->pend_len) {
+            flush_pending(d, 0);
+        }
+        bw_put(d, (u32)final, 1);
         if (cf <= cd) {
-            emit_fixed(d, final);
+            bw_put(d, 1, 2);
+            emit_tokens(d, &d->fixlit, &d->fixdist);
         } else {
-            emit_dynamic(d, final, &b);
+            emit_dynamic(d, &b);
         }
     }
 
     d->ntok = 0;
     d->blk_len = 0;
-    memset(d->lit_freq, 0, sizeof(d->lit_freq));
-    memset(d->dist_freq, 0, sizeof(d->dist_freq));
+    bytefill(d->lit_freq, 0, sizeof(d->lit_freq));
+    bytefill(d->dist_freq, 0, sizeof(d->dist_freq));
 }
 
-static inline void tok_lit(deflate *d, u8 c, u64 g)
+static void tok_lit(deflate *d, iz p)
 {
-    if (d->ntok == 0) {
-        d->blk_start = g;
+    if (!d->ntok) {
+        d->blk_start = d->base + (u64)p;
     }
-    d->blk_len += 1;
-    token *t = &d->toks[d->ntok++];
-    t->litlen = c;
-    t->dist = 0;
+    u8 c = d->win[p];
+    d->blk_len++;
+    d->toks[d->ntok++] = (token){c, 0};
     d->lit_freq[c]++;
-    if (d->ntok == d->tok_cap) {
+    if (d->ntok == TOK_CAP) {
         flush_block(d, 0);
     }
 }
 
-static inline void tok_match(deflate *d, i32 len, u64 dist, u64 g)
+static void tok_match(deflate *d, iz p, i32 len, i32 dist)
 {
-    if (d->ntok == 0) {
-        d->blk_start = g;
+    if (!d->ntok) {
+        d->blk_start = d->base + (u64)p;
     }
     d->blk_len += (u64)len;
-    token *t = &d->toks[d->ntok++];
-    t->litlen = (u16)len;
-    t->dist = (u16)dist;
-    d->lit_freq[257 + length_code_tab[len]]++;
-    d->dist_freq[dist_code_tab[dist]]++;
-    if (d->ntok == d->tok_cap) {
+    d->toks[d->ntok++] = (token){(u16)len, (u16)dist};
+    d->lit_freq[257+length_code(len)]++;
+    d->dist_freq[dist_code(dist)]++;
+    if (d->ntok == TOK_CAP) {
         flush_block(d, 0);
     }
 }
 
-static u32 hash_insert(deflate *d, iz p)
+// Index into prev tables for window position p.
+static u32 chain_slot(deflate *d, iz p)
+{
+    return (u32)(d->base + (u64)p) & DEF_WMASK;
+}
+
+static u32 load32(u8 const *p)
 {
     u32 v;
-    __builtin_memcpy(&v, d->win + p, 4);
-    u32 g = (u32)(d->base + (u64)p);
-    u32 h = (v * 2654435761u) >> (32 - HASH_BITS);
-    d->prev[g & WMASK] = d->head[h];
-    d->head[h] = g + 1;
+    __builtin_memcpy(&v, p, 4);
+    return v;
+}
+
+static u32 hash4(u32 v)
+{
+    return (v * 2654435761u) >> (32 - HASH_BITS);
+}
+
+static u32 hash3(u32 v)
+{
+    return ((v & 0xffffff) * 2654435761u) >> (32 - HASH_BITS);
+}
+
+// Insert position p, returning the previous 3-byte hash chain head.
+static u32 hash_insert(deflate *d, iz p)
+{
+    u32 v = load32(d->win + p);
+    u32 slot = chain_slot(d, p);
+    u32 h = hash4(v);
+    d->prev[slot] = d->head[h];
+    d->head[h] = (u32)p + 1;
     u32 prev3 = 0;
     if (d->use3) {
-        u32 h3 = ((v & 0xffffffu) * 2654435761u) >> (32 - HASH_BITS);
+        u32 h3 = hash3(v);
         prev3 = d->head3[h3];
-        d->prev3[g & WMASK] = prev3;
-        d->head3[h3] = g + 1;
+        d->prev3[slot] = prev3;
+        d->head3[h3] = (u32)p + 1;
     }
     return prev3;
 }
 
+// Insert all positions through q, returning the 3-byte chain for q.
 static u32 ensure_insert(deflate *d, iz q)
 {
     u32 c3 = 0;
     if (q >= d->ins) {
-        iz lim = d->win_len >= HASH_LEN ? d->win_len - (HASH_LEN - 1) : 0;
-        for (iz x = d->ins; x <= q && x < lim; x++) {
+        iz lim = d->win_len - (HASH_LEN - 1);
+        for (iz x = d->ins; x<=q && x<lim; x++) {
             c3 = hash_insert(d, x);
         }
         d->ins = q + 1;
@@ -713,196 +658,199 @@ static u32 ensure_insert(deflate *d, iz q)
     return c3;
 }
 
-static iz match_len(const u8 *a, const u8 *b, iz max)
+static i32 match_len(u8 const *a, u8 const *b, i32 max)
 {
-    iz l = 0;
-    while (l + 8 <= max) {
+    i32 len = 0;
+    for (; len+8 <= max; len += 8) {
         u64 x, y;
-        __builtin_memcpy(&x, a + l, 8);
-        __builtin_memcpy(&y, b + l, 8);
+        __builtin_memcpy(&x, a+len, 8);
+        __builtin_memcpy(&y, b+len, 8);
         if (x != y) {
-            return l + (iz)(__builtin_ctzll(x ^ y) >> 3);
+            return len + (__builtin_ctzll(x ^ y) >> 3);
         }
-        l += 8;
     }
-    while (l < max && a[l] == b[l]) {
-        l++;
-    }
-    return l;
+    for (; len<max && a[len]==b[len]; len++) {}
+    return len;
 }
 
-static void find_match(deflate *d, iz p, u32 cand, u32 cand3, i32 depth,
-                       i32 *out_len, u64 *out_dist)
-{
-    iz maxlen = d->win_len - p;
-    if (maxlen > MAX_MATCH) {
-        maxlen = MAX_MATCH;
-    }
-    i32 best = MIN_MATCH - 1;
-    u32 best_g = 0;
-    u32 pg = (u32)(d->base + (u64)p);
-    u32 base = (u32)d->base;
+typedef struct {
+    i32 len;
+    i32 dist;
+} match;
 
-    while (cand && depth-- > 0) {
-        u32 g = cand - 1;
-        if (g < base) {
+static match find_match(deflate *d, iz p, u32 cand, u32 cand3, i32 depth)
+{
+    u8 *win = d->win;
+    i32 maxlen = (i32)MIN(d->win_len - p, MAX_MATCH);
+    i32 best = MIN_MATCH - 1;
+    iz  best_pos = 0;
+
+    for (; cand && depth > 0; depth--) {
+        iz c = (iz)cand - 1;
+        if (p-c > DEF_WSIZE) {
             break;
         }
-        iz c = (iz)(g - base);
-        if (p - c > WSIZE) {
-            break;
-        }
-        cand = d->prev[g & WMASK];
-        __builtin_prefetch(d->win + c);
-        if (d->win[c + best] == d->win[p + best] && d->win[c] == d->win[p]) {
-            iz l = match_len(d->win + c, d->win + p, maxlen);
-            if ((i32)l > best) {
-                best = (i32)l;
-                best_g = g;
-                if (best >= d->nice || (iz)best == maxlen) {
+        cand = d->prev[chain_slot(d, c)];
+        if (win[c+best]==win[p+best] && win[c]==win[p]) {
+            i32 len = match_len(win+c, win+p, maxlen);
+            if (len > best) {
+                best = len;
+                best_pos = c;
+                if (best>=d->lvl.nice || best==maxlen) {
                     break;
                 }
-                if (best >= d->good && depth > 8) {
+                if (best>=d->lvl.good && depth>8) {
                     depth = 8;
                 }
             }
         }
     }
 
-    i32 d3 = best < MIN_MATCH ? d->depth3 : 0;
-    while (cand3 && d3-- > 0) {
-        u32 g = cand3 - 1;
-        if (g < base) {
+    // Fall back to short, close 3-byte matches
+    i32 depth3 = best<MIN_MATCH ? d->lvl.depth3 : 0;
+    for (; cand3 && depth3 > 0; depth3--) {
+        iz c = (iz)cand3 - 1;
+        if (p-c > D3_MAX) {
             break;
         }
-        iz c = (iz)(g - base);
-        if (p - c > D3_MAX) {
-            break;
-        }
-        if (d->win[c] == d->win[p] && d->win[c + 1] == d->win[p + 1] &&
-            d->win[c + 2] == d->win[p + 2]) {
+        if (win[c]==win[p] && win[c+1]==win[p+1] && win[c+2]==win[p+2]) {
             best = MIN_MATCH;
-            best_g = g;
+            best_pos = c;
             break;
         }
-        cand3 = d->prev3[g & WMASK];
+        cand3 = d->prev3[chain_slot(d, c)];
     }
 
+    match r = {0, 0};
     if (best >= MIN_MATCH) {
-        *out_len = best;
-        *out_dist = pg - best_g;
-    } else {
-        *out_len = 0;
-        *out_dist = 0;
+        r.len  = best;
+        r.dist = (i32)(p - best_pos);
     }
+    return r;
 }
 
-static void parse(deflate *d, iz start, iz end)
+// Find the best match at p, inserting p into the hash chains.
+static match match_at(deflate *d, iz p, i32 depth)
 {
-    iz p = start;
-    while (p < end) {
-        i32 len = 0;
-        u64 dist = 0;
-
-        u32 c3 = ensure_insert(d, p);
-        if (p + HASH_LEN <= d->win_len) {
-            find_match(d, p, d->prev[(u32)(d->base + (u64)p) & WMASK],
-                       c3, d->depth, &len, &dist);
-        } else if (d->use3 && p + MIN_MATCH <= d->win_len) {
-            u32 v = (u32)d->win[p] | ((u32)d->win[p + 1] << 8) |
-                    ((u32)d->win[p + 2] << 16);
-            u32 h3 = (v * 2654435761u) >> (32 - HASH_BITS);
-            find_match(d, p, 0, d->head3[h3], d->depth, &len, &dist);
-        }
-
-        if (len >= MIN_MATCH) {
-            for (i32 step = 0; step < d->lazy && len >= MIN_MATCH &&
-                 len < d->good && p + 1 < end; step++) {
-                i32 l2 = 0;
-                u64 d2 = 0;
-                u32 c3b = ensure_insert(d, p + 1);
-                if (p + 1 + HASH_LEN <= d->win_len) {
-                    i32 depth = d->depth >> 1;
-                    find_match(d, p + 1,
-                               d->prev[(u32)(d->base + (u64)(p + 1)) & WMASK],
-                               c3b, depth, &l2, &d2);
-                } else if (d->use3 && p + 1 + MIN_MATCH <= d->win_len) {
-                    u32 v = (u32)d->win[p + 1] | ((u32)d->win[p + 2] << 8) |
-                            ((u32)d->win[p + 3] << 16);
-                    u32 h3 = (v * 2654435761u) >> (32 - HASH_BITS);
-                    find_match(d, p + 1, 0, d->head3[h3], d->depth, &l2, &d2);
-                }
-                if (l2 > len) {
-                    tok_lit(d, d->win[p], d->base + (u64)p);
-                    p++;
-                    len = l2;
-                    dist = d2;
-                } else {
-                    break;
-                }
-            }
-        }
-
-        if (len >= MIN_MATCH) {
-            tok_match(d, len, dist, d->base + (u64)p);
-            ensure_insert(d, p + (iz)len - 1);
-            p += len;
-        } else {
-            tok_lit(d, d->win[p], d->base + (u64)p);
-            p++;
-        }
+    u32 c3 = ensure_insert(d, p);
+    if (p+HASH_LEN <= d->win_len) {
+        return find_match(d, p, d->prev[chain_slot(d, p)], c3, depth);
+    } else if (d->use3 && p+MIN_MATCH <= d->win_len) {
+        u32 v = (u32)d->win[p] | (u32)d->win[p+1]<<8 | (u32)d->win[p+2]<<16;
+        return find_match(d, p, 0, d->head3[hash3(v)], depth);
     }
+    return (match){0, 0};
 }
 
-b32 deflate_push(deflate *d, const u8 *data, iz len)
+// Decide whether 3-byte matching is worthwhile by sampling how often
+// 4-byte hashes collide in the first part of the input.
+static void sample(deflate *d)
+{
+    d->sampled = 1;
+    iz n = MIN(d->win_len, 32768);
+    if (n < 64) {
+        return;
+    }
+    u32 hits = 0;
+    for (iz i = 0; i+4 <= n; i++) {
+        u32 h = hash4(load32(d->win + i));
+        hits += d->head3[h] != 0;
+        d->head3[h] = 1;
+    }
+    bytefill(d->head3, 0, HASH_SIZE*(iz)sizeof(u32));
+    d->use3 = (u64)hits*10 < (u64)(n - 3)*7;
+}
+
+static void parse(deflate *d, iz end)
 {
     if (!d->sampled) {
-        d->sampled = 1;
-        iz n = len < 32768 ? len : 32768;
-        if (n >= 64) {
-            u32 hits = 0;
-            for (iz i = 0; i + 4 <= n; i++) {
-                u32 v;
-                __builtin_memcpy(&v, data + i, 4);
-                u32 h = (v * 2654435761u) >> (32 - HASH_BITS);
-                if (d->head3[h]) {
-                    hits++;
-                }
-                d->head3[h] = 1;
+        sample(d);
+    }
+
+    iz p = d->pos;
+    while (p < end) {
+        match m = match_at(d, p, d->lvl.depth);
+
+        // Lazy matching: prefer a longer match starting one byte later
+        for (i32 step = 0; step < d->lvl.lazy; step++) {
+            if (m.len<MIN_MATCH || m.len>=d->lvl.good || p+1>=d->win_len) {
+                break;
             }
-            iz total = n - 3;
-            memset(d->head3, 0, HASH_SIZE * (iz)sizeof(u32));
-            d->use3 = hits * 10 < (u32)total * 7;
+            match m2 = match_at(d, p+1, d->lvl.depth>>1);
+            if (m2.len <= m.len) {
+                break;
+            }
+            tok_lit(d, p++);
+            m = m2;
+        }
+
+        if (m.len >= MIN_MATCH) {
+            tok_match(d, p, m.len, m.dist);
+            ensure_insert(d, p + m.len - 1);
+            p += m.len;
+        } else {
+            tok_lit(d, p++);
         }
     }
-    iz hist = d->win_len < WSIZE ? d->win_len : WSIZE;
-    iz shift = d->win_len - hist;
-    if (d->pend_len && d->pend_start < d->base + (u64)shift) {
-        flush_pending(d, 0);
-    }
-    if (hist) {
-        memmove(d->win, d->win + shift, hist);
-    }
-    d->base += (u64)shift;
-    d->win_len = hist;
-    d->ins = d->ins > shift ? d->ins - shift : 0;
-    memcpy(d->win + hist, data, len);
-    d->win_len = hist + len;
-    iz end = (len < CHUNK_SIZE || d->win_len <= MAX_MATCH)
-        ? d->win_len
-        : d->win_len - MAX_MATCH;
-    if (end > d->ins) {
-        parse(d, d->ins, end);
-    }
-    return !d->out->err;
+    d->pos = p;
 }
 
-b32 deflate_end(deflate *d)
+static u32 slide_entry(u32 v, u32 shift)
 {
-    if (d->win_len > d->ins) {
-        parse(d, d->ins, d->win_len);
+    return v>shift ? v-shift : 0;
+}
+
+// Discard window contents more than WSIZE behind the parse position.
+static void slide(deflate *d)
+{
+    iz shift = d->pos - DEF_WSIZE;
+    if (shift <= 0) {
+        return;
     }
+    if (d->pend_len && d->pend_start < d->base+(u64)shift) {
+        flush_pending(d, 0);
+    }
+    bytemove(d->win, d->win+shift, d->win_len-shift);
+    d->base    += (u64)shift;
+    d->win_len -= shift;
+    d->pos     -= shift;
+    d->ins     -= shift;
+
+    u32 s = (u32)shift;
+    for (i32 i = 0; i < HASH_SIZE; i++) {
+        d->head[i] = slide_entry(d->head[i], s);
+    }
+    for (i32 i = 0; i < DEF_WSIZE; i++) {
+        d->prev[i] = slide_entry(d->prev[i], s);
+    }
+    if (d->use3) {
+        for (i32 i = 0; i < HASH_SIZE; i++) {
+            d->head3[i] = slide_entry(d->head3[i], s);
+        }
+        for (i32 i = 0; i < DEF_WSIZE; i++) {
+            d->prev3[i] = slide_entry(d->prev3[i], s);
+        }
+    }
+}
+
+static void deflate_push(deflate *d, u8 const *data, iz len)
+{
+    while (len) {
+        if (d->win_len == WIN_CAP) {
+            parse(d, WIN_CAP - LOOKAHEAD);
+            slide(d);
+        }
+        iz n = MIN(len, WIN_CAP - d->win_len);
+        bytecopy(d->win + d->win_len, data, n);
+        d->win_len += n;
+        data += n;
+        len -= n;
+    }
+}
+
+static void deflate_finish(deflate *d)
+{
+    parse(d, d->win_len);
     flush_block(d, 1);
     bw_align(d);
-    return !d->out->err;
 }

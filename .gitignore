@@ -4,4 +4,10 @@ bench_corpus/
 build/
 fuzz/build/
 fuzz/corpus/
-fuzz/artifacts/
+fuzz/artifacts//gzip
+/gzip-debug
+/gzip.exe
+/tests
+/bench
+/fuzz-*
+*.dSYM/

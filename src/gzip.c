@@ -1,197 +1,183 @@
-#include "gzip.h"
-#include "deflate.h"
-#include "inflate.h"
-#include "crc32.h"
+// gzip core: gzip container format (RFC 1952)
+//
+// Decompression handles concatenated members. Following GNU gzip, data
+// after the last member is ignored with a warning (GZ_TRAILING) unless it
+// starts with the gzip magic, in which case it must be a valid member.
 
-static const u8 gz_header[10] = {
-    0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3
+#define GZ_RDBUF  (1 << 18)
+#define GZ_WRBUF  (1 << 20)
+
+enum {
+    FTEXT    = 1 << 0,
+    FHCRC    = 1 << 1,
+    FEXTRA   = 1 << 2,
+    FNAME    = 1 << 3,
+    FCOMMENT = 1 << 4,
 };
 
-#define RDBUF (1 << 18)
-#define WRBUF (1 << 20)
-#define CHUNK (1 << 20)
-
-b32 gzip_compress_handle(iptr in, iptr out, i32 level)
+static void put32le(u8 *p, u32 v)
 {
-    arena_mark m = arena_save();
+    p[0] = (u8)(v >>  0);
+    p[1] = (u8)(v >>  8);
+    p[2] = (u8)(v >> 16);
+    p[3] = (u8)(v >> 24);
+}
 
-    reader rd;
-    writer wr;
-    reader_init(&rd, in, arena_alloc(RDBUF, 64), RDBUF);
-    writer_init(&wr, out, arena_alloc(WRBUF, 64), WRBUF, 0);
+static u32 get32le(u8 const *p)
+{
+    return (u32)p[0] | (u32)p[1]<<8 | (u32)p[2]<<16 | (u32)p[3]<<24;
+}
 
-    deflate *d = deflate_create(level, &wr);
-    u8 *chunk = arena_alloc(CHUNK, 64);
+static i32 gzip_compress(i32 in, i32 out, i32 level, arena scratch)
+{
+    reader  *r = newreader(&scratch, in, GZ_RDBUF);
+    writer  *w = newwriter(&scratch, out, GZ_WRBUF);
+    deflate *d = deflate_new(&scratch, level, w);
 
-    writer_write(&wr, gz_header, sizeof(gz_header));
+    static u8 const header[10] = {0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3};
+    writer_write(w, header, countof(header));
 
-    u32 crc = 0xffffffffu;
+    u32 crc = 0;
     u64 total = 0;
-    for (;;) {
-        iz n = reader_read(&rd, chunk, CHUNK);
-        if (n == 0) {
-            break;
-        }
-        crc = crc32_update(crc, chunk, n);
-        total += (u64)n;
-        deflate_push(d, chunk, n);
+    while (reader_fill(r)) {
+        u8 *p = r->buf + r->off;
+        iz len = r->len - r->off;
+        crc = crc32_update(crc, p, len);
+        total += (u64)len;
+        deflate_push(d, p, len);
+        r->off = r->len;
     }
-
-    deflate_end(d);
+    deflate_finish(d);
 
     u8 trailer[8];
-    u32 c = ~crc;
-    trailer[0] = (u8)(c);
-    trailer[1] = (u8)(c >> 8);
-    trailer[2] = (u8)(c >> 16);
-    trailer[3] = (u8)(c >> 24);
-    trailer[4] = (u8)(total);
-    trailer[5] = (u8)(total >> 8);
-    trailer[6] = (u8)(total >> 16);
-    trailer[7] = (u8)(total >> 24);
-    writer_write(&wr, trailer, 8);
-    writer_flush(&wr);
+    put32le(trailer+0, crc);
+    put32le(trailer+4, (u32)total);
+    writer_write(w, trailer, countof(trailer));
+    writer_flush(w);
 
-    b32 ok = !wr.err && !rd.err;
-    arena_restore(m);
-    return ok;
+    return r->err ? GZ_EREAD : w->err ? GZ_EWRITE : GZ_OK;
 }
 
-static b32 read_exact(reader *r, u8 *buf, iz n)
+typedef struct {
+    reader *r;
+    u32     crc;
+    b32     eof;
+} hdrreader;
+
+static i32 hdr_byte(hdrreader *h)
 {
-    return reader_read(r, buf, n) == n;
+    i32 c = reader_byte(h->r);
+    if (c < 0) {
+        h->eof = 1;
+        return 0;
+    }
+    u8 b = (u8)c;
+    h->crc = crc32_update(h->crc, &b, 1);
+    return c;
 }
 
-static b32 skip_until_zero(reader *r)
+// Parse the remainder of a member header after the first 10 bytes.
+static i32 gzip_header(reader *r, u8 *hdr)
 {
-    for (;;) {
-        i32 c = reader_byte(r);
-        if (c < 0) {
-            return 0;
-        }
-        if (c == 0) {
-            return 1;
+    if (hdr[2] != 8) {
+        return GZ_EMETHOD;
+    }
+    u8 flg = hdr[3];
+    if (flg & 0xe0) {
+        return GZ_EFLAGS;
+    }
+
+    hdrreader h = {r, crc32_update(0, hdr, 10), 0};
+    if (flg & FEXTRA) {
+        i32 xlen = hdr_byte(&h);
+        xlen |= hdr_byte(&h) << 8;
+        for (; xlen && !h.eof; xlen--) {
+            hdr_byte(&h);
         }
     }
+    if (flg & FNAME) {
+        while (hdr_byte(&h) && !h.eof) {}
+    }
+    if (flg & FCOMMENT) {
+        while (hdr_byte(&h) && !h.eof) {}
+    }
+    if (flg & FHCRC) {
+        u32 want = h.crc & 0xffff;
+        u32 got  = (u32)hdr_byte(&h);
+        got |= (u32)hdr_byte(&h) << 8;
+        if (!h.eof && got!=want) {
+            return GZ_EHCRC;
+        }
+    }
+    if (h.eof) {
+        return r->err ? GZ_EREAD : GZ_ETRUNC;
+    }
+    return GZ_OK;
 }
 
-b32 gzip_decompress_handle(iptr in, iptr out, b32 verify_only)
+// Decompress all members. A negative output descriptor only verifies.
+static i32 gzip_decompress(i32 in, i32 out, arena scratch)
 {
-    arena_mark m = arena_save();
+    reader *r = newreader(&scratch, in, GZ_RDBUF);
+    writer *w = newwriter(&scratch, out, GZ_WRBUF);
 
-    reader rd;
-    writer wr;
-    reader_init(&rd, in, arena_alloc(RDBUF, 64), RDBUF);
-    writer_init(&wr, out, arena_alloc(WRBUF, 64), WRBUF, verify_only);
-
-    b32 ok = 1;
-    b32 any = 0;
-
-    for (;;) {
+    i32 status = GZ_OK;
+    for (b32 first = 1;; first = 0) {
         u8 hdr[10];
-        iz got = reader_read(&rd, hdr, 10);
-        if (got == 0) {
+        iz got = reader_read(r, hdr, 10);
+        b32 magic = got>=2 && hdr[0]==0x1f && hdr[1]==0x8b;
+        if (r->err) {
+            status = GZ_EREAD;
             break;
-        }
-        if (got < 10) {
-            if (got >= 2 && hdr[0] == 0x1f && hdr[1] == 0x8b) {
-                ok = 0;
-            }
+        } else if (!first && !magic) {
+            status = got ? GZ_TRAILING : GZ_OK;
             break;
-        }
-        if (hdr[0] != 0x1f || hdr[1] != 0x8b) {
-            if (any) {
-                break;
-            }
-            ok = 0;
+        } else if (first && !got) {
+            status = GZ_ETRUNC;
             break;
-        }
-        if (hdr[2] != 8) {
-            ok = 0;
+        } else if (!magic) {
+            status = GZ_ENOTGZ;
+            break;
+        } else if (got < 10) {
+            status = GZ_ETRUNC;
             break;
         }
 
-        u8 flg = hdr[3];
-        if (flg & 4) {
-            u8 x[2];
-            if (!read_exact(&rd, x, 2)) {
-                ok = 0;
-                break;
-            }
-            u32 xlen = (u32)x[0] | ((u32)x[1] << 8);
-            for (u32 i = 0; i < xlen; i++) {
-                if (reader_byte(&rd) < 0) {
-                    ok = 0;
-                    break;
-                }
-            }
-            if (!ok) {
-                break;
-            }
-        }
-        if (flg & 8) {
-            if (!skip_until_zero(&rd)) {
-                ok = 0;
-                break;
-            }
-        }
-        if (flg & 16) {
-            if (!skip_until_zero(&rd)) {
-                ok = 0;
-                break;
-            }
-        }
-        if (flg & 2) {
-            u8 x[2];
-            if (!read_exact(&rd, x, 2)) {
-                ok = 0;
-                break;
-            }
+        status = gzip_header(r, hdr);
+        if (status) {
+            break;
         }
 
-        arena_mark mm = arena_save();
-        inflate_state *s = inflate_create(&rd, &wr);
-        b32 mok = inflate_stream(s);
-        mok = inflate_finish(s) && mok;
+        arena temp = scratch;
+        inflate *s = inflate_new(&temp, r, w);
+        status = inflate_run(s);
+        if (status) {
+            break;
+        }
 
-        u8 tr[8];
-        b32 have_trailer = 1;
-        for (i32 i = 0; i < 8; i++) {
-            i32 c = inflate_read_byte(s);
+        u8 trailer[8];
+        i32 i = 0;
+        for (; i < 8; i++) {
+            i32 c = inflate_byte(s);
             if (c < 0) {
-                have_trailer = 0;
                 break;
             }
-            tr[i] = (u8)c;
+            trailer[i] = (u8)c;
         }
-
-        if (mok && have_trailer) {
-            u32 crc = (u32)tr[0] | ((u32)tr[1] << 8) |
-                      ((u32)tr[2] << 16) | ((u32)tr[3] << 24);
-            u32 isize = (u32)tr[4] | ((u32)tr[5] << 8) |
-                        ((u32)tr[6] << 16) | ((u32)tr[7] << 24);
-            if (crc != inflate_crc(s) || isize != (u32)inflate_total(s)) {
-                mok = 0;
-            }
-        } else {
-            mok = 0;
-        }
-        arena_restore(mm);
-
-        if (!mok) {
-            ok = 0;
+        if (i < 8) {
+            status = r->err ? GZ_EREAD : GZ_ETRUNC;
+            break;
+        } else if (get32le(trailer+0) != s->crc) {
+            status = GZ_ECRC;
+            break;
+        } else if (get32le(trailer+4) != (u32)s->total) {
+            status = GZ_ELEN;
             break;
         }
-        any = 1;
     }
 
-    if (!any) {
-        ok = 0;
+    if (!writer_flush(w) && (!status || status==GZ_TRAILING)) {
+        status = GZ_EWRITE;
     }
-    if (!verify_only) {
-        ok = writer_flush(&wr) && ok;
-    }
-
-    arena_restore(m);
-    return ok;
+    return status;
 }
