@@ -81,7 +81,7 @@ decoder on the same zlib -6 stream. Baseline is the original algorithms
 | baseline        | 33.9% @ 109  | 32.3% @  58  | 32.1% @  37  |   142      |
 | **final**       | 34.0% @ 176  | 32.2% @ 102  | 31.7% @  39  |  1049      |
 | zlib (macOS)    | 36.4% @ 166  | 32.2% @  50  | 31.9% @  20  |  1256      |
-| libdeflate 1.24 | 34.7% @ 347  | 31.9% @ 147  | 31.5% @  51  |  1359      |
+| libdeflate 1.26 | 34.7% @ 347  | 31.9% @ 147  | 31.5% @  51  |  1359      |
 
 Changes, roughly in order of impact:
 
