@@ -80,6 +80,9 @@ typedef struct {
 
     htree fixlit;
     htree fixdist;
+
+    u8 lcode[MAX_MATCH+1];  // length -> length code index
+    u8 dcode[512];          // see dcode_of
 } deflator;
 
 static u16 const def_len_base[29] = {
@@ -126,6 +129,16 @@ static i32 dist_code(i32 dist)
     }
     i32 b = 31 - __builtin_clz(x);
     return 2*b + (i32)(x>>(b - 1) & 1);
+}
+
+static i32 lcode_of(deflator *d, i32 len)
+{
+    return d->lcode[len];
+}
+
+static i32 dcode_of(deflator *d, i32 dist)
+{
+    return d->dcode[dist<=256 ? dist-1 : 256 + ((dist-1)>>7)];
 }
 
 static u32 bit_reverse(u32 v, i32 n)
@@ -298,24 +311,52 @@ static deflator *deflate_new(arena *a, i32 level, writer *out)
         d->fixdist.len[i] = 5;
     }
     huff_codes(&d->fixdist, NDIST);
+
+    for (i32 len = MIN_MATCH; len <= MAX_MATCH; len++) {
+        d->lcode[len] = (u8)length_code(len);
+    }
+    for (i32 dist = 1; dist <= 256; dist++) {
+        d->dcode[dist-1] = (u8)dist_code(dist);
+    }
+    for (i32 i = 2; i < 256; i++) {
+        d->dcode[256+i] = (u8)dist_code((i<<7) + 1);
+    }
     return d;
 }
 
-static void bw_put(deflator *d, u32 v, i32 n)
+static void store64le(u8 *p, u64 v)
 {
-    d->bitbuf |= (u64)(v & ((1u<<n) - 1)) << d->bitcnt;
-    d->bitcnt += n;
-    while (d->bitcnt >= 8) {
-        writer_byte(d->out, (u8)d->bitbuf);
-        d->bitbuf >>= 8;
-        d->bitcnt -= 8;
+    for (i32 i = 0; i < 8; i++) {
+        p[i] = (u8)(v >> (8*i));
     }
 }
 
+// Append n bits, n <= 32. Whole bytes spill into the writer's buffer
+// 8 bytes at a time once 32 or more bits accumulate.
+static void bw_put(deflator *d, u64 v, i32 n)
+{
+    assert(n<=32 && !(v>>n));
+    d->bitbuf |= v << d->bitcnt;
+    d->bitcnt += n;
+    if (d->bitcnt >= 32) {
+        writer *w = d->out;
+        if (w->cap-w->len < 8) {
+            writer_flush(w);
+        }
+        store64le(w->buf+w->len, d->bitbuf);
+        w->len += d->bitcnt >> 3;
+        d->bitbuf >>= d->bitcnt & ~7;
+        d->bitcnt &= 7;
+    }
+}
+
+// Pad to a byte boundary and spill all bits to the writer.
 static void bw_align(deflator *d)
 {
-    if (d->bitcnt) {
-        bw_put(d, 0, 8 - d->bitcnt);
+    d->bitcnt = (d->bitcnt + 7) & ~7;
+    for (; d->bitcnt; d->bitcnt -= 8) {
+        writer_byte(d->out, (u8)d->bitbuf);
+        d->bitbuf >>= 8;
     }
 }
 
@@ -408,19 +449,18 @@ static void build_dyn(deflator *d, dynblock *b)
     b->hclen = hclen;
 }
 
+// Size of the block's symbols under the given codes, from frequencies.
 static u64 cost_tokens(deflator *d, htree *lt, htree *dt)
 {
     u64 bits = lt->len[256];
-    for (iz i = 0; i < d->ntok; i++) {
-        token t = d->toks[i];
-        if (!t.dist) {
-            bits += lt->len[t.litlen];
-        } else {
-            i32 lc = length_code(t.litlen);
-            i32 dc = dist_code(t.dist);
-            bits += lt->len[257+lc] + def_len_extra[lc];
-            bits += dt->len[dc] + def_dist_extra[dc];
-        }
+    for (i32 i = 0; i < 256; i++) {
+        bits += (u64)d->lit_freq[i] * lt->len[i];
+    }
+    for (i32 i = 0; i < 29; i++) {
+        bits += (u64)d->lit_freq[257+i] * (lt->len[257+i] + def_len_extra[i]);
+    }
+    for (i32 i = 0; i < NDIST; i++) {
+        bits += (u64)d->dist_freq[i] * (dt->len[i] + def_dist_extra[i]);
     }
     return bits;
 }
@@ -448,8 +488,8 @@ static void emit_stored_chunk(deflator *d, iz start, iz len, b32 final)
     bw_put(d, (u32)final, 1);
     bw_put(d, 0, 2);
     bw_align(d);
-    bw_put(d, (u32)len, 16);
-    bw_put(d, ~(u32)len, 16);
+    bw_put(d, (u32)len | (~(u32)len & 0xffff)<<16, 32);
+    bw_align(d);
     writer_write(d->out, d->win+start, len);
 }
 
@@ -502,12 +542,15 @@ static void emit_tokens(deflator *d, htree *lt, htree *dt)
         if (!t.dist) {
             bw_put(d, lt->code[t.litlen], lt->len[t.litlen]);
         } else {
-            i32 lc = length_code(t.litlen);
-            i32 dc = dist_code(t.dist);
-            bw_put(d, lt->code[257+lc], lt->len[257+lc]);
-            bw_put(d, t.litlen - def_len_base[lc], def_len_extra[lc]);
-            bw_put(d, dt->code[dc], dt->len[dc]);
-            bw_put(d, t.dist - def_dist_base[dc], def_dist_extra[dc]);
+            // Code plus extra bits: at most 15+5 and 15+13 bits
+            i32 lc = lcode_of(d, t.litlen);
+            i32 dc = dcode_of(d, t.dist);
+            u32 lx = (u32)(t.litlen - def_len_base[lc]);
+            u32 dx = (u32)(t.dist - def_dist_base[dc]);
+            i32 ln = lt->len[257+lc];
+            i32 dn = dt->len[dc];
+            bw_put(d, lt->code[257+lc] | lx<<ln, ln + def_len_extra[lc]);
+            bw_put(d, dt->code[dc] | dx<<dn, dn + def_dist_extra[dc]);
         }
     }
     bw_put(d, lt->code[256], lt->len[256]);
@@ -596,8 +639,8 @@ static void tok_match(deflator *d, iz p, i32 len, i32 dist)
     }
     d->blk_len += (u64)len;
     d->toks[d->ntok++] = (token){(u16)len, (u16)dist};
-    d->lit_freq[257+length_code(len)]++;
-    d->dist_freq[dist_code(dist)]++;
+    d->lit_freq[257+lcode_of(d, len)]++;
+    d->dist_freq[dcode_of(d, dist)]++;
     if (d->ntok == TOK_CAP) {
         flush_block(d, 0);
     }

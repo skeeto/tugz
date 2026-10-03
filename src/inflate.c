@@ -360,6 +360,13 @@ static void inf_reserve(inflator *s)
     }
 }
 
+// Little-endian load, compiled to a single load on most targets.
+static u64 load64le(u8 const *p)
+{
+    return (u64)p[0]     | (u64)p[1]<< 8 | (u64)p[2]<<16 | (u64)p[3]<<24 |
+           (u64)p[4]<<32 | (u64)p[5]<<40 | (u64)p[6]<<48 | (u64)p[7]<<56;
+}
+
 static u64 load64(u8 const *p)
 {
     u64 v;
@@ -372,23 +379,30 @@ static void store64(u8 *p, u64 v)
     __builtin_memcpy(p, &v, 8);
 }
 
-// Copy a match of len bytes from dist back, writing up to 7 bytes past
+// Copy a match of len bytes from dist back, writing up to 15 bytes past
 // the end (requires slack).
 static u8 *copy_match(u8 *out, iz dist, iz len)
 {
     u8 *src = out - dist;
     u8 *end = out + len;
-    if (dist >= 8) {
+    if (dist >= 16) {
+        do {
+            __builtin_memcpy(out, src, 16);
+            out += 16;
+            src += 16;
+        } while (out < end);
+    } else if (dist >= 8) {
         do {
             store64(out, load64(src));
             out += 8;
             src += 8;
         } while (out < end);
     } else if (dist == 1) {
-        u64 v = 0x0101010101010101 * src[0];
+        u64 v = 0x0101010101010101u * src[0];
         do {
             store64(out, v);
-            out += 8;
+            store64(out+8, v);
+            out += 16;
         } while (out < end);
     } else {
         do {
@@ -417,12 +431,15 @@ static b32 decode_fast(inflator *s, htable const *lt, htable const *dt)
     u32 dmask = dt->mask;
     b32 eob = 0;
 
-    // A refill always leaves at least 56 bits: enough for three literals
-    // (3*15), or for a length and distance (15+5+15+13 = 48). Refilling
-    // only appends above the current bits, so a pending entry remains
-    // valid across a refill. Each iteration consumes at most 14 bytes.
+    // Each iteration begins with a refill, after which all 64 buffered
+    // bits are real input (bitcnt counts only whole bytes, at least 56).
+    // An iteration consumes at most 48 bits: three literals (3*15), or a
+    // length and distance (15+5+15+13). So at least 16 real bits remain,
+    // enough to look up the next code early, overlapping the lookup with
+    // the match copy. Refilling only appends above existing bits, so the
+    // preloaded entry stays valid. An iteration reads at most 8 bytes.
     #define REFILL() \
-        bb |= load64(in) << bc; \
+        bb |= load64le(in) << bc; \
         in += (63 - bc) >> 3; \
         bc |= 56
     #define CONSUME(e) \
@@ -431,13 +448,10 @@ static b32 decode_fast(inflator *s, htable const *lt, htable const *dt)
     #define EXTRA(e) \
         (iz)(((u32)bb & ((1u << ENT_TOTAL(e)) - 1)) >> ENT_CODELEN(e))
 
-    while (inend-in>=16 && out<=outlim) {
+    if (inend-in>=16 && out<=outlim) {
         REFILL();
         u32 e = lookup(lte, lmask, bb);
-        if (ENT_KIND(e) == ENT_LIT) {
-            CONSUME(e);
-            *out++ = (u8)ENT_VAL(e);
-            e = lookup(lte, lmask, bb);
+        for (;;) {
             if (ENT_KIND(e) == ENT_LIT) {
                 CONSUME(e);
                 *out++ = (u8)ENT_VAL(e);
@@ -445,37 +459,46 @@ static b32 decode_fast(inflator *s, htable const *lt, htable const *dt)
                 if (ENT_KIND(e) == ENT_LIT) {
                     CONSUME(e);
                     *out++ = (u8)ENT_VAL(e);
-                    continue;
+                    e = lookup(lte, lmask, bb);
+                    if (ENT_KIND(e) == ENT_LIT) {
+                        CONSUME(e);
+                        *out++ = (u8)ENT_VAL(e);
+                        e = lookup(lte, lmask, bb);
+                    }
                 }
+            } else if (ENT_KIND(e) == ENT_LEN) {
+                iz len = ENT_VAL(e) + EXTRA(e);
+                CONSUME(e);
+
+                e = lookup(dte, dmask, bb);
+                if (ENT_KIND(e) != ENT_LEN) {
+                    s->err = GZ_EDATA;
+                    break;
+                }
+                iz dist = ENT_VAL(e) + EXTRA(e);
+                CONSUME(e);
+                if (dist > out-win) {
+                    s->err = GZ_EDATA;
+                    break;
+                }
+
+                e = lookup(lte, lmask, bb);
+                out = copy_match(out, dist, len);
+            } else {
+                eob = ENT_KIND(e) == ENT_EOB;
+                if (!eob) {
+                    s->err = GZ_EDATA;
+                    break;
+                }
+                CONSUME(e);
+                break;
+            }
+
+            if (inend-in<16 || out>outlim) {
+                break;
             }
             REFILL();
         }
-
-        if (ENT_KIND(e) != ENT_LEN) {
-            eob = ENT_KIND(e) == ENT_EOB;
-            if (!eob) {
-                s->err = GZ_EDATA;
-            } else {
-                CONSUME(e);
-            }
-            break;
-        }
-        iz len = ENT_VAL(e) + EXTRA(e);
-        CONSUME(e);
-
-        e = lookup(dte, dmask, bb);
-        if (ENT_KIND(e) != ENT_LEN) {
-            s->err = GZ_EDATA;
-            break;
-        }
-        iz dist = ENT_VAL(e) + EXTRA(e);
-        CONSUME(e);
-
-        if (dist > out-win) {
-            s->err = GZ_EDATA;
-            break;
-        }
-        out = copy_match(out, dist, len);
     }
     #undef EXTRA
     #undef CONSUME

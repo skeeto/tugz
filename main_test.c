@@ -529,6 +529,7 @@ static void test_tables(void)
             buf[i] = (u8)(i*37 + len);
         }
         TEST(crc32_update(0, buf, len) == (u32)crc32(0, buf, (uInt)len));
+        TEST(crc32_slice8(0, buf, len) == (u32)crc32(0, buf, (uInt)len));
     }
     TEST(crc32_update(0, (u8 *)"123456789", 9) == 0xcbf43926);
     TEST(crc32_update(0, 0, 0) == 0);
@@ -536,6 +537,7 @@ static void test_tables(void)
     u8 *p = randbytes(100000, 1);
     u32 whole = crc32_update(0, p, 100000);
     TEST(whole == (u32)crc32(0, p, 100000));
+    TEST(whole == crc32_slice8(0, p, 100000));
     u32 parts = crc32_update(crc32_update(0, p, 33333), p+33333, 66667);
     TEST(whole == parts);
     free(p);
@@ -714,6 +716,23 @@ static void test_inflate_vectors(os *ctx, arena a)
     bfixed(&b, 256);
     TEST(inflate_bits(ctx, a, &b, &out) == GZ_OK);
     TEST(equals(out, (u8 *)"aaaa", 4));
+
+    // Fixed: run of a high byte (regression: signed overflow in the
+    // distance-1 fill)
+    b = (bits){0};
+    bput(&b, 1, 1);
+    bput(&b, 1, 2);
+    bfixed(&b, 0xff);
+    bfixed(&b, 265);  // length 11..12
+    bput(&b, 1, 1);
+    bcode(&b, 0, 5);
+    bfixed(&b, 256);
+    b.len += 32;  // trailing padding, ignored, to engage the fast path
+    TEST(inflate_bits(ctx, a, &b, &out) == GZ_OK);
+    TEST(out.len == 13);
+    for (iz i = 0; i < out.len; i++) {
+        TEST(out.s[i] == 0xff);
+    }
 
     // Fixed: distance too far back
     b = (bits){0};

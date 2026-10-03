@@ -366,8 +366,8 @@ static u32 const crc32_table[8][256] = {
     },
 };
 
-// Update a CRC with more data. Start with 0, the CRC of empty input.
-static u32 crc32_update(u32 crc, u8 const *p, iz len)
+// Portable CRC update. Start with 0, the CRC of empty input.
+static u32 crc32_slice8(u32 crc, u8 const *p, iz len)
 {
     u32 const (*t)[256] = crc32_table;
     crc = ~crc;
@@ -384,3 +384,25 @@ static u32 crc32_update(u32 crc, u8 const *p, iz len)
     }
     return ~crc;
 }
+
+// Update a CRC with more data. Start with 0, the CRC of empty input.
+// This is a CPU feature test, not a platform test: ARMv8 has instructions
+// for exactly this polynomial, about 4x faster than slicing.
+#if __ARM_FEATURE_CRC32
+#include <arm_acle.h>
+static u32 crc32_update(u32 crc, u8 const *p, iz len)
+{
+    crc = ~crc;
+    for (; len >= 8; p += 8, len -= 8) {
+        u64 v = (u64)p[0]     | (u64)p[1]<< 8 | (u64)p[2]<<16 | (u64)p[3]<<24 |
+                (u64)p[4]<<32 | (u64)p[5]<<40 | (u64)p[6]<<48 | (u64)p[7]<<56;
+        crc = __crc32d(crc, v);
+    }
+    return crc32_slice8(~crc, p, len);
+}
+#else
+static u32 crc32_update(u32 crc, u8 const *p, iz len)
+{
+    return crc32_slice8(crc, p, len);
+}
+#endif
