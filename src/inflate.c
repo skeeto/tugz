@@ -3,9 +3,25 @@
 // Accepts exactly the streams zlib accepts: incomplete Huffman codes are
 // rejected except for a lone 1-bit code, and an empty distance code is
 // only an error if a distance is actually decoded.
+//
+// Decoding is table-driven, with a fast loop that runs while plenty of
+// input and output space remain, refilling the bit buffer 64 bits at a
+// time. Near buffer edges a careful byte-at-a-time path takes over.
+// Output is produced directly into a window that retains 32 KiB of
+// history, flushed through the writer as it fills.
+//
+// Window invariant: until history first slides, wpos equals the total
+// output so far. Afterwards wpos >= INF_HIST, which exceeds any distance.
+// Therefore a distance is too far back exactly when it exceeds wpos.
 
-#define INF_WSIZE   32768
-#define INF_WSIZE2  65536
+#define INF_HIST    32768
+#define INF_CHUNK   (1 << 18)
+#define INF_SLACK   (258 + 32)  // room for one match plus wide-copy overrun
+#define INF_WINCAP  (INF_HIST + INF_CHUNK + INF_SLACK)
+#define LIT_ROOT    10
+#define DIST_ROOT   8
+#define LIT_ENOUGH  1332  // zlib's enough for 286 symbols, 10-bit root
+#define DIST_ENOUGH 402   // zlib's enough for 30 symbols, 8-bit root
 
 enum {
     HUFF_CODELEN,
@@ -13,16 +29,42 @@ enum {
     HUFF_DIST,
 };
 
+// Table entry layout:
+//   bits  0..4   total bits: code length plus extra bits
+//   bits  5..7   entry kind
+//   bits  8..11  code length (root bits for a subtable link)
+//   bits 12..15  subtable index bits (links only)
+//   bits 16..31  value: literal, base length/distance, or subtable offset
+// Subtable entries hold the full code length, so a lookup never needs to
+// consume the root bits separately.
+enum {
+    ENT_LIT,
+    ENT_LEN,  // also distances
+    ENT_EOB,
+    ENT_SUB,
+    ENT_BAD,
+};
+#define ENT(len, kind, extra, val) \
+    ((u32)((len) + (extra)) | (u32)(kind)<<5 | (u32)(len)<<8 | (u32)(val)<<16)
+#define ENT_LINK(root, bits, off) \
+    ((u32)ENT_SUB<<5 | (u32)(root)<<8 | (u32)(bits)<<12 | (u32)(off)<<16)
+#define ENT_TOTAL(e)    ((i32)((e) & 31))
+#define ENT_KIND(e)     ((i32)((e)>>5 & 7))
+#define ENT_CODELEN(e)  ((i32)((e)>>8 & 15))
+#define ENT_SUBBITS(e)  ((i32)((e)>>12 & 15))
+#define ENT_EXTRA(e)    (ENT_TOTAL(e) - ENT_CODELEN(e))
+#define ENT_VAL(e)      ((i32)((e) >> 16))
+
 typedef struct {
-    u16 count[16];
-    u16 symbol[288];
-} hdecode;
+    u32 *entries;
+    u32  mask;
+} htable;
 
 typedef struct {
     reader *in;
     writer *out;
 
-    u64 bitbuf;
+    u64 bitbuf;   // bits above bitcnt are zero or upcoming input
     i32 bitcnt;
     i32 err;
 
@@ -31,10 +73,16 @@ typedef struct {
     iz  wflushed;
 
     u32 crc;
-    u64 total;
+    u64 total;    // bytes flushed
 
-    hdecode fixlit;
-    hdecode fixdist;
+    htable fixlit;
+    htable fixdist;
+    htable lit;
+    htable dist;
+    u32    fixlit_entries[512];
+    u32    fixdist_entries[32];
+    u32    lit_entries[LIT_ENOUGH];
+    u32    dist_entries[DIST_ENOUGH];
 } inflator;
 
 static u16 const inf_len_base[29] = {
@@ -57,28 +105,55 @@ static u8 const inf_cl_order[19] = {
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
 };
 
-// Build a canonical decoder from code lengths, returning false if the
-// lengths do not describe a code that zlib would accept.
-static b32 hdecode_build(hdecode *h, u16 const *lens, i32 n, i32 kind)
+static u32 sym_entry(i32 sym, i32 len, i32 kind)
 {
-    for (i32 b = 0; b < 16; b++) {
-        h->count[b] = 0;
+    switch (kind) {
+    case HUFF_CODELEN:
+        return ENT(len, ENT_LIT, 0, sym);
+    case HUFF_LITLEN:
+        if (sym < 256) {
+            return ENT(len, ENT_LIT, 0, sym);
+        } else if (sym == 256) {
+            return ENT(len, ENT_EOB, 0, 0);
+        } else if (sym < 286) {
+            sym -= 257;
+            return ENT(len, ENT_LEN, inf_len_extra[sym], inf_len_base[sym]);
+        }
+        break;
+    case HUFF_DIST:
+        if (sym < 30) {
+            return ENT(len, ENT_LEN, inf_dist_extra[sym], inf_dist_base[sym]);
+        }
+        break;
     }
-    i32 max = 0;
+    return ENT(len, ENT_BAD, 0, 0);
+}
+
+// Build a decoding table from code lengths, returning false if the
+// lengths do not describe a code that zlib would accept. Adapted from
+// zlib's inflate_table: a root table indexed by the low bits, with
+// subtables for longer codes.
+static b32 htable_build(htable *t, u32 *entries, iz cap, u16 const *lens,
+                        i32 n, i32 kind, i32 rootbits)
+{
+    u16 count[16] = {0};
     for (i32 i = 0; i < n; i++) {
-        h->count[lens[i]]++;
-        max = MAX(max, lens[i]);
+        count[lens[i]]++;
     }
-    h->count[0] = 0;
+    i32 max = 15;
+    for (; max && !count[max]; max--) {}
+    t->entries = entries;
 
     if (!max) {
         // Nothing can be decoded, which is only allowed for distances
+        t->mask = 1;
+        entries[0] = entries[1] = ENT(1, ENT_BAD, 0, 0);
         return kind == HUFF_DIST;
     }
 
     i32 left = 1;
-    for (i32 b = 1; b < 16; b++) {
-        left = (left << 1) - h->count[b];
+    for (i32 len = 1; len < 16; len++) {
+        left = (left << 1) - count[len];
         if (left < 0) {
             return 0;  // over-subscribed
         }
@@ -89,13 +164,74 @@ static b32 hdecode_build(hdecode *h, u16 const *lens, i32 n, i32 kind)
 
     u16 offs[16];
     offs[1] = 0;
-    for (i32 b = 1; b < 15; b++) {
-        offs[b+1] = (u16)(offs[b] + h->count[b]);
+    for (i32 len = 1; len < 15; len++) {
+        offs[len+1] = (u16)(offs[len] + count[len]);
     }
+    u16 work[288];
     for (i32 i = 0; i < n; i++) {
         if (lens[i]) {
-            h->symbol[offs[lens[i]]++] = (u16)i;
+            work[offs[lens[i]]++] = (u16)i;
         }
+    }
+
+    i32 len = 1;
+    for (; !count[len]; len++) {}
+    i32 root = MIN(rootbits, max);
+    t->mask = (1u << root) - 1;
+
+    u32 *next = entries;
+    i32  curr = root;
+    i32  drop = 0;
+    u32  low  = (u32)-1;
+    iz   used = (iz)1 << root;
+    u32  huff = 0;  // bit-reversed code of the current symbol
+    for (i32 sym = 0;; sym++) {
+        // Replicate the entry across the current (sub)table
+        u32 here = sym_entry(work[sym], len, kind);
+        u32 incr = 1u << (len - drop);
+        u32 fill = 1u << curr;
+        u32 size = fill;
+        do {
+            fill -= incr;
+            next[(huff >> drop) + fill] = here;
+        } while (fill);
+
+        // Increment the bit-reversed code
+        incr = 1u << (len - 1);
+        for (; huff & incr; incr >>= 1) {}
+        huff = incr ? (huff & (incr - 1)) + incr : 0;
+
+        if (!--count[len]) {
+            if (len == max) {
+                break;
+            }
+            len = lens[work[sym+1]];
+        }
+
+        // Start a new subtable when the low root bits change
+        if (len>root && (huff & t->mask)!=low) {
+            if (!drop) {
+                drop = root;
+            }
+            next += size;
+            curr = len - drop;
+            i32 avail = 1 << curr;
+            for (; curr+drop < max; curr++, avail <<= 1) {
+                avail -= count[curr + drop];
+                if (avail <= 0) {
+                    break;
+                }
+            }
+            used += (iz)1 << curr;
+            assert(used <= cap);
+            low = huff & t->mask;
+            entries[low] = ENT_LINK(root, curr, next - entries);
+        }
+    }
+
+    // An incomplete code is a lone 1-bit code with one unused entry
+    if (huff) {
+        next[huff] = ENT(len, ENT_BAD, 0, 0);
     }
     return 1;
 }
@@ -105,22 +241,20 @@ static inflator *inflate_new(arena *a, reader *in, writer *out)
     inflator *s = new(a, 1, inflator);
     s->in  = in;
     s->out = out;
-    s->win = newbytes(a, INF_WSIZE2);
+    s->win = newbytes(a, INF_WINCAP);
 
     u16 lens[288];
     for (i32 i = 0; i < 288; i++) {
         lens[i] = (u16)(i<144 ? 8 : i<256 ? 9 : i<280 ? 7 : 8);
     }
-    hdecode_build(&s->fixlit, lens, 288, HUFF_LITLEN);
-    for (i32 i = 0; i < 30; i++) {
+    htable_build(&s->fixlit, s->fixlit_entries, countof(s->fixlit_entries),
+                 lens, 288, HUFF_LITLEN, LIT_ROOT);
+    // All 32 fixed distance codes exist, though 30 and 31 are invalid
+    for (i32 i = 0; i < 32; i++) {
         lens[i] = 5;
     }
-    // Only 30 of the 32 fixed distance codes are valid, making it
-    // incomplete, but zlib treats it as a complete code.
-    s->fixdist.count[5] = 32;  // pretend all 32 exist
-    for (i32 i = 0; i < 32; i++) {
-        s->fixdist.symbol[i] = (u16)i;  // 30 and 31 rejected on decode
-    }
+    htable_build(&s->fixdist, s->fixdist_entries,
+                 countof(s->fixdist_entries), lens, 32, HUFF_DIST, DIST_ROOT);
     return s;
 }
 
@@ -131,123 +265,273 @@ static void inf_fail(inflator *s)
     }
 }
 
-static u32 inf_bits(inflator *s, i32 n)
+// Make at least n bits available, one byte at a time. Returns false if
+// input ran out first, in which case fewer bits are available.
+static b32 inf_need(inflator *s, i32 n)
 {
+    assert(n <= 32);
     while (s->bitcnt < n) {
         i32 c = reader_byte(s->in);
         if (c < 0) {
-            inf_fail(s);
             return 0;
         }
         s->bitbuf |= (u64)c << s->bitcnt;
         s->bitcnt += 8;
     }
-    u32 v = (u32)s->bitbuf & ((1u << n) - 1);
+    return 1;
+}
+
+static void inf_drop(inflator *s, i32 n)
+{
     s->bitbuf >>= n;
     s->bitcnt -= n;
+}
+
+static u32 inf_bits(inflator *s, i32 n)
+{
+    if (!inf_need(s, n)) {
+        inf_fail(s);
+        return 0;
+    }
+    u32 v = (u32)s->bitbuf & ((1u << n) - 1);
+    inf_drop(s, n);
     return v;
+}
+
+// Look up the entry for the next code, resolving subtables.
+static u32 lookup(u32 const *t, u32 mask, u64 bb)
+{
+    u32 e = t[bb & mask];
+    if (ENT_KIND(e) == ENT_SUB) {
+        u32 sub = (u32)(bb >> ENT_CODELEN(e)) & ((1u << ENT_SUBBITS(e)) - 1);
+        e = t[ENT_VAL(e) + sub];
+    }
+    return e;
+}
+
+// Decode one code the careful way, consuming only the code itself.
+// Returns a BAD entry on error.
+static u32 inf_decode(inflator *s, htable const *t)
+{
+    inf_need(s, 15);
+    u32 e = lookup(t->entries, t->mask, s->bitbuf);
+    if (ENT_KIND(e) == ENT_BAD) {
+        s->err = GZ_EDATA;
+    } else if (ENT_CODELEN(e) > s->bitcnt) {
+        inf_fail(s);
+        return ENT(0, ENT_BAD, 0, 0);
+    } else {
+        inf_drop(s, ENT_CODELEN(e));
+    }
+    return e;
 }
 
 // Read the next byte-aligned byte following the stream, or -1.
 static i32 inflate_byte(inflator *s)
 {
-    i32 drop = s->bitcnt & 7;
-    s->bitbuf >>= drop;
-    s->bitcnt -= drop;
+    inf_drop(s, s->bitcnt & 7);
     if (s->bitcnt) {
         i32 b = (i32)(s->bitbuf & 0xff);
-        s->bitbuf >>= 8;
-        s->bitcnt -= 8;
+        inf_drop(s, 8);
         return b;
     }
     return reader_byte(s->in);
 }
 
+// Write out pending window contents, then slide history to the front.
 static void inf_flush(inflator *s)
 {
     iz len = s->wpos - s->wflushed;
     s->crc = crc32_update(s->crc, s->win+s->wflushed, len);
+    s->total += (u64)len;
     writer_write(s->out, s->win+s->wflushed, len);
+    if (s->wpos > INF_HIST) {
+        bytemove(s->win, s->win+s->wpos-INF_HIST, INF_HIST);
+        s->wpos = INF_HIST;
+    }
     s->wflushed = s->wpos;
 }
 
-static void out_byte(inflator *s, u8 b)
+// Ensure room for at least one maximum-length match.
+static void inf_reserve(inflator *s)
 {
-    if (s->wpos == INF_WSIZE2) {
+    if (s->wpos > INF_WINCAP-INF_SLACK) {
         inf_flush(s);
-        bytemove(s->win, s->win+INF_WSIZE, INF_WSIZE);
-        s->wflushed = s->wpos = INF_WSIZE;
     }
-    s->win[s->wpos++] = b;
-    s->total++;
 }
 
-static i32 hdecode_sym(inflator *s, hdecode const *h)
+static u64 load64(u8 const *p)
 {
-    i32 code  = 0;
-    i32 first = 0;
-    i32 index = 0;
-    for (i32 len = 1; len < 16; len++) {
-        code |= (i32)inf_bits(s, 1);
-        if (s->err) {
-            return -1;
-        }
-        i32 count = h->count[len];
-        if (code-first < count) {
-            return h->symbol[index + code - first];
-        }
-        index += count;
-        first = (first + count) << 1;
-        code <<= 1;
-    }
-    s->err = GZ_EDATA;
-    return -1;
+    u64 v;
+    __builtin_memcpy(&v, p, 8);
+    return v;
 }
 
-static void decode_symbols(inflator *s, hdecode const *lit, hdecode const *dist)
+static void store64(u8 *p, u64 v)
 {
-    for (;;) {
-        i32 sym = hdecode_sym(s, lit);
-        if (sym < 0) {
-            return;
-        } else if (sym < 256) {
-            out_byte(s, (u8)sym);
+    __builtin_memcpy(p, &v, 8);
+}
+
+// Copy a match of len bytes from dist back, writing up to 7 bytes past
+// the end (requires slack).
+static u8 *copy_match(u8 *out, iz dist, iz len)
+{
+    u8 *src = out - dist;
+    u8 *end = out + len;
+    if (dist >= 8) {
+        do {
+            store64(out, load64(src));
+            out += 8;
+            src += 8;
+        } while (out < end);
+    } else if (dist == 1) {
+        u64 v = 0x0101010101010101 * src[0];
+        do {
+            store64(out, v);
+            out += 8;
+        } while (out < end);
+    } else {
+        do {
+            *out++ = *src++;
+        } while (out < end);
+    }
+    return end;
+}
+
+// Fast loop: runs while at least 16 input bytes and room for a full
+// match remain. Returns true at end of block, false to fall back to the
+// careful path (or on error).
+static b32 decode_fast(inflator *s, htable const *lt, htable const *dt)
+{
+    reader *r = s->in;
+    u8 const *in    = r->buf + r->off;
+    u8 const *inend = r->buf + r->len;
+    u8 *win    = s->win;
+    u8 *out    = win + s->wpos;
+    u8 *outlim = win + INF_WINCAP - INF_SLACK;
+    u64 bb = s->bitbuf;
+    i32 bc = s->bitcnt;
+    u32 const *lte = lt->entries;
+    u32 const *dte = dt->entries;
+    u32 lmask = lt->mask;
+    u32 dmask = dt->mask;
+    b32 eob = 0;
+
+    // A refill always leaves at least 56 bits: enough for three literals
+    // (3*15), or for a length and distance (15+5+15+13 = 48). Refilling
+    // only appends above the current bits, so a pending entry remains
+    // valid across a refill. Each iteration consumes at most 14 bytes.
+    #define REFILL() \
+        bb |= load64(in) << bc; \
+        in += (63 - bc) >> 3; \
+        bc |= 56
+    #define CONSUME(e) \
+        bb >>= ENT_TOTAL(e); \
+        bc -= ENT_TOTAL(e)
+    #define EXTRA(e) \
+        (iz)(((u32)bb & ((1u << ENT_TOTAL(e)) - 1)) >> ENT_CODELEN(e))
+
+    while (inend-in>=16 && out<=outlim) {
+        REFILL();
+        u32 e = lookup(lte, lmask, bb);
+        if (ENT_KIND(e) == ENT_LIT) {
+            CONSUME(e);
+            *out++ = (u8)ENT_VAL(e);
+            e = lookup(lte, lmask, bb);
+            if (ENT_KIND(e) == ENT_LIT) {
+                CONSUME(e);
+                *out++ = (u8)ENT_VAL(e);
+                e = lookup(lte, lmask, bb);
+                if (ENT_KIND(e) == ENT_LIT) {
+                    CONSUME(e);
+                    *out++ = (u8)ENT_VAL(e);
+                    continue;
+                }
+            }
+            REFILL();
+        }
+
+        if (ENT_KIND(e) != ENT_LEN) {
+            eob = ENT_KIND(e) == ENT_EOB;
+            if (!eob) {
+                s->err = GZ_EDATA;
+            } else {
+                CONSUME(e);
+            }
+            break;
+        }
+        iz len = ENT_VAL(e) + EXTRA(e);
+        CONSUME(e);
+
+        e = lookup(dte, dmask, bb);
+        if (ENT_KIND(e) != ENT_LEN) {
+            s->err = GZ_EDATA;
+            break;
+        }
+        iz dist = ENT_VAL(e) + EXTRA(e);
+        CONSUME(e);
+
+        if (dist > out-win) {
+            s->err = GZ_EDATA;
+            break;
+        }
+        out = copy_match(out, dist, len);
+    }
+    #undef EXTRA
+    #undef CONSUME
+    #undef REFILL
+
+    r->off = in - r->buf;
+    s->wpos = out - win;
+    s->bitbuf = bb;
+    s->bitcnt = bc;
+    return eob;
+}
+
+static void decode_symbols(inflator *s, htable const *lt, htable const *dt)
+{
+    while (!s->err) {
+        inf_reserve(s);
+        if (s->in->len-s->in->off >= 16) {
+            if (decode_fast(s, lt, dt)) {
+                return;
+            }
             continue;
-        } else if (sym == 256) {
-            return;
         }
 
-        sym -= 257;
-        if (sym >= 29) {
-            s->err = GZ_EDATA;
+        // Careful path: one symbol at a time
+        u32 e = inf_decode(s, lt);
+        switch (ENT_KIND(e)) {
+        case ENT_LIT:
+            s->win[s->wpos++] = (u8)ENT_VAL(e);
+            continue;
+        case ENT_EOB:
+        case ENT_BAD:
             return;
         }
-        i32 len = inf_len_base[sym] + (i32)inf_bits(s, inf_len_extra[sym]);
-
-        i32 dsym = hdecode_sym(s, dist);
-        if (dsym < 0) {
-            return;
-        } else if (dsym >= 30) {
-            s->err = GZ_EDATA;
-            return;
-        }
-        i32 d = inf_dist_base[dsym] + (i32)inf_bits(s, inf_dist_extra[dsym]);
+        iz len = ENT_VAL(e) + inf_bits(s, ENT_EXTRA(e));
+        e = inf_decode(s, dt);
         if (s->err) {
             return;
-        } else if ((u64)d > s->total) {
+        }
+        iz dist = ENT_VAL(e) + inf_bits(s, ENT_EXTRA(e));
+        if (s->err) {
+            return;
+        } else if (dist > s->wpos) {
             s->err = GZ_EDATA;
             return;
         }
-
-        for (; len; len--) {
-            out_byte(s, s->win[s->wpos - d]);
+        u8 *out = s->win + s->wpos;
+        for (iz i = 0; i < len; i++) {
+            out[i] = out[i-dist];
         }
+        s->wpos += len;
     }
 }
 
 static void stored_block(inflator *s)
 {
-    inf_bits(s, s->bitcnt & 7);
+    inf_drop(s, s->bitcnt & 7);
     u32 len  = inf_bits(s, 16);
     u32 nlen = inf_bits(s, 16);
     if (s->err) {
@@ -256,13 +540,30 @@ static void stored_block(inflator *s)
         s->err = GZ_EDATA;
         return;
     }
-    for (; len; len--) {
-        i32 c = reader_byte(s->in);
-        if (c < 0) {
+
+    // Whole bytes may remain in the bit buffer
+    for (; len && s->bitcnt; len--) {
+        inf_reserve(s);
+        s->win[s->wpos++] = (u8)s->bitbuf;
+        inf_drop(s, 8);
+    }
+    if (!s->bitcnt) {
+        s->bitbuf = 0;  // discard lookahead before reading directly
+    }
+
+    reader *r = s->in;
+    while (len) {
+        inf_reserve(s);
+        if (!reader_fill(r)) {
             inf_fail(s);
             return;
         }
-        out_byte(s, (u8)c);
+        iz n = MIN((iz)len, r->len - r->off);
+        n = MIN(n, INF_WINCAP - s->wpos);
+        bytecopy(s->win + s->wpos, r->buf + r->off, n);
+        s->wpos += n;
+        r->off += n;
+        len -= (u32)n;
     }
 }
 
@@ -285,18 +586,22 @@ static void dynamic_block(inflator *s)
     if (s->err) {
         return;
     }
-    hdecode cl;
-    if (!hdecode_build(&cl, lens, 19, HUFF_CODELEN)) {
+    htable cl;
+    u32 cl_entries[128];
+    if (!htable_build(&cl, cl_entries, countof(cl_entries), lens, 19,
+                      HUFF_CODELEN, 7)) {
         s->err = GZ_EDATA;
         return;
     }
 
     i32 total = hlit + hdist;
     for (i32 n = 0; n < total;) {
-        i32 sym = hdecode_sym(s, &cl);
-        if (sym < 0) {
+        u32 e = inf_decode(s, &cl);
+        if (s->err) {
             return;
-        } else if (sym < 16) {
+        }
+        i32 sym = ENT_VAL(e);
+        if (sym < 16) {
             lens[n++] = (u16)sym;
             continue;
         }
@@ -330,14 +635,15 @@ static void dynamic_block(inflator *s)
         }
     }
 
-    hdecode lit, dist;
     if (!lens[256] ||
-        !hdecode_build(&lit, lens, hlit, HUFF_LITLEN) ||
-        !hdecode_build(&dist, lens+hlit, hdist, HUFF_DIST)) {
+        !htable_build(&s->lit, s->lit_entries, countof(s->lit_entries),
+                      lens, hlit, HUFF_LITLEN, LIT_ROOT) ||
+        !htable_build(&s->dist, s->dist_entries, countof(s->dist_entries),
+                      lens+hlit, hdist, HUFF_DIST, DIST_ROOT)) {
         s->err = GZ_EDATA;
         return;
     }
-    decode_symbols(s, &lit, &dist);
+    decode_symbols(s, &s->lit, &s->dist);
 }
 
 // Decode a complete stream, then flush output. Returns a GZ_* status.

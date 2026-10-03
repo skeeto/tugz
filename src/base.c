@@ -216,6 +216,15 @@ static void writer_write(writer *w, u8 const *p, iz len)
 {
     if (w->fd < 0) {
         return;
+    } else if (len > w->cap-w->len) {
+        writer_flush(w);
+        if (len >= w->cap) {
+            // Large writes bypass the buffer
+            if (!w->err) {
+                w->err = !os_write(w->ctx, w->fd, (u8 *)p, len);
+            }
+            return;
+        }
     }
     while (len) {
         if (w->len == w->cap) {

@@ -516,7 +516,20 @@ static void test_tables(void)
         }
         table[n] = c;
     }
-    TEST(!memcmp(table, crc32_table, sizeof(table)));
+    TEST(!memcmp(table, crc32_table[0], sizeof(table)));
+    for (i32 k = 1; k < 8; k++) {
+        for (i32 n = 0; n < 256; n++) {
+            u32 want = crc32_table[k-1][n]>>8 ^ table[crc32_table[k-1][n]&0xff];
+            TEST(crc32_table[k][n] == want);
+        }
+    }
+    for (i32 len = 0; len < 64; len++) {
+        u8 buf[64];
+        for (i32 i = 0; i < len; i++) {
+            buf[i] = (u8)(i*37 + len);
+        }
+        TEST(crc32_update(0, buf, len) == (u32)crc32(0, buf, (uInt)len));
+    }
     TEST(crc32_update(0, (u8 *)"123456789", 9) == 0xcbf43926);
     TEST(crc32_update(0, 0, 0) == 0);
 
@@ -593,8 +606,10 @@ static void check_tree(htree *t, u32 const *freq, i32 n, i32 maxlen)
     for (i32 i = 0; i < n; i++) {
         lens[i] = t->len[i];
     }
-    hdecode h;
-    TEST(hdecode_build(&h, lens, n, HUFF_CODELEN));
+    htable h;
+    static u32 entries[1<<15];
+    TEST(htable_build(&h, entries, countof(entries), lens, n, HUFF_CODELEN,
+                      LIT_ROOT));
 }
 
 static void test_huffman(void)

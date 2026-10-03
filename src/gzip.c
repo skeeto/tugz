@@ -118,8 +118,9 @@ static i32 gzip_header(reader *r, u8 *hdr)
 // Decompress all members. A negative output descriptor only verifies.
 static i32 gzip_decompress(i32 in, i32 out, arena scratch)
 {
+    // The inflator buffers its own output, so this one stays small
     reader *r = newreader(&scratch, in, GZ_RDBUF);
-    writer *w = newwriter(&scratch, out, GZ_WRBUF);
+    writer *w = newwriter(&scratch, out, 1<<16);
 
     i32 status = GZ_OK;
     for (b32 first = 1;; first = 0) {

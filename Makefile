@@ -49,7 +49,7 @@ fuzz-diff-deflate: main_fuzz_diff_deflate.c $(SRC)
 fuzz: fuzz-inflate fuzz-roundtrip fuzz-diff-inflate fuzz-diff-deflate
 
 bench: main_bench.c $(SRC)
-	$(CC) -O2 $(WARN) -o $@ main_bench.c $(REFLIBS)
+	$(CC) -O2 $(WARN) -Wno-unused-function -o $@ main_bench.c $(REFLIBS)
 
 clean:
 	rm -rf gzip gzip-debug gzip.exe tests bench *.dSYM \
