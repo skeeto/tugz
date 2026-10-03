@@ -373,13 +373,6 @@ static void inf_reserve(inflator *s)
     }
 }
 
-// Little-endian load, compiled to a single load on most targets.
-static u64 load64le(u8 const *p)
-{
-    return (u64)p[0]     | (u64)p[1]<< 8 | (u64)p[2]<<16 | (u64)p[3]<<24 |
-           (u64)p[4]<<32 | (u64)p[5]<<40 | (u64)p[6]<<48 | (u64)p[7]<<56;
-}
-
 static u64 load64(u8 const *p)
 {
     u64 v;

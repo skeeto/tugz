@@ -342,13 +342,6 @@ static deflator *deflate_new(arena *a, i32 level, writer *out)
     return d;
 }
 
-static void store64le(u8 *p, u64 v)
-{
-    for (i32 i = 0; i < 8; i++) {
-        p[i] = (u8)(v >> (8*i));
-    }
-}
-
 // Append n bits, n <= 32. Whole bytes spill into the writer's buffer
 // 8 bytes at a time once 32 or more bits accumulate.
 static void bw_put(deflator *d, u64 v, i32 n)
@@ -710,11 +703,10 @@ static u32 chain_slot(deflator *d, iz p)
     return (u32)(d->base + (u64)p) & DEF_WMASK;
 }
 
+// Little-endian, so hashes (and therefore output) match across hosts.
 static u32 load32(u8 const *p)
 {
-    u32 v;
-    __builtin_memcpy(&v, p, 4);
-    return v;
+    return (u32)p[0] | (u32)p[1]<<8 | (u32)p[2]<<16 | (u32)p[3]<<24;
 }
 
 static u32 hash4(u32 v)
@@ -763,11 +755,9 @@ static i32 match_len(u8 const *a, u8 const *b, i32 max)
 {
     i32 len = 0;
     for (; len+8 <= max; len += 8) {
-        u64 x, y;
-        __builtin_memcpy(&x, a+len, 8);
-        __builtin_memcpy(&y, b+len, 8);
-        if (x != y) {
-            return len + (__builtin_ctzll(x ^ y) >> 3);
+        u64 x = load64le(a+len) ^ load64le(b+len);
+        if (x) {
+            return len + (__builtin_ctzll(x) >> 3);  // first differing byte
         }
     }
     for (; len<max && a[len]==b[len]; len++) {}

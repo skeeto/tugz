@@ -95,6 +95,21 @@ static void *bytefill(void *dst, i32 c, iz len)
     return __builtin_memset(dst, c, (uz)len);
 }
 
+// Explicit little-endian accesses; each compiles to a single unaligned
+// load or store on little-endian targets.
+static u64 load64le(u8 const *p)
+{
+    return (u64)p[0]     | (u64)p[1]<< 8 | (u64)p[2]<<16 | (u64)p[3]<<24 |
+           (u64)p[4]<<32 | (u64)p[5]<<40 | (u64)p[6]<<48 | (u64)p[7]<<56;
+}
+
+static void store64le(u8 *p, u64 v)
+{
+    for (i32 i = 0; i < 8; i++) {
+        p[i] = (u8)(v >> (8*i));
+    }
+}
+
 static b32 s8equals(s8 a, s8 b)
 {
     return a.len==b.len && (!a.len || !__builtin_memcmp(a.s, b.s, (uz)a.len));
