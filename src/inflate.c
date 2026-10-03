@@ -549,13 +549,11 @@ static void decode_symbols(inflator *s, htable const *lt, htable const *dt)
 
         // Careful path: one symbol at a time
         u32 e = inf_decode(s, lt);
-        switch (ENT_KIND(e)) {
-        case ENT_LIT:
+        if (e & F_LIT) {
             s->win[s->wpos++] = (u8)ENT_VAL(e);
             continue;
-        case ENT_EOB:
-        case ENT_BAD:
-            return;
+        } else if (e & F_SPECIAL) {
+            return;  // end of block, or error
         }
         iz len = ENT_VAL(e) + inf_bits(s, ENT_EXTRA(e));
         e = inf_decode(s, dt);
