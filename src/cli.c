@@ -1,4 +1,4 @@
-// gzip core: command line interface
+// tugz core: command line interface
 //
 // Exit status follows GNU gzip: 0 for success, 1 for errors, 2 for
 // warnings (e.g. trailing garbage, file skipped). Errors take precedence.
@@ -328,7 +328,7 @@ static i32 apply_option(options *o, i32 c, arena scratch)
         print(scratch, 1, usage_text);
         return EXIT_OK;
     case 'V':
-        print(scratch, 1, S("gzip 1.0\n"));
+        print(scratch, 1, S("gzip (tugz) 1.0\n"));
         return EXIT_OK;
     }
     print(scratch, 2, usage_text);

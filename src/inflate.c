@@ -1,4 +1,4 @@
-// gzip core: raw DEFLATE decoder (RFC 1951)
+// tugz core: raw DEFLATE decoder (RFC 1951)
 //
 // Accepts exactly the streams zlib accepts: incomplete Huffman codes are
 // rejected except for a lone 1-bit code, and an empty distance code is

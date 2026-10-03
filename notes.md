@@ -1,4 +1,9 @@
-# gzip development notes
+# tugz development notes
+
+tugz (tiny unity gzip) is a from-specification implementation of gzip
+(RFC 1952) and DEFLATE (RFC 1951): a drop-in `gzip` command, and a
+portable core intended to become a library. It identifies itself as
+`gzip (tugz) 1.0` and is installed under the name `gzip`.
 
 ## Layout
 

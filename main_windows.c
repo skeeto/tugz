@@ -1,4 +1,4 @@
-// CRT-free Win32 platform layer for gzip
+// CRT-free Win32 platform layer for tugz
 // $ cc -O2 -fno-builtin -nostartfiles -o gzip.exe main_windows.c
 //      -lmemory -lshell32 -lkernel32
 #include "src/base.c"

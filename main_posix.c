@@ -1,4 +1,4 @@
-// POSIX platform layer for gzip
+// POSIX platform layer for tugz
 // $ cc -O2 -o gzip main_posix.c
 #define _POSIX_C_SOURCE 200809L  // sigaction, futimens, O_NOFOLLOW, ...
 #define _DARWIN_C_SOURCE         // macOS hides O_NOFOLLOW otherwise

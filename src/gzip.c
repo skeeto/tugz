@@ -1,4 +1,4 @@
-// gzip core: gzip container format (RFC 1952)
+// tugz core: gzip container format (RFC 1952)
 //
 // Decompression handles concatenated members. Following GNU gzip, data
 // after the last member is ignored with a warning (GZ_TRAILING) unless it

@@ -1,4 +1,4 @@
-// Test suite for gzip
+// Test suite for tugz
 // On success prints "all tests pass" and exits with status zero. A
 // failure traps, so run under a debugger to examine it.
 // $ cc -g3 -fsanitize=address,undefined -o tests main_test.c -lz -ldeflate
@@ -1697,6 +1697,7 @@ static void test_cli(os *ctx, arena a)
     TEST(run(ctx, a, "-h") == EXIT_OK);
     TEST(mfs_get(ctx, "<stdout>").len > 0);
     TEST(run(ctx, a, "--version") == EXIT_OK);
+    TEST(equals(mfs_get(ctx, "<stdout>"), (u8 *)"gzip (tugz) 1.0\n", 16));
 
     // Error wins over warning in the exit status
     mfs_put(ctx, "w", text, 10);

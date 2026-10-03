@@ -1,4 +1,4 @@
-// gzip core: base types, arena allocator, platform interface, buffered I/O
+// tugz core: base types, arena allocator, platform interface, buffered I/O
 //
 // The program is a unity build. A platform layer (main_*.c) includes the
 // sources it needs, starting with this one, and then defines the os_*

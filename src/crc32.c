@@ -1,4 +1,4 @@
-// gzip core: CRC-32 (ISO-HDLC, reflected 0xedb88320)
+// tugz core: CRC-32 (ISO-HDLC, reflected 0xedb88320)
 //
 // Slicing-by-8: crc32_table[k][n] is the CRC of byte n followed by k
 // zero bytes, so eight table lookups advance the CRC by eight bytes.

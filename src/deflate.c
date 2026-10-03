@@ -1,4 +1,4 @@
-// gzip core: raw DEFLATE encoder (RFC 1951)
+// tugz core: raw DEFLATE encoder (RFC 1951)
 //
 // Input accumulates in a sliding window and is parsed into tokens once
 // the window fills, so output does not depend on how input is split
