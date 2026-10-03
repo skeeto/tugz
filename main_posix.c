@@ -18,6 +18,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+// Nanosecond timestamps: POSIX 2008 names, but macOS predates them
+#ifdef __APPLE__
+#  define st_atim st_atimespec
+#  define st_mtim st_mtimespec
+#endif
+
 // Path of the output file being written, deleted if a signal interrupts
 // the program. The signal handler is why this one variable is global.
 static char *volatile pending_output;
@@ -225,10 +231,7 @@ static void os_copymeta(os *ctx, i32 from, i32 to)
     }
     fchmod(to, mode);
 
-    // Whole seconds: the nanosecond field names differ between systems
-    struct timespec times[2] = {{0}, {0}};
-    times[0].tv_sec = st.st_atime;
-    times[1].tv_sec = st.st_mtime;
+    struct timespec times[2] = {st.st_atim, st.st_mtim};
     futimens(to, times);
 }
 

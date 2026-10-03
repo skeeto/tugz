@@ -1794,9 +1794,10 @@ static void test_cli_safety(os *ctx, arena a)
     TEST(run(ctx, a, "") == EXIT_ERR);
     TEST(stderr_has(ctx, "not written to a terminal"));
     TEST(!mfs_get(ctx, "<stdout>").len);
-    TEST(run(ctx, a, "-c t") == EXIT_ERR);
-    TEST(!mfs_get(ctx, "<stdout>").len);
-    TEST(run(ctx, a, "-cf t") == EXIT_OK);
+    set_stdin(ctx, text, 1000);
+    TEST(run(ctx, a, "-cf") == EXIT_OK);
+    TEST(mfs_get(ctx, "<stdout>").len > 0);
+    TEST(run(ctx, a, "-c t") == EXIT_OK);  // named files are not checked
     TEST(mfs_get(ctx, "<stdout>").len > 0);
     TEST(run(ctx, a, "-k t") == EXIT_OK);  // in place: terminal irrelevant
     s8 tgz = dup8(mfs_get(ctx, "t.gz"));

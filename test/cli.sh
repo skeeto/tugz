@@ -118,6 +118,15 @@ else
 fi
 [ meta -nt ref ] || [ meta -ot ref ] && fail "mtime not preserved on decompress"
 
+# Sub-second timestamps, where stat can show them
+mtime() { stat -c %y "$1" 2>/dev/null || stat -f %Fm "$1"; }
+printf 'fresh\n' >fresh
+want=$(mtime fresh)
+"$GZIP" fresh
+[ "$(mtime fresh.gz)" = "$want" ] || fail "mtime $(mtime fresh.gz) != $want"
+"$GZIP" -d fresh.gz
+[ "$(mtime fresh)" = "$want" ] || fail "mtime lost on decompress"
+
 # Symbolic links are skipped in place unless forced
 printf 'target\n' >target
 if ln -s target slink 2>/dev/null; then

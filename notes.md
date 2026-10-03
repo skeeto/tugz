@@ -4,8 +4,9 @@
 
 Unity build: each `main_*.c` is a platform layer that includes the core
 sources it needs and defines the `os_*` hooks declared in `src/base.c`.
-Everything is `static` except the entry point, and nothing at file scope
-is mutable, so the core is ready to become a library.
+Everything is `static` except the entry point. Nothing at file scope in
+the core (`src/`) is mutable, so it is ready to become a library; the
+platform layers are not part of that and may use globals and `#ifdef`.
 
 | File                     | Purpose                                         |
 |--------------------------|-------------------------------------------------|
@@ -86,20 +87,18 @@ Fuzzers:
   directory may be read (e.g. `gzip -c <(cmd)`).
 - Output files are created owner-only, then given the input's mode,
   ownership (when permitted; set-ID bits dropped otherwise), and
-  timestamps. Timestamps are whole seconds: the POSIX nanosecond field
-  names differ between macOS and Linux. On Windows, timestamps are copied
-  and access control is inherited from the directory, as with GNU gzip.
+  timestamps at full resolution. On Windows, timestamps are copied and
+  access control is inherited from the directory, as with GNU gzip.
 - Outputs are discarded unless explicitly kept after success
   (`os_keep`): on failure, on a failed close (which may mean lost data),
-  and on interruption. POSIX uses a SIGHUP/SIGINT/SIGTERM handler (the
-  only global, in `main_posix.c`; inherited "ignore" dispositions are
-  respected, as under nohup). Windows marks the file delete-pending at
+  and on interruption. POSIX uses a SIGHUP/SIGINT/SIGTERM handler
+  (inherited "ignore" dispositions are respected, as under nohup). Windows marks the file delete-pending at
   creation, so even `TerminateProcess` cleans up.
 - `-f` replaces an existing output by unlinking it first, never writing
   through a link.
-- Compressed data is not written to, or read from, a terminal without
-  `-f`. Stricter than GNU in one case: `gzip -c file` to a terminal is
-  refused too.
+- As in GNU gzip, when using standard input, compressed data is not
+  written to, or read from, a terminal without `-f`. Named files with
+  `-c` are not checked.
 
 ## Bugs found along the way
 

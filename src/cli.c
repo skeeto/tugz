@@ -157,9 +157,10 @@ static i32 transform(options *o, i32 in, i32 out, arena scratch)
     return gzip_compress(in, out, o->level, scratch);
 }
 
-// Refuse to write compressed data to a terminal, or to read it from one,
-// unless forced. Returns -1 to continue, or an exit status.
-static i32 check_terminal(options *o, b32 from_stdin, arena scratch)
+// Like GNU gzip, when using standard input, refuse to write compressed
+// data to a terminal or to read it from one, unless forced. Named files
+// with -c are not checked. Returns -1 to continue, or an exit status.
+static i32 check_terminal(options *o, arena scratch)
 {
     os *ctx = scratch.ctx;
     b32 compress = !o->decompress && !o->test;
@@ -171,7 +172,7 @@ static i32 check_terminal(options *o, b32 from_stdin, arena scratch)
             "Use -f to force compression."
         ));
         return EXIT_ERR;
-    } else if (!compress && from_stdin && os_isatty(ctx, 0)) {
+    } else if (!compress && os_isatty(ctx, 0)) {
         message(scratch, (s8){0}, S(
             "compressed data not read from a terminal. "
             "Use -f to force decompression."
@@ -186,7 +187,7 @@ static i32 process_file(options *o, s8 path, arena scratch)
     os *ctx = scratch.ctx;
 
     if (s8equals(path, S("-"))) {
-        i32 r = check_terminal(o, 1, scratch);
+        i32 r = check_terminal(o, scratch);
         if (r >= 0) {
             return r;
         }
@@ -205,11 +206,6 @@ static i32 process_file(options *o, s8 path, arena scratch)
                                 : s8concat(&scratch, path, S(".gz"));
         if (!outpath.s) {
             return warn(o, path, S("unknown suffix -- ignored"), scratch);
-        }
-    } else {
-        i32 r = check_terminal(o, 0, scratch);
-        if (r >= 0) {
-            return r;
         }
     }
 
