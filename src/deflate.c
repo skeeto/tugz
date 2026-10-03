@@ -19,6 +19,9 @@
 #define NLIT          286
 #define NDIST         30
 #define NCL           19
+#define NOBS          10    // block split observation categories
+#define OBS_BATCH     512   // observations between block split checks
+#define MIN_BLOCK     10000 // minimum block size in bytes for splitting
 
 typedef struct {
     u16 litlen;
@@ -26,20 +29,28 @@ typedef struct {
 } token;
 
 typedef struct {
-    i32 depth, nice, lazy, good, depth3;
+    i32 depth;   // hash chain search depth
+    i32 nice;    // stop searching at a match this long
+    i32 lazy;    // lazy evaluation steps (0 for greedy)
+    i32 good;    // skip lazy evaluation, and shorten search, past this
+    i32 depth3;  // 3-byte chain search depth
+    i32 insert;  // insert positions inside matches up to this long
 } deflate_level;
 
+// Chosen from a sweep over Silesia: each level beats zlib's compression
+// ratio at the same level while running faster.
 static deflate_level const deflate_levels[10] = {
-    {   0,   0,  0,  0,   0},
-    {   4,  16,  0,  4,   4},
-    {   8,  24,  0,  4,   8},
-    {  16,  32,  4,  4,  16},
-    {  32,  48,  8,  4,  32},
-    {  48,  64,  8,  8,  32},
-    { 128, 258,  2, 16,  32},
-    { 256, 258,  8,  8,  64},
-    { 512, 258,  8, 32, 128},
-    {1024, 258, 16, 32, 256},
+    // depth nice lazy good depth3 insert
+    {   0,    0,  0,   0,    0,   0},
+    {   4,   16,  0,   4,    4,  16},
+    {   6,   32,  0,   8,    6,  16},
+    {   8,   32,  0,   8,    8,  32},
+    {   8,   32,  1,   8,    8, 258},
+    {  16,   64,  1,  16,   16, 258},
+    {  32,   64,  1,  16,   32, 258},
+    {  64,  128,  2,  32,   32, 258},
+    { 256,  258,  2,  64,   64, 258},
+    {1024,  258,  2, 258,  256, 258},
 };
 
 typedef struct {
@@ -71,6 +82,13 @@ typedef struct {
     u64 blk_len;
     u64 pend_start;
     iz  pend_len;
+
+    // Block splitting statistics: coarse symbol categories observed in
+    // the current block, and in the latest batch of observations.
+    u32 obs[NOBS];
+    u32 newobs[NOBS];
+    u32 nobs;
+    u32 nnewobs;
 
     u32 lit_freq[NLIT];
     u32 dist_freq[NDIST];
@@ -616,6 +634,48 @@ static void flush_block(deflator *d, b32 final)
     d->blk_len = 0;
     bytefill(d->lit_freq, 0, sizeof(d->lit_freq));
     bytefill(d->dist_freq, 0, sizeof(d->dist_freq));
+    bytefill(d->obs, 0, sizeof(d->obs));
+    bytefill(d->newobs, 0, sizeof(d->newobs));
+    d->nobs = d->nnewobs = 0;
+}
+
+// Decide whether the latest batch of observations differs enough from
+// the block so far that a new block should start, so that its Huffman
+// codes can adapt. The idea follows libdeflate: compare the batch's
+// category distribution to the block's, scaling both to a common total,
+// with a bias toward longer blocks that grows as the block does.
+static b32 should_split(deflator *d)
+{
+    b32 split = 0;
+    if (d->nobs) {
+        u64 delta = 0;
+        for (i32 i = 0; i < NOBS; i++) {
+            u64 expect = (u64)d->obs[i] * d->nnewobs;
+            u64 actual = (u64)d->newobs[i] * d->nobs;
+            delta += actual>expect ? actual-expect : expect-actual;
+        }
+        u64 total  = (u64)d->nobs + d->nnewobs;
+        u64 cutoff = (u64)d->nnewobs * 200/512 * d->nobs;
+        if (d->blk_len<MIN_BLOCK && total<8192) {
+            cutoff += cutoff * (8192 - total) / 8192;
+        }
+        split = d->blk_len>=MIN_BLOCK &&
+                delta + d->blk_len/4096*d->nobs >= cutoff;
+    }
+    for (i32 i = 0; i < NOBS; i++) {
+        d->obs[i] += d->newobs[i];
+        d->newobs[i] = 0;
+    }
+    d->nobs += d->nnewobs;
+    d->nnewobs = 0;
+    return split;
+}
+
+static void tok_end(deflator *d)
+{
+    if (d->ntok==TOK_CAP || (++d->nnewobs==OBS_BATCH && should_split(d))) {
+        flush_block(d, 0);
+    }
 }
 
 static void tok_lit(deflator *d, iz p)
@@ -627,9 +687,8 @@ static void tok_lit(deflator *d, iz p)
     d->blk_len++;
     d->toks[d->ntok++] = (token){c, 0};
     d->lit_freq[c]++;
-    if (d->ntok == TOK_CAP) {
-        flush_block(d, 0);
-    }
+    d->newobs[(c>>5 & 6) | (c & 1)]++;
+    tok_end(d);
 }
 
 static void tok_match(deflator *d, iz p, i32 len, i32 dist)
@@ -641,9 +700,8 @@ static void tok_match(deflator *d, iz p, i32 len, i32 dist)
     d->toks[d->ntok++] = (token){(u16)len, (u16)dist};
     d->lit_freq[257+lcode_of(d, len)]++;
     d->dist_freq[dcode_of(d, dist)]++;
-    if (d->ntok == TOK_CAP) {
-        flush_block(d, 0);
-    }
+    d->newobs[8 + (len >= 9)]++;
+    tok_end(d);
 }
 
 // Index into prev tables for window position p.
@@ -829,7 +887,11 @@ static void parse(deflator *d, iz end)
 
         if (m.len >= MIN_MATCH) {
             tok_match(d, p, m.len, m.dist);
-            ensure_insert(d, p + m.len - 1);
+            if (m.len <= d->lvl.insert) {
+                ensure_insert(d, p + m.len - 1);
+            } else {
+                d->ins = MAX(d->ins, p + m.len);
+            }
             p += m.len;
         } else {
             tok_lit(d, p++);
