@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+bench_corpus/
+build/
+fuzz/build/
+fuzz/corpus/
+fuzz/artifacts/
