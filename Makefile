@@ -8,7 +8,7 @@ WARN     = -Wall -Wextra -Wconversion -Wno-sign-conversion
 DEBUG    = -g3 -O1 $(WARN) -fsanitize=address,undefined \
            -fno-sanitize-recover=all
 FUZZCC   = clang
-FUZZ     = -g3 -O1 $(WARN) -fsanitize=fuzzer,address,undefined \
+FUZZ     = -g3 -O1 $(WARN) -Wno-unused-function -fsanitize=fuzzer,address,undefined \
            -fno-sanitize-recover=all
 PREFIX   = /opt/homebrew
 REFLIBS  = -I$(PREFIX)/include -L$(PREFIX)/lib -ldeflate -lz
