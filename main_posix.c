@@ -5,9 +5,11 @@
 #define _FILE_OFFSET_BITS 64     // large files on 32-bit hosts
 #include "src/base.c"
 #include "src/crc32.c"
+#include "src/adler32.c"
 #include "src/inflate.c"
 #include "src/deflate.c"
 #include "src/gzip.c"
+#include "src/io.c"
 #include "src/cli.c"
 
 #include <errno.h>

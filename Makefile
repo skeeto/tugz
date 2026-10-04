@@ -16,7 +16,10 @@ REFLIBS  = -I$(PREFIX)/include -L$(PREFIX)/lib -ldeflate -lz
 WIN32_CFLAGS = -fno-builtin -fno-asynchronous-unwind-tables
 WIN32_LIBS   = -nostartfiles -s -Wl,--gc-sections -lmemory -lshell32 -lkernel32
 
-SRC = src/base.c src/crc32.c src/inflate.c src/deflate.c src/gzip.c src/cli.c
+CORE = src/base.c src/crc32.c src/adler32.c src/inflate.c src/deflate.c \
+       src/gzip.c
+SRC  = $(CORE) src/io.c src/cli.c
+LIB  = libtugz.c tugz.h $(CORE)
 
 gzip: main_posix.c $(SRC)
 	$(CC) $(OPT) $(WARN) -o $@ main_posix.c
@@ -43,9 +46,29 @@ gzip.c: main_windows.c $(SRC)
 tests: main_test.c $(SRC)
 	$(CC) $(DEBUG) -o $@ main_test.c $(REFLIBS)
 
-check: tests gzip
+tests-lib: main_libtest.c $(LIB)
+	$(CC) $(DEBUG) -o $@ main_libtest.c $(REFLIBS)
+
+check: tests tests-lib gzip
 	./tests
+	./tests-lib
 	sh test/cli.sh ./gzip
+
+# The library: an object exporting only the tugz.h interface
+libtugz.o: $(LIB)
+	$(CC) -c $(OPT) $(WARN) -o $@ libtugz.c
+
+# Single-file library source with its header inlined. Define TUGZ_API as
+# static before including it to embed the library in another program.
+tugz.c: $(LIB)
+	v=$$(sed -n 's/.*gzip (tugz) \([0-9.]*\).*/\1/p' src/cli.c); \
+	{ echo "// tugz $$v: streaming DEFLATE, zlib, and gzip library"; \
+	  echo "// Single-file amalgamation of the tugz sources. Build:"; \
+	  echo "//   \$$ cc -c -O2 tugz.c"; \
+	  echo "// The interface documentation follows."; \
+	  echo; \
+	  awk 'FNR==1 && NR>1 {print ""} !/^#include "/ && !/^\/\/ +\$$ cc/' \
+	      tugz.h $(CORE) libtugz.c; } >$@
 
 fuzz-inflate: main_fuzz_inflate.c test/fuzzos.c $(SRC)
 	$(FUZZCC) $(FUZZ) -o $@ main_fuzz_inflate.c
@@ -68,7 +91,8 @@ bench: main_bench.c $(SRC)
 	$(CC) -O2 $(WARN) -Wno-unused-function -o $@ main_bench.c $(REFLIBS)
 
 clean:
-	rm -rf gzip gzip-debug gzip.exe gzip.c tests bench *.dSYM \
+	rm -rf gzip gzip-debug gzip.exe gzip.c tests tests-lib bench *.dSYM \
+	       libtugz.o tugz.c \
 	       fuzz-inflate fuzz-roundtrip fuzz-diff-inflate fuzz-diff-deflate
 
 .PHONY: amalgamation check fuzz fuzz-seeds clean

@@ -1,11 +1,15 @@
-// tugz core: gzip container format (RFC 1952)
+// tugz core: zlib (RFC 1950) and gzip (RFC 1952) containers around raw
+// DEFLATE, as streaming decoders and encoders
 //
-// Decompression handles concatenated members. Following GNU gzip, data
-// after the last member is ignored with a warning (GZ_TRAILING) unless it
-// starts with the gzip magic, in which case it must be a valid member.
+// The gzip decoder handles one member at a time: after a member ends,
+// the next call begins parsing another. Bytes that are not a gzip header
+// produce GZ_ENOTGZ, leaving trailing data policy to the caller.
 
-#define GZ_RDBUF  (1 << 18)
-#define GZ_WRBUF  (1 << 20)
+enum {
+    FMT_RAW,
+    FMT_ZLIB,
+    FMT_GZIP,
+};
 
 enum {
     FTEXT    = 1 << 0,
@@ -28,157 +32,323 @@ static u32 get32le(u8 const *p)
     return (u32)p[0] | (u32)p[1]<<8 | (u32)p[2]<<16 | (u32)p[3]<<24;
 }
 
-static i32 gzip_compress(i32 in, i32 out, i32 level, arena scratch)
+static u32 get32be(u8 const *p)
 {
-    reader  *r = newreader(&scratch, in, GZ_RDBUF);
-    writer  *w = newwriter(&scratch, out, GZ_WRBUF);
-    deflator *d = deflate_new(&scratch, level, w);
-
-    static u8 const header[10] = {0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3};
-    writer_write(w, header, countof(header));
-
-    u32 crc = 0;
-    u64 total = 0;
-    while (reader_fill(r)) {
-        u8 *p = r->buf + r->off;
-        iz len = r->len - r->off;
-        crc = crc32_update(crc, p, len);
-        total += (u64)len;
-        deflate_push(d, p, len);
-        r->off = r->len;
-    }
-    deflate_finish(d);
-
-    u8 trailer[8];
-    put32le(trailer+0, crc);
-    put32le(trailer+4, (u32)total);
-    writer_write(w, trailer, countof(trailer));
-    writer_flush(w);
-
-    return r->err ? GZ_EREAD : w->err ? GZ_EWRITE : GZ_OK;
+    return (u32)p[0]<<24 | (u32)p[1]<<16 | (u32)p[2]<<8 | (u32)p[3];
 }
+
+static u32 check_update(i32 format, u32 check, u8 const *p, iz len)
+{
+    switch (format) {
+    case FMT_ZLIB: return adler32_update(check, p, len);
+    case FMT_GZIP: return crc32_update(check, p, len);
+    }
+    return 0;
+}
+
+static u32 check_init(i32 format)
+{
+    return format==FMT_ZLIB ? 1 : 0;
+}
+
+enum {
+    DEC_FIXED,    // gzip: first 10 bytes; zlib: 2 bytes
+    DEC_XLEN,
+    DEC_EXTRA,
+    DEC_NAME,
+    DEC_COMMENT,
+    DEC_HCRC,
+    DEC_BODY,
+    DEC_TRAILER,
+    DEC_DONE,
+};
 
 typedef struct {
-    reader *r;
-    u32     crc;
-    b32     eof;
-} hdrreader;
+    inflator *inf;
+    i32 format;
+    i32 state;
+    i32 err;      // sticky container error
+    u32 check;    // of the output so far
+    u64 total;
+    u8  buf[10];  // header or trailer bytes
+    i32 len;      // bytes in buf
+    iz  hpos;     // header bytes consumed
+    u32 hcrc;
+    i32 flg;
+    i32 xlen;
+} decoder;
 
-static i32 hdr_byte(hdrreader *h)
+static iz decoder_memsize(void)
 {
-    i32 c = reader_byte(h->r);
-    if (c < 0) {
-        h->eof = 1;
-        return 0;
-    }
-    u8 b = (u8)c;
-    h->crc = crc32_update(h->crc, &b, 1);
-    return c;
+    return (iz)sizeof(decoder) + 64 + inflate_memsize();
 }
 
-// Parse the remainder of a member header after the first 10 bytes.
-static i32 gzip_header(reader *r, u8 *hdr)
+static void decoder_reset(decoder *z)
 {
-    if (hdr[2] != 8) {
-        return GZ_EMETHOD;
-    }
-    u8 flg = hdr[3];
-    if (flg & 0xe0) {
-        return GZ_EFLAGS;
+    inflate_reset(z->inf);
+    z->state = z->format==FMT_RAW ? DEC_BODY : DEC_FIXED;
+    z->check = check_init(z->format);
+    z->total = 0;
+    z->len   = 0;
+    z->hpos  = 0;
+    z->hcrc  = 0;
+    z->err   = 0;
+}
+
+static decoder *decoder_new(arena *a, i32 format)
+{
+    decoder *z = new(a, 1, decoder);
+    z->inf = inflate_new(a);
+    z->format = format;
+    decoder_reset(z);
+    return z;
+}
+
+// Consume one gzip header byte, advancing the header state.
+static i32 gzip_header_byte(decoder *z, u8 c)
+{
+    z->hpos++;
+    if (z->state != DEC_HCRC) {
+        z->hcrc = crc32_update(z->hcrc, &c, 1);
     }
 
-    hdrreader h = {r, crc32_update(0, hdr, 10), 0};
-    if (flg & FEXTRA) {
-        i32 xlen = hdr_byte(&h);
-        xlen |= hdr_byte(&h) << 8;
-        for (; xlen && !h.eof; xlen--) {
-            hdr_byte(&h);
+    switch (z->state) {
+    case DEC_FIXED:
+        // Each field is validated as soon as it is complete, like zlib
+        z->buf[z->len++] = c;
+        if (z->len==2 && (z->buf[0]!=0x1f || z->buf[1]!=0x8b)) {
+            return GZ_ENOTGZ;
+        } else if (z->len==4 && z->buf[2]!=8) {
+            return GZ_EMETHOD;
+        } else if (z->len==4 && (z->buf[3] & 0xe0)) {
+            return GZ_EFLAGS;
+        } else if (z->len < 10) {
+            return GZ_OK;
         }
-    }
-    if (flg & FNAME) {
-        while (hdr_byte(&h) && !h.eof) {}
-    }
-    if (flg & FCOMMENT) {
-        while (hdr_byte(&h) && !h.eof) {}
-    }
-    if (flg & FHCRC) {
-        u32 want = h.crc & 0xffff;
-        u32 got  = (u32)hdr_byte(&h);
-        got |= (u32)hdr_byte(&h) << 8;
-        if (!h.eof && got!=want) {
+        z->flg = z->buf[3];
+        z->len = 0;
+        z->xlen = 0;
+        z->state = DEC_XLEN;
+        break;
+    case DEC_XLEN:
+        z->xlen |= c << 8*z->len++;
+        if (z->len < 2) {
+            return GZ_OK;
+        }
+        z->len = 0;
+        z->state = DEC_EXTRA;
+        break;
+    case DEC_EXTRA:
+        if (--z->xlen) {
+            return GZ_OK;
+        }
+        z->state = DEC_NAME;
+        break;
+    case DEC_NAME:
+    case DEC_COMMENT:
+        if (c) {
+            return GZ_OK;
+        }
+        z->state++;
+        break;
+    case DEC_HCRC:
+        z->buf[z->len++] = c;
+        if (z->len < 2) {
+            return GZ_OK;
+        } else if ((z->buf[0] | z->buf[1]<<8) != (i32)(z->hcrc & 0xffff)) {
             return GZ_EHCRC;
         }
+        z->state = DEC_BODY;
+        break;
     }
-    if (h.eof) {
-        return r->err ? GZ_EREAD : GZ_ETRUNC;
+
+    // Skip absent fields
+    for (;;) {
+        switch (z->state) {
+        case DEC_XLEN:    if (z->flg & FEXTRA)   return GZ_OK; break;
+        case DEC_EXTRA:   if (z->xlen)           return GZ_OK; break;
+        case DEC_NAME:    if (z->flg & FNAME)    return GZ_OK; break;
+        case DEC_COMMENT: if (z->flg & FCOMMENT) return GZ_OK; break;
+        case DEC_HCRC:    if (z->flg & FHCRC)    return GZ_OK; break;
+        default:          return GZ_OK;
+        }
+        z->state++;
     }
+}
+
+// Consume one zlib header byte. Validation follows zlib's order.
+static i32 zlib_header_byte(decoder *z, u8 c)
+{
+    z->hpos++;
+    z->buf[z->len++] = c;
+    if (z->len < 2) {
+        return GZ_OK;
+    }
+    u32 cmf = z->buf[0];
+    u32 flg = z->buf[1];
+    if ((cmf<<8 | flg) % 31) {
+        return GZ_EHEADER;
+    } else if ((cmf & 15) != 8) {
+        return GZ_EMETHOD;
+    } else if ((cmf >> 4) > 7) {
+        return GZ_EHEADER;  // window larger than 32 KiB
+    } else if (flg & 0x20) {
+        return GZ_EHEADER;  // preset dictionary unsupported
+    }
+    z->len = 0;
+    z->state = DEC_BODY;
     return GZ_OK;
 }
 
-// Decompress all members. A negative output descriptor only verifies.
-static i32 gzip_decompress(i32 in, i32 out, arena scratch)
+// Verify each trailer field as soon as it is complete, like zlib.
+static i32 trailer_check(decoder *z)
 {
-    // The inflator buffers its own output, so this one stays small
-    reader *r = newreader(&scratch, in, GZ_RDBUF);
-    writer *w = newwriter(&scratch, out, 1<<16);
-
-    i32 status = GZ_OK;
-    for (b32 first = 1;; first = 0) {
-        u8 hdr[10];
-        iz got = reader_read(r, hdr, 10);
-        b32 magic = got>=2 && hdr[0]==0x1f && hdr[1]==0x8b;
-        if (r->err) {
-            status = GZ_EREAD;
-            break;
-        } else if (!first && !magic) {
-            status = got ? GZ_TRAILING : GZ_OK;
-            break;
-        } else if (first && !got) {
-            status = GZ_ETRUNC;
-            break;
-        } else if (!magic) {
-            status = GZ_ENOTGZ;
-            break;
-        } else if (got < 10) {
-            status = GZ_ETRUNC;
-            break;
-        }
-
-        status = gzip_header(r, hdr);
-        if (status) {
-            break;
-        }
-
-        arena temp = scratch;
-        inflator *s = inflate_new(&temp, r, w);
-        status = inflate_run(s);
-        if (status) {
-            break;
-        }
-
-        u8 trailer[8];
-        i32 i = 0;
-        for (; i < 8; i++) {
-            i32 c = inflate_byte(s);
-            if (c < 0) {
-                break;
-            }
-            trailer[i] = (u8)c;
-        }
-        if (i < 8) {
-            status = r->err ? GZ_EREAD : GZ_ETRUNC;
-            break;
-        } else if (get32le(trailer+0) != s->crc) {
-            status = GZ_ECRC;
-            break;
-        } else if (get32le(trailer+4) != (u32)s->total) {
-            status = GZ_ELEN;
-            break;
-        }
+    if (z->len != 4) {
+        return get32le(z->buf+4)==(u32)z->total ? GZ_OK : GZ_ELEN;
+    } else if (z->format == FMT_ZLIB) {
+        return get32be(z->buf)==z->check ? GZ_OK : GZ_ECRC;
     }
-
-    if (!writer_flush(w) && (!status || status==GZ_TRAILING)) {
-        status = GZ_EWRITE;
-    }
-    return status;
+    return get32le(z->buf)==z->check ? GZ_OK : GZ_ECRC;
 }
+
+// Decode from b->in into b->out, advancing both. Returns GZ_OK at the
+// end of the stream (or gzip member), with b->in just past it. Calling
+// again after a gzip member begins the next. Otherwise returns
+// GZ_NEEDIN, GZ_NEEDOUT, or an error, which is sticky.
+static i32 decoder_run(decoder *z, zbuf *b)
+{
+    if (z->err) {
+        return z->err;
+    } else if (z->state==DEC_DONE && z->format==FMT_GZIP) {
+        decoder_reset(z);
+    }
+
+    for (;;) {
+        switch (z->state) {
+        case DEC_DONE:
+            return GZ_OK;
+
+        case DEC_BODY: {
+            u8 *out = b->out;
+            i32 r = inflate_stream(z->inf, b);
+            if (z->format != FMT_RAW) {
+                z->check = check_update(z->format, z->check, out, b->out-out);
+            }
+            z->total += (u64)(b->out - out);
+            if (r != GZ_OK) {
+                return r;
+            }
+            z->state = z->format==FMT_RAW ? DEC_DONE : DEC_TRAILER;
+            z->len = 0;
+        } break;
+
+        case DEC_TRAILER: {
+            i32 need = z->format==FMT_ZLIB ? 4 : 8;
+            while (z->len < need) {
+                if (!b->inlen) {
+                    return GZ_NEEDIN;
+                }
+                z->buf[z->len++] = *b->in++;
+                b->inlen--;
+                if (z->len==4 || z->len==8) {
+                    z->err = trailer_check(z);
+                    if (z->err) {
+                        return z->err;
+                    }
+                }
+            }
+            z->state = DEC_DONE;
+        } break;
+
+        default:
+            while (z->state < DEC_BODY) {
+                if (!b->inlen) {
+                    return GZ_NEEDIN;
+                }
+                u8 c = *b->in++;
+                b->inlen--;
+                z->err = z->format==FMT_ZLIB ? zlib_header_byte(z, c)
+                                             : gzip_header_byte(z, c);
+                if (z->err) {
+                    return z->err;
+                }
+            }
+        }
+    }
+}
+
+typedef struct {
+    deflator *def;
+    i32 format;
+    u32 check;    // of the input so far
+    u64 total;
+    b32 done;     // trailer written
+} encoder;
+
+static iz encoder_memsize(void)
+{
+    return (iz)sizeof(encoder) + 64 + deflate_memsize();
+}
+
+static encoder *encoder_new(arena *a, i32 format, i32 level)
+{
+    level = MAX(1, MIN(level, 9));
+    encoder *e = new(a, 1, encoder);
+    e->def = deflate_new(a, level);
+    e->format = format;
+    e->check = check_init(format);
+
+    switch (format) {
+    case FMT_GZIP: {
+        static u8 const header[10] = {0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3};
+        deflate_bytes(e->def, header, countof(header));
+    } break;
+    case FMT_ZLIB: {
+        // Same header as zlib for a 32 KiB window at this level
+        u32 flevel = level<2 ? 0 : level<6 ? 1 : level==6 ? 2 : 3;
+        u32 cmf = 0x78;
+        u32 flg = flevel << 6;
+        flg |= 31 - (cmf<<8 | flg)%31;
+        u8 header[2] = {(u8)cmf, (u8)flg};
+        deflate_bytes(e->def, header, countof(header));
+    } break;
+    }
+    return e;
+}
+
+// Compress from b->in into b->out with a DEF_* flush mode. Returns as
+// deflate_stream, and after a finish only accepts further finishes.
+static i32 encoder_run(encoder *e, zbuf *b, i32 flush)
+{
+    if (e->done && (b->inlen || flush!=DEF_FINISH)) {
+        return GZ_EUSAGE;
+    }
+
+    u8 const *in = b->in;
+    i32 r = deflate_stream(e->def, b, flush);
+    if (e->format != FMT_RAW) {
+        e->check = check_update(e->format, e->check, in, b->in-in);
+    }
+    e->total += (u64)(b->in - in);
+
+    if (r==GZ_OK && flush==DEF_FINISH && !e->done) {
+        u8 trailer[8];
+        switch (e->format) {
+        case FMT_GZIP:
+            put32le(trailer+0, e->check);
+            put32le(trailer+4, (u32)e->total);
+            deflate_bytes(e->def, trailer, 8);
+            break;
+        case FMT_ZLIB:
+            for (i32 i = 0; i < 4; i++) {
+                trailer[i] = (u8)(e->check >> (24 - 8*i));
+            }
+            deflate_bytes(e->def, trailer, 4);
+            break;
+        }
+        e->done = 1;
+        r = deflate_stream(e->def, b, flush);
+    }
+    return r;
+}
+

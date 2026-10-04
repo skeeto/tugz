@@ -4,9 +4,11 @@
 // $ cc -g3 -fsanitize=address,undefined -o tests main_test.c -lz -ldeflate
 #include "src/base.c"
 #include "src/crc32.c"
+#include "src/adler32.c"
 #include "src/inflate.c"
 #include "src/deflate.c"
 #include "src/gzip.c"
+#include "src/io.c"
 #include "src/cli.c"
 
 #include <libdeflate.h>
@@ -369,34 +371,49 @@ static i32 do_gunzip(os *ctx, arena a, u8 const *p, iz len, s8 *out)
 static i32 do_inflate(os *ctx, arena a, u8 const *p, iz len, s8 *out)
 {
     set_stdin(ctx, p, len);
-    reader  *r = newreader(&a, 0, 1<<16);
-    writer  *w = newwriter(&a, 1, 1<<16);
-    inflator *s = inflate_new(&a, r, w);
-    i32 status = inflate_run(s);
-    writer_flush(w);
+    i32 status = stream_decompress(0, 1, FMT_RAW, a);
     *out = get_stdout(ctx);
     return status;
 }
 
-// Deflate in pieces of the given size (0 for one piece).
+// Compress in memory, feeding input and taking output in pieces of the
+// given sizes (0 for unlimited), with the deflater at a stream base.
+static s8 zcompress(arena a, i32 format, u8 const *p, iz len, i32 level,
+                    iz inpiece, iz outpiece, u64 base)
+{
+    encoder *e = encoder_new(&a, format, level);
+    e->def->base = base;
+    iz cap = len + len/4 + (1<<16);
+    s8 r = {malloc((uz)cap), 0};
+    zbuf b = {p, 0, 0, 0};
+    for (;;) {
+        iz inleft = p + len - b.in;
+        b.inlen = inpiece ? MIN(inpiece, inleft) : inleft;
+        iz inlen = b.inlen;
+        b.out = r.s + r.len;
+        b.outlen = outpiece ? MIN(outpiece, cap-r.len) : cap-r.len;
+        u8 *out = b.out;
+        i32 flush = inlen==inleft ? DEF_FINISH : DEF_NONE;
+        i32 status = encoder_run(e, &b, flush);
+        r.len += b.out - out;
+        TEST(b.inlen==0 || status==GZ_NEEDOUT);
+        TEST(status==GZ_OK || status==GZ_NEEDIN || status==GZ_NEEDOUT);
+        TEST(r.len < cap);
+        if (status == GZ_OK) {
+            TEST(flush == DEF_FINISH);
+            break;
+        }
+    }
+    return r;
+}
+
+// Raw deflate in pieces of the given size (0 for one piece).
 static s8 do_deflate(os *ctx, arena a, u8 const *p, iz len, i32 level,
                      iz piece, deflator **dp)
 {
-    set_stdin(ctx, 0, 0);
-    writer  *w = newwriter(&a, 1, 1<<16);
-    deflator *d = deflate_new(&a, level, w);
-    if (dp) {
-        *dp = d;
-    }
-    for (iz off = 0; off < len;) {
-        iz n = piece ? MIN(piece, len-off) : len-off;
-        deflate_push(d, p+off, n);
-        off += n;
-    }
-    deflate_finish(d);
-    writer_flush(w);
-    TEST(!w->err);
-    return get_stdout(ctx);
+    (void)ctx;
+    (void)dp;
+    return zcompress(a, FMT_RAW, p, len, level, piece, 0, 0);
 }
 
 static b32 equals(s8 a, u8 const *p, iz len)
@@ -1018,7 +1035,7 @@ static void test_inflate_vectors(os *ctx, arena a)
     static u8 const clcases[][4] = {
         {0, 0, 0, 1},  // only symbol 0 with length 1: incomplete
         {1, 1, 1, 0},  // three 1-bit codes: over-subscribed
-        {0, 0, 0, 0},  // empty
+        {0, 0, 0, 0},  // empty: like zlib, fails at missing end-of-block
     };
     for (i32 i = 0; i < countof(clcases); i++) {
         b = (bits){0};
@@ -1030,11 +1047,23 @@ static void test_inflate_vectors(os *ctx, arena a)
         for (i32 j = 0; j < 4; j++) {
             bput(&b, clcases[i][j], 3);
         }
-        bput(&b, 0, 32);
+        for (i32 j = 0; j < 10; j++) {
+            bput(&b, 0, 32);  // enough 1-bit lengths for the empty case
+        }
         TEST(inflate_bits(ctx, a, &b, &out) == GZ_EDATA);
         free(out.s);
     }
 
+    // Fuzz regression: an empty code length code is truncation, not an
+    // error, while input runs out before the missing end-of-block
+    b = (bits){0};
+    bput(&b, 1, 1);
+    bput(&b, 2, 2);
+    bput(&b, 0, 14);
+    bput(&b, 0, 12);
+    bput(&b, 0, 32);
+    TEST(inflate_bits(ctx, a, &b, &out) == GZ_ETRUNC);
+    free(out.s);
 }
 
 typedef struct {
@@ -1332,14 +1361,7 @@ static void test_large_offset(os *ctx, arena a)
     u8 *p = randbytes(len, 3);
     s8 ref = do_deflate(ctx, a, p, len, 6, 0, 0);
 
-    set_stdin(ctx, 0, 0);
-    writer  *w = newwriter(&a, 1, 1<<16);
-    deflator *d = deflate_new(&a, 6, w);
-    d->base = 0xffffffffu - 1000000;
-    deflate_push(d, p, len);
-    deflate_finish(d);
-    writer_flush(w);
-    s8 out = get_stdout(ctx);
+    s8 out = zcompress(a, FMT_RAW, p, len, 6, 0, 0, 0xffffffffu - 1000000);
     TEST(s8equals(ref, out));
     free(out.s);
     free(ref.s);

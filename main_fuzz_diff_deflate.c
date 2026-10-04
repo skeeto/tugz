@@ -2,7 +2,9 @@
 // The leading bytes configure zlib (level, window, memory, strategy,
 // flush points, mid-stream parameter changes) or libdeflate (level), and
 // the rest is compressed. Our raw decoder must reproduce it exactly. Our
-// own encoder's output must also decode under both libraries.
+// own streaming encoder, in any format with fuzzer-chosen flush points
+// and buffer pieces, must produce piece-independent output that decodes
+// under both libraries and our own streaming decoder.
 // $ clang -g -O1 -fsanitize=fuzzer,address,undefined \
 //         main_fuzz_diff_deflate.c -lz -ldeflate
 #include "test/fuzzos.c"
@@ -82,16 +84,57 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     CHECK(!memcmp(env->ctx.out, in, (uz)len));
     free(z.s);
 
-    // Our encoder's output under libdeflate
-    fuzz_deflate(env, in, len, 1 + cfg[0]%9, 0, 0);
-    struct libdeflate_decompressor *d = libdeflate_alloc_decompressor();
+    // Our streaming encoder: any format, flushes at fuzzer-chosen points,
+    // and pieces of any size. Output must not depend on the pieces, and
+    // must decode under zlib, libdeflate, and our own decoder.
+    i32 format = cfg[1] % 3;
+    i32 level  = 1 + cfg[0]%9;
+    u32 seed   = cfg[6]&2 ? (u32)cfg[4]<<8 | cfg[5] | 1 : 0;
+    s8 ref = fuzz_encode(env, format, level, in, len, 0, 0, seed);
+    s8 alt = fuzz_encode(env, format, level, in, len,
+                         fuzz_pieces[cfg[2]&7], fuzz_pieces[cfg[3]&7], seed);
+    CHECK(alt.len==ref.len && !memcmp(alt.s, ref.s, (uz)ref.len));
+    free(alt.s);
+
+    static i32 const wbits[] = {-15, 15, 31};
     u8 *out = malloc((uz)len + 1);
+    z_stream zs = {0};
+    CHECK(inflateInit2(&zs, wbits[format]) == Z_OK);
+    zs.next_in = ref.s;
+    zs.avail_in = (u32)ref.len;
+    zs.next_out = out;
+    zs.avail_out = (u32)len + 1;
+    CHECK(inflate(&zs, Z_FINISH) == Z_STREAM_END);
+    CHECK(zs.total_out==(uLong)len && !zs.avail_in);
+    CHECK(!memcmp(out, in, (uz)len));
+    inflateEnd(&zs);
+
+    struct libdeflate_decompressor *d = libdeflate_alloc_decompressor();
     uz actual;
-    CHECK(libdeflate_deflate_decompress(d, env->ctx.out, (uz)env->ctx.outlen,
-                                        out, (uz)len, &actual)
-          == LIBDEFLATE_SUCCESS);
+    enum libdeflate_result r;
+    switch (format) {
+    case FMT_RAW:
+        r = libdeflate_deflate_decompress(d, ref.s, (uz)ref.len, out,
+                                          (uz)len, &actual);
+        break;
+    case FMT_ZLIB:
+        r = libdeflate_zlib_decompress(d, ref.s, (uz)ref.len, out,
+                                       (uz)len, &actual);
+        break;
+    default:
+        r = libdeflate_gzip_decompress(d, ref.s, (uz)ref.len, out,
+                                       (uz)len, &actual);
+    }
+    CHECK(r == LIBDEFLATE_SUCCESS);
     CHECK(actual==(uz)len && !memcmp(out, in, (uz)len));
     libdeflate_free_decompressor(d);
     free(out);
+
+    iz used;
+    CHECK(fuzz_decode(env, format, ref.s, ref.len, fuzz_pieces[cfg[3]&7],
+                      fuzz_pieces[cfg[2]&7], (iz)1<<24, &used) == GZ_OK);
+    CHECK(used == ref.len);
+    CHECK(env->ctx.outlen==len && !memcmp(env->ctx.out, in, (uz)len));
+    free(ref.s);
     return 0;
 }

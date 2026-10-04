@@ -2,9 +2,11 @@
 // $ cc -O2 -nostartfiles -o gzip.exe main_windows.c -lmemory
 #include "src/base.c"
 #include "src/crc32.c"
+#include "src/adler32.c"
 #include "src/inflate.c"
 #include "src/deflate.c"
 #include "src/gzip.c"
+#include "src/io.c"
 #include "src/cli.c"
 
 typedef unsigned short c16;

@@ -8,7 +8,10 @@
 // input and output space remain, refilling the bit buffer 64 bits at a
 // time. Near buffer edges a careful byte-at-a-time path takes over.
 // Output is produced directly into a window that retains 32 KiB of
-// history, flushed through the writer as it fills.
+// history, from which it is handed out as the window fills.
+//
+// The caller supplies input and output buffers of any size, and decoding
+// resumes wherever the previous call stopped.
 //
 // Window invariant: until history first slides, wpos equals the total
 // output so far. Afterwards wpos >= INF_HIST, which exceeds any distance.
@@ -73,20 +76,45 @@ typedef struct {
     u32  mask;
 } htable;
 
+enum {
+    INF_HEAD,     // next is a block header
+    INF_STORED,   // copying stored block data
+    INF_SYMBOLS,  // decoding a compressed block
+    INF_END,      // the final block has ended
+};
+
+// Decoding proceeds in atomic units: a block header (including a whole
+// dynamic table header), or one literal or length/distance pair. When
+// input runs out partway through a unit, it is rolled back and its
+// bytes are saved in the stash, to be completed by the next call's
+// input. A unit is at most about 300 bytes, which the stash covers.
+//
+// Input invariant: between calls the bit buffer holds fewer than 8
+// bits. Whole bytes are always given back to the input, so the stream
+// end is reported exactly, and the stash only ever holds bytes of one
+// incomplete unit.
+#define INF_STASH   1024
+
 typedef struct {
-    reader *in;
-    writer *out;
+    u8 const *in;     // input cursor for the current call
+    u8 const *inend;
 
     u64 bitbuf;   // bits above bitcnt are zero or upcoming input
     i32 bitcnt;
-    i32 err;
+    i32 err;      // sticky error, or GZ_NEEDIN while a unit is starved
+
+    i32 state;
+    b32 final;
+    iz  stored;   // stored block bytes remaining
+    htable const *lt;
+    htable const *dt;
 
     u8 *win;
     iz  wpos;
-    iz  wflushed;
+    iz  wflushed; // output before this has been handed out
 
-    u32 crc;
-    u64 total;    // bytes flushed
+    iz  stashlen;
+    u8  stash[INF_STASH];
 
     htable fixlit;
     htable fixdist;
@@ -158,10 +186,13 @@ static b32 htable_build(htable *t, u32 *entries, iz cap, u16 const *lens,
     t->entries = entries;
 
     if (!max) {
-        // Nothing can be decoded, which is only allowed for distances
+        // Nothing can be decoded, which is only allowed for distances.
+        // Like zlib, an empty code length code decodes every length as a
+        // 1-bit zero, failing later on the missing end-of-block code.
         t->mask = 1;
-        entries[0] = entries[1] = ENT(1, ENT_BAD, 0, 0);
-        return kind == HUFF_DIST;
+        entries[0] = entries[1] = kind==HUFF_CODELEN ? ENT(1, ENT_LIT, 0, 0)
+                                                     : ENT(1, ENT_BAD, 0, 0);
+        return kind != HUFF_LITLEN;
     }
 
     i32 left = 1;
@@ -249,11 +280,30 @@ static b32 htable_build(htable *t, u32 *entries, iz cap, u16 const *lens,
     return 1;
 }
 
-static inflator *inflate_new(arena *a, reader *in, writer *out)
+// Memory needed by inflate_new, including alignment padding.
+static iz inflate_memsize(void)
+{
+    return (iz)sizeof(inflator) + _Alignof(inflator) + INF_WINCAP + 64;
+}
+
+// Prepare to decode a new stream.
+static void inflate_reset(inflator *s)
+{
+    s->in       = s->inend = 0;
+    s->bitbuf   = 0;
+    s->bitcnt   = 0;
+    s->err      = 0;
+    s->state    = INF_HEAD;
+    s->final    = 0;
+    s->stored   = 0;
+    s->wpos     = 0;
+    s->wflushed = 0;
+    s->stashlen = 0;
+}
+
+static inflator *inflate_new(arena *a)
 {
     inflator *s = new(a, 1, inflator);
-    s->in  = in;
-    s->out = out;
     s->win = newbytes(a, INF_WINCAP);
 
     u16 lens[288];
@@ -268,13 +318,15 @@ static inflator *inflate_new(arena *a, reader *in, writer *out)
     }
     htable_build(&s->fixdist, s->fixdist_entries,
                  countof(s->fixdist_entries), lens, 32, HUFF_DIST, DIST_ROOT);
+    inflate_reset(s);
     return s;
 }
 
-static void inf_fail(inflator *s)
+// Note that the current unit cannot complete with the input at hand.
+static void inf_starve(inflator *s)
 {
     if (!s->err) {
-        s->err = s->in->err ? GZ_EREAD : GZ_ETRUNC;
+        s->err = GZ_NEEDIN;
     }
 }
 
@@ -284,11 +336,10 @@ static b32 inf_need(inflator *s, i32 n)
 {
     assert(n <= 32);
     while (s->bitcnt < n) {
-        i32 c = reader_byte(s->in);
-        if (c < 0) {
+        if (s->in == s->inend) {
             return 0;
         }
-        s->bitbuf |= (u64)c << s->bitcnt;
+        s->bitbuf |= (u64)*s->in++ << s->bitcnt;
         s->bitcnt += 8;
     }
     return 1;
@@ -303,12 +354,20 @@ static void inf_drop(inflator *s, i32 n)
 static u32 inf_bits(inflator *s, i32 n)
 {
     if (!inf_need(s, n)) {
-        inf_fail(s);
+        inf_starve(s);
         return 0;
     }
     u32 v = (u32)s->bitbuf & ((1u << n) - 1);
     inf_drop(s, n);
     return v;
+}
+
+// Return whole bytes in the bit buffer to the input.
+static void inf_giveback(inflator *s)
+{
+    s->in -= s->bitcnt >> 3;
+    s->bitcnt &= 7;
+    s->bitbuf &= ((u64)1 << s->bitcnt) - 1;
 }
 
 // Look up the entry for the next code, resolving subtables.
@@ -322,55 +381,51 @@ static u32 lookup(u32 const *t, u32 mask, u64 bb)
     return e;
 }
 
-// Decode one code the careful way, consuming only the code itself.
+// Decode one code the careful way, consuming only the code itself. Like
+// zlib, an invalid code is only reported once all its bits are present.
 // Returns a BAD entry on error.
 static u32 inf_decode(inflator *s, htable const *t)
 {
     inf_need(s, 15);
     u32 e = lookup(t->entries, t->mask, s->bitbuf);
-    if (ENT_KIND(e) == ENT_BAD) {
-        s->err = GZ_EDATA;
-    } else if (ENT_CODELEN(e) > s->bitcnt) {
-        inf_fail(s);
+    if (ENT_CODELEN(e) > s->bitcnt) {
+        inf_starve(s);
         return ENT(0, ENT_BAD, 0, 0);
+    } else if (ENT_KIND(e) == ENT_BAD) {
+        s->err = GZ_EDATA;
     } else {
         inf_drop(s, ENT_CODELEN(e));
     }
     return e;
 }
 
-// Read the next byte-aligned byte following the stream, or -1.
-static i32 inflate_byte(inflator *s)
+// Make room for at least one maximum-length match, sliding history to
+// the front once all output has been handed out. Returns false if
+// undelivered output is in the way.
+static b32 inf_room(inflator *s)
 {
-    inf_drop(s, s->bitcnt & 7);
-    if (s->bitcnt) {
-        i32 b = (i32)(s->bitbuf & 0xff);
-        inf_drop(s, 8);
-        return b;
+    if (s->wpos <= INF_WINCAP-INF_SLACK) {
+        return 1;
+    } else if (s->wflushed < s->wpos) {
+        return 0;
     }
-    return reader_byte(s->in);
+    bytemove(s->win, s->win+s->wpos-INF_HIST, INF_HIST);
+    s->wpos = s->wflushed = INF_HIST;
+    return 1;
 }
 
-// Write out pending window contents, then slide history to the front.
-static void inf_flush(inflator *s)
+// Decoded output not yet handed out.
+static s8 inflate_pending(inflator *s)
 {
-    iz len = s->wpos - s->wflushed;
-    s->crc = crc32_update(s->crc, s->win+s->wflushed, len);
-    s->total += (u64)len;
-    writer_write(s->out, s->win+s->wflushed, len);
-    if (s->wpos > INF_HIST) {
-        bytemove(s->win, s->win+s->wpos-INF_HIST, INF_HIST);
-        s->wpos = INF_HIST;
-    }
-    s->wflushed = s->wpos;
+    s8 r = {s->win + s->wflushed, s->wpos - s->wflushed};
+    return r;
 }
 
-// Ensure room for at least one maximum-length match.
-static void inf_reserve(inflator *s)
+// Mark the first n bytes of pending output as handed out.
+static void inflate_consume(inflator *s, iz n)
 {
-    if (s->wpos > INF_WINCAP-INF_SLACK) {
-        inf_flush(s);
-    }
+    assert(n>=0 && n<=s->wpos-s->wflushed);
+    s->wflushed += n;
 }
 
 static u64 load64(u8 const *p)
@@ -433,11 +488,12 @@ static u8 *copy_match(u8 *out, iz dist, iz len)
 // Fast loop: runs while at least 16 input bytes and room for a full
 // match remain. Returns true at end of block, false to fall back to the
 // careful path (or on error).
-static b32 decode_fast(inflator *s, htable const *lt, htable const *dt)
+static b32 decode_fast(inflator *s)
 {
-    reader *r = s->in;
-    u8 const *in    = r->buf + r->off;
-    u8 const *inend = r->buf + r->len;
+    htable const *lt = s->lt;
+    htable const *dt = s->dt;
+    u8 const *in    = s->in;
+    u8 const *inend = s->inend;
     u8 *win    = s->win;
     u8 *out    = win + s->wpos;
     u8 *outlim = win + INF_WINCAP - INF_SLACK;
@@ -522,91 +578,49 @@ static b32 decode_fast(inflator *s, htable const *lt, htable const *dt)
     #undef CONSUME
     #undef REFILL
 
-    r->off = in - r->buf;
+    s->in = in;
     s->wpos = out - win;
     s->bitbuf = bb;
     s->bitcnt = bc;
+    inf_giveback(s);
     return eob;
 }
 
-static void decode_symbols(inflator *s, htable const *lt, htable const *dt)
+// Careful path: decode one literal, length/distance pair, or end of
+// block. Output is only written once the whole unit has been decoded.
+static void inf_symbol(inflator *s)
 {
-    while (!s->err) {
-        inf_reserve(s);
-        if (s->in->len-s->in->off >= 16) {
-            if (decode_fast(s, lt, dt)) {
-                return;
-            }
-            continue;
-        }
-
-        // Careful path: one symbol at a time
-        u32 e = inf_decode(s, lt);
-        if (e & F_LIT) {
-            s->win[s->wpos++] = (u8)ENT_VAL(e);
-            continue;
-        } else if (e & F_SPECIAL) {
-            return;  // end of block, or error
-        }
-        iz len = ENT_VAL(e) + inf_bits(s, ENT_EXTRA(e));
-        e = inf_decode(s, dt);
-        if (s->err) {
-            return;
-        }
-        iz dist = ENT_VAL(e) + inf_bits(s, ENT_EXTRA(e));
-        if (s->err) {
-            return;
-        } else if (dist > s->wpos) {
-            s->err = GZ_EDATA;
-            return;
-        }
-        u8 *out = s->win + s->wpos;
-        for (iz i = 0; i < len; i++) {
-            out[i] = out[i-dist];
-        }
-        s->wpos += len;
-    }
-}
-
-static void stored_block(inflator *s)
-{
-    inf_drop(s, s->bitcnt & 7);
-    u32 len  = inf_bits(s, 16);
-    u32 nlen = inf_bits(s, 16);
+    u32 e = inf_decode(s, s->lt);
     if (s->err) {
         return;
-    } else if (len != (~nlen & 0xffff)) {
+    } else if (e & F_LIT) {
+        s->win[s->wpos++] = (u8)ENT_VAL(e);
+        return;
+    } else if (e & F_SPECIAL) {
+        s->state = s->final ? INF_END : INF_HEAD;  // end of block
+        return;
+    }
+    iz len = ENT_VAL(e) + inf_bits(s, ENT_EXTRA(e));
+    e = inf_decode(s, s->dt);
+    if (s->err) {
+        return;
+    }
+    iz dist = ENT_VAL(e) + inf_bits(s, ENT_EXTRA(e));
+    if (s->err) {
+        return;
+    } else if (dist > s->wpos) {
         s->err = GZ_EDATA;
         return;
     }
-
-    // Whole bytes may remain in the bit buffer
-    for (; len && s->bitcnt; len--) {
-        inf_reserve(s);
-        s->win[s->wpos++] = (u8)s->bitbuf;
-        inf_drop(s, 8);
+    u8 *out = s->win + s->wpos;
+    for (iz i = 0; i < len; i++) {
+        out[i] = out[i-dist];
     }
-    if (!s->bitcnt) {
-        s->bitbuf = 0;  // discard lookahead before reading directly
-    }
-
-    reader *r = s->in;
-    while (len) {
-        inf_reserve(s);
-        if (!reader_fill(r)) {
-            inf_fail(s);
-            return;
-        }
-        iz n = MIN((iz)len, r->len - r->off);
-        n = MIN(n, INF_WINCAP - s->wpos);
-        bytecopy(s->win + s->wpos, r->buf + r->off, n);
-        s->wpos += n;
-        r->off += n;
-        len -= (u32)n;
-    }
+    s->wpos += len;
 }
 
-static void dynamic_block(inflator *s)
+// Read a dynamic block's code descriptions and build its tables.
+static void inf_dynamic(inflator *s)
 {
     i32 hlit  = (i32)inf_bits(s, 5) + 257;
     i32 hdist = (i32)inf_bits(s, 5) + 1;
@@ -645,16 +659,13 @@ static void dynamic_block(inflator *s)
             continue;
         }
 
+        // Like zlib, read the extra bits before validating the repeat
         u16 fill = 0;
         i32 repeat = 0;
         switch (sym) {
         case 16:
-            if (!n) {
-                s->err = GZ_EDATA;
-                return;
-            }
-            fill = lens[n-1];
             repeat = 3 + (i32)inf_bits(s, 2);
+            fill = n ? lens[n-1] : 0;
             break;
         case 17:
             repeat = 3 + (i32)inf_bits(s, 3);
@@ -665,7 +676,7 @@ static void dynamic_block(inflator *s)
         }
         if (s->err) {
             return;
-        } else if (repeat > total-n) {
+        } else if ((sym==16 && !n) || repeat>total-n) {
             s->err = GZ_EDATA;
             return;
         }
@@ -680,30 +691,195 @@ static void dynamic_block(inflator *s)
         !htable_build(&s->dist, s->dist_entries, countof(s->dist_entries),
                       lens+hlit, hdist, HUFF_DIST, DIST_ROOT)) {
         s->err = GZ_EDATA;
-        return;
     }
-    decode_symbols(s, &s->lit, &s->dist);
 }
 
-// Decode a complete stream, then flush output. Returns a GZ_* status.
-static i32 inflate_run(inflator *s)
+// Read a block header, including a stored block's lengths or a dynamic
+// block's code descriptions.
+static void inf_header(inflator *s)
 {
-    for (b32 final = 0; !final && !s->err;) {
-        final = (b32)inf_bits(s, 1);
-        i32 type = (i32)inf_bits(s, 2);
+    b32 final = (b32)inf_bits(s, 1);
+    i32 type  = (i32)inf_bits(s, 2);
+    if (s->err) {
+        return;
+    }
+    switch (type) {
+    case 0: {
+        inf_drop(s, s->bitcnt & 7);
+        u32 len  = inf_bits(s, 16);
+        u32 nlen = inf_bits(s, 16);
         if (s->err) {
+            return;
+        } else if (len != (~nlen & 0xffff)) {
+            s->err = GZ_EDATA;
+            return;
+        }
+        inf_giveback(s);  // the bit buffer is now empty
+        s->stored = len;
+        s->state = INF_STORED;
+    } break;
+    case 1:
+        s->lt = &s->fixlit;
+        s->dt = &s->fixdist;
+        s->state = INF_SYMBOLS;
+        break;
+    case 2:
+        inf_dynamic(s);
+        if (s->err) {
+            return;
+        }
+        s->lt = &s->lit;
+        s->dt = &s->dist;
+        s->state = INF_SYMBOLS;
+        break;
+    default:
+        s->err = GZ_EDATA;
+        return;
+    }
+    s->final = final;
+}
+
+// Run one atomic unit. If input runs out, roll it back and return false.
+static b32 inf_unit(inflator *s)
+{
+    u8 const *in = s->in;
+    u64 bitbuf = s->bitbuf;
+    i32 bitcnt = s->bitcnt;
+    if (s->state == INF_HEAD) {
+        inf_header(s);
+    } else {
+        inf_symbol(s);
+    }
+    if (s->err == GZ_NEEDIN) {
+        s->in = in;
+        s->bitbuf = bitbuf;
+        s->bitcnt = bitcnt;
+        s->err = 0;
+        return 0;
+    }
+    return 1;
+}
+
+// Decode until the input runs out, undelivered output fills the window,
+// or the stream ends. Returns a GZ_* status.
+static i32 inf_run(inflator *s)
+{
+    for (;;) {
+        if (s->err) {
+            return s->err;
+        } else if (s->state == INF_END) {
+            return GZ_OK;
+        } else if (!inf_room(s)) {
+            return GZ_NEEDOUT;
+        }
+
+        switch (s->state) {
+        case INF_STORED: {
+            if (!s->stored) {
+                s->state = s->final ? INF_END : INF_HEAD;
+                continue;
+            }
+            iz n = MIN(s->stored, s->inend - s->in);
+            n = MIN(n, INF_WINCAP - s->wpos);
+            if (!n) {
+                return GZ_NEEDIN;
+            }
+            bytecopy(s->win + s->wpos, s->in, n);
+            s->wpos += n;
+            s->in += n;
+            s->stored -= n;
+        } continue;
+        case INF_SYMBOLS:
+            if (s->inend-s->in >= 16) {
+                if (decode_fast(s)) {
+                    s->state = s->final ? INF_END : INF_HEAD;
+                }
+                continue;
+            }
             break;
         }
-        switch (type) {
-        case 0:  stored_block(s);                              break;
-        case 1:  decode_symbols(s, &s->fixlit, &s->fixdist);   break;
-        case 2:  dynamic_block(s);                             break;
-        default: s->err = GZ_EDATA;
+
+        if (!inf_unit(s)) {
+            return GZ_NEEDIN;
         }
     }
-    inf_flush(s);
-    if (!s->err && s->out->err) {
-        s->err = GZ_EWRITE;
+}
+
+// Copy pending output into the caller's buffer.
+static void inf_drain(inflator *s, zbuf *b)
+{
+    s8 p = inflate_pending(s);
+    iz n = MIN(p.len, b->outlen);
+    if (n) {
+        bytecopy(b->out, p.s, n);
+        b->out += n;
+        b->outlen -= n;
+        inflate_consume(s, n);
     }
-    return s->err;
+}
+
+// Decode from b->in into b->out, advancing both. Returns GZ_OK when the
+// stream has ended and all output is delivered, with b->in just past the
+// end of the stream. Otherwise returns GZ_NEEDIN when all input has been
+// consumed, GZ_NEEDOUT when the output buffer is full, or an error.
+//
+// Output may also be taken without copying through inflate_pending and
+// inflate_consume, in which case b->out may be empty.
+static i32 inflate_stream(inflator *s, zbuf *b)
+{
+    if (s->err) {
+        return s->err;
+    }
+
+    if (s->stashlen) {
+        // Complete the unit begun by an earlier call. All stashed bytes
+        // belong to it, so whatever remains afterward came from b->in.
+        iz n = MIN(b->inlen, INF_STASH - s->stashlen);
+        if (n) {
+            bytecopy(s->stash + s->stashlen, b->in, n);
+        }
+        s->stashlen += n;
+        b->in += n;
+        b->inlen -= n;
+        s->in = s->stash;
+        s->inend = s->stash + s->stashlen;
+        if (!inf_unit(s)) {
+            assert(s->stashlen < INF_STASH);
+            inf_drain(s, b);
+            return GZ_NEEDIN;
+        }
+        inf_giveback(s);
+        iz left = s->inend - s->in;
+        b->in -= left;
+        b->inlen += left;
+        s->stashlen = 0;
+    }
+
+    s->in = b->in;
+    s->inend = b->in + b->inlen;
+    i32 r;
+    do {
+        r = inf_run(s);
+        inf_drain(s, b);
+    } while (r==GZ_NEEDOUT && s->wflushed==s->wpos);
+
+    inf_giveback(s);
+    if (r == GZ_NEEDIN) {
+        iz n = s->inend - s->in;
+        assert(n < INF_STASH);
+        bytecopy(s->stash, s->in, n);
+        s->stashlen = n;
+        s->in = s->inend;
+    }
+    b->in = s->in;
+    b->inlen = s->inend - s->in;
+
+    if (r == GZ_OK) {
+        s->bitbuf = 0;  // padding in the final byte
+        s->bitcnt = 0;
+        if (s->wflushed < s->wpos) {
+            return GZ_NEEDOUT;
+        }
+    }
+    return r;
 }

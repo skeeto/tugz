@@ -10,3 +10,6 @@ fuzz/
 /fuzz-*
 *.dSYM/
 /gzip.c
+/tests-lib
+/libtugz.o
+/tugz.c

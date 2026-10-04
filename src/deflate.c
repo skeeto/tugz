@@ -1,9 +1,18 @@
 // tugz core: raw DEFLATE encoder (RFC 1951)
 //
 // Input accumulates in a sliding window and is parsed into tokens once
-// the window fills, so output does not depend on how input is split
-// across deflate_push calls. Hash chains store window-relative positions
-// plus one (zero is "none"), rebased whenever the window slides.
+// the window fills (or at a flush), so output depends only on the input
+// and flush points, not on how input and output buffers are split
+// across calls. Hash chains store window-relative positions plus one
+// (zero is "none"), rebased whenever the window slides.
+//
+// Output is staged in a buffer from which the caller drains it. Each
+// emission step (one block, a window slide, or a flush) requires
+// DEF_STAGE_NEED bytes of staging room, which bounds its output: a block
+// holds at most TOK_CAP tokens of at most 48 bits each, a stored block
+// is only chosen when no larger than that, and held-back stored data is
+// under 64 KiB. Parsing pauses when a block is ready but there is no
+// room, and resumes once the caller has drained output.
 
 #define DEF_WSIZE     32768
 #define DEF_WMASK     (DEF_WSIZE - 1)
@@ -16,12 +25,23 @@
 #define LOOKAHEAD     (MAX_MATCH + 32)
 #define WIN_CAP       ((1 << 20) + DEF_WSIZE)
 #define TOK_CAP       65535
+#define TOK_LIMIT     (TOK_CAP - 3)  // headroom for one lazy parse step
+#define DEF_STAGE_NEED (TOK_CAP*6 + 2*(65535+5) + 1024)
+#define DEF_STAGE     (DEF_STAGE_NEED + (1 << 16))
 #define NLIT          286
 #define NDIST         30
 #define NCL           19
 #define NOBS          10    // block split observation categories
 #define OBS_BATCH     512   // observations between block split checks
 #define MIN_BLOCK     10000 // minimum block size in bytes for splitting
+
+// Flush modes, matching the library's
+enum {
+    DEF_NONE,
+    DEF_SYNC,    // byte-align output with an empty stored block
+    DEF_FULL,    // also forget history
+    DEF_FINISH,  // end the stream
+};
 
 typedef struct {
     u16 litlen;
@@ -59,8 +79,14 @@ typedef struct {
 } htree;
 
 typedef struct {
-    writer *out;
     deflate_level lvl;
+
+    u8 *obuf;     // staged output: [ooff, olen) is pending
+    iz  olen;
+    iz  ooff;
+    b32 blkready; // a block is complete and should be emitted
+    b32 flushing; // a flush has been emitted, awaiting drain
+    b32 finished;
 
     u8 *win;
     iz  win_len;
@@ -309,10 +335,19 @@ static void huff_build(htree *t, u32 const *freq, i32 n, i32 maxlen)
     huff_codes(t, n);
 }
 
-static deflator *deflate_new(arena *a, i32 level, writer *out)
+// Memory needed by deflate_new, including alignment padding.
+static iz deflate_memsize(void)
+{
+    return (iz)sizeof(deflator) + WIN_CAP + 2*HASH_SIZE*(iz)sizeof(u32) +
+           2*DEF_WSIZE*(iz)sizeof(u32) + TOK_CAP*(iz)sizeof(token) +
+           DEF_STAGE + 8*64;
+}
+
+// Levels 1 through 9; others are clamped.
+static deflator *deflate_new(arena *a, i32 level)
 {
     deflator *d = new(a, 1, deflator);
-    d->out   = out;
+    d->obuf  = newbytes(a, DEF_STAGE);
     d->lvl   = deflate_levels[MAX(1, MIN(level, 9))];
     d->win   = newbytes(a, WIN_CAP);
     d->head  = new(a, HASH_SIZE, u32);
@@ -342,7 +377,7 @@ static deflator *deflate_new(arena *a, i32 level, writer *out)
     return d;
 }
 
-// Append n bits, n <= 32. Whole bytes spill into the writer's buffer
+// Append n bits, n <= 32. Whole bytes spill into the staging buffer
 // 8 bytes at a time once 32 or more bits accumulate.
 static void bw_put(deflator *d, u64 v, i32 n)
 {
@@ -350,25 +385,32 @@ static void bw_put(deflator *d, u64 v, i32 n)
     d->bitbuf |= v << d->bitcnt;
     d->bitcnt += n;
     if (d->bitcnt >= 32) {
-        writer *w = d->out;
-        if (w->cap-w->len < 8) {
-            writer_flush(w);
-        }
-        store64le(w->buf+w->len, d->bitbuf);
-        w->len += d->bitcnt >> 3;
+        assert(DEF_STAGE-d->olen >= 8);
+        store64le(d->obuf+d->olen, d->bitbuf);
+        d->olen += d->bitcnt >> 3;
         d->bitbuf >>= d->bitcnt & ~7;
         d->bitcnt &= 7;
     }
 }
 
-// Pad to a byte boundary and spill all bits to the writer.
+// Pad to a byte boundary and spill all bits.
 static void bw_align(deflator *d)
 {
     d->bitcnt = (d->bitcnt + 7) & ~7;
     for (; d->bitcnt; d->bitcnt -= 8) {
-        writer_byte(d->out, (u8)d->bitbuf);
+        assert(d->olen < DEF_STAGE);
+        d->obuf[d->olen++] = (u8)d->bitbuf;
         d->bitbuf >>= 8;
     }
+}
+
+// Append whole bytes, such as a container header or trailer, at a byte
+// boundary.
+static void deflate_bytes(deflator *d, u8 const *p, iz len)
+{
+    assert(!d->bitcnt && len<=DEF_STAGE-d->olen);
+    bytecopy(d->obuf+d->olen, p, len);
+    d->olen += len;
 }
 
 static i32 cl_extra_bits(i32 s)
@@ -501,7 +543,7 @@ static void emit_stored_chunk(deflator *d, iz start, iz len, b32 final)
     bw_align(d);
     bw_put(d, (u32)len | (~(u32)len & 0xffff)<<16, 32);
     bw_align(d);
-    writer_write(d->out, d->win+start, len);
+    deflate_bytes(d, d->win+start, len);
 }
 
 static void flush_pending(deflator *d, b32 final)
@@ -666,8 +708,9 @@ static b32 should_split(deflator *d)
 
 static void tok_end(deflator *d)
 {
-    if (d->ntok==TOK_CAP || (++d->nnewobs==OBS_BATCH && should_split(d))) {
-        flush_block(d, 0);
+    if (!d->blkready && (d->ntok>=TOK_LIMIT ||
+                         (++d->nnewobs==OBS_BATCH && should_split(d)))) {
+        d->blkready = 1;
     }
 }
 
@@ -859,7 +902,7 @@ static void parse(deflator *d, iz end)
     }
 
     iz p = d->pos;
-    while (p < end) {
+    while (p<end && !d->blkready) {
         match m = match_at(d, p, d->lvl.depth);
 
         // Lazy matching: prefer a longer match starting one byte later
@@ -928,24 +971,122 @@ static void slide(deflator *d)
     }
 }
 
-static void deflate_push(deflator *d, u8 const *data, iz len)
+// Ensure staging room for one emission step, compacting if needed.
+static b32 def_room(deflator *d)
 {
-    while (len) {
-        if (d->win_len == WIN_CAP) {
-            parse(d, WIN_CAP - LOOKAHEAD);
-            slide(d);
-        }
-        iz n = MIN(len, WIN_CAP - d->win_len);
-        bytecopy(d->win + d->win_len, data, n);
-        d->win_len += n;
-        data += n;
-        len -= n;
+    if (DEF_STAGE-d->olen < DEF_STAGE_NEED && d->ooff) {
+        bytemove(d->obuf, d->obuf+d->ooff, d->olen-d->ooff);
+        d->olen -= d->ooff;
+        d->ooff = 0;
+    }
+    return DEF_STAGE-d->olen >= DEF_STAGE_NEED;
+}
+
+// Staged output not yet handed out.
+static s8 deflate_pending(deflator *d)
+{
+    s8 r = {d->obuf + d->ooff, d->olen - d->ooff};
+    return r;
+}
+
+// Mark the first n bytes of pending output as handed out.
+static void deflate_consume(deflator *d, iz n)
+{
+    assert(n>=0 && n<=d->olen-d->ooff);
+    d->ooff += n;
+    if (d->ooff == d->olen) {
+        d->ooff = d->olen = 0;
     }
 }
 
-static void deflate_finish(deflator *d)
+static void def_drain(deflator *d, zbuf *b)
 {
-    parse(d, d->win_len);
-    flush_block(d, 1);
-    bw_align(d);
+    s8 p = deflate_pending(d);
+    iz n = MIN(p.len, b->outlen);
+    if (n) {
+        bytecopy(b->out, p.s, n);
+        b->out += n;
+        b->outlen -= n;
+        deflate_consume(d, n);
+    }
+}
+
+// Emit everything parsed so far for the given flush.
+static void def_flush(deflator *d, i32 flush)
+{
+    switch (flush) {
+    case DEF_FINISH:
+        flush_block(d, 1);
+        bw_align(d);
+        d->finished = 1;
+        break;
+    case DEF_SYNC:
+    case DEF_FULL:
+        flush_block(d, 0);
+        flush_pending(d, 0);
+        emit_stored_chunk(d, 0, 0, 0);
+        if (flush == DEF_FULL) {
+            bytefill(d->head,  0, HASH_SIZE*(iz)sizeof(u32));
+            bytefill(d->prev,  0, DEF_WSIZE*(iz)sizeof(u32));
+            bytefill(d->head3, 0, HASH_SIZE*(iz)sizeof(u32));
+            bytefill(d->prev3, 0, DEF_WSIZE*(iz)sizeof(u32));
+            d->ins = d->pos;
+        }
+        break;
+    }
+}
+
+// Compress from b->in into b->out, advancing both. With DEF_NONE,
+// returns GZ_NEEDIN once all input is consumed, though output may remain
+// staged. Otherwise returns GZ_OK once all input is consumed, the flush
+// is complete, and all output is delivered. Returns GZ_NEEDOUT when the
+// output buffer is full.
+//
+// Output may also be taken without copying through deflate_pending and
+// deflate_consume, in which case b->out may be empty.
+static i32 deflate_stream(deflator *d, zbuf *b, i32 flush)
+{
+    for (;;) {
+        def_drain(d, b);
+        if (d->flushing || d->finished) {
+            if (d->ooff < d->olen) {
+                return GZ_NEEDOUT;
+            }
+            d->flushing = 0;
+            return GZ_OK;
+        }
+
+        if (d->blkready) {
+            if (!def_room(d)) {
+                return GZ_NEEDOUT;
+            }
+            flush_block(d, 0);
+            d->blkready = 0;
+        } else if (d->win_len == WIN_CAP) {
+            parse(d, WIN_CAP - LOOKAHEAD);
+            if (!d->blkready) {
+                if (!def_room(d)) {
+                    return GZ_NEEDOUT;
+                }
+                slide(d);
+            }
+        } else if (b->inlen) {
+            iz n = MIN(b->inlen, WIN_CAP - d->win_len);
+            bytecopy(d->win + d->win_len, b->in, n);
+            d->win_len += n;
+            b->in += n;
+            b->inlen -= n;
+        } else if (flush == DEF_NONE) {
+            return GZ_NEEDIN;
+        } else {
+            parse(d, d->win_len);
+            if (!d->blkready) {
+                if (!def_room(d)) {
+                    return GZ_NEEDOUT;
+                }
+                def_flush(d, flush);
+                d->flushing = 1;
+            }
+        }
+    }
 }

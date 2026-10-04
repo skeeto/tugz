@@ -2,6 +2,10 @@
 // Raw DEFLATE: both must agree exactly on accept/reject and on output.
 // gzip: our decoder versus a zlib multi-member loop that applies the GNU
 // gzip trailing-data policy (non-magic trailing bytes are a warning).
+// Streaming: the first byte selects a format and input/output piece
+// sizes for the rest. Our streaming decoder must then agree with zlib on
+// success, on truncation versus error, on output, and on exactly where
+// the stream ends.
 // $ clang -g -O1 -fsanitize=fuzzer,address,undefined main_fuzz_diff_inflate.c -lz
 #include "test/fuzzos.c"
 #include <zlib.h>
@@ -63,6 +67,51 @@ static i32 zlib_gzip(u8 const *in, iz len, iz *outlen, b32 *trailing)
     return result;
 }
 
+static void diff_stream(fuzzenv *env, u8 cfg, u8 const *in, iz len)
+{
+    enum { CAP = 1 << 20 };
+    i32 format = cfg % 3;
+    static i32 const wbits[] = {-15, 15, 31};
+    z_stream z = {0};
+    CHECK(inflateInit2(&z, wbits[format]) == Z_OK);
+    z.next_in = (u8 *)in;
+    z.avail_in = (u32)len;
+    z.next_out = zout;
+    z.avail_out = CAP;
+    i32 want = inflate(&z, Z_FINISH);
+    iz zlen = CAP - z.avail_out;
+    iz zused = len - z.avail_in;
+    inflateEnd(&z);
+    if (want==Z_BUF_ERROR && !z.avail_out) {
+        return;  // output too long to compare
+    }
+
+    iz used;
+    i32 got = fuzz_decode(env, format, in, len, fuzz_pieces[cfg>>2 & 7],
+                          fuzz_pieces[cfg>>5], CAP, &used);
+    CHECK(got != GZ_NEEDOUT);
+    switch (want) {
+    case Z_STREAM_END:
+        CHECK(got == GZ_OK);
+        CHECK(used == zused);
+        CHECK(env->ctx.outlen == zlen);
+        CHECK(!memcmp(zout, env->ctx.out, (uz)zlen));
+        break;
+    case Z_BUF_ERROR:  // truncated
+        if (format==FMT_ZLIB && len>=2 && in[1]&0x20) {
+            // zlib reads the dictionary ID before reporting it
+            CHECK(got==GZ_NEEDIN || got==GZ_EHEADER);
+            break;
+        }
+        CHECK(got == GZ_NEEDIN);
+        CHECK(env->ctx.outlen <= zlen);
+        CHECK(!memcmp(zout, env->ctx.out, (uz)env->ctx.outlen));
+        break;
+    default:  // Z_DATA_ERROR, Z_NEED_DICT
+        CHECK(got!=GZ_OK && got!=GZ_NEEDIN);
+    }
+}
+
 int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
 {
     fuzzenv *env = fuzz_env(OUTCAP);
@@ -94,6 +143,10 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
             CHECK(zlen == env->ctx.outlen);
             CHECK(!memcmp(zout, env->ctx.out, (uz)zlen));
         }
+    }
+
+    if (size) {
+        diff_stream(env, data[0], data+1, (iz)size-1);
     }
     return 0;
 }

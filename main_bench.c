@@ -6,9 +6,11 @@
 // is measured by each decoder on the same zlib level 6 stream.
 #include "src/base.c"
 #include "src/crc32.c"
+#include "src/adler32.c"
 #include "src/inflate.c"
 #include "src/deflate.c"
 #include "src/gzip.c"
+#include "src/io.c"
 
 #include <libdeflate.h>
 #include <stdio.h>

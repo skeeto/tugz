@@ -3,9 +3,11 @@
 // bounded buffer (writes past the bound fail), and os_fail longjmps.
 #include "../src/base.c"
 #include "../src/crc32.c"
+#include "../src/adler32.c"
 #include "../src/inflate.c"
 #include "../src/deflate.c"
 #include "../src/gzip.c"
+#include "../src/io.c"
 
 #include <setjmp.h>
 #include <stdint.h>
@@ -123,13 +125,7 @@ static void fuzz_io(fuzzenv *env, u8 const *in, iz len)
 static i32 fuzz_inflate(fuzzenv *env, u8 const *in, iz len)
 {
     fuzz_io(env, in, len);
-    arena a = env->perm;
-    reader   *r = newreader(&a, 0, 1<<12);
-    writer   *w = newwriter(&a, 1, 1<<12);
-    inflator *s = inflate_new(&a, r, w);
-    i32 status = inflate_run(s);
-    writer_flush(w);
-    return status;
+    return stream_decompress(0, 1, FMT_RAW, env->perm);
 }
 
 static i32 fuzz_gunzip(fuzzenv *env, u8 const *in, iz len)
@@ -144,15 +140,115 @@ static void fuzz_deflate(fuzzenv *env, u8 const *in, iz len, i32 level,
 {
     fuzz_io(env, 0, 0);
     arena a = env->perm;
-    writer   *w = newwriter(&a, 1, 1<<12);
-    deflator *d = deflate_new(&a, level, w);
-    d->base = base;
-    for (iz off = 0; off < len;) {
-        iz n = piece ? MIN(piece, len-off) : len-off;
-        deflate_push(d, in+off, n);
-        off += n;
+    encoder *e = encoder_new(&a, FMT_RAW, level);
+    e->def->base = base;
+    zbuf b = {in, 0, 0, 0};
+    for (;;) {
+        iz inleft = in + len - b.in;
+        b.inlen = piece ? MIN(piece, inleft) : inleft;
+        b.out = env->ctx.out + env->ctx.outlen;
+        b.outlen = env->ctx.outcap - env->ctx.outlen;
+        u8 *out = b.out;
+        i32 flush = b.inlen==inleft ? DEF_FINISH : DEF_NONE;
+        i32 status = encoder_run(e, &b, flush);
+        env->ctx.outlen += b.out - out;
+        CHECK(status != GZ_NEEDOUT);
+        if (status == GZ_OK) {
+            break;
+        }
+        CHECK(status==GZ_NEEDIN && !b.inlen);
     }
-    deflate_finish(d);
-    writer_flush(w);
-    CHECK(!w->err);
+}
+
+static iz const fuzz_pieces[8] = {0, 1, 2, 3, 7, 16, 64, 1000};
+
+// Decode one stream (or gzip member) in memory, feeding input and taking
+// output in pieces (0 for unlimited), with output capped at cap. Returns
+// GZ_OK, GZ_NEEDIN once input is exhausted, GZ_NEEDOUT at the output cap,
+// or an error. Output goes to env->ctx.out.
+static i32 fuzz_decode(fuzzenv *env, i32 format, u8 const *in, iz len,
+                       iz inpiece, iz outpiece, iz cap, iz *used)
+{
+    fuzz_io(env, 0, 0);
+    arena a = env->perm;
+    decoder *z = decoder_new(&a, format);
+    cap = MIN(cap, env->ctx.outcap);
+    *used = 0;
+    for (;;) {
+        iz inleft  = len - *used;
+        iz outleft = cap - env->ctx.outlen;
+        zbuf b = {0};
+        b.in     = in + *used;
+        b.inlen  = inpiece  ? MIN(inpiece, inleft)   : inleft;
+        b.out    = env->ctx.out + env->ctx.outlen;
+        b.outlen = outpiece ? MIN(outpiece, outleft) : outleft;
+        iz inlen  = b.inlen;
+        iz outlen = b.outlen;
+        i32 status = decoder_run(z, &b);
+        *used += inlen - b.inlen;
+        env->ctx.outlen += outlen - b.outlen;
+        if (status == GZ_NEEDIN) {
+            CHECK(!b.inlen);
+            if (*used < len) {
+                continue;
+            }
+        } else if (status == GZ_NEEDOUT) {
+            CHECK(!b.outlen);
+            if (env->ctx.outlen < cap) {
+                continue;
+            }
+        }
+        return status;
+    }
+}
+
+// Encode in memory, feeding input and taking output in pieces (0 for
+// unlimited). A nonzero seed splits input into segments, each ending in
+// a flush chosen from NONE, SYNC, or FULL. Returns a malloc'd buffer.
+static s8 fuzz_encode(fuzzenv *env, i32 format, i32 level, u8 const *in,
+                      iz len, iz inpiece, iz outpiece, u32 seed)
+{
+    arena a = env->perm;
+    encoder *e = encoder_new(&a, format, level);
+    iz cap = 8*len + (1<<16);
+    s8 r = {malloc((uz)cap), 0};
+    iz off = 0;
+    for (b32 last = 0; !last;) {
+        iz end = len;
+        i32 flush = DEF_FINISH;
+        if (seed) {
+            seed = seed*1103515245 + 12345;
+            end = MIN(len, off + 1 + (iz)(seed>>16)%2048);
+            static i32 const modes[] = {DEF_NONE, DEF_NONE, DEF_SYNC, DEF_FULL};
+            flush = end<len ? modes[(seed>>8)%4] : DEF_FINISH;
+        }
+        last = end == len;
+        for (;;) {
+            zbuf b = {0};
+            b.in     = in + off;
+            b.inlen  = inpiece ? MIN(inpiece, end-off) : end-off;
+            b.out    = r.s + r.len;
+            b.outlen = outpiece ? MIN(outpiece, cap-r.len) : cap-r.len;
+            iz inlen = b.inlen;
+            i32 status = encoder_run(e, &b, off+inlen==end ? flush : DEF_NONE);
+            off += inlen - b.inlen;
+            r.len = b.out - r.s;
+            CHECK(r.len < cap);
+            if (status == GZ_NEEDOUT) {
+                CHECK(!b.outlen);
+                continue;
+            } else if (status == GZ_NEEDIN) {
+                CHECK(!b.inlen);
+                if (off<end || flush!=DEF_NONE) {
+                    CHECK(off < end);
+                    continue;
+                }
+                break;
+            }
+            CHECK(status == GZ_OK);
+            CHECK(off==end && flush!=DEF_NONE);
+            break;
+        }
+    }
+    return r;
 }
