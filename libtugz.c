@@ -11,6 +11,9 @@
 #include "src/gzip.c"
 #include "tugz.h"
 
+// Definitions may be unused when embedded with TUGZ_API defined static.
+#define TUGZ_DEF [[maybe_unused]] TUGZ_API
+
 static void os_oom(os *ctx)
 {
     (void)ctx;
@@ -66,7 +69,7 @@ static b32 valid_buf(tugz_buf *b)
            (b->in || !b->inlen) && (b->out || !b->outlen);
 }
 
-TUGZ_API ptrdiff_t tugz_inflate_size(int format)
+TUGZ_DEF ptrdiff_t tugz_inflate_size(int format)
 {
     if (!valid_format(format)) {
         return 0;
@@ -74,7 +77,7 @@ TUGZ_API ptrdiff_t tugz_inflate_size(int format)
     return (iz)sizeof(tugz_inflator) + 64 + decoder_memsize();
 }
 
-TUGZ_API tugz_inflator *tugz_inflate_init(void *mem, ptrdiff_t len,
+TUGZ_DEF tugz_inflator *tugz_inflate_init(void *mem, ptrdiff_t len,
                                           int format)
 {
     if (!mem || !valid_format(format) || len<tugz_inflate_size(format)) {
@@ -88,7 +91,7 @@ TUGZ_API tugz_inflator *tugz_inflate_init(void *mem, ptrdiff_t len,
     return s;
 }
 
-TUGZ_API int tugz_inflate(tugz_inflator *s, tugz_buf *b)
+TUGZ_DEF int tugz_inflate(tugz_inflator *s, tugz_buf *b)
 {
     if (!s || !valid_buf(b)) {
         return TUGZ_EUSAGE;
@@ -102,7 +105,7 @@ TUGZ_API int tugz_inflate(tugz_inflator *s, tugz_buf *b)
     return tugz_status(status);
 }
 
-TUGZ_API ptrdiff_t tugz_deflate_size(int format, int level)
+TUGZ_DEF ptrdiff_t tugz_deflate_size(int format, int level)
 {
     (void)level;
     if (!valid_format(format)) {
@@ -111,7 +114,7 @@ TUGZ_API ptrdiff_t tugz_deflate_size(int format, int level)
     return (iz)sizeof(tugz_deflator) + 64 + encoder_memsize();
 }
 
-TUGZ_API tugz_deflator *tugz_deflate_init(void *mem, ptrdiff_t len,
+TUGZ_DEF tugz_deflator *tugz_deflate_init(void *mem, ptrdiff_t len,
                                           int format, int level)
 {
     if (!mem || !valid_format(format) ||
@@ -126,7 +129,7 @@ TUGZ_API tugz_deflator *tugz_deflate_init(void *mem, ptrdiff_t len,
     return s;
 }
 
-TUGZ_API int tugz_deflate(tugz_deflator *s, tugz_buf *b, int flush)
+TUGZ_DEF int tugz_deflate(tugz_deflator *s, tugz_buf *b, int flush)
 {
     if (!s || !valid_buf(b) || flush<TUGZ_NONE || flush>TUGZ_FINISH) {
         return TUGZ_EUSAGE;
@@ -140,7 +143,7 @@ TUGZ_API int tugz_deflate(tugz_deflator *s, tugz_buf *b, int flush)
     return tugz_status(status);
 }
 
-TUGZ_API tugz_inflator *tugz_inflate_new(tugz_allocator *alloc, void *ctx,
+TUGZ_DEF tugz_inflator *tugz_inflate_new(tugz_allocator *alloc, void *ctx,
                                          int format)
 {
     ptrdiff_t len = tugz_inflate_size(format);
@@ -151,7 +154,7 @@ TUGZ_API tugz_inflator *tugz_inflate_new(tugz_allocator *alloc, void *ctx,
     return mem ? tugz_inflate_init(mem, len, format) : 0;
 }
 
-TUGZ_API void tugz_inflate_free(tugz_inflator *s, tugz_allocator *alloc,
+TUGZ_DEF void tugz_inflate_free(tugz_inflator *s, tugz_allocator *alloc,
                                 void *ctx)
 {
     if (s) {
@@ -159,7 +162,7 @@ TUGZ_API void tugz_inflate_free(tugz_inflator *s, tugz_allocator *alloc,
     }
 }
 
-TUGZ_API tugz_deflator *tugz_deflate_new(tugz_allocator *alloc, void *ctx,
+TUGZ_DEF tugz_deflator *tugz_deflate_new(tugz_allocator *alloc, void *ctx,
                                          int format, int level)
 {
     ptrdiff_t len = tugz_deflate_size(format, level);
@@ -170,7 +173,7 @@ TUGZ_API tugz_deflator *tugz_deflate_new(tugz_allocator *alloc, void *ctx,
     return mem ? tugz_deflate_init(mem, len, format, level) : 0;
 }
 
-TUGZ_API void tugz_deflate_free(tugz_deflator *s, tugz_allocator *alloc,
+TUGZ_DEF void tugz_deflate_free(tugz_deflator *s, tugz_allocator *alloc,
                                 void *ctx)
 {
     if (s) {
