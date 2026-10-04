@@ -18,10 +18,11 @@
         } \
     } while (0)
 
-_Static_assert(FMT_RAW==TUGZ_RAW && FMT_ZLIB==TUGZ_ZLIB &&
-               FMT_GZIP==TUGZ_GZIP, "formats");
-_Static_assert(DEF_NONE==TUGZ_NONE && DEF_SYNC==TUGZ_SYNC &&
-               DEF_FULL==TUGZ_FULL && DEF_FINISH==TUGZ_FINISH, "flushes");
+_Static_assert((int)FMT_RAW==TUGZ_RAW && (int)FMT_ZLIB==TUGZ_ZLIB &&
+               (int)FMT_GZIP==TUGZ_GZIP, "formats");
+_Static_assert((int)DEF_NONE==TUGZ_NONE && (int)DEF_SYNC==TUGZ_SYNC &&
+               (int)DEF_FULL==TUGZ_FULL && (int)DEF_FINISH==TUGZ_FINISH,
+               "flushes");
 
 typedef struct {
     u8 *s;
@@ -607,7 +608,9 @@ static void test_large(void)
 {
     iz n = (iz)5 << 20;
     u8 *p = textbytes(n, 7);
-    memcpy(p + n/2, randbytes(1<<20, 8), 1<<20);  // leaks a little
+    u8 *noise = randbytes(1<<20, 8);
+    memcpy(p + n/2, noise, 1<<20);
+    free(noise);
     buf c = tcompress(TUGZ_GZIP, 1, p, n, 1<<16, 1<<16, 0, 0);
     buf c2 = tcompress(TUGZ_GZIP, 1, p, n, 0, 3000, 0, 0);
     TEST(same(c2, c.s, c.len));
@@ -638,6 +641,10 @@ static void test_usage(void)
     b = (tugz_buf){0, 1, 0, 0};
     TEST(tugz_inflate(z, &b) == TUGZ_EUSAGE);
     TEST(tugz_inflate(0, &b) == TUGZ_EUSAGE);
+    b = (tugz_buf){0};
+    TEST(tugz_inflate(z, &b) == TUGZ_NEED_INPUT);
+    b = (tugz_buf){(u8 const *)"\x02", 1, 0, 0};  // a stash, then nulls
+    TEST(tugz_inflate(z, &b) == TUGZ_NEED_INPUT);
     b = (tugz_buf){0};
     TEST(tugz_inflate(z, &b) == TUGZ_NEED_INPUT);
     free(mem);

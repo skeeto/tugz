@@ -1,14 +1,14 @@
 # tugz: tiny unity gzip
 
-A from-specification implementation of gzip ([RFC 1952][]) and DEFLATE
-([RFC 1951][]) in portable C11, built as a drop-in `gzip` command. It
-compresses faster than zlib at every level with equal or better ratios,
-and validates input exactly as strictly as zlib.
+A from-specification implementation of gzip ([RFC 1952][]), zlib
+([RFC 1950][]), and DEFLATE ([RFC 1951][]) in portable C11, as a drop-in
+`gzip` command and a streaming library. It compresses faster than zlib
+at every level with equal or better ratios, and validates input exactly
+as strictly as zlib.
 
-The core has no dependencies, no global state, and no platform
-conditionals, and is intended to become a library. Each program is a
-unity build: a platform layer includes the core and supplies a handful
-of I/O functions.
+The core has no dependencies, no global state, no platform
+conditionals, and does no I/O. Each program is a unity build: a platform
+layer includes the core and supplies a handful of functions.
 
 ## Build
 
@@ -27,6 +27,24 @@ time), and the CRC instructions on ARMv8 targets that have them.
 source file with its build command in the header:
 
     $ cc -O2 -nostartfiles -o gzip.exe gzip.c -lmemory
+
+## Library
+
+`tugz.h` declares a streaming interface for raw DEFLATE, zlib, and gzip.
+The caller provides the memory and does all I/O, passing buffers of any
+size; sizes are `ptrdiff_t`.
+
+```c
+ptrdiff_t      len = tugz_inflate_size(TUGZ_GZIP);
+tugz_inflator *z   = tugz_inflate_init(malloc(len), len, TUGZ_GZIP);
+tugz_buf       b   = {in, inlen, out, outlen};
+int status = tugz_inflate(z, &b);  // TUGZ_DONE, NEED_INPUT, NEED_OUTPUT, or error
+```
+
+Deflate supports SYNC, FULL, and FINISH flushes, and a Lua-style
+allocator callback is available in place of caller memory. Build
+`libtugz.c` as an object (`make libtugz.o`), or use `make tugz.c` for a
+single-file amalgamation with the header inlined.
 
 ## Usage
 
@@ -65,7 +83,7 @@ Silesia corpus on Apple M-series, compression ratio @ MB/s:
 
 ## Development
 
-    $ make check     # unit tests (ASan/UBSan) and end-to-end CLI tests
+    $ make check     # unit and library tests (ASan/UBSan), end-to-end CLI tests
     $ make fuzz      # libFuzzer harnesses, including differential
     $ make bench     # benchmark against zlib and libdeflate
 
@@ -74,5 +92,6 @@ macOS, Linux (x86-64, i386, big-endian PowerPC), and Windows (x86-64,
 i686). See [notes.md](notes.md) for design decisions, test coverage, and
 the optimization log.
 
+[RFC 1950]: https://www.rfc-editor.org/rfc/rfc1950
 [RFC 1951]: https://www.rfc-editor.org/rfc/rfc1951
 [RFC 1952]: https://www.rfc-editor.org/rfc/rfc1952

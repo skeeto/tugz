@@ -1,29 +1,38 @@
 # tugz development notes
 
 tugz (tiny unity gzip) is a from-specification implementation of gzip
-(RFC 1952) and DEFLATE (RFC 1951): a drop-in `gzip` command, and a
-portable core intended to become a library. It identifies itself as
-`gzip (tugz) 1.0` and is installed under the name `gzip`.
+(RFC 1952), zlib (RFC 1950), and DEFLATE (RFC 1951): a drop-in `gzip`
+command, and a streaming library (`tugz.h`). The command identifies
+itself as `gzip (tugz) 1.0` and is installed under the name `gzip`.
 
 ## Layout
 
-Unity build: each `main_*.c` is a platform layer that includes the core
-sources it needs and defines the `os_*` hooks declared in `src/base.c`.
-Everything is `static` except the entry point. Nothing at file scope in
-the core (`src/`) is mutable, so it is ready to become a library; the
-platform layers are not part of that and may use globals and `#ifdef`.
+Unity build: each `main_*.c` (and `libtugz.c`) is a platform layer that
+includes the sources it needs and defines their hooks. Everything is
+`static` except the entry points. Nothing at file scope in the core is
+mutable; platform layers may use globals and `#ifdef`.
+
+The core (`base`, `crc32`, `adler32`, `inflate`, `deflate`, `gzip`) does
+no I/O: callers hand it input and output buffers of any size and it
+resumes where it stopped. Its only hook is `os_oom`. Programs add
+`src/io.c` (the `os_*` file interface, buffered reader and writer, and
+descriptor drivers) and `src/cli.c`. The library layer adds neither.
 
 | File                     | Purpose                                         |
 |--------------------------|-------------------------------------------------|
-| `src/base.c`             | types, arena, `os_*` interface, reader/writer   |
+| `src/base.c`             | types, arena, status codes, streaming buffers   |
 | `src/crc32.c`            | CRC-32 (slicing-by-8, ARMv8 CRC, x86 PCLMUL)    |
-| `src/inflate.c`          | raw DEFLATE decoder, zlib-exact validation      |
-| `src/deflate.c`          | raw DEFLATE encoder                             |
-| `src/gzip.c`             | gzip container (RFC 1952), multi-member         |
+| `src/adler32.c`          | Adler-32                                        |
+| `src/inflate.c`          | resumable raw DEFLATE decoder, zlib-exact       |
+| `src/deflate.c`          | resumable raw DEFLATE encoder, flushes          |
+| `src/gzip.c`             | zlib and gzip containers: decoder, encoder      |
+| `src/io.c`               | programs only: `os_*`, reader/writer, drivers   |
 | `src/cli.c`              | command line driver, `gzip_main`                |
 | `main_posix.c`           | POSIX platform layer                            |
 | `main_windows.c`         | CRT-free Win32 platform layer                   |
+| `libtugz.c`, `tugz.h`    | library layer and its public interface          |
 | `main_test.c`            | test suite (in-memory file system)              |
+| `main_libtest.c`         | library interface tests                         |
 | `main_fuzz_*.c`          | libFuzzer harnesses, sharing `test/fuzzos.c`    |
 | `main_bench.c`           | benchmark versus zlib and libdeflate            |
 | `test/cli.sh`            | end-to-end tests of the binary                  |
@@ -40,9 +49,53 @@ CPUs without it. On an i9-12900, PCLMUL folding runs at 16.8 GB/s versus
 MB/s on Silesia). Both paths were verified with one binary under QEMU
 CPU models with and without PCLMUL.
 
+## Library
+
+`tugz.h` documents the interface. Design points:
+
+- Sizes are `ptrdiff_t`; statuses, formats, levels, and flushes are
+  `int`. No `long`, no `size_t`.
+- State is fixed-size and lives in caller memory of any alignment
+  (`tugz_*_size`, `tugz_*_init`): 310 KB to inflate and 2.7 MB to
+  deflate. The optional allocator has the Lua shape
+  `(ctx, ptr, old, new)` and is called once to allocate and once to free,
+  with the size. Init on the same memory resets. `os_oom` traps in the
+  library: init checks the size first, so it is unreachable. Programs
+  allocate their codecs from exactly-sized sub-arenas, so every program
+  run checks the size calculation.
+- Inflate decodes in atomic units: a block header (with a whole dynamic
+  table description, at most ~300 bytes) or one literal or
+  length/distance pair. If input runs out mid-unit, the unit rolls back
+  and its bytes go to a 1 KiB stash, completed by the next call's input.
+  Invariant: between calls the bit buffer holds fewer than 8 bits (whole
+  bytes are returned to the input), and the stash holds only bytes of one
+  incomplete unit. So the stream end is exact: after `TUGZ_DONE`, `in`
+  points just past the stream, as zlib's `avail_in` does.
+- Errors are reported only once every bit of the offending field is
+  present, in zlib's order, so truncation (`TUGZ_NEED_INPUT`) versus
+  corruption agrees with zlib at every input length (checked by
+  `fuzz-diff-inflate`).
+- Deflate stages output (~576 KiB) and parses into tokens only when its
+  window fills or at a flush. Each emission step (one block, a window
+  slide, or a flush) needs `DEF_STAGE_NEED` bytes of room: a block has at
+  most `TOK_CAP` tokens of at most 48 bits, a stored block is chosen only
+  when no larger, and held-back stored data is under 64 KiB. Lacking room,
+  parsing pauses at the block boundary. Output therefore depends only on
+  input bytes and flush points, never on buffer sizes (checked by tests
+  and fuzzers).
+- SYNC emits an empty stored block (`00 00 ff ff`); FULL also clears the
+  hash chains so no match reaches behind the flush. zlib headers match
+  zlib's byte for byte (FLEVEL). gzip decoding stops after each member;
+  the program's driver applies the GNU trailing-data policy.
+- Programs reach the buffers without copying (`*_pending`/`*_consume`),
+  so the program's throughput is unchanged by the restructure.
+- `make libtugz.o` builds an object exporting only `tugz_*` (no writable
+  data). `make tugz.c` produces a single-file amalgamation with the header
+  inlined; define `TUGZ_API` as `static` to embed it.
+
 ## Workflow
 
-    make check                 # unit tests (ASan/UBSan) + CLI tests
+    make check                 # unit and library tests (ASan/UBSan), CLI tests
     SLOW=1 sh test/cli.sh ./gzip   # adds a 5 GiB stream (>4 GiB offsets)
     make gzip.exe              # Win32 build (w64devkit or CROSS=...)
     make fuzz                  # build the four fuzzers
@@ -50,6 +103,7 @@ CPU models with and without PCLMUL.
     ./fuzz-diff-inflate -fork=3 -max_len=65536 fuzz/corpus/diff-inflate
     make bench && ./bench -l 1,6,9 bench_corpus/silesia/*
     make amalgamation          # single-file Windows source, gzip.c
+    make tugz.c libtugz.o      # single-file library source, library object
 
 Fuzzers:
 
@@ -57,10 +111,15 @@ Fuzzers:
 - `fuzz-roundtrip`: deflate then inflate; output must not depend on push
   sizes or stream offset (including past 4 GiB); zlib must agree
 - `fuzz-diff-inflate`: exact accept/reject and output agreement with zlib,
-  for raw DEFLATE and for multi-member gzip (GNU trailing-data policy)
+  for raw DEFLATE and for multi-member gzip (GNU trailing-data policy);
+  then streaming in raw, zlib, and gzip formats with fuzzer-chosen input
+  and output piece sizes, which must agree with zlib on success, on
+  truncation versus error, on output, and on the exact stream end
 - `fuzz-diff-deflate`: zlib (every parameter, flush mode, mid-stream
-  parameter change) and libdeflate streams must decode exactly; our output
-  must decode under libdeflate
+  parameter change) and libdeflate streams must decode exactly; our
+  streaming encoder, in every format with fuzzer-placed NONE/SYNC/FULL
+  flushes and piece sizes, must produce piece-independent output that
+  decodes under zlib, libdeflate, and our streaming decoder
 
 ## Cross-platform verification
 
@@ -80,6 +139,12 @@ Fuzzers:
   passes under UBSan against GNU gzip 1.14, and compressed output is
   byte-identical to the little-endian build at every level. The build
   before the endian fix produced corrupt output.
+
+- Library: big-endian ppc (also under UBSan), Windows x86-64 and i686,
+  and 32-bit Linux under UBSan produce byte-identical compressed output
+  to the Mac in all formats, with SYNC flushes and odd buffer pieces.
+  `main_libtest.c` passes under ASan/UBSan/LSan in WSL. `tugz.c` builds
+  warning-free with GCC and mingw, and `tugz.h` parses as C++.
 
 ## Behavior decisions
 
@@ -125,6 +190,13 @@ Fuzzers:
 - big-endian hosts: match length computed with `ctz` on native loads
 - decoder accepted streams zlib rejects (incomplete codes, missing
   end-of-block code, reserved flags, bad header CRC)
+- streaming exposed timing differences from zlib, invisible when only
+  whole streams were compared: an empty code length code is an error
+  only at the missing end-of-block code (zlib decodes it as 1-bit zeros);
+  a repeat-previous code is validated after its extra bits; gzip magic,
+  method, flags, and trailer CRC are checked as soon as each is complete
+- `memcpy` with a null pointer and zero length, from callers passing
+  empty null buffers (UBSan under GCC)
 
 ## Performance log
 

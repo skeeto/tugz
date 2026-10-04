@@ -66,16 +66,18 @@ typedef struct {
     iz        outlen;
 } zbuf;
 
+// Null pointers are permitted with zero lengths, as library callers may
+// legitimately pass empty buffers that way.
 static void *bytecopy(void *dst, void const *src, iz len)
 {
     assert(len >= 0);
-    return __builtin_memcpy(dst, src, (uz)len);
+    return len ? __builtin_memcpy(dst, src, (uz)len) : dst;
 }
 
 static void *bytemove(void *dst, void const *src, iz len)
 {
     assert(len >= 0);
-    return __builtin_memmove(dst, src, (uz)len);
+    return len ? __builtin_memmove(dst, src, (uz)len) : dst;
 }
 
 static void *bytefill(void *dst, i32 c, iz len)
