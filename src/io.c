@@ -44,7 +44,7 @@ static void os_keep(os *, i32 fd);
 // Best effort: give an open output file the input file's permissions,
 // ownership, and timestamps, as far as the platform supports.
 static void os_copymeta(os *, i32 from, i32 to);
-static void os_fail(os *) __attribute((noreturn));
+[[noreturn]] static void os_fail(os *);
 
 static void os_oom(os *ctx)
 {

@@ -17,7 +17,7 @@ W32(b32)    CloseHandle(iptr);
 W32(c16 **) CommandLineToArgvW(c16 *, i32 *);
 W32(iptr)   CreateFileW(c16 *, u32, u32, uptr, u32, u32, iptr);
 W32(b32)    DeleteFileW(c16 *);
-W32(void)   ExitProcess(u32) __attribute((noreturn));
+[[noreturn]] W32(void) ExitProcess(u32);
 W32(c16 *)  GetCommandLineW(void);
 W32(u32)    GetCurrentDirectoryW(u32, c16 *);
 W32(u32)    GetFileAttributesW(c16 *);

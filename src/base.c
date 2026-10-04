@@ -102,7 +102,7 @@ static void store64le(u8 *p, u64 v)
 }
 
 // Called when an arena is exhausted. Defined by the platform layer.
-static void os_oom(os *) __attribute((noreturn));
+[[noreturn]] static void os_oom(os *);
 
 static void *alloc(arena *a, iz count, iz size, iz align, b32 zero)
 {
