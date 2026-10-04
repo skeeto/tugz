@@ -264,3 +264,16 @@ x-ray           8474240   71.4%    85   71.2%    97   74.3%   176   71.3%    74 
 xml             5345280   15.7%   406   18.1%   324   16.6%   628   13.3%   214   12.9%   108   12.8%   261   12.2%    71   12.3%    60   12.2%    88     2354   2985   3437
 TOTAL         211938580   34.0%   176   36.4%   166   34.7%   347   32.2%   102   32.2%    50   31.9%   147   31.7%    39   31.9%    20   31.5%    51     1049   1256   1359
 ```
+
+Streaming restructure (d1de8a5): the program path is unchanged within
+noise (TOTAL before/after, same machine and session: compression
+175/101/38 versus 177/102/39 MB/s at levels 1/6/9, decompression 1039
+versus 1032 MB/s). Through the library interface with 64 KiB input and
+output buffers, on Silesia concatenated into one stream: level 1 34.3%
+at 180 MB/s, level 5 32.7% at 124 MB/s, level 9 32.0% at 39 MB/s, and
+decompression at 946-994 MB/s. The extra copy into the caller's buffer
+costs little; the program avoids it via `*_pending`/`*_consume`.
+
+Fuzzing after the restructure: one hour per harness on 16 cores, about
+93 million executions in all, no findings beyond the empty code length
+timing difference fixed above.
