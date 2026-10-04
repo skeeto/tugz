@@ -78,6 +78,17 @@ typedef struct {
     u16 code[288];
 } htree;
 
+// A dynamic block's codes and their run-length encoded description.
+// Kept in the deflator rather than on the stack, whose frame would
+// otherwise exceed a page (a stack probe on Windows).
+typedef struct {
+    htree lt, dt, cl;
+    i32   hlit, hdist, hclen;
+    i32   nrle;
+    u8    rsym[NLIT+NDIST];
+    u8    rextra[NLIT+NDIST];
+} dynblock;
+
 typedef struct {
     deflate_level lvl;
 
@@ -124,6 +135,7 @@ typedef struct {
 
     htree fixlit;
     htree fixdist;
+    dynblock dyn;
 
     u8 lcode[MAX_MATCH+1];  // length -> length code index
     u8 dcode[512];          // see dcode_of
@@ -461,14 +473,6 @@ static i32 rle_lengths(u8 const *lens, i32 n, u8 *sym, u8 *extra)
     return m;
 }
 
-typedef struct {
-    htree lt, dt, cl;
-    i32   hlit, hdist, hclen;
-    i32   nrle;
-    u8    rsym[NLIT+NDIST];
-    u8    rextra[NLIT+NDIST];
-} dynblock;
-
 static void build_dyn(deflator *d, dynblock *b)
 {
     u32 lf[NLIT];
@@ -641,10 +645,10 @@ static void flush_block(deflator *d, b32 final)
         return;
     }
 
-    dynblock b;
-    build_dyn(d, &b);
+    dynblock *b = &d->dyn;
+    build_dyn(d, b);
 
-    u64 cd = cost_dyn(d, &b);
+    u64 cd = cost_dyn(d, b);
     u64 cf = 3 + cost_tokens(d, &d->fixlit, &d->fixdist);
     b32 can_store = d->blk_start>=d->base &&
                     d->blk_start-d->base+d->blk_len <= (u64)d->win_len;
@@ -661,7 +665,7 @@ static void flush_block(deflator *d, b32 final)
             bw_put(d, 1, 2);
             emit_tokens(d, &d->fixlit, &d->fixdist);
         } else {
-            emit_dynamic(d, &b);
+            emit_dynamic(d, b);
         }
     }
 
