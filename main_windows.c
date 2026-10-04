@@ -364,7 +364,6 @@ static void os_fail(os *ctx)
     ExitProcess(EXIT_ERR);
 }
 
-__attribute((force_align_arg_pointer))
 void mainCRTStartup(void)
 {
     os ctx = {0};
