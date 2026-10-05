@@ -97,7 +97,9 @@ cmp -s got want || fail "recursive names: $(cat got)"
 extract_same t.zip tree
 
 # Every level round trips; -0 stores everything; small and empty files,
-# and incompressible data, are stored at any level
+# and incompressible data, are stored at any level. Deflated entries get
+# Info-ZIP's flag bits for the level, which zipinfo shows as defF (fast,
+# -1 and -2), defN, and defX (maximum, -8 and -9).
 for level in 0 1 2 3 4 5 6 7 8 9; do
     rm -f l.zip
     "$ZIP" -qr -$level l.zip tree
@@ -109,10 +111,33 @@ for level in 0 1 2 3 4 5 6 7 8 9; do
     zipinfo l.zip | grep 'tree/empty$' | grep -q stor || fail "empty -$level"
     zipinfo l.zip | grep 'tree/one$'   | grep -q stor || fail "one -$level"
     zipinfo l.zip | grep 'random$'     | grep -q stor || fail "random -$level"
-    if [ $level != 0 ]; then
-        zipinfo l.zip | grep 'text$' | grep -q def || fail "text -$level"
-    fi
+    case $level in
+    0) continue;;
+    1|2) def=defF;;
+    8|9) def=defX;;
+    *) def=defN;;
+    esac
+    zipinfo l.zip | grep 'text$' | grep -q " $def " ||
+        fail "text -$level, not $def: $(zipinfo l.zip | grep 'text$')"
 done
+
+# Unix modes, and the DOS read-only attribute, which Windows tools honor
+mkdir -p modes/d
+printf '#!/bin/sh\n' >modes/run.sh
+printf r >modes/ro.txt
+chmod 755 modes/run.sh
+chmod 444 modes/ro.txt
+chmod 750 modes/d
+"$ZIP" -qr modes.zip modes
+zipinfo modes.zip >out
+grep -q '^drwxr-x--- .* modes/d/$' out &&
+    grep -q '^-rwxr-xr-x .* modes/run.sh$' out &&
+    grep -q '^-r--r--r-- .* modes/ro.txt$' out || fail "modes: $(cat out)"
+zipinfo -v modes.zip >out
+grep -q 'MS-DOS file attributes (01 hex): *read-only' out &&
+    [ "$(grep -c 'MS-DOS file attributes (00 hex): *none' out)" = 1 ] &&
+    [ "$(grep -c 'MS-DOS file attributes (10 hex): *dir' out)" = 2 ] ||
+    fail "DOS attributes: $(grep 'MS-DOS file attributes' out)"
 
 # Below -9, files with the suffixes of Info-ZIP's default -n list are
 # stored without trying to compress them, as there: so without level
@@ -225,6 +250,43 @@ zipinfo -T e5.zip >out
 grep 'tree/a.txt$' out | grep -q 20231114.221320 || fail "odd epoch: $(cat out)"
 grep 'odd.txt$' out | grep -q 20231114.221320 || fail "odd epoch: $(cat out)"
 grep 'tree/one$' out | grep -q 20000102.030406 || fail "odd epoch: $(cat out)"
+
+# Without -X, the times of the UT extra field are clamped too, access
+# time and all, so that output does not depend on later changes to them
+mkdir ut
+printf new >ut/new
+printf old >ut/old
+touch -t 203001010000 ut/new
+TZ=UTC0 touch -m -t 202001010000 ut/old  # 1577836800, before the epoch
+touch -a -t 203001010000 ut/old
+SOURCE_DATE_EPOCH=1700000000 "$ZIP" -q ut1.zip ut/new ut/old
+touch -t 203101010000 ut/new
+touch -a -t 203101010000 ut/old
+SOURCE_DATE_EPOCH=1700000000 "$ZIP" -q ut2.zip ut/new ut/old
+cmp -s ut1.zip ut2.zip || fail "SOURCE_DATE_EPOCH without -X: times not clamped"
+if [ -n "$PY" ]; then  # local modification and access, central times
+    $PY -c 'import struct, sys
+d = open(sys.argv[1], "rb").read()
+def ut(x):
+    while len(x) >= 4:
+        i, n = struct.unpack("<HH", x[:4])
+        if i == 0x5455:
+            return struct.unpack("<%dI" % ((n-1)//4), x[5:4+n])
+        x = x[4+n:]
+    return ()
+e = d.rfind(b"PK\5\6")
+p = struct.unpack("<I", d[e+16:e+20])[0]
+while d[p:p+4] == b"PK\1\2":
+    c = struct.unpack("<IHHHHHHIIIHHHHHII", d[p:p+46])
+    h = struct.unpack("<IHHHHHIIIHH", d[c[16]:c[16]+30])
+    x = c[16] + 30 + h[9]
+    print(d[p+46:p+46+c[10]].decode(), *ut(d[x:x+h[10]]),
+          *ut(d[p+46+c[10]:p+46+c[10]+c[11]]))
+    p += 46 + c[10] + c[11] + c[12]' ut1.zip >out
+    printf '%s\n' 'ut/new 1700000000 1700000000 1700000000' \
+        'ut/old 1577836800 1700000000 1577836800' >want
+    cmp -s out want || fail "UT times under SOURCE_DATE_EPOCH: $(cat out)"
+fi
 
 # Times beyond the DOS range clamp to its ends
 printf far >far.txt
