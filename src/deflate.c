@@ -793,6 +793,12 @@ static match find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth)
         if (p-c > DEF_WSIZE) {
             break;
         }
+        // A candidate exactly WSIZE back shares p's prev slot, where
+        // inserting p linked this walk's first candidate. Revisiting
+        // candidates cannot beat best, so make this one the last.
+        if (p-c == DEF_WSIZE) {
+            depth = 1;
+        }
         cand = d->prev[chain_slot(d, c)];
         if (win[c+best]==win[p+best] && win[c]==win[p]) {
             i32 len = match_len(win+c, win+p, maxlen);
