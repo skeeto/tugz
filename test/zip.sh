@@ -480,6 +480,17 @@ cmp -s err want || fail "missing pattern file: $(cat err)"
 expect_status 18 "$ZIP" -qr x7.zip tree -x @missing.lst
 expect_status 16 "$ZIP" -qr x7.zip tree -x@
 
+# A directory as a pattern file is an empty list, as Info-ZIP reads it
+# on POSIX: patterns that select nothing, nor need anything to select
+mkdir -p atdir/d
+printf x >atdir/f
+(cd atdir && "$ZIP" -q ../atdir1.zip f -x@d -i @d) || fail "@dir list"
+[ "$(names atdir1.zip)" = f ] || fail "@dir list: $(names atdir1.zip)"
+"$ZIP" atdir2.zip -x@atdir/d >out 2>&1 && fail "@dir list, no paths"
+[ "$(cat out)" = "
+zip error: Nothing to do! (atdir2.zip)" ] || fail "@dir list: $(cat out)"
+expect_status 12 "$ZIP" atdir2.zip -i@atdir/d
+
 # Names from standard input, before any arguments, as Info-ZIP reads
 # them: a line ends at any CR or LF, and a name at a NUL
 printf 'tree/a.txt\r\ntree/one\n\ntree/sub\n' | "$ZIP" -q at.zip -@

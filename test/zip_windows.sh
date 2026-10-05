@@ -246,6 +246,15 @@ printf '*.txt \r\n' >pat.lst
 "$ZIP" -qr at3.zip tree -x@pat.lst
 list at3.zip | grep -q a.txt && fail "@file trailing space"
 
+# A directory as a pattern file fails, as the C runtime of Info-ZIP's
+# port refuses to open one (on POSIX it is an empty list)
+mkdir atdir
+"$ZIP" atdir.zip tree/a.txt -x@atdir 2>err && fail "@dir list"
+printf '%s\n' 'zip I/O error: Permission denied' \
+    "zip error: File not found or no read permission (x pattern file '@atdir')" >want.txt
+cmp -s err want.txt || fail "@dir list: $(cat err)"
+expect_status 18 "$ZIP" atdir.zip tree/a.txt -x@atdir
+
 # Paths are resolved before the \\?\ prefix, which turns off Win32
 # parsing: "." and "..", doubled separators, root- and drive-relative
 # paths, and a wildcard in the first component. An empty path is no file.

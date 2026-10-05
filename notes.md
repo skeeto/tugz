@@ -276,10 +276,13 @@ neither inflate nor the gzip container.
   leaves `?` a wildcard. Filters see paths as before `-j`, and a `-d`
   name on disk is taken literally. `-@` and `@file` lines are read as
   Info-ZIP's getnam does (any CR or LF ends a line, a NUL ends a name),
-  and `-@` names come before the arguments. As in Info-ZIP, patterns
-  with nothing to select from, no paths (even from `-@`) unless `-u` or
-  `-f` selects entries, are a usage error, found before the archive is
-  read.
+  and `-@` names come before the arguments. A directory as an `@file` is
+  an empty list, as Info-ZIP's getc fails at once to read it on POSIX;
+  Windows' C runtime refuses to open one, so there it fails (18) with
+  the reason Info-ZIP's port gives, "Permission denied". As in
+  Info-ZIP, patterns with nothing to select from, no paths (even from
+  `-@`) unless `-u` or `-f` selects entries, are a usage error, found
+  before the archive is read.
 - Departures in exit status, chosen as friendlier: `-u` and `-f` with
   nothing newer exit 0 (Info-ZIP: 12); an unreadable directory, or a
   dangling link (or one whose target vanished), met while recursing

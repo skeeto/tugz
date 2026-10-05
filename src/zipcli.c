@@ -499,11 +499,17 @@ static i32 add_patterns(zip *z, s8s *list, s8 arg, arena scratch)
         return fail(z, ZE_PARMS, S("Invalid command arguments"),
                     S("missing file after @"), scratch);
     } else {
+        // Info-ZIP reads the list through fopen and getc. On POSIX that
+        // opens a directory, which getc then fails to read: an empty
+        // list. Windows' C runtime refuses to open one, as EACCES.
         s8  path = {arg.s+1, arg.len-1};
         i32 fd   = os_open(z->ctx, path, OS_READ, scratch);
-        s8  text = fd<0 ? (s8){0} : read_all(z, fd, &z->perm);
-        b32 sys  = fd>=0 || fd==OS_ERR;  // not so for a directory
-        s8  why  = !text.s && sys ? os_error(z->ctx) : S("");
+        b32 dir  = fd == OS_EISDIR;
+        s8  text = dir && !z->windows ? S("")
+                 : fd>=0 ? read_all(z, fd, &z->perm) : (s8){0};
+        s8  why  = text.s ? S("")
+                 : dir    ? S("Permission denied")
+                 : os_error(z->ctx);
         if (fd >= 0) {
             os_close(z->ctx, fd);
         }
