@@ -135,18 +135,26 @@ the file is flushed and closed without error), and
   and errors go to standard error. Info-ZIP's quirks kept: `../` stays
   in names, an emptied archive remains as a 22-byte file, entries that
   do not shrink are stored, odd seconds round up.
-- Patterns: `-x`, `-i`, and `-d` patterns match whole paths as
-  Info-ZIP's recmatch does, quirks included: the first unescaped `]`
-  closes a set, a byte before `-` only starts a range, an unclosed set
-  or a trailing backslash matches nothing, a trailing `**` needs a
-  byte, and after a `*` followed by no wildcards the rest is compared
-  literally. `-nw` leaves `?` a wildcard.
+- Patterns: `-x`, `-i`, and `-d` patterns, `@file` lines included, are
+  normalized as names are, so that `./` and `/` prefixes (and on
+  Windows, backslashes and drives) match. Matching follows Info-ZIP's
+  recmatch, quirks included: the first unescaped `]` closes a set, a
+  byte before `-` only starts a range, an unclosed set or a trailing
+  backslash matches nothing, a trailing `**` needs a byte, and after a
+  `*` followed by no wildcards the rest is compared literally. `-nw`
+  leaves `?` a wildcard. Filters see paths as before `-j`, and a `-d`
+  name on disk is taken literally. `-@` and `@file` lines are read as
+  Info-ZIP's getnam does (any CR or LF ends a line, a NUL ends a name),
+  and `-@` names come before the arguments.
 - Departures: entries are sorted by name within each directory (Info-ZIP
-  uses readdir order), doubled slashes collapse, `SOURCE_DATE_EPOCH`
-  clamps times and makes them UTC, names that are valid non-ASCII
-  UTF-8 always get flag bit 11, and an entry whose replacement cannot be
-  read is kept under `-FS` as in other modes (Info-ZIP warns that it
-  will copy it over, then drops it).
+  uses readdir order), doubled slashes collapse (in patterns too),
+  `SOURCE_DATE_EPOCH` clamps times and makes them UTC, names that are
+  valid non-ASCII UTF-8 always get flag bit 11, an entry whose
+  replacement cannot be read is kept under `-FS` as in other modes
+  (Info-ZIP warns that it will copy it over, then drops it), and
+  patterns given after `-j` stay whole (Info-ZIP's name conversion cuts
+  them to their last component, so that `-j -x 'dir/*'` excludes
+  everything).
 - Writing: entries go to a temporary file beside the archive (created
   discard-on-close, like gzip's outputs), at explicit offsets so that a
   local header can be patched once sizes are known. No data descriptors

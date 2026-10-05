@@ -159,6 +159,14 @@ grep -qx a.txt got || fail "recursing . names: $(cat got)"
 names j.zip >got
 printf 'text\nrandom\n' >want
 cmp -s got want || fail "-j: $(cat got)"
+"$ZIP" -x 'tree/sub/deeper/*' -qrj j2.zip tree  # paths seen before -j
+names j2.zip >got
+printf 'Z.txt\na.txt\nb.txt\nempty\none\nrandom\n' >want
+cmp -s got want || fail "-j -x: $(cat got)"
+"$ZIP" -qj j3.zip tree/a.txt tree/sub/random -x a.txt -i 'tree/*'
+names j3.zip >got
+printf 'a.txt\nrandom\n' >want
+cmp -s got want || fail "-j -x -i: $(cat got)"
 "$ZIP" -qrD dd.zip tree
 names dd.zip | grep -q '/$' && fail "-D kept a directory"
 "$ZIP" -qr x.zip tree -x '*.txt' 'tree/sub/*'
@@ -185,11 +193,38 @@ names x5.zip | grep -q 'tree/one' || fail "-nw ? too broad"
 "$ZIP" -qr x8.zip tree/sub -x 'tree/sub/**'  # needs a byte, as in Info-ZIP
 [ "$(names x8.zip)" = tree/sub/ ] || fail "trailing **: $(names x8.zip)"
 
-# Names from standard input
+# Patterns are normalized as names are: ./ and leading / match
+(cd tree && "$ZIP" -qr ../xn.zip . -x './sub/*' -i './*.txt')
+names xn.zip >got
+printf 'Z.txt\na.txt\nb.txt\n' >want
+cmp -s got want || fail "./ patterns: $(cat got)"
+"$ZIP" -qr xa.zip "$tmp/tree/sub" -x "$tmp/tree/sub/deeper/*"
+names xa.zip >got
+printf '%s/tree/sub/\n%s/tree/sub/random\n' "${tmp#/}" "${tmp#/}" >want
+cmp -s got want || fail "absolute pattern: $(cat got)"
+
+# @file within a list, with CR line endings, and a missing pattern file
+printf '*.txt\rtree/s*\r' >patterns.cr
+"$ZIP" -qr x6.zip tree -x nomatch @patterns.cr
+names x6.zip >got
+printf 'tree/\ntree/.hidden/\ntree/empty\ntree/one\n' >want
+cmp -s got want || fail "-x @file: $(cat got)"
+expect_status 18 "$ZIP" -qr x7.zip tree -x @missing.lst
+expect_status 16 "$ZIP" -qr x7.zip tree -x@
+
+# Names from standard input, before any arguments, as Info-ZIP reads
+# them: a line ends at any CR or LF, and a name at a NUL
 printf 'tree/a.txt\r\ntree/one\n\ntree/sub\n' | "$ZIP" -q at.zip -@
 names at.zip >got
 printf 'tree/a.txt\ntree/one\ntree/sub/\n' >want
 cmp -s got want || fail "-@: $(cat got)"
+printf 'tree/one\rtree/b.txt\r\r\n' | "$ZIP" -q at1.zip tree/a.txt -@
+names at1.zip >got
+printf 'tree/one\ntree/b.txt\ntree/a.txt\n' >want
+cmp -s got want || fail "-@ order and CR: $(cat got)"
+printf 'tree/a.txt\0tree/one\0' | "$ZIP" -qX at2.zip -@
+printf 'tree/a.txt\n' | "$ZIP" -qX at3.zip -@
+cmp -s at2.zip at3.zip || fail "-@ name not cut at NUL: $(names at2.zip)"
 
 # Symbolic links: followed by default, stored as links with -y
 if ln -s a.txt tree/link 2>/dev/null; then
@@ -302,6 +337,21 @@ cmp -s dx.zip dx0.zip || fail "-d of only excluded entries changed the archive"
 names dir.zip >got
 printf 'tree/sub/deeper/\ntree/sub/deeper/text\ntree/sub/random\n' >want
 cmp -s got want || fail "-d of a directory: $(cat got)"
+
+# -d names are normalized like names, and those on disk are literal,
+# wildcards and all, as in Info-ZIP
+"$ZIP" -q dn.zip tree/a.txt tree/b.txt tree/one
+"$ZIP" -qd dn.zip ./tree/a.txt '/tree/b.*'
+[ "$(names dn.zip)" = tree/one ] || fail "-d ./ and /: $(names dn.zip)"
+mkdir -p 'lit/s*' lit/sx
+printf q >'lit/s*/q'
+printf r >lit/sx/r
+"$ZIP" -qr lit.zip lit
+"$ZIP" -qd lit.zip 'lit/s*'
+names lit.zip >got
+printf 'lit/\nlit/s*/q\nlit/sx/\nlit/sx/r\n' >want
+cmp -s got want || fail "-d of a name on disk: $(cat got)"
+expect_status 12 "$ZIP" -qdD lit.zip lit
 
 # Copied entries keep their bytes; -X strips their extra fields
 "$ZIP" -qr k1.zip tree

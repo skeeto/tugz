@@ -152,6 +152,15 @@ printf 'tree/a.txt\ntree/b.txt\n' >want.txt
 cmp -s got want.txt || fail "-nw ?: $(cat got)"
 expect_status 12 "$ZIP" -nw nw2.zip 'tree/*.txt'
 
+# Patterns and -d names are normalized as names are (backslashes, ./)
+"$ZIP" -qr x1.zip tree -x 'tree\sub\*' '.\tree\*.txt'
+list x1.zip | sort >got
+printf 'tree/\ntree/empty\ntree/one\n' >want.txt
+cmp -s got want.txt || fail "-x with backslashes: $(cat got)"
+"$ZIP" -q x2.zip tree/a.txt tree/one tree/b.txt
+"$ZIP" -qd x2.zip 'tree\one' '.\tree\a.*'
+[ "$(list x2.zip)" = tree/b.txt ] || fail "-d with backslashes: $(list x2.zip)"
+
 # Paths are resolved before the \\?\ prefix, which turns off Win32
 # parsing: "." and "..", doubled separators, root- and drive-relative
 # paths, and a wildcard in the first component. An empty path is no file.

@@ -90,7 +90,7 @@ releases, such as `zip -qX9r release-1.2.3.zip build/`:
 | `-X` | no extra attributes (Unix times, uid/gid) |
 | `-@` | read paths from standard input, one per line (UTF-8) |
 | `-j`, `-D` | junk directory names; no directory entries |
-| `-x`, `-i` | exclude or include only archive names matching patterns |
+| `-x`, `-i` | exclude or include only paths matching patterns (before `-j`) |
 | `-y` | store symbolic links as links (POSIX) |
 | `-S` | include hidden and system files (Windows) |
 | `-u`, `-f` | update newer entries and add; freshen existing only |

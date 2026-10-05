@@ -330,20 +330,23 @@ static s8 read_all(zip *z, i32 fd, arena *perm)
     }
 }
 
-// Append each non-empty line, without a carriage return, to a list.
-static void push_lines(arena *perm, s8s *list, s8 text)
+// Append each name in a list (-@, @file) as Info-ZIP's getnam reads it:
+// a line ends at any CR or LF, empty lines are skipped, and a name ends
+// at a NUL.
+static void push_lines(zip *z, s8s *list, s8 text)
 {
     for (iz i = 0; i < text.len;) {
         iz j = i;
-        for (; j<text.len && text.s[j]!='\n'; j++) {}
+        for (; j<text.len && text.s[j]!='\n' && text.s[j]!='\r'; j++) {}
         s8 line = {text.s+i, j-i};
-        if (line.len && line.s[line.len-1]=='\r') {
-            line.len--;
-        }
-        if (line.len) {
-            *push(perm, list) = line;
-        }
         i = j + 1;
+        if (!line.len) {
+            continue;
+        }
+        iz len = 0;
+        for (; len<line.len && line.s[len]; len++) {}
+        line.len = len;
+        *push(&z->perm, list) = line;
     }
 }
 
@@ -352,33 +355,52 @@ static b32 is_list_end(s8 arg)
     return (arg.len>1 && arg.s[0]=='-') || zequals(arg, S("@"));
 }
 
-// Collect a pattern list option's values: an attached value (a single
-// pattern, or @file of patterns), else the following arguments up to the
-// next option or a lone @.
+// Add an element of a pattern list: a pattern, or @file, a file of them,
+// one per line. Like Info-ZIP, patterns are normalized as names are, so
+// that ./ and / prefixes, and Windows backslashes, match.
+static i32 add_patterns(zip *z, s8s *list, s8 arg, arena scratch)
+{
+    iz first = list->len;
+    if (!arg.len || arg.s[0]!='@') {
+        *push(&z->perm, list) = arg;
+    } else if (arg.len == 1) {
+        return fail(z, ZE_PARMS, S("Invalid command arguments"),
+                    S("missing file after @"), scratch);
+    } else {
+        s8  path = {arg.s+1, arg.len-1};
+        i32 fd   = os_open(z->ctx, path, OS_READ, scratch);
+        s8  text = fd<0 ? (s8){0} : read_all(z, fd, &z->perm);
+        if (fd >= 0) {
+            os_close(z->ctx, fd);
+        }
+        if (!text.s) {
+            s8 opt = list==&z->exclude ? S("x") : S("i");
+            s8 msg = JOIN(&scratch, opt, S(" pattern file '"), arg, S("'"));
+            return fail(z, ZE_OPEN, S("File not found or no read permission"),
+                        msg, scratch);
+        }
+        push_lines(z, list, text);
+    }
+    for (iz i = first; i < list->len; i++) {
+        list->data[i] = zip_name(&z->perm, list->data[i], z->windows);
+    }
+    return 0;
+}
+
+// Collect a pattern list option's values: an attached value, else the
+// following arguments up to the next option or a lone @.
 static i32 take_list(zip *z, s8s *list, s8 value, zipconfig *conf,
                      i32 *i, arena scratch)
 {
     if (value.len) {
-        if (value.s[0] == '@') {
-            s8 path = {value.s+1, value.len-1};
-            i32 fd = os_open(z->ctx, path, OS_READ, scratch);
-            s8 text = fd<0 ? (s8){0} : read_all(z, fd, &z->perm);
-            if (fd >= 0) {
-                os_close(z->ctx, fd);
-            }
-            if (!text.s) {
-                return fail(z, ZE_OPEN, S("Could not open pattern file"),
-                            path, scratch);
-            }
-            push_lines(&z->perm, list, text);
-        } else {
-            *push(&z->perm, list) = value;
-        }
-        return 0;
+        return add_patterns(z, list, value, scratch);
     }
     i32 n = 0;
     for (; *i+1<conf->nargs && !is_list_end(conf->args[*i+1]); n++) {
-        *push(&z->perm, list) = conf->args[++*i];
+        i32 err = add_patterns(z, list, conf->args[++*i], scratch);
+        if (err) {
+            return err;
+        }
     }
     if (*i+1<conf->nargs && zequals(conf->args[*i+1], S("@"))) {
         ++*i;
@@ -619,6 +641,22 @@ static b32 listed(zip *z, os_info *info)
            (!z->arcexists || info->size!=z->arcinfo.size);
 }
 
+static b32 is_sep(zip *z, u8 c)
+{
+    return c=='/' || (z->windows && c=='\\');
+}
+
+static s8 basename(zip *z, s8 path)
+{
+    iz i = path.len;
+    for (; i>0 && is_sep(z, path.s[i-1]); i--) {}
+    path.len = i;
+    for (; i>0 && !is_sep(z, path.s[i-1]); i--) {}
+    return (s8){path.s+i, path.len-i};
+}
+
+// Add a file under its archive name, which -i and -x see whole, before
+// -j junks its directories, as in Info-ZIP.
 static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
 {
     if (z->arcexists && info->type==FT_FILE && same_file(info, &z->arcinfo)) {
@@ -626,6 +664,7 @@ static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
     } else if (!name.len || !selected(z, name)) {
         return;
     }
+    name = z->junk ? basename(z, name) : name;
 
     iz *seen = zmap_upsert(&z->names, name, &z->perm);
     if (*seen >= 0) {
@@ -643,20 +682,6 @@ static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
     f->name    = name;
     f->info    = *info;
     f->dostime = file_dostime(z, info->mtime);
-}
-
-static b32 is_sep(zip *z, u8 c)
-{
-    return c=='/' || (z->windows && c=='\\');
-}
-
-static s8 basename(zip *z, s8 path)
-{
-    iz i = path.len;
-    for (; i>0 && is_sep(z, path.s[i-1]); i--) {}
-    path.len = i;
-    for (; i>0 && !is_sep(z, path.s[i-1]); i--) {}
-    return (s8){path.s+i, path.len-i};
 }
 
 static void scan(zip *z, s8 path, s8 name, os_info *info, dirid *up,
@@ -704,7 +729,7 @@ static void scan(zip *z, s8 path, s8 name, os_info *info, dirid *up,
     s8 sep = path.len && is_sep(z, path.s[path.len-1]) ? S("") : S("/");
     for (iz i = 0; i < n; i++) {
         s8 kpath = JOIN(&z->perm, path, sep, kids[i].name);
-        s8 kname = JOIN(&z->perm, z->junk ? S("") : dname, kids[i].name);
+        s8 kname = JOIN(&z->perm, dname, kids[i].name);
         os_info *k = &kids[i].info;
         if (!listed(z, k) && !os_stat(z->ctx, kpath, !z->symlinks, k,
                                       scratch)) {
@@ -719,8 +744,7 @@ static void scan(zip *z, s8 path, s8 name, os_info *info, dirid *up,
 
 static s8 arg_name(zip *z, s8 path)
 {
-    s8 name = zip_name(&z->perm, path, z->windows);
-    return z->junk ? basename(z, name) : name;
+    return zip_name(&z->perm, path, z->windows);
 }
 
 // Expand wildcards in a path's components against the file system, as
@@ -1417,6 +1441,25 @@ static b32 mark_deletes(zip *z, zentry *entries, iz n, s8 pattern, b32 *hit)
     return any;
 }
 
+// Mark the entry for a -d name on disk, which Info-ZIP takes literally,
+// wildcards and all: a directory names its "dir/" entry, unless -D.
+static void mark_named(zip *z, zmap *old, s8 path, os_info *info, b32 *hit,
+                       arena scratch)
+{
+    s8 name = zip_name(&scratch, path, z->windows);
+    if (info->type == FT_DIR) {
+        if (z->nodirs || !name.len) {
+            return;
+        } else if (name.s[name.len-1] != '/') {
+            name = JOIN(&scratch, name, S("/"));
+        }
+    }
+    iz *v = zmap_upsert(&old, name, 0);
+    if (v && included(z, name)) {
+        hit[*v] = 1;
+    }
+}
+
 static i32 zip_main(zipconfig *conf)
 {
     zip *z = new(&conf->perm, 1, zip);
@@ -1461,7 +1504,13 @@ static i32 zip_main(zipconfig *conf)
             return fail(z, ZE_READ, S("Could not read names"),
                         S("standard input"), scratch);
         }
-        push_lines(&z->perm, &z->paths, text);
+        // These names come before the arguments, as in Info-ZIP
+        s8s names = {0};
+        push_lines(z, &names, text);
+        for (iz i = 0; i < z->paths.len; i++) {
+            *push(&z->perm, &names) = z->paths.data[i];
+        }
+        z->paths = names;
     }
 
     zarchive  arc = {0};
@@ -1480,25 +1529,28 @@ static i32 zip_main(zipconfig *conf)
     }
     iz nold = ar ? (iz)ar->end.count : 0;
 
+    // Existing entries by name, the first of any duplicates
+    zmap *old = 0;
+    for (iz i = 0; i < nold; i++) {
+        iz *v = zmap_upsert(&old, ar->entries[i].name, &scratch);
+        *v = *v<0 ? i : *v;
+    }
+
     zitems items = {0};
     b32 changed = 0;
     if (z->mode == MODE_DELETE) {
         b32 *hit = new(&scratch, nold, b32);
         for (iz p = 0; p < z->paths.len; p++) {
-            s8  name  = z->paths.data[p];
-            b32 found = mark_deletes(z, ar->entries, nold, name, hit);
+            s8 arg = z->paths.data[p];
             os_info info = {0};
-            b32 ondisk = !found &&
-                         os_stat(z->ctx, name, !z->symlinks, &info, scratch);
-            if (ondisk && info.type==FT_DIR && name.len &&
-                name.s[name.len-1]!='/') {
-                // A directory names its entry, as in Info-ZIP
-                s8 dir = JOIN(&scratch, name, S("/"));
-                mark_deletes(z, ar->entries, nold, dir, hit);
-            }
-            if (!found && !ondisk) {
+            if (os_stat(z->ctx, arg, !z->symlinks, &info, scratch)) {
                 // Info-ZIP does not warn about names on disk
-                warn(z, S("name not matched: "), name, scratch);
+                mark_named(z, old, arg, &info, hit, scratch);
+            } else {
+                s8 pattern = zip_name(&scratch, arg, z->windows);
+                if (!mark_deletes(z, ar->entries, nold, pattern, hit)) {
+                    warn(z, S("name not matched: "), arg, scratch);
+                }
             }
         }
         for (iz i = 0; i < nold; i++) {
@@ -1520,11 +1572,6 @@ static i32 zip_main(zipconfig *conf)
             return fail(z, ZE_NONE, S("Nothing to do!"), z->archive, scratch);
         }
 
-        zmap *old = 0;
-        for (iz i = 0; i < nold; i++) {
-            iz *v = zmap_upsert(&old, ar->entries[i].name, &scratch);
-            *v = *v<0 ? i : *v;
-        }
         for (iz i = 0; i < nold; i++) {
             zitem *it = push(&z->perm, &items);
             it->kind = z->mode==MODE_SYNC ? ITEM_DELETE : ITEM_KEEP;
