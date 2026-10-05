@@ -183,16 +183,21 @@ the file is flushed and closed without error), and
 - Windows: made-by host 0 (FAT, the most widely understood), DOS
   attributes, `UT` extra field. Names drop a drive or a UNC
   `//server/share/` prefix, as Info-ZIP's do, and likewise a device
-  path's `//?/X:/` or `//?/UNC/server/share/`. Wildcard arguments are
-  expanded per component and matched as Info-ZIP's Windows port does:
-  ignoring case, without `[sets]`, and by its dosmatch, under which a
-  name without a period matches as if it ended in one (`*.*` matches
-  every name). Recursion and wildcards skip hidden and system
-  entries unless `-S`, judged as Info-ZIP does by the listing (a link's
-  own attributes), so that unopenable ones like `pagefile.sys` are never
-  opened. Links and junctions are followed; cycles are detected by file
-  identity, the 128-bit `FileIdInfo` where available (64-bit indexes
-  are not unique on ReFS). An unknown (zero) ID matches nothing.
+  path's `//?/X:/` or `//?/UNC/server/share/`. Wildcard arguments,
+  drive-relative ones (`C:*.txt`) included, are expanded per component
+  and matched as Info-ZIP's Windows port does: ignoring case, without
+  `[sets]`, and by its dosmatch, under which a name without a period
+  matches as if it ended in one (`*.*` matches every name). Filters
+  match the same way, except that case matters against archive entries
+  (`-d`) and when freshening. Files replace existing entries whose
+  names differ only in case, and those keep their names. Hidden and
+  system files are skipped unless `-S`, even when named; recursion and
+  wildcards judge them, as Info-ZIP does, by the listing (a link's own
+  attributes), so that unopenable ones like `pagefile.sys` are never
+  opened. `-@` and `@file` lines lose trailing spaces and periods, as
+  in Info-ZIP. Links and junctions are followed; cycles are detected by
+  file identity, the 128-bit `FileIdInfo` where available (64-bit
+  indexes are not unique on ReFS). An unknown (zero) ID matches nothing.
   Recursion takes plain files' attributes, size, and times from the
   listing, opening only directories, links, and files the size of the
   archive, whose identity it needs. (A directory entry can lag for a

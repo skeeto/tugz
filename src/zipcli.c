@@ -332,7 +332,7 @@ static s8 read_all(zip *z, i32 fd, arena *perm)
 
 // Append each name in a list (-@, @file) as Info-ZIP's getnam reads it:
 // a line ends at any CR or LF, empty lines are skipped, and a name ends
-// at a NUL.
+// at a NUL. On Windows, trailing spaces and periods are dropped first.
 static void push_lines(zip *z, s8s *list, s8 text)
 {
     for (iz i = 0; i < text.len;) {
@@ -342,6 +342,10 @@ static void push_lines(zip *z, s8s *list, s8 text)
         i = j + 1;
         if (!line.len) {
             continue;
+        }
+        while (z->windows && line.len && (line.s[line.len-1]==' ' ||
+                                         line.s[line.len-1]=='.')) {
+            line.len--;
         }
         iz len = 0;
         for (; len<line.len && line.s[len]; len++) {}
@@ -591,10 +595,17 @@ static u32 file_dostime(zip *z, i64 t)
     return zip_dostime(tm);
 }
 
+// Pattern matching as Info-ZIP's: [sets] on Unix; on Windows, its DOS
+// rules, ignoring case except against archive entries (-d) and when
+// freshening.
 static i32 match_flags(zip *z)
 {
     i32 flags = z->nowild ? ZIP_NOWILD : 0;
-    return z->windows ? flags : flags|ZIP_SETS;
+    if (!z->windows) {
+        return flags | ZIP_SETS;
+    }
+    b32 exact = z->mode==MODE_DELETE || z->mode==MODE_FRESHEN;
+    return flags | ZIP_DOS | (exact ? 0 : ZIP_FOLD);
 }
 
 static b32 any_match(zip *z, s8s *patterns, s8 name)
@@ -747,15 +758,25 @@ static s8 arg_name(zip *z, s8 path)
     return zip_name(&z->perm, path, z->windows);
 }
 
+// Whether a file is hidden or system (Windows), which Info-ZIP leaves
+// out unless -S, even when named. A directory is still scanned.
+static b32 hidden_file(zip *z, os_info *info)
+{
+    return z->windows && !z->hidden && info->type!=FT_DIR &&
+           (info->attr & 0x06);
+}
+
 // Expand wildcards in a path's components against the file system, as
 // Windows shells do not, matching as Info-ZIP does there: ignoring case,
 // with DOS rules, and with -nw only ?. Returns the number of matches.
 static iz expand(zip *z, s8 path, arena scratch)
 {
-    // Find the first component with a wildcard
+    // Find the first component with a wildcard. A drive ends a component:
+    // "C:*.c" lists the drive's current directory, "C:".
+    u8 drive = path.len>=2 && path.s[1]==':' ? (u8)(path.s[0] | 0x20) : 0;
     iz beg = 0;
     iz end = 0;
-    for (iz i = 0;; i = end + 1) {
+    for (iz i = drive>='a' && drive<='z' ? 2 : 0;; i = end + 1) {
         beg = i;
         for (end = i; end<path.len && !is_sep(z, path.s[end]); end++) {}
         s8 comp = {path.s+beg, end-beg};
@@ -804,7 +825,9 @@ static void scan_arg(zip *z, s8 arg, arena scratch)
 {
     os_info info = {0};
     if (os_stat(z->ctx, arg, !z->symlinks, &info, scratch)) {
-        scan(z, arg, arg_name(z, arg), &info, 0, scratch);
+        if (!hidden_file(z, &info)) {
+            scan(z, arg, arg_name(z, arg), &info, 0, scratch);
+        }
     } else if (!z->windows || !zip_haswild(arg, 0) ||
                !expand(z, arg, scratch)) {
         warn(z, S("name not matched: "), arg, scratch);
@@ -1441,8 +1464,23 @@ static b32 mark_deletes(zip *z, zentry *entries, iz n, s8 pattern, b32 *hit)
     return any;
 }
 
+// Key for finding an archive entry by name: on Windows, ignoring ASCII
+// case, as Info-ZIP's name comparison does there.
+static s8 entry_key(zip *z, s8 name, arena *a)
+{
+    if (!z->windows) {
+        return name;
+    }
+    s8 key = {newbytes(a, name.len), name.len};
+    for (iz i = 0; i < name.len; i++) {
+        key.s[i] = zip_fold(name.s[i], ZIP_FOLD);
+    }
+    return key;
+}
+
 // Mark the entry for a -d name on disk, which Info-ZIP takes literally,
-// wildcards and all: a directory names its "dir/" entry, unless -D.
+// wildcards and all: a directory names its "dir/" entry, unless -D, and
+// a hidden or system file (Windows) nothing, unless -S.
 static void mark_named(zip *z, zmap *old, s8 path, os_info *info, b32 *hit,
                        arena scratch)
 {
@@ -1453,8 +1491,10 @@ static void mark_named(zip *z, zmap *old, s8 path, os_info *info, b32 *hit,
         } else if (name.s[name.len-1] != '/') {
             name = JOIN(&scratch, name, S("/"));
         }
+    } else if (hidden_file(z, info)) {
+        return;
     }
-    iz *v = zmap_upsert(&old, name, 0);
+    iz *v = zmap_upsert(&old, entry_key(z, name, &scratch), 0);
     if (v && included(z, name)) {
         hit[*v] = 1;
     }
@@ -1529,10 +1569,13 @@ static i32 zip_main(zipconfig *conf)
     }
     iz nold = ar ? (iz)ar->end.count : 0;
 
-    // Existing entries by name, the first of any duplicates
+    // Existing entries by name, the first of any duplicates. On Windows,
+    // a file then replaces an entry whose name differs only in case, as
+    // in Info-ZIP, and the entry keeps its name.
     zmap *old = 0;
     for (iz i = 0; i < nold; i++) {
-        iz *v = zmap_upsert(&old, ar->entries[i].name, &scratch);
+        s8  key = entry_key(z, ar->entries[i].name, &scratch);
+        iz *v   = zmap_upsert(&old, key, &scratch);
         *v = *v<0 ? i : *v;
     }
 
@@ -1581,7 +1624,7 @@ static i32 zip_main(zipconfig *conf)
 
         for (iz i = 0; i < z->files.len; i++) {
             zfile *f = z->files.data + i;
-            iz *v = zmap_upsert(&old, f->name, 0);
+            iz *v = zmap_upsert(&old, entry_key(z, f->name, &scratch), 0);
             if (!v) {
                 if (z->mode != MODE_FRESHEN) {
                     zitem *it = push(&z->perm, &items);
@@ -1613,6 +1656,7 @@ static i32 zip_main(zipconfig *conf)
             if (replace) {
                 it->kind = z->mode==MODE_FRESHEN ? ITEM_FRESHEN : ITEM_UPDATE;
                 it->file = f;
+                f->name  = e->name;
                 changed  = 1;
             }
         }

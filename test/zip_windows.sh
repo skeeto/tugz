@@ -152,14 +152,38 @@ printf 'tree/a.txt\ntree/b.txt\n' >want.txt
 cmp -s got want.txt || fail "-nw ?: $(cat got)"
 expect_status 12 "$ZIP" -nw nw2.zip 'tree/*.txt'
 
-# Patterns and -d names are normalized as names are (backslashes, ./)
-"$ZIP" -qr x1.zip tree -x 'tree\sub\*' '.\tree\*.txt'
+# A hidden or system file is left out even when named, unless -S
+expect_status 12 "$ZIP" h3.zip tree/hidden.txt
+"$ZIP" -qS h4.zip tree/hidden.txt tree/system.txt
+[ "$(list h4.zip | wc -l)" = 2 ] || fail "-S with named hidden files"
+
+# Patterns and -d names are normalized as names are (backslashes, ./),
+# and filters match as wildcards do, ignoring case and with DOS rules,
+# except against entries (-d)
+"$ZIP" -qr x1.zip tree -x 'tree\sub\*' '.\tree\*.TXT'
 list x1.zip | sort >got
 printf 'tree/\ntree/empty\ntree/one\n' >want.txt
-cmp -s got want.txt || fail "-x with backslashes: $(cat got)"
+cmp -s got want.txt || fail "-x with backslashes and case: $(cat got)"
 "$ZIP" -q x2.zip tree/a.txt tree/one tree/b.txt
 "$ZIP" -qd x2.zip 'tree\one' '.\tree\a.*'
 [ "$(list x2.zip)" = tree/b.txt ] || fail "-d with backslashes: $(list x2.zip)"
+expect_status 12 "$ZIP" -d x2.zip 'TREE/*'
+
+# A file replaces an entry whose name differs only in case, which keeps
+# its name, as in Info-ZIP
+"$ZIP" -q c1.zip tree/a.txt
+"$ZIP" -q c1.zip TREE/A.TXT
+[ "$(list c1.zip)" = tree/a.txt ] || fail "case-only update: $(list c1.zip)"
+
+# Lists lose trailing spaces and periods, as with Info-ZIP's getnam,
+# such as from cmd's "echo name > list"
+printf 'tree/a.txt \r\ntree/one.\r\n' | "$ZIP" -q at2.zip -@
+list at2.zip >got
+printf 'tree/a.txt\ntree/one\n' >want.txt
+cmp -s got want.txt || fail "-@ trailing spaces: $(cat got)"
+printf '*.txt \r\n' >pat.lst
+"$ZIP" -qr at3.zip tree -x@pat.lst
+list at3.zip | grep -q a.txt && fail "@file trailing space"
 
 # Paths are resolved before the \\?\ prefix, which turns off Win32
 # parsing: "." and "..", doubled separators, root- and drive-relative
@@ -177,6 +201,9 @@ printf 'tree/one\ntree/sub/../b.txt\n%s/tree/a.txt\ntree/empty\n' \
 cmp -s got want.txt || fail "paths: $(cat got)"
 (cd tree && "$ZIP" -q ../p4.zip '*.txt') || fail "zip ../p4.zip '*.txt'"
 [ "$(list p4.zip | wc -l)" = 4 ] || fail "wildcard in the first component"
+(cd tree && "$ZIP" -q ../p8.zip "${here%%:*}:*.txt") ||
+    fail "zip ../p8.zip C:*.txt"
+[ "$(list p8.zip | wc -l)" = 4 ] || fail "drive-relative wildcard"
 expect_status 12 "$ZIP" -r p5.zip ''
 
 # Names drop a device or UNC prefix along with the drive, as Info-ZIP
