@@ -769,17 +769,18 @@ static u32 kraft(u8 const *lens, i32 n)
     return sum;
 }
 
-// Every code in the stream's first block, which must be dynamic, is
+// The stream must be one final dynamic block whose codes are all
 // complete. Some decoders, notably Windows' zip folder, reject the
 // incomplete codes that DEFLATE permits (libdeflate issue #323), such as
 // a lone distance code when a block has at most one distinct distance.
-static void check_complete_codes(s8 z)
+// Returns the highest distance symbol with a code.
+static i32 check_complete_codes(s8 z)
 {
     static u8 const order[19] = {
         16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
     };
     bitreader r = {z.s, z.len, 0};
-    getbits(&r, 1);
+    TEST(getbits(&r, 1) == 1);  // BFINAL: the input was not split
     TEST(getbits(&r, 2) == 2);
     i32 hlit  = (i32)getbits(&r, 5) + 257;
     i32 hdist = (i32)getbits(&r, 5) + 1;
@@ -832,6 +833,10 @@ static void check_complete_codes(s8 z)
     }
     TEST(kraft(lens, hlit) == 1u<<15);
     TEST(kraft(lens+hlit, hdist) == 1u<<15);
+
+    i32 last = hdist - 1;
+    for (; last>=0 && !lens[hlit+last]; last--) {}
+    return last;
 }
 
 // de Bruijn sequence over 26 letters of order 3: no three-byte string
@@ -864,9 +869,11 @@ static void test_complete_codes(os *ctx, arena a)
         // Literals only: no distance codes used at all
         check_complete_codes(do_deflate(ctx, a, p, len, level, 0, 0));
 
-        // One match: a single distance code used
+        // One match, at distance 17576 (symbol 28): a single distance
+        // code used, which must appear in the checked block
         bytecopy(p+len, p, 40);
-        check_complete_codes(do_deflate(ctx, a, p, len+40, level, 0, 0));
+        s8 z = do_deflate(ctx, a, p, len+40, level, 0, 0);
+        TEST(check_complete_codes(z) == 28);
     }
 }
 
