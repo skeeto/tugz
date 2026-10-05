@@ -146,7 +146,24 @@ static void test_names(arena a)
     TEST(equals(zip_name(&a, str("C:\\x\\y"), 1), "x/y"));
     TEST(equals(zip_name(&a, str("C:x"), 1), "x"));
     TEST(equals(zip_name(&a, str(".\\x"), 1), "x"));
-    TEST(equals(zip_name(&a, str("\\\\server\\share\\f"), 1), "server/share/f"));
+
+    // UNC and device prefixes, dropped as Info-ZIP's ex2in does
+    TEST(equals(zip_name(&a, str("\\\\server\\share\\f"), 1), "f"));
+    TEST(equals(zip_name(&a, str("//server/share/d/f"), 1), "d/f"));
+    TEST(equals(zip_name(&a, str("\\\\server\\share\\"), 1), ""));
+    TEST(equals(zip_name(&a, str("\\\\server\\share"), 1), "server/share"));
+    TEST(equals(zip_name(&a, str("\\\\server"), 1), "server"));
+    TEST(equals(zip_name(&a, str("\\\\\\x"), 1), "x"));
+    TEST(equals(zip_name(&a, str("\\\\?\\C:\\rel\\x.txt"), 1), "rel/x.txt"));
+    TEST(equals(zip_name(&a, str("//?/C:/x"), 1), "x"));
+    TEST(equals(zip_name(&a, str("\\\\.\\C:\\d\\f.txt"), 1), "d/f.txt"));
+    TEST(equals(zip_name(&a, str("\\\\?\\UNC\\srv\\shr\\x"), 1), "x"));
+    TEST(equals(zip_name(&a, str("\\\\?\\unc\\srv\\shr\\.\\x"), 1), "x"));
+    TEST(equals(zip_name(&a, str("\\\\?\\UNC\\srv\\shr"), 1), "srv/shr"));
+    TEST(equals(zip_name(&a, str("\\\\?\\Volume{1}\\d\\x"), 1), "d/x"));
+    TEST(equals(zip_name(&a, str("\\\\?x\\UNC\\srv\\shr\\x"), 1),
+                "srv/shr/x"));
+    TEST(equals(zip_name(&a, str("//server/share/f"), 0), "server/share/f"));
 }
 
 static void test_percent(void)

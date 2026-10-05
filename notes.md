@@ -147,10 +147,13 @@ portable format layer (`src/zip.c`, no I/O, fuzzed) and a driver
   resembling a Zip64 locator may precede the end record by chance (found
   by fuzzing).
 - Windows: made-by host 0 (FAT, the most widely understood), DOS
-  attributes, `UT` extra field. Wildcard arguments are expanded per
-  component, case-insensitively, without `[sets]` (as Info-ZIP on
-  Windows). Recursion skips hidden and system files unless `-S`. Links
-  and junctions are followed; cycles are detected by file identity.
+  attributes, `UT` extra field. Names drop a drive or a UNC
+  `//server/share/` prefix, as Info-ZIP's do, and likewise a device
+  path's `//?/X:/` or `//?/UNC/server/share/`. Wildcard arguments are
+  expanded per component, case-insensitively, without `[sets]` (as
+  Info-ZIP on Windows). Recursion skips hidden and system files unless
+  `-S`. Links and junctions are followed; cycles are detected by file
+  identity.
 - libdeflate issue #323: Windows' zip folder rejects incomplete Huffman
   codes (such as a lone distance code in a block with at most one
   distinct distance), which DEFLATE permits. `huff_build` always codes at

@@ -133,6 +133,11 @@ cmp -s got want.txt || fail "paths: $(cat got)"
 [ "$(list p4.zip | wc -l)" = 4 ] || fail "wildcard in the first component"
 expect_status 12 "$ZIP" -r p5.zip ''
 
+# Names drop a device or UNC prefix along with the drive, as Info-ZIP
+"$ZIP" -q p6.zip "//?/$here/tree/one"
+[ "$(list p6.zip)" = "${here#?:/}/tree/one" ] ||
+    fail "device path name: $(list p6.zip)"
+
 # Unicode names: from stdin as UTF-8, and from recursion (bit 11 set,
 # checked by .NET decoding the name)
 printf 'tree/caf\303\251.txt\r\n' | "$ZIP" -q at.zip -@

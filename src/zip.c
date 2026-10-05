@@ -677,15 +677,51 @@ static b32 zip_haswild(s8 s, i32 flags)
     return 0;
 }
 
+static b32 zip_winsep(u8 c)
+{
+    return c=='/' || c=='\\';
+}
+
+// Length of a Windows UNC prefix "//server/share/" (either separator)
+// to drop from a name, as Info-ZIP does, or zero. Without its final
+// separator, "//server/share" is kept. A device path "//?/X:/" counts
+// as server "?" and share "X:", and "//?/UNC/server/share/" as a whole.
+static iz zip_unc(s8 p)
+{
+    if (p.len<3 || !zip_winsep(p.s[0]) || !zip_winsep(p.s[1]) ||
+        zip_winsep(p.s[2])) {
+        return 0;
+    }
+    iz drop = 0;
+    iz i    = 2;
+    for (i32 k = 0, parts = 2; k < parts; k++) {
+        iz beg = i;
+        for (; i<p.len && !zip_winsep(p.s[i]); i++) {}
+        if (i++ == p.len) {
+            break;
+        }
+        b32 dev = k==1 && beg==4 && (p.s[2]=='?' || p.s[2]=='.');
+        if (dev && i-beg==4 && (p.s[beg]|32)=='u' &&
+            (p.s[beg+1]|32)=='n' && (p.s[beg+2]|32)=='c') {
+            parts = 4;
+        }
+        drop = k&1 ? i : drop;
+    }
+    return drop;
+}
+
 // Archive name for a path: backslashes become slashes on Windows; a
-// drive, leading slashes, and leading ./ components are dropped; and
-// doubled slashes collapse. Like Info-ZIP, ../ components are kept.
+// drive or UNC prefix, leading slashes, and leading ./ components are
+// dropped; and doubled slashes collapse. Like Info-ZIP, ../ components
+// are kept.
 static s8 zip_name(arena *a, s8 path, b32 windows)
 {
     s8 r = {newbytes(a, path.len), 0};
     iz i = 0;
     if (windows && path.len>=2 && path.s[1]==':') {
         i = 2;
+    } else if (windows) {
+        i = zip_unc(path);
     }
     for (b32 lead = 1; i < path.len; i++) {
         u8 c = path.s[i];
