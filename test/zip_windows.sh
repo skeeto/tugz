@@ -300,6 +300,25 @@ cmp -s got want.txt || fail "merge: $(cat got)"
 list m.zip | grep -q one && fail "-d"
 ls | grep -q '^zi[0-9]' && fail "temporary file left behind"
 
+# Links at the archive path survive: the archive is replaced where they
+# lead, and a dangling link gets its target created (making links needs
+# Developer Mode or elevation)
+mkdir -p al/dist al/store
+"$ZIP" -q al/store/r.zip tree/a.txt
+if cmd /c 'mklink al\dist\rel.zip ..\store\r.zip' >/dev/null 2>&1; then
+    "$ZIP" -q al/dist/rel.zip tree/b.txt
+    [ -L al/dist/rel.zip ] || fail "archive link replaced"
+    [ "$(list al/store/r.zip | tr '\n' ' ')" = "tree/a.txt tree/b.txt " ] ||
+        fail "archive through a link: $(list al/store/r.zip)"
+    cmd /c 'mklink al\dist\dangling.zip ..\store\new.zip' >/dev/null
+    "$ZIP" -q al/dist/dangling.zip tree/one
+    [ -L al/dist/dangling.zip ] || fail "dangling archive link replaced"
+    [ "$(list al/store/new.zip)" = tree/one ] ||
+        fail "dangling archive link: $(list al/store/new.zip)"
+fi
+ls al/dist al/store | grep -q '^zi[0-9]' &&
+    fail "temporary file left beside an archive link"
+
 # Replacing an archive that another process holds open with delete
 # sharing, as scanners and indexers do
 ps "\$f = [IO.File]::Open('m.zip', 'Open', 'Read', 'ReadWrite, Delete');

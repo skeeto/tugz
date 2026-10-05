@@ -117,7 +117,10 @@ an empty archive). Zip64 is used as needed for large files, large
 archives, and more than 65,535 entries. Names are stored as UTF-8 with
 flag bit 11 when they are valid UTF-8 and not ASCII. On Windows,
 arguments with wildcards are expanded, as `cmd` does not, except when
-freshening, as in Info-ZIP.
+freshening, as in Info-ZIP. The archive is replaced where symbolic
+links at its path lead, so that they survive, and a dangling link gets
+its target created. Hard links do not survive: other names keep the old
+archive.
 
 Output is deterministic: entries within each directory are sorted by
 name, and with `-X` an archive depends only on file contents, names,

@@ -45,6 +45,7 @@ W32(iptr) FindFirstFileExW(c16 *, i32, find_data *, i32, uptr, u32);
 W32(b32)  FindNextFileW(iptr, find_data *);
 W32(b32)  FlushFileBuffers(iptr);
 W32(u32)  GetEnvironmentVariableW(c16 *, c16 *, u32);
+W32(u32)  GetFinalPathNameByHandleW(iptr, c16 *, u32, u32);
 W32(void) SetLastError(u32);
 W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 
@@ -52,6 +53,7 @@ W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 #define FILE_ATTRIBUTE_SYSTEM      0x04u
 #define FILE_READ_ATTRIBUTES       0x80u
 #define FILE_FLAG_BACKUP_SEMANTICS 0x02000000u
+#define FILE_FLAG_DELETE_ON_CLOSE  0x04000000u
 #define FILE_TYPE_UNKNOWN          0u
 #define FIND_FIRST_EX_LARGE_FETCH  2u
 #define FILE_RENAME_REPLACE        1u
@@ -199,6 +201,34 @@ static s8 os_readlink(os *ctx, s8 path, arena *perm, arena scratch)
     (void)perm;
     (void)scratch;
     return (s8){0};  // never asked: links are followed
+}
+
+// A link (or junction) at the end of the path is followed by opening the
+// file it leads to, which the system finds, and asking for its path, a
+// \\?\ path. A dangling link is followed as writing through it would be:
+// by creating its target, which is discarded at once.
+static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
+{
+    (void)ctx;
+    c16 *wpath = winpath(&scratch, path);
+    u32  attr  = wpath ? GetFileAttributesW(wpath) : INVALID_FILE_ATTRIBUTES;
+    if (attr==INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_REPARSE)) {
+        return path;  // no link
+    }
+    iptr h = CreateFileW(wpath, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, 0,
+                         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0);
+    if (h == INVALID_HANDLE_VALUE) {
+        h = CreateFileW(wpath, DELETE, FILE_SHARE_ALL, 0, CREATE_NEW,
+                        FILE_FLAG_DELETE_ON_CLOSE, 0);
+    }
+    if (h == INVALID_HANDLE_VALUE) {
+        return (s8){0};  // e.g. a loop
+    }
+    u32  cap = GetFinalPathNameByHandleW(h, 0, 0, 0);  // including the null
+    c16 *buf = cap ? new(&scratch, cap, c16) : 0;
+    u32  len = buf ? GetFinalPathNameByHandleW(h, buf, cap, 0) : 0;
+    CloseHandle(h);
+    return len && len<cap ? towtf8(perm, buf) : (s8){0};
 }
 
 static b32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)

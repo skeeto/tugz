@@ -561,6 +561,45 @@ if mkfifo fifo.zip 2>/dev/null; then
 fi
 ln -s /dev/null null.zip && expect_status 3 "$ZIP" null.zip tree/a.txt
 
+# Links at the archive path survive: the archive is replaced where they
+# lead, as Info-ZIP updates it through them, whether a link is relative
+# (to its directory), absolute, or leads to another. The archive is not
+# added to itself through them. A loop cannot be written (15).
+mkdir -p al/dist al/store
+"$ZIP" -q al/store/r.zip tree/a.txt
+if ln -s ../store/r.zip al/dist/rel.zip 2>/dev/null; then
+    ln -s "$(pwd)/al/dist/rel.zip" al/abs.zip
+    "$ZIP" -q al/dist/rel.zip tree/b.txt
+    "$ZIP" -qr al/abs.zip tree/one al
+    [ -L al/dist/rel.zip ] && [ -L al/abs.zip ] || fail "archive link replaced"
+    names al/store/r.zip >got
+    printf '%s\n' tree/a.txt tree/b.txt tree/one al/ al/dist/ al/store/ >want
+    cmp -s got want || fail "archive through links: $(cat got)"
+    case "$(ls al al/dist al/store)" in
+    *zi[0-9]*) fail "temporary file left beside an archive link";;
+    esac
+
+    # Departure: a dangling link gets its target created, where Info-ZIP
+    # leaves an empty file there and replaces the link with the archive
+    ln -s ../store/new.zip al/dist/dangling.zip
+    "$ZIP" -q al/dist/dangling.zip tree/a.txt
+    [ -L al/dist/dangling.zip ] || fail "dangling archive link replaced"
+    [ "$(names al/store/new.zip)" = tree/a.txt ] ||
+        fail "dangling archive link: $(names al/store/new.zip)"
+    ln -s loop.zip al/loop.zip
+    "$ZIP" al/loop.zip tree/a.txt 2>err && fail "archive link loop succeeded"
+    grep -q 'Could not create output file (al/loop.zip)' err ||
+        fail "archive link loop: $(cat err)"
+    [ -L al/loop.zip ] || fail "archive link loop replaced"
+fi
+
+# Departure: a hard-linked archive is replaced by a new file, which its
+# other names do not share (Info-ZIP writes the new archive into it)
+if "$ZIP" -q hl1.zip tree/a.txt && ln hl1.zip hl2.zip 2>/dev/null; then
+    "$ZIP" -q hl1.zip tree/b.txt
+    [ "$(names hl2.zip)" = tree/a.txt ] || fail "hard link: $(names hl2.zip)"
+fi
+
 # A failed read is told from a failed open (Linux: reading this file at
 # offset 0 fails)
 if [ -r /proc/self/mem ]; then

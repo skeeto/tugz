@@ -92,6 +92,35 @@ static s8 os_readlink(os *ctx, s8 path, arena *perm, arena scratch)
     }
 }
 
+// Links are read one at a time, so that a dangling one leads where it
+// points, a relative target being relative to the link's directory. But
+// only links the system itself would follow are: not a loop, nor one
+// that Linux's protected_symlinks refuses in a sticky directory.
+static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
+{
+    struct stat st;
+    if (stat(tocstr(&scratch, path), &st) && errno!=ENOENT) {
+        return (s8){0};
+    }
+    for (i32 hops = 0; hops < 40; hops++) {
+        s8 target = os_readlink(ctx, path, perm, scratch);
+        if (!target.s) {
+            // Not a link (EINVAL), or nothing there
+            return errno==EINVAL || errno==ENOENT ? path : (s8){0};
+        }
+        iz cut = path.len;
+        if (target.len && target.s[0]=='/') {
+            cut = 0;
+        }
+        for (; cut>0 && path.s[cut-1]!='/'; cut--) {}
+        s8 next = {newbytes(perm, cut+target.len), cut+target.len};
+        bytecopy(next.s, path.s, cut);
+        bytecopy(next.s+cut, target.s, target.len);
+        path = next;
+    }
+    return (s8){0};
+}
+
 static b32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
 {
     (void)ctx;

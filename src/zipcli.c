@@ -58,6 +58,11 @@ static s8   os_readlink(os *, s8 path, arena *perm, arena scratch);
 static b32  os_readat(os *, i32 fd, u8 *buf, iz len, i64 off);
 static b32  os_writeat(os *, i32 fd, u8 *buf, iz len, i64 off);
 static b32  os_truncate(os *, i32 fd, i64 len);
+// The path to replace for path, so that symbolic links there survive
+// the replacement: path itself unless it is a link, else the file the
+// links lead to, which for a dangling link is where it points. Returns
+// a null string for a link the system would not follow (a loop).
+static s8   os_resolve(os *, s8 path, arena *perm, arena scratch);
 // Close a created file and move it over path, keeping it. It takes the
 // permissions of a file it replaces. The descriptor is closed even on
 // failure, which discards the file.
@@ -175,6 +180,7 @@ typedef struct {
     b32     haveepoch;
     i64     epoch;
     s8      archive;
+    s8      target;  // past links at the archive path; null if unfollowable
     s8s     paths;
     s8s     include;
     s8s     exclude;
@@ -1104,7 +1110,7 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
         return not_zip(z, scratch);
     }
 
-    ar->fd = os_open(z->ctx, z->archive, OS_READ|OS_REGULAR, scratch);
+    ar->fd = os_open(z->ctx, z->target, OS_READ|OS_REGULAR, scratch);
     if (ar->fd < 0) {
         return fail(z, ZE_READ, S("Could not open archive"), z->archive,
                     scratch);
@@ -1552,13 +1558,14 @@ static void report(zip *z, s8 verb, s8 name, zentry *e, arena scratch)
     say(z, 1, JOIN(&scratch, verb, name, how, S("\n")));
 }
 
-// Temporary file beside the archive, created discarded-on-close. For a
-// new archive it has the permissions of a new file from the start. On
-// Windows, beside a drive-relative "X:name" is in "X:", that drive's
-// current directory, which need not be the current directory.
+// Temporary file beside the archive, past any links, so that it can be
+// renamed over it, created discarded-on-close. For a new archive it has
+// the permissions of a new file from the start. On Windows, beside a
+// drive-relative "X:name" is in "X:", that drive's current directory,
+// which need not be the current directory.
 static i32 create_temp(zip *z, s8 *path, arena scratch)
 {
-    s8 a     = z->archive;
+    s8 a     = z->target;
     u8 drive = a.len>=2 && a.s[1]==':' ? (u8)(a.s[0] | 0x20) : 0;
     iz root  = z->windows && drive>='a' && drive<='z' ? 2 : 0;
     iz cut   = a.len;
@@ -1689,7 +1696,7 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     if (!count) {
         warn(z, S("zip file empty"), S(""), scratch);
     }
-    if (!os_commit(z->ctx, fd, z->archive, scratch)) {
+    if (!os_commit(z->ctx, fd, z->target, scratch)) {
         // Info-ZIP's status when closing or renaming its temporary file
         // fails, which a deferred write error (fsync) also is
         return fail(z, ZE_TEMP, S("Temporary file failure"), z->archive,
@@ -1918,11 +1925,18 @@ static i32 zip_main(zipconfig *conf)
         z->paths = names;
     }
 
+    // The archive is replaced past any links at its path, so that they
+    // survive, as Info-ZIP updates it through them. A link that cannot
+    // be followed leaves no archive to read, and as in Info-ZIP, once
+    // there is something to do, none can be written.
+    z->target = os_resolve(z->ctx, z->archive, &z->perm, scratch);
+
     // Whatever is at the archive path must be a zip file, as Info-ZIP
     // finds before any work: an empty file, or a directory, is not
     zarchive  arc = {0};
     zarchive *ar  = 0;
-    z->arcexists = os_stat(z->ctx, z->archive, 1, &z->arcinfo, scratch);
+    z->arcexists = z->target.s &&
+                   os_stat(z->ctx, z->target, 1, &z->arcinfo, scratch);
     if (z->arcexists) {
         ar = &arc;
         err = read_archive(z, ar, scratch);
@@ -2077,6 +2091,10 @@ static i32 zip_main(zipconfig *conf)
         return fail(z, ZE_NONE, S("Nothing to do!"), z->archive, scratch);
     }
 
+    if (!z->target.s) {
+        return fail(z, ZE_CREAT, S("Could not create output file"),
+                    z->archive, scratch);
+    }
     err = write_archive(z, ar, &items, scratch);
     if (err) {
         return err;
