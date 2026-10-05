@@ -21,7 +21,8 @@
 static char *volatile pending_output;
 
 struct os {
-    i32 outfd;  // descriptor of the created output file, or -1
+    i32 outfd;     // descriptor of the created output file, or -1
+    b32 defperms;  // it was created with OS_DEFPERMS, not owner-only
 };
 
 static s8 cstr(char *z)
@@ -111,6 +112,7 @@ static i32 open_output(os *ctx, char *cpath, i32 mode)
     int err = errno;
     if (fd >= 0) {
         ctx->outfd = fd;
+        ctx->defperms = !!(mode & OS_DEFPERMS);
         pending_output = copy;
     }
     restore_signals(old);

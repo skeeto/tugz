@@ -137,6 +137,14 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
     struct stat st;
     if (!stat(dst, &st)) {
         fchmod(fd, st.st_mode & 0777);
+    } else if (!ctx->defperms) {
+        // The archive existed at startup, so the temp file is owner-only,
+        // but it has since gone and this becomes a new file. Give it the
+        // usual 0666 less the umask. Unlike OS_DEFPERMS, this ignores a
+        // default ACL, and the target may still change before the rename.
+        mode_t mask = umask(0);
+        umask(mask);
+        fchmod(fd, 0666 & ~mask);
     }
 
     // Flush and close before replacing anything, since deferred write
