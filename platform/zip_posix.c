@@ -201,11 +201,13 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
         fchmod(fd, 0666 & ~mask);
     }
 
-    // Flush and close before replacing anything, since deferred write
-    // errors (NFS, quotas) may surface only now. Until the rename, the
-    // file is still discarded on failure or interruption.
-    b32 ok = !fsync(fd) || errno==EINVAL || errno==ENOTSUP;
-    ok &= !close(fd) || errno==EINTR;
+    // Close before replacing anything, since deferred write errors (NFS,
+    // quotas) may surface only now. Until the rename, the file is still
+    // discarded on failure or interruption. As in Info-ZIP there is no
+    // fsync: on an SD card, waiting for the device turned a 0.85 s run
+    // storing 256 MiB into 20-40 s, adding only durability across a
+    // crash and the rare device error that nothing else reports.
+    b32 ok = !close(fd) || errno==EINTR;
     ctx->outfd = -1;
 
     sigset_t old = block_signals();

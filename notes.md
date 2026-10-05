@@ -118,7 +118,7 @@ portable format layer (`src/zip.c`, no I/O, fuzzed) and a driver
 (`src/zipcli.c`) over a few more platform functions: `os_stat`,
 `os_listdir`, `os_readlink`, positioned `os_readat`/`os_writeat`,
 `os_truncate`, `os_commit` (atomic rename over the target, only once
-the file is flushed and closed without error), and
+the file is closed, or on Windows flushed, without error), and
 `os_localtime`. It needs neither inflate nor the gzip container.
 
 - Scope: batch use by release scripts. Everything interactive or legacy
@@ -242,9 +242,16 @@ the file is flushed and closed without error), and
   directory). Output is buffered 1 MiB at a time, and rewinding to an
   entry's start or patching its header stays in the buffer when it can,
   so small entries cost no writes of their own. The file is truncated to
-  its final length and renamed over the target; on Windows by handle,
-  after flushing and clearing delete-pending, so it never appears
-  incomplete. `FileRenameInfoEx` with POSIX semantics replaces an
+  its final length and renamed over the target. On POSIX that follows
+  closing it, which reports the write errors that network file systems
+  defer, but there is no fsync, as in Info-ZIP: on a Raspberry Pi's SD
+  card, waiting for the device turned a 0.85 s run storing 256 MiB into
+  20-40 s, for only durability across a crash and the rare device error
+  that nothing else reports. On Windows the rename is by handle, after
+  flushing and clearing delete-pending, so it never appears incomplete.
+  Closing comes after it there, so the flush, which does wait for the
+  device, is the only check for deferred errors before the archive is
+  replaced. `FileRenameInfoEx` with POSIX semantics replaces an
   archive that a scanner or indexer holds open (with delete sharing);
   `FileRenameInfo` is the fallback (SMB shares refuse the former). The
   temporary file of a drive-relative archive, `D:x.zip`, is in `D:`,

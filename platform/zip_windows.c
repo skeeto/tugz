@@ -303,16 +303,17 @@ static b32 os_truncate(os *ctx, i32 fd, i64 len)
 // semantics replace a target that others hold open with delete sharing
 // (scanners, indexers), which the classic rename refuses. Flush first,
 // while the file is still delete-pending, since deferred write errors
-// (network, quotas) may surface only then. Once renamed, the archive is
-// replaced, and closing, after the flush, can lose nothing.
+// (network, quotas) may surface only then: closing, the POSIX layer's
+// check, comes after the rename. Once renamed, the archive is replaced,
+// and closing, after the flush, can lose nothing.
 static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
 {
     iptr h = ctx->handles[fd];
     c16 *wpath = winpath(&scratch, path);
     b32  ok    = wpath && FlushFileBuffers(h);
     if (wpath && !ok) {
-        // As POSIX accepts EINVAL and ENOTSUP from fsync: a file system
-        // that cannot flush (some network and virtual ones) defers nothing
+        // A file system that cannot flush (some network and virtual ones)
+        // defers nothing
         u32 err = GetLastError();
         ok = err==ERROR_INVALID_FUNCTION || err==ERROR_NOT_SUPPORTED;
     }

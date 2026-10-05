@@ -69,7 +69,10 @@ static s8   os_resolve(os *, s8 path, arena *perm, arena scratch);
 // that the user may write it; on Windows, that it is not read-only.
 static b32  os_writable(os *, s8 path, arena scratch);
 // Close a created file and move it over path, keeping it. A file there
-// is replaced by this new one, so its other hard links keep the old. On
+// is replaced by this new one, so its other hard links keep the old. A
+// deferred write error fails it before anything is replaced: on POSIX,
+// one that closing reports (there is no fsync, as in Info-ZIP); on
+// Windows, which renames before closing, one that flushing reports. On
 // POSIX it takes the replaced file's mode, though not its owner, group,
 // or ACL; without one it has a new file's permissions (0666 less the
 // umask, and a default ACL if created with OS_DEFPERMS). On Windows it
@@ -1766,7 +1769,7 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     }
     if (!os_commit(z->ctx, fd, z->target, scratch)) {
         // Info-ZIP's status when closing or renaming its temporary file
-        // fails, which a deferred write error (fsync) also is
+        // fails, which a deferred write error also is
         return fail(z, ZE_TEMP, S("Temporary file failure"), z->archive,
                     scratch);
     }
