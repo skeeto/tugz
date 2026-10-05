@@ -87,6 +87,7 @@ struct os {
     u8   held[3][4];  // for each, an incomplete UTF-8 sequence written
     u8   nheld[3];
     i32  unsure;      // creations refused in a row, each name maybe taken
+    iptr guard;       // zip's archive, held so that it can be replaced
 };
 
 typedef struct {

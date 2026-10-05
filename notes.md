@@ -141,14 +141,21 @@ the file is closed, or on Windows flushed, without error), and
   finds by opening it to update it (replacing it needs no permission to
   write it), and so does one that can be neither read nor written: as
   `access` judges on POSIX, and on Windows by the read-only attribute,
-  which would otherwise refuse the rename only after all the work. A
-  file that cannot be added still gets its progress line, then a
-  warning under its entry's name that tells a failed open from a failed
-  read. Info-ZIP's quirks kept: `../` stays in names, an emptied archive
-  remains as a 22-byte file, entries that do not shrink are stored, odd
-  seconds round up (but not past `SOURCE_DATE_EPOCH`). Times beyond the
-  DOS range clamp to its ends. A name over 65,535 bytes (possible in
-  deep Windows paths) is skipped with a warning, exiting 18.
+  which would otherwise refuse the rename only after all the work. So
+  does, on Windows, an archive that another process holds open without
+  sharing delete access, which the rename needs (by its sources,
+  Info-ZIP's port refuses it up front only if that process also
+  refuses reading or writing, and otherwise at the end, 15 either way):
+  zip finds this by opening the archive with that access, and holds it
+  so until the rename, so that no process can open it that way in the
+  meantime. A file that cannot be added still gets its progress line,
+  then a warning under its entry's name that tells a failed open from a
+  failed read. Info-ZIP's quirks kept: `../` stays in names, an emptied
+  archive remains as a 22-byte file, entries that do not shrink are
+  stored, odd seconds round up (but not past `SOURCE_DATE_EPOCH`).
+  Times beyond the DOS range clamp to its ends. A name over 65,535
+  bytes (possible in deep Windows paths) is skipped with a warning,
+  exiting 18.
 - Options: Info-ZIP's grammar and names. Long names may be abbreviated
   to a prefix of exactly one of Info-ZIP's long names (supported or
   not, so `--rec` is ambiguous). Only `-X` is negatable; other negations

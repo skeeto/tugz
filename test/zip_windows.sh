@@ -411,6 +411,29 @@ expect_status 15 "$ZIP" -d ro.zip tree/a.txt
 cmp -s ro.zip ro.orig || fail "read-only archive changed"
 attrib -r ro.zip
 
+# So is one that another process holds open without sharing delete
+# access, which replacing it needs, or without sharing reading
+for share in ReadWrite None; do
+    rm -f held done
+    ps "\$f = [IO.File]::Open('ro.zip', 'Open', 'Read', '$share');
+        Set-Content held '';
+        for (\$i = 0; \$i -lt 600 -and !(Test-Path done); \$i++) {
+            Start-Sleep -Milliseconds 50
+        }
+        \$f.Close()" &
+    pid=$!
+    for i in 1 2 3 4 5 6 7 8 9 10; do [ -e held ] && break; sleep 1; done
+    set +e
+    "$ZIP" ro.zip tree/b.txt >out 2>err; st=$?
+    set -e
+    : >done
+    wait $pid || true
+    [ $st = 15 ] && grep -q 'Could not create output file (ro.zip)' err ||
+        fail "archive held ($share): $st $(cat err)"
+    grep -q adding out && fail "archive held ($share): work done first"
+    cmp -s ro.zip ro.orig || fail "archive held ($share) changed"
+done
+
 # A replaced archive keeps its hidden, system, and not-indexed
 # attributes, as POSIX keeps the mode, with the archive bit set
 "$ZIP" -q ha.zip tree/a.txt

@@ -66,7 +66,9 @@ static b32  os_truncate(os *, i32 fd, i64 len);
 // a null string for a link the system would not follow (a loop).
 static s8   os_resolve(os *, s8 path, arena *perm, arena scratch);
 // Whether an existing file may be replaced as though written: on POSIX,
-// that the user may write it; on Windows, that it is not read-only.
+// that the user may write it; on Windows, that it is not read-only and
+// that no other process holds it open in a way that refuses the rename,
+// which it then prevents until os_commit.
 static b32  os_writable(os *, s8 path, arena scratch);
 // Close a created file and move it over path, keeping it. A file there
 // is replaced by this new one, so its other hard links keep the old. A

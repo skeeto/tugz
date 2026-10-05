@@ -301,14 +301,37 @@ static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
     return towtf8(perm, t.s);
 }
 
-// A read-only file, which Info-ZIP's port cannot open to update, and
-// which also refuses being replaced, but only after all the work.
+static void release_guard(os *ctx)
+{
+    if (ctx->guard) {
+        CloseHandle(ctx->guard);
+        ctx->guard = 0;
+    }
+}
+
+// Whether the archive may be replaced, found before any work, since the
+// rename that replaces it would refuse only after all of it: not if it
+// is read-only, which Info-ZIP's port cannot open to update either, nor
+// if another process holds it open without sharing delete access, as
+// the rename needs, which Info-ZIP's port finds only at the end. Hold it
+// with that access, sharing all, until os_commit, so that no process can
+// open it so in the meantime.
 static b32 os_writable(os *ctx, s8 path, arena scratch)
 {
-    (void)ctx;
     c16 *wpath = winpath(&scratch, path);
     u32  attr  = wpath ? GetFileAttributesW(wpath) : INVALID_FILE_ATTRIBUTES;
-    return attr==INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_READONLY);
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+        return 1;
+    } else if (attr & FILE_ATTRIBUTE_READONLY) {
+        return 0;
+    }
+    iptr h = CreateFileW(wpath, DELETE, FILE_SHARE_ALL, 0, OPEN_EXISTING, 0, 0);
+    if (h == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    release_guard(ctx);
+    ctx->guard = h;
+    return 1;
 }
 
 static b32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
@@ -407,7 +430,9 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
     }
     if (!SetFileInformationByHandle(h, FileRenameInfoEx, ri, (u32)size)) {
         // Older Windows, or a file system without POSIX semantics
-        // (FAT, some SMB servers)
+        // (FAT, some SMB servers), which also refuses while os_writable
+        // holds the archive
+        release_guard(ctx);
         ri->flags = 1;  // ReplaceIfExists
         if (!SetFileInformationByHandle(h, FileRenameInfo, ri, (u32)size)) {
             u8 discard = 1;
@@ -416,6 +441,7 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
             return 0;
         }
     }
+    release_guard(ctx);
     os_close(ctx, fd);
     return 1;
 }
