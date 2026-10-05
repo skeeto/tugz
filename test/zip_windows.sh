@@ -165,6 +165,23 @@ cmp -s got want.txt || fail "merge: $(cat got)"
 list m.zip | grep -q one && fail "-d"
 ls | grep -q '^zi[0-9]' && fail "temporary file left behind"
 
+# Replacing an archive that another process holds open with delete
+# sharing, as scanners and indexers do
+ps "\$f = [IO.File]::Open('m.zip', 'Open', 'Read', 'ReadWrite, Delete');
+    & '$ZIP' -q m.zip tree/one; \$s = \$LASTEXITCODE; \$f.Close();
+    exit \$s" || fail "replacing an archive held open"
+list m.zip | grep -q one || fail "archive held open: contents"
+
+# Concurrent runs in one directory: each skips the temporary file that
+# the other holds delete-pending
+head -c 30000000 /dev/urandom >big
+"$ZIP" -q9 c1.zip big & p1=$!
+"$ZIP" -q9 c2.zip big & p2=$!
+wait $p1 || fail "concurrent run 1"
+wait $p2 || fail "concurrent run 2"
+ls | grep -q '^zi[0-9]' && fail "temporary file left behind (concurrent)"
+rm big
+
 # Determinism
 SOURCE_DATE_EPOCH=1700000000 "$ZIP" -qX9r d1.zip tree
 SOURCE_DATE_EPOCH=1700000000 "$ZIP" -qX9r d2.zip tree

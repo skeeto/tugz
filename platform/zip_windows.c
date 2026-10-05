@@ -29,9 +29,9 @@ typedef struct {
 } systemtime;
 
 typedef struct {
-    u32  replace;  // a BOOLEAN, padded
+    u32  flags;  // FileRenameInfoEx, else a BOOLEAN ReplaceIfExists
     iptr root;
-    u32  len;      // bytes
+    u32  len;    // bytes
     c16  name[];
 } rename_info;
 
@@ -44,10 +44,13 @@ W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 #define FILE_READ_ATTRIBUTES       0x80u
 #define FILE_FLAG_BACKUP_SEMANTICS 0x02000000u
 #define FIND_FIRST_EX_LARGE_FETCH  2u
+#define FILE_RENAME_REPLACE        1u
+#define FILE_RENAME_POSIX          2u
 
 enum {
     FileRenameInfo    = 3,
     FileEndOfFileInfo = 6,
+    FileRenameInfoEx  = 22,
 };
 
 // Unix seconds from a FILETIME, rounding down.
@@ -178,7 +181,9 @@ static b32 os_truncate(os *ctx, i32 fd, i64 len)
 }
 
 // Rename by handle while the file is still open, replacing the target,
-// so that it is never visible incomplete under its final name.
+// so that it is never visible incomplete under its final name. POSIX
+// semantics replace a target that others hold open with delete sharing
+// (scanners, indexers), which the classic rename refuses.
 static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
 {
     c16 *wpath = winpath(&scratch, path);
@@ -189,8 +194,8 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
     iz  size = (iz)sizeof(rename_info) + (name.len+1)*(iz)sizeof(c16);
     rename_info *ri = (rename_info *)newbytes(&scratch, size);
     bytefill(ri, 0, size);
-    ri->replace = 1;
-    ri->len     = (u32)(name.len * (iz)sizeof(c16));
+    ri->flags = FILE_RENAME_REPLACE | FILE_RENAME_POSIX;
+    ri->len   = (u32)(name.len * (iz)sizeof(c16));
     bytecopy(ri->name, name.s, name.len*(iz)sizeof(c16));
 
     iptr h = ctx->handles[fd];
@@ -198,10 +203,15 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
     if (!SetFileInformationByHandle(h, FileDispositionInfo, &keep, 1)) {
         return 0;
     }
-    if (!SetFileInformationByHandle(h, FileRenameInfo, ri, (u32)size)) {
-        u8 discard = 1;
-        SetFileInformationByHandle(h, FileDispositionInfo, &discard, 1);
-        return 0;
+    if (!SetFileInformationByHandle(h, FileRenameInfoEx, ri, (u32)size)) {
+        // Older Windows, or a file system without POSIX semantics
+        // (FAT, some SMB servers)
+        ri->flags = 1;  // ReplaceIfExists
+        if (!SetFileInformationByHandle(h, FileRenameInfo, ri, (u32)size)) {
+            u8 discard = 1;
+            SetFileInformationByHandle(h, FileDispositionInfo, &discard, 1);
+            return 0;
+        }
     }
     return os_close(ctx, fd);
 }

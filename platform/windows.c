@@ -42,6 +42,8 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define IO_REPARSE_TAG_SYMLINK     0xa000000cu
 #define INVALID_FILE_ATTRIBUTES    0xffffffffu
 #define INVALID_HANDLE_VALUE       ((iptr)-1)
+#define ERROR_ACCESS_DENIED        5u
+#define ERROR_SHARING_VIOLATION    32u
 #define ERROR_FILE_EXISTS          80u
 #define ERROR_BROKEN_PIPE          109u
 #define ERROR_HANDLE_EOF           38u
@@ -358,7 +360,16 @@ static i32 open_output(os *ctx, i32 fd, c16 *wpath, i32 mode)
     iptr h = CreateFileW(wpath, GENERIC_WRITE|DELETE, 0, 0, CREATE_NEW,
                          FILE_ATTRIBUTE_NORMAL, 0);
     if (h == INVALID_HANDLE_VALUE) {
-        return GetLastError()==ERROR_FILE_EXISTS ? OS_EEXIST : OS_ERR;
+        // A name that another process holds delete-pending (its output
+        // not yet kept) refuses access rather than reporting that it
+        // exists, so check for it
+        u32 err = GetLastError();
+        if (err==ERROR_ACCESS_DENIED || err==ERROR_SHARING_VIOLATION) {
+            b32 found = GetFileAttributesW(wpath) != INVALID_FILE_ATTRIBUTES;
+            err = found || GetLastError()==ERROR_ACCESS_DENIED ?
+                  ERROR_FILE_EXISTS : err;
+        }
+        return err==ERROR_FILE_EXISTS ? OS_EEXIST : OS_ERR;
     }
     u8 discard = 1;
     if (!SetFileInformationByHandle(h, FileDispositionInfo,
