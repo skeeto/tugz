@@ -283,6 +283,34 @@ if "$ZIP" -q s1.zip "$share/${here#?:/}/tree/one" 2>/dev/null; then
     [ "$(list s2.zip)" = tree/one ] || fail "share root: $(list s2.zip)"
 fi
 
+# An archive named by its volume's GUID, or by its device, as a link's
+# target is named on a volume with no drive letter, or one unknown to
+# the mount manager
+vol=$(mountvol "${here%%:*}:\\" /L | tr -d ' \r')
+"$ZIP" -q "$vol${here#?:/}/vg.zip" tree/a.txt
+"$ZIP" -q "$vol${here#?:/}/vg.zip" tree/b.txt
+[ "$(list vg.zip | tr '\n' ' ')" = "tree/a.txt tree/b.txt " ] ||
+    fail "archive named by volume GUID: $(list vg.zip)"
+cat >dev.cs <<'EOF'
+using System.Runtime.InteropServices;
+using System.Text;
+public static class Dev {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern uint QueryDosDeviceW(string name, StringBuilder buf, uint n);
+    public static string Of(string name) {
+        StringBuilder b = new StringBuilder(1024);
+        QueryDosDeviceW(name, b, 1024);
+        return b.ToString();
+    }
+}
+EOF
+dev=$(ps "Add-Type -TypeDefinition (Get-Content -Raw dev.cs);
+          [Dev]::Of('${here%%:*}:')" | tr -d '\r')
+"$ZIP" -q "\\\\?\\GLOBALROOT$dev${win#?:}\\vd.zip" tree/a.txt
+"$ZIP" -q "\\\\?\\GLOBALROOT$dev${win#?:}\\vd.zip" tree/b.txt
+[ "$(list vd.zip | tr '\n' ' ')" = "tree/a.txt tree/b.txt " ] ||
+    fail "archive named by device: $(list vd.zip)"
+
 # Only a letter is a drive: "1:s" is stream s of file 1, and named so
 ps "Set-Content -LiteralPath 1 -Value f;
     Set-Content -LiteralPath 1 -Stream s -Value s"
@@ -344,6 +372,32 @@ if cmd /c 'mklink al\dist\rel.zip ..\store\r.zip' >/dev/null 2>&1; then
 fi
 ls al/dist al/store | grep -q '^zi[0-9]' &&
     fail "temporary file left beside an archive link"
+
+# Through a link, a temporary file that cannot be created is named as
+# the archive was, from its directory if the target is there, else by
+# a plain drive path (not \\?\)
+mkdir tf tfo
+"$ZIP" -q tf/real.zip tree/a.txt
+"$ZIP" -q tfo/real.zip tree/a.txt
+if cmd /c 'mklink tf\in.zip real.zip' >/dev/null 2>&1; then
+    cmd /c 'mklink tf\out.zip ..\tfo\real.zip' >/dev/null
+    icacls tf /deny "$USERNAME:(WD)" >/dev/null
+    icacls tfo /deny "$USERNAME:(WD)" >/dev/null
+    set +e
+    "$ZIP" tf/in.zip tree/b.txt 2>err1; st1=$?
+    "$ZIP" tf/out.zip tree/b.txt 2>err2; st2=$?
+    set -e
+    icacls tf /remove:d "$USERNAME" >/dev/null
+    icacls tfo /remove:d "$USERNAME" >/dev/null
+    [ $st1 = 10 ] && grep -q 'Temporary file failure (tf/zi[0-9]*)' err1 ||
+        fail "linked archive temp name: $st1 $(cat err1)"
+    [ $st2 = 10 ] &&
+        grep -q 'Temporary file failure (.:\\.*\\tfo\\zi[0-9]*)' err2 ||
+        fail "linked archive temp name elsewhere: $st2 $(cat err2)"
+    "$ZIP" -q tf/in.zip tree/b.txt
+    [ -L tf/in.zip ] && [ "$(list tf/real.zip | wc -l)" = 2 ] ||
+        fail "archive through a link in its directory"
+fi
 
 # A read-only archive is refused (15) before any work, and left alone
 "$ZIP" -q ro.zip tree/a.txt

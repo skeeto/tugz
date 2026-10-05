@@ -216,10 +216,28 @@ static s8 os_readlink(os *ctx, s8 path, arena *perm, arena scratch)
     return (s8){0};  // never asked: links are followed
 }
 
+// The final path of an open file, a \\?\ path, with its volume named
+// one way: as a drive letter path (DOS), by its GUID, or by its NT
+// device. Null if the system has no such name for it.
+enum { VOLUME_NAME_DOS, VOLUME_NAME_GUID, VOLUME_NAME_NT };
+static c16 *final_path(iptr h, u32 how, arena *a)
+{
+    u32  cap = GetFinalPathNameByHandleW(h, 0, 0, how);  // including the null
+    c16 *buf = cap ? new(a, cap, c16) : 0;
+    u32  len = buf ? GetFinalPathNameByHandleW(h, buf, cap, how) : 0;
+    return len && len<cap ? buf : 0;
+}
+
 // A link (or junction) at the end of the path is followed by opening the
-// file it leads to, which the system finds, and asking for its path, a
-// \\?\ path. A dangling link is followed as writing through it would be:
-// by creating its target, which is discarded at once.
+// file it leads to, which the system finds, and asking for its final
+// path. A dangling link is followed as writing through it would be: by
+// creating its target, which is discarded at once. Where the system has
+// no drive letter path for it (on a volume mounted nowhere, at least),
+// its volume is named by GUID, and if the mount manager does not know
+// the volume (a RAM disk), by its device, under \\?\GLOBALROOT. Since
+// messages name files beside the archive, a target within the directory
+// where the user named the archive is named from there, and otherwise,
+// a drive or share path loses its \\?\ (winpath restores it).
 static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
 {
     (void)ctx;
@@ -237,11 +255,50 @@ static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
     if (h == INVALID_HANDLE_VALUE) {
         return (s8){0};  // e.g. a loop
     }
-    u32  cap = GetFinalPathNameByHandleW(h, 0, 0, 0);  // including the null
-    c16 *buf = cap ? new(&scratch, cap, c16) : 0;
-    u32  len = buf ? GetFinalPathNameByHandleW(h, buf, cap, 0) : 0;
+    u32  how    = VOLUME_NAME_DOS;
+    c16 *target = final_path(h, how, &scratch);
+    while (!target && how<VOLUME_NAME_NT) {
+        target = final_path(h, ++how, &scratch);
+    }
     CloseHandle(h);
-    return len && len<cap ? towtf8(perm, buf) : (s8){0};
+    if (!target) {
+        return (s8){0};
+    }
+
+    // The directory as named, which for "X:name" is "X:"
+    iz cut = path.len;
+    for (; cut>0 && path.s[cut-1]!='/' && path.s[cut-1]!='\\'; cut--) {}
+    u8 drive = path.len>2 ? (u8)(path.s[0] | 0x20) : 0;
+    cut = !cut && drive>='a' && drive<='z' && path.s[1]==':' ? 2 : cut;
+    s8   dir  = {path.s, cut};
+    c16 *wdir = winpath(&scratch, cut ? dir : S("."));
+    iptr dh   = !wdir ? INVALID_HANDLE_VALUE :
+                CreateFileW(wdir, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, 0,
+                            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0);
+    s16 base = {0};
+    if (dh != INVALID_HANDLE_VALUE) {
+        c16 *final = final_path(dh, how, &scratch);
+        base = final ? s16lit(final) : base;
+        CloseHandle(dh);
+    }
+
+    s16 t      = s16lit(target);
+    b32 sep    = base.len && base.s[base.len-1]=='\\';  // a root
+    iz  len    = base.len + !sep;  // with the separator after it
+    b32 within = base.len && len<t.len && (sep || t.s[base.len]=='\\');
+    for (iz i = 0; within && i<base.len; i++) {
+        within = t.s[i] == base.s[i];
+    }
+    if (within) {
+        return JOIN(perm, dir, towtf8(&scratch, t.s+len));
+    } else if (how == VOLUME_NAME_NT) {
+        return JOIN(perm, S("\\\\?\\GLOBALROOT"), towtf8(&scratch, t.s));
+    } else if (how == VOLUME_NAME_DOS) {
+        b32 unc = t.s[4]=='U' && t.s[5]=='N' && t.s[6]=='C' && t.s[7]=='\\';
+        t.s += unc ? 6 : 4;  // "\\?\UNC\server" to "\\server"
+        t.s[0] = unc ? '\\' : t.s[0];
+    }
+    return towtf8(perm, t.s);
 }
 
 // A read-only file, which Info-ZIP's port cannot open to update, and

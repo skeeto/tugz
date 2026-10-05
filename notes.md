@@ -268,16 +268,22 @@ the file is closed, or on Windows flushed, without error), and
   loop, nor one that Linux's `protected_symlinks` refuses. On Windows,
   links and junctions are resolved by opening the file and asking for
   its final path, or for a dangling link, by creating the file,
-  discarded at once. A link that cannot be followed cannot be written
-  (15, as in Info-ZIP). The new archive keeps the old one's mode on
-  POSIX (not its owner, group, or ACL), and on Windows its hidden,
-  system, and not-indexed attributes, with the archive bit set, but not
-  its access control: as for gzip's outputs, that is inherited from the
-  directory (copying it would take advapi32). Departures: a hard-linked
-  archive is replaced by a new file, which its other names do not share
-  (Info-ZIP copies into it); a dangling link gets its target created
-  (Info-ZIP leaves an empty file there and replaces the link with the
-  archive).
+  discarded at once. That path names the volume by drive letter where
+  the system can, else by GUID (`\\?\Volume{...}`, as for a volume
+  mounted nowhere), else by device (`\\?\GLOBALROOT\Device\...`, for
+  one the mount manager does not know). Messages name the temporary
+  file beside the target, so a target within the directory where the
+  archive was named is named from there, as the user named it, and
+  otherwise a drive or share path is given without `\\?\`. A link that
+  cannot be followed cannot be written (15, as in Info-ZIP). The new
+  archive keeps the old one's mode on POSIX (not its owner, group, or
+  ACL), and on Windows its hidden, system, and not-indexed attributes,
+  with the archive bit set, but not its access control: as for gzip's
+  outputs, that is inherited from the directory (copying it would take
+  advapi32). Departures: a hard-linked archive is replaced by a new
+  file, which its other names do not share (Info-ZIP copies into it); a
+  dangling link gets its target created (Info-ZIP leaves an empty file
+  there and replaces the link with the archive).
 - Merging: the central directory is parsed with every field bounds
   checked; copied entries get regenerated local headers (descriptor flag
   cleared, except for traditionally encrypted entries, whose check byte
