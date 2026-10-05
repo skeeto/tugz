@@ -143,7 +143,9 @@ neither inflate nor the gzip container.
   (`-r`, `-rX9`, `-r1`, `-r0`): made-by and needed versions, flags
   (including the level bits: 0x4 for -1/-2, 0x2 for -8/-9, set whenever
   compression was attempted), method, external attributes, local and
-  central `UT`/`ux` extra fields, times, and CRCs are byte-identical.
+  central `UT`/`ux` extra fields, times, and CRCs are byte-identical,
+  but for the method of an incompressible file over 32 KiB (see the
+  departures).
   Symbolic links (`-y`) are always stored, never compressed, as in
   Info-ZIP. So, below `-9`, are files whose names end in a suffix of
   its default `-n` list (`.Z .zip .zoo .arc .lzh .arj`, ignoring case
