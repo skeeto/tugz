@@ -158,6 +158,12 @@ expect_status 12 "$ZIP" -r p5.zip ''
 [ "$(list p6.zip)" = "${here#?:/}/tree/one" ] ||
     fail "device path name: $(list p6.zip)"
 
+# Only a letter is a drive: "1:s" is stream s of file 1, and named so
+ps "Set-Content -LiteralPath 1 -Value f;
+    Set-Content -LiteralPath 1 -Stream s -Value s"
+"$ZIP" -q p7.zip 1:s
+[ "$(list p7.zip)" = 1:s ] || fail "stream name: $(list p7.zip)"
+
 # Unicode names: from stdin as UTF-8, and from recursion (bit 11 set,
 # checked by .NET decoding the name)
 printf 'tree/caf\303\251.txt\r\n' | "$ZIP" -q at.zip -@

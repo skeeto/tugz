@@ -145,7 +145,17 @@ static void test_names(arena a)
     TEST(equals(zip_name(&a, str("a\\b"), 1), "a/b"));
     TEST(equals(zip_name(&a, str("C:\\x\\y"), 1), "x/y"));
     TEST(equals(zip_name(&a, str("C:x"), 1), "x"));
+    TEST(equals(zip_name(&a, str("z:/x"), 1), "x"));
     TEST(equals(zip_name(&a, str(".\\x"), 1), "x"));
+    TEST(equals(zip_name(&a, str("C:x"), 0), "C:x"));
+
+    // Only a letter is a drive, as Windows has it: "1:x" opens stream x
+    // of file 1, so the name keeps it
+    TEST(equals(zip_name(&a, str("1:x"), 1), "1:x"));
+    TEST(equals(zip_name(&a, str("@:x"), 1), "@:x"));
+    TEST(equals(zip_name(&a, str("[:x"), 1), "[:x"));
+    TEST(equals(zip_name(&a, str("{:x"), 1), "{:x"));
+    TEST(equals(zip_name(&a, str(":"), 1), ":"));
 
     // UNC and device prefixes, dropped as Info-ZIP's ex2in does
     TEST(equals(zip_name(&a, str("\\\\server\\share\\f"), 1), "f"));

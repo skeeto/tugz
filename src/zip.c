@@ -718,8 +718,9 @@ static s8 zip_name(arena *a, s8 path, b32 windows)
 {
     s8 r = {newbytes(a, path.len), 0};
     iz i = 0;
-    if (windows && path.len>=2 && path.s[1]==':') {
-        i = 2;
+    u8 drive = path.len>=2 && path.s[1]==':' ? (u8)(path.s[0] | 0x20) : 0;
+    if (windows && drive>='a' && drive<='z') {
+        i = 2;  // only a letter is a drive: "1:x" is a stream of file "1"
     } else if (windows) {
         i = zip_unc(path);
     }

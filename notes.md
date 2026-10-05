@@ -177,6 +177,7 @@ the file is flushed and closed without error), and
   listing, opening only directories, links, and files the size of the
   archive, whose identity it needs. (A directory entry can lag for a
   file changed through another of its hard links, as Microsoft notes.)
+  Only a letter is a drive: `1:x` names stream `x` of file `1`.
 - libdeflate issue #323: Windows' zip folder rejects incomplete Huffman
   codes (such as a lone distance code in a block with at most one
   distinct distance), which DEFLATE permits. `huff_build` always codes at
