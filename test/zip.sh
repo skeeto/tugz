@@ -768,6 +768,25 @@ grep -q 'Nothing to do' out && fail "-f with nothing found: $(cat out)"
 grep -q 'newu.zip not found or empty' out || fail "-u, no archive: $(cat out)"
 names newu.zip | grep -q tree/a.txt || fail "-u, no archive: $(names newu.zip)"
 
+# -d and -f warn the same of a missing or empty archive, then go on
+# with their arguments, as Info-ZIP does
+"$ZIP" -d gone.zip nosuch tree/a.txt >out 2>&1 && fail "-d, no archive"
+grep -q 'gone.zip not found or empty' out || fail "-d, no archive: $(cat out)"
+grep -q 'name not matched: nosuch' out || fail "-d, no archive: $(cat out)"
+grep -q 'name not matched: tree/a.txt' out && fail "-d, no archive: $(cat out)"
+grep -q 'Nothing to do' out || fail "-d, no archive: $(cat out)"
+expect_status 16 "$ZIP" -f gone.zip tree/a.txt ./tree/a.txt
+"$ZIP" -f gone.zip tree/a.txt nosuch >out 2>&1 && fail "-f, no archive"
+grep -q 'name not matched: nosuch' out || fail "-f, no archive: $(cat out)"
+"$ZIP" -q em.zip tree/a.txt
+"$ZIP" -qd em.zip tree/a.txt
+expect_status 12 "$ZIP" -f em.zip tree/b.txt
+for mode in -d -f -u; do  # the last adds
+    "$ZIP" $mode em.zip tree/b.txt >out 2>&1 || true
+    grep -q 'em.zip not found or empty' out || fail "$mode, empty: $(cat out)"
+done
+[ ! -e gone.zip ] || fail "-d or -f created an archive"
+
 if [ "$(id -u)" != 0 ]; then
     cp tree/a.txt unreadable
     chmod 000 unreadable
@@ -798,7 +817,8 @@ if [ "$(id -u)" != 0 ]; then
 
     # A read-only archive is refused (15) and left alone, as Info-ZIP
     # finds, after reading it and finding something to do, before doing
-    # it; so is one that can be neither read nor written
+    # it. One that can be neither read nor written is, as there, taken
+    # for a missing archive, which cannot be written (15) either.
     "$ZIP" -q rox.zip tree/a.txt
     cp rox.zip rox.orig
     chmod 444 rox.zip
@@ -813,6 +833,18 @@ if [ "$(id -u)" != 0 ]; then
     ln -s rox.zip roxl.zip && expect_status 15 "$ZIP" roxl.zip tree/b.txt
     chmod 000 rox.zip
     expect_status 15 "$ZIP" rox.zip tree/b.txt
+    expect_status 15 "$ZIP" -u rox.zip tree/b.txt
+    expect_status 12 "$ZIP" -f rox.zip tree/b.txt
+    "$ZIP" -d rox.zip tree/a.txt >out 2>&1 && fail "-d on mode 000 archive"
+    grep -q 'rox.zip not found or empty' out || fail "-d, 000: $(cat out)"
+    grep -q 'Nothing to do' out || fail "-d, 000: $(cat out)"
+
+    # Departure: one that can be written but not read fails (11), where
+    # Info-ZIP takes it for a missing archive and replaces it
+    chmod 200 rox.zip
+    expect_status 11 "$ZIP" rox.zip tree/b.txt
+    chmod 644 rox.zip
+    cmp -s rox.zip rox.orig || fail "unreadable archive changed"
     echo junk >roj.zip
     chmod 444 roj.zip
     expect_status 3 "$ZIP" roj.zip tree/b.txt

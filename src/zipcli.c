@@ -1145,6 +1145,8 @@ static i32 not_zip(zip *z, arena scratch)
                 scratch);
 }
 
+// Returns an exit status on failure, or -1 for an archive that is to be
+// taken for a missing one.
 static i32 read_archive(zip *z, zarchive *ar, arena scratch)
 {
     if (z->arcinfo.type != FT_FILE) {
@@ -1155,11 +1157,10 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
 
     ar->fd = os_open(z->ctx, z->target, OS_READ|OS_REGULAR, scratch);
     if (ar->fd < 0) {
-        // One that cannot be written either fails as in Info-ZIP, which
-        // takes it for a missing archive, then cannot write it
+        // One that cannot be written either is, as in Info-ZIP, taken
+        // for a missing archive, which then cannot be written
         if (!os_writable(z->ctx, z->target, scratch)) {
-            return fail(z, ZE_CREAT, S("Could not create output file"),
-                        z->archive, scratch);
+            return -1;
         }
         return fail(z, ZE_READ, S("Could not open archive"), z->archive,
                     scratch);
@@ -2032,27 +2033,24 @@ static i32 zip_main(zipconfig *conf)
     if (z->arcexists) {
         ar = &arc;
         err = read_archive(z, ar, scratch);
-        if (err) {
+        if (err > 0) {
             return err;
         }
-    } else if (z->mode != MODE_ADD && z->mode != MODE_SYNC) {
-        // Info-ZIP warns, and -u goes on to add files
-        warn(z, z->archive, S(" not found or empty"), scratch);
-        if (z->mode == MODE_DELETE) {
-            return fail(z, ZE_NONE, S("Nothing to do!"), z->archive,
-                        scratch);
-        } else if (z->mode == MODE_FRESHEN) {
-            return ZE_NONE;
-        }
+        ar = err ? 0 : ar;
     }
-    iz nold = ar ? (iz)ar->end.count : 0;
+    iz      nold    = ar ? (iz)ar->end.count : 0;
+    zentry *entries = ar ? ar->entries : 0;
+    if (!nold && z->mode!=MODE_ADD && z->mode!=MODE_SYNC) {
+        // Info-ZIP warns, then goes on with the arguments
+        warn(z, z->archive, S(" not found or empty"), scratch);
+    }
 
     // Existing entries by name, the first of any duplicates. On Windows,
     // a file then replaces an entry whose name differs only in case, as
     // in Info-ZIP, and the entry keeps its name.
     zmap *old = 0;
     for (iz i = 0; i < nold; i++) {
-        s8  key = entry_key(z, ar->entries[i].name, &scratch);
+        s8  key = entry_key(z, entries[i].name, &scratch);
         iz *v   = zmap_upsert(&old, key, &scratch);
         *v = *v<0 ? i : *v;
     }
@@ -2069,7 +2067,7 @@ static i32 zip_main(zipconfig *conf)
                 mark_named(z, old, arg, &info, hit, scratch);
             } else {
                 s8 pattern = zip_name(&scratch, arg, z->windows);
-                if (!mark_deletes(z, ar->entries, nold, pattern, hit)) {
+                if (!mark_deletes(z, entries, nold, pattern, hit)) {
                     warn(z, S("name not matched: "), arg, scratch);
                 }
             }
@@ -2077,7 +2075,7 @@ static i32 zip_main(zipconfig *conf)
         for (iz i = 0; i < nold; i++) {
             zitem *it = push(&z->perm, &items);
             it->kind = hit[i] ? ITEM_DELETE : ITEM_KEEP;
-            it->old  = ar->entries + i;
+            it->old  = entries + i;
             it->file = 0;
             changed |= hit[i];
         }
@@ -2095,8 +2093,7 @@ static i32 zip_main(zipconfig *conf)
 
         // Then paths not on disk select entries, as do -u and -f without
         // paths, except entries that paths on disk already selected
-        b32    *taken   = new(&scratch, nold, b32);
-        zentry *entries = ar ? ar->entries : 0;
+        b32 *taken = new(&scratch, nold, b32);
         for (iz i = 0; i < z->files.len; i++) {
             s8  key = entry_key(z, z->files.data[i].name, &scratch);
             iz *v   = zmap_upsert(&old, key, 0);
@@ -2111,7 +2108,6 @@ static i32 zip_main(zipconfig *conf)
                 warn(z, S("name not matched: "), missing.data[p], scratch);
             }
         }
-        b32 refresh = z->mode==MODE_UPDATE || z->mode==MODE_FRESHEN;
         if (refresh && !z->paths.len) {
             scan_entries(z, entries, nold, old, (s8){0}, taken, scratch);
         }
@@ -2124,7 +2120,7 @@ static i32 zip_main(zipconfig *conf)
         for (iz i = 0; i < nold; i++) {
             zitem *it = push(&z->perm, &items);
             it->kind = z->mode==MODE_SYNC ? ITEM_DELETE : ITEM_KEEP;
-            it->old  = ar->entries + i;
+            it->old  = entries + i;
             it->file = 0;
         }
 
@@ -2171,13 +2167,14 @@ static i32 zip_main(zipconfig *conf)
     }
 
     if (!changed) {
-        if (z->files.len) {
+        b32 none = z->mode==MODE_FRESHEN && !nold;  // nothing to freshen
+        if (z->files.len && !none) {
             // Already up to date, which only -FS reports, as in Info-ZIP
             if (z->mode==MODE_SYNC && !z->quiet) {
                 say(z, 1, S("Archive is current\n"));
             }
             return z->status;
-        } else if (z->mode==MODE_UPDATE || z->mode==MODE_FRESHEN) {
+        } else if (refresh) {
             return ZE_NONE;  // silently, as in Info-ZIP
         }
         return fail(z, ZE_NONE, S("Nothing to do!"), z->archive, scratch);
@@ -2186,7 +2183,8 @@ static i32 zip_main(zipconfig *conf)
     // Once there is something to do, and before doing it, Info-ZIP opens
     // the archive for writing, which a read-only one refuses: a guard
     // against changing it, though replacing it needs no such permission
-    if (!z->target.s || (ar && !os_writable(z->ctx, z->target, scratch))) {
+    b32 readonly = z->arcexists && !os_writable(z->ctx, z->target, scratch);
+    if (!z->target.s || readonly) {
         return fail(z, ZE_CREAT, S("Could not create output file"),
                     z->archive, scratch);
     }

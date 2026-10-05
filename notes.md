@@ -139,23 +139,26 @@ the file is closed, or on Windows flushed, without error), and
   warnings and errors go to standard error. A read-only archive fails
   with 15 once there is something to do, before doing it, as Info-ZIP
   finds by opening it to update it (replacing it needs no permission to
-  write it), and so does one that can be neither read nor written: as
-  `access` judges on POSIX, and on Windows by the read-only attribute,
-  which would otherwise refuse the rename only after all the work. So
-  does, on Windows, an archive that another process holds open without
-  sharing delete access, which the rename needs (by its sources,
-  Info-ZIP's port refuses it up front only if that process also
-  refuses reading or writing, and otherwise at the end, 15 either way):
-  zip finds this by opening the archive with that access, and holds it
-  so until the rename, so that no process can open it that way in the
-  meantime. A file that cannot be added still gets its progress line,
-  then a warning under its entry's name that tells a failed open from a
-  failed read. Info-ZIP's quirks kept: `../` stays in names, an emptied
-  archive remains as a 22-byte file, entries that do not shrink are
-  stored, odd seconds round up (but not past `SOURCE_DATE_EPOCH`).
-  Times beyond the DOS range clamp to its ends. A name over 65,535
-  bytes (possible in deep Windows paths) is skipped with a warning,
-  exiting 18.
+  write it): as `access` judges on POSIX, and on Windows by the
+  read-only attribute, which would otherwise refuse the rename only
+  after all the work. One that can be neither read nor written is, as
+  in Info-ZIP, taken for a missing archive, which then cannot be
+  written. So does, on Windows, an archive that another process holds
+  open without sharing delete access, which the rename needs (by its
+  sources, Info-ZIP's port refuses it up front only if that process
+  also refuses reading or writing, and otherwise at the end, 15 either
+  way): zip finds this by opening the archive with that access, and
+  holds it so until the rename, so that no process can open it that way
+  in the meantime. A missing or empty archive gets Info-ZIP's "not found
+  or empty" warning under `-u`, `-f`, and `-d`, which go on with their
+  arguments (warning of unmatched names, rejecting repeated ones). A
+  file that cannot be added still gets its progress line, then a
+  warning under its entry's name that tells a failed open from a failed
+  read. Info-ZIP's quirks kept: `../` stays in names, an emptied archive
+  remains as a 22-byte file, entries that do not shrink are stored, odd
+  seconds round up (but not past `SOURCE_DATE_EPOCH`). Times beyond the
+  DOS range clamp to its ends. A name over 65,535 bytes (possible in
+  deep Windows paths) is skipped with a warning, exiting 18.
 - Options: Info-ZIP's grammar and names. Long names may be abbreviated
   to a prefix of exactly one of Info-ZIP's long names (supported or
   not, so `--rec` is ambiguous). Only `-X` is negatable; other negations
@@ -231,6 +234,9 @@ the file is closed, or on Windows flushed, without error), and
   "name not matched" for the link, exiting 0); and `-i` that matches
   nothing has nothing to do, 12 (Info-ZIP writes an empty archive,
   exiting 0, when the archive is new). `test/zip.sh` asserts each.
+  Also, an archive that can be written but not read fails (11, "Could
+  not open archive"), where Info-ZIP takes it for a missing one and
+  replaces it, losing its entries.
 - Departures: entries are sorted by name within each directory (Info-ZIP
   uses readdir order), doubled slashes collapse (in patterns too, and
   so `d/a d//a` is one path rather than two entries), different paths
