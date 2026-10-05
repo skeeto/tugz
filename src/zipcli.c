@@ -63,6 +63,9 @@ static b32  os_truncate(os *, i32 fd, i64 len);
 // links lead to, which for a dangling link is where it points. Returns
 // a null string for a link the system would not follow (a loop).
 static s8   os_resolve(os *, s8 path, arena *perm, arena scratch);
+// Whether an existing file may be replaced as though written: on POSIX,
+// that the user may write it; on Windows, that it is not read-only.
+static b32  os_writable(os *, s8 path, arena scratch);
 // Close a created file and move it over path, keeping it. It takes the
 // permissions of a file it replaces. The descriptor is closed even on
 // failure, which discards the file.
@@ -1112,6 +1115,12 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
 
     ar->fd = os_open(z->ctx, z->target, OS_READ|OS_REGULAR, scratch);
     if (ar->fd < 0) {
+        // One that cannot be written either fails as in Info-ZIP, which
+        // takes it for a missing archive, then cannot write it
+        if (!os_writable(z->ctx, z->target, scratch)) {
+            return fail(z, ZE_CREAT, S("Could not create output file"),
+                        z->archive, scratch);
+        }
         return fail(z, ZE_READ, S("Could not open archive"), z->archive,
                     scratch);
     }
@@ -2091,7 +2100,10 @@ static i32 zip_main(zipconfig *conf)
         return fail(z, ZE_NONE, S("Nothing to do!"), z->archive, scratch);
     }
 
-    if (!z->target.s) {
+    // Once there is something to do, and before doing it, Info-ZIP opens
+    // the archive for writing, which a read-only one refuses: a guard
+    // against changing it, though replacing it needs no such permission
+    if (!z->target.s || (ar && !os_writable(z->ctx, z->target, scratch))) {
         return fail(z, ZE_CREAT, S("Could not create output file"),
                     z->archive, scratch);
     }

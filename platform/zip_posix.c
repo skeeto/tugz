@@ -121,6 +121,14 @@ static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
     return (s8){0};
 }
 
+// Judged by the system, as when Info-ZIP opens the archive to update
+// it: root, ACLs, flags, and read-only file systems all count.
+static b32 os_writable(os *ctx, s8 path, arena scratch)
+{
+    (void)ctx;
+    return !access(tocstr(&scratch, path), W_OK);
+}
+
 static b32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
 {
     (void)ctx;

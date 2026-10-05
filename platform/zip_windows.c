@@ -49,6 +49,7 @@ W32(u32)  GetFinalPathNameByHandleW(iptr, c16 *, u32, u32);
 W32(void) SetLastError(u32);
 W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 
+#define FILE_ATTRIBUTE_READONLY    0x01u
 #define FILE_ATTRIBUTE_HIDDEN      0x02u
 #define FILE_ATTRIBUTE_SYSTEM      0x04u
 #define FILE_READ_ATTRIBUTES       0x80u
@@ -229,6 +230,16 @@ static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
     u32  len = buf ? GetFinalPathNameByHandleW(h, buf, cap, 0) : 0;
     CloseHandle(h);
     return len && len<cap ? towtf8(perm, buf) : (s8){0};
+}
+
+// A read-only file, which Info-ZIP's port cannot open to update, and
+// which also refuses being replaced, but only after all the work.
+static b32 os_writable(os *ctx, s8 path, arena scratch)
+{
+    (void)ctx;
+    c16 *wpath = winpath(&scratch, path);
+    u32  attr  = wpath ? GetFileAttributesW(wpath) : INVALID_FILE_ATTRIBUTES;
+    return attr==INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_READONLY);
 }
 
 static b32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)

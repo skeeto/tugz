@@ -134,11 +134,17 @@ the file is flushed and closed without error), and
   `-u` and `-f`; 16 usage; 18 unreadable files; 3 bad archive; 10
   temporary file failure, including failing to replace the archive;
   15 for an archive that cannot be created) follow Info-ZIP, except
-  warnings and errors go to standard error. A file that cannot be added
-  still gets its progress line, then a warning under its entry's name
-  that tells a failed open from a failed read. Info-ZIP's quirks kept:
-  `../` stays in names, an emptied archive remains as a 22-byte file,
-  entries that do not shrink are stored, odd seconds round up.
+  warnings and errors go to standard error. A read-only archive fails
+  with 15 once there is something to do, before doing it, as Info-ZIP
+  finds by opening it to update it (replacing it needs no permission to
+  write it), and so does one that can be neither read nor written: as
+  `access` judges on POSIX, and on Windows by the read-only attribute,
+  which would otherwise refuse the rename only after all the work. A
+  file that cannot be added still gets its progress line, then a
+  warning under its entry's name that tells a failed open from a failed
+  read. Info-ZIP's quirks kept: `../` stays in names, an emptied archive
+  remains as a 22-byte file, entries that do not shrink are stored, odd
+  seconds round up.
 - Options: Info-ZIP's grammar and names. Long names may be abbreviated
   to a prefix of exactly one of Info-ZIP's long names (supported or
   not, so `--rec` is ambiguous). Only `-X` is negatable; other negations

@@ -646,6 +646,27 @@ if [ "$(id -u)" != 0 ]; then
         fail "read-only directory: $(cat err)"
     chmod 755 ro
 
+    # A read-only archive is refused (15) and left alone, as Info-ZIP
+    # finds, after reading it and finding something to do, before doing
+    # it; so is one that can be neither read nor written
+    "$ZIP" -q rox.zip tree/a.txt
+    cp rox.zip rox.orig
+    chmod 444 rox.zip
+    "$ZIP" rox.zip tree/b.txt >out 2>err && fail "read-only archive updated"
+    grep -q 'Could not create output file (rox.zip)' err ||
+        fail "read-only archive: $(cat err)"
+    grep -q adding out && fail "read-only archive: work done first"
+    expect_status 15 "$ZIP" -d rox.zip tree/a.txt
+    expect_status 15 "$ZIP" -FS rox.zip tree/b.txt
+    expect_status 12 "$ZIP" rox.zip missing
+    cmp -s rox.zip rox.orig || fail "read-only archive changed"
+    ln -s rox.zip roxl.zip && expect_status 15 "$ZIP" roxl.zip tree/b.txt
+    chmod 000 rox.zip
+    expect_status 15 "$ZIP" rox.zip tree/b.txt
+    echo junk >roj.zip
+    chmod 444 roj.zip
+    expect_status 3 "$ZIP" roj.zip tree/b.txt
+
     # Departure: an unreadable directory while recursing exits 18, where
     # Info-ZIP adds it silently (0)
     mkdir -p ud/sub

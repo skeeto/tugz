@@ -319,6 +319,18 @@ fi
 ls al/dist al/store | grep -q '^zi[0-9]' &&
     fail "temporary file left beside an archive link"
 
+# A read-only archive is refused (15) before any work, and left alone
+"$ZIP" -q ro.zip tree/a.txt
+cp ro.zip ro.orig
+attrib +r ro.zip
+"$ZIP" ro.zip tree/b.txt >out 2>err && fail "read-only archive updated"
+grep -q 'Could not create output file (ro.zip)' err ||
+    fail "read-only archive: $(cat err)"
+grep -q adding out && fail "read-only archive: work done first"
+expect_status 15 "$ZIP" -d ro.zip tree/a.txt
+cmp -s ro.zip ro.orig || fail "read-only archive changed"
+attrib -r ro.zip
+
 # Replacing an archive that another process holds open with delete
 # sharing, as scanners and indexers do
 ps "\$f = [IO.File]::Open('m.zip', 'Open', 'Read', 'ReadWrite, Delete');
