@@ -244,7 +244,8 @@ int main(int argc, char **argv)
 {
     os ctx = {0};
     ctx.outfd = -1;
-    reserve_stdfds();
+    reserve_stdfds(&ctx, S("\nzip error: Could not open /dev/null\n"),
+                   ZE_TEMP);
     install_signals();
 
     iz cap = (iz)1 << 28;

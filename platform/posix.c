@@ -234,12 +234,18 @@ static void os_exit(os *ctx, i32 status)
 
 // Occupy any closed standard descriptor, so that a file opened later
 // cannot take its place and receive messages. The opposite access mode
-// makes using it fail as though it were still closed.
-static void reserve_stdfds(void)
+// makes using it fail as though it were still closed. Without /dev/null
+// (some chroots and sandboxes), exit with msg and status instead: with
+// nothing opened yet, msg reaches only the caller's standard error.
+static void reserve_stdfds(os *ctx, s8 msg, i32 status)
 {
     for (int fd = 0; fd <= 2; fd++) {
         if (fcntl(fd, F_GETFD) < 0) {
-            open("/dev/null", fd ? O_RDONLY : O_WRONLY);  // lowest is fd
+            int devnull = open("/dev/null", fd ? O_RDONLY : O_WRONLY);
+            if (devnull != fd) {  // the lowest free, so fd unless it failed
+                os_write(ctx, 2, msg.s, msg.len);
+                os_exit(ctx, status);
+            }
         }
     }
 }

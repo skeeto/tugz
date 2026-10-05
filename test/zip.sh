@@ -871,6 +871,27 @@ chmod 640 perm.zip
 "$ZIP" -r closed.zip tree >&-
 verify closed.zip
 
+# Without /dev/null to fill the closed descriptor (a sandbox), zip exits
+# before creating anything rather than let the archive take its place
+nonull() {
+    if command -v bwrap >/dev/null; then
+        bwrap --bind / / --tmpfs /dev "$@"
+    else
+        sandbox-exec -p '(version 1) (allow default)
+            (deny file-read* file-write* (literal "/dev/null"))' "$@"
+    fi
+}
+if nonull true 2>/dev/null && ! nonull sh -c ': </dev/null' 2>/dev/null
+then
+    set +e
+    nonull sh -c 'exec "$0" -r nonull.zip tree >&-' "$ZIP" 2>err
+    st=$?
+    set -e
+    [ "$st" = 10 ] || fail "status $st without /dev/null"
+    grep -q "Could not open /dev/null" err || fail "no /dev/null message"
+    [ ! -e nonull.zip ] || fail "archive created without /dev/null"
+fi
+
 # A reader that goes away (SIGPIPE) leaves no temporary file behind
 mkdir pipe
 (cd pipe && "$ZIP" -r out.zip ../tree | true)

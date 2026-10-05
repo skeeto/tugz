@@ -49,7 +49,7 @@ int main(int argc, char **argv)
     os ctx = {0};
     ctx.outfd = -1;
 
-    reserve_stdfds();
+    reserve_stdfds(&ctx, S("gzip: cannot open /dev/null\n"), EXIT_ERR);
     install_signals();
 
     iz cap = (iz)1 << 25;

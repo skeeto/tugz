@@ -433,7 +433,9 @@ Fuzzers:
   delete-pending at creation, so even `TerminateProcess` cleans up.
 - At startup, a closed standard descriptor is reopened on `/dev/null`,
   keeping output files off it; the opposite access mode makes using it
-  fail as before.
+  fail as before. Without `/dev/null` (some chroots and sandboxes), the
+  program instead exits before opening anything, with a message and
+  status 1 (gzip) or 10 (zip, a temporary file failure).
 - `-f` replaces an existing output by unlinking it first, never writing
   through a link. An output it cannot remove (a directory, and on
   Windows a read-only file or a name another process holds
