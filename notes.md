@@ -201,6 +201,19 @@ neither inflate nor the gzip container.
   twice (`f f`, `d d/a`, `d d/`, `find d | zip -r@`) is added once,
   silently, as in Info-ZIP; different paths giving one name
   (`./d/a d/a`, or a `-j` collision) are an error (16).
+- Entry names in code pages: files match an entry by its stored name,
+  then, as in Info-ZIP, by an Info-ZIP Unicode path field (0x7075) whose
+  CRC is the stored name's, as Info-ZIP's Windows port, WinZip, and
+  7-Zip write one for a name not stored as UTF-8. On Windows, as in
+  Info-ZIP's port, a name without flag bit 11 or such a field, made on
+  DOS or Windows (or OS/2, or WinZip's NTFS), is decoded from the OEM
+  code page (`MultiByteToWideChar`), as Explorer's zip folder stores
+  names, and there patterns also match the decoded name, which names the
+  file that `-u`, `-f`, and patterns select. A replaced entry is written
+  under the Unicode name, flagged UTF-8; copied entries keep their
+  bytes. Messages give the Unicode name. Elsewhere, as in Info-ZIP's
+  Unix port, patterns match stored names only, and an entry they select
+  names its file by its stored name.
 - Selection: as Info-ZIP's procname does, a path not on disk is a
   pattern for the archive's entries (taken up after the paths on disk,
   which come first), and `-u` and `-f` without paths select every

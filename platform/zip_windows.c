@@ -46,8 +46,10 @@ W32(b32)  FindNextFileW(iptr, find_data *);
 W32(b32)  FlushFileBuffers(iptr);
 W32(u32)  GetEnvironmentVariableW(c16 *, c16 *, u32);
 W32(u32)  GetFinalPathNameByHandleW(iptr, c16 *, u32, u32);
+W32(i32)  MultiByteToWideChar(u32, u32, u8 const *, i32, c16 *, i32);
 W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 
+#define CP_OEMCP                   1u
 #define FILE_ATTRIBUTE_HIDDEN      0x02u
 #define FILE_ATTRIBUTE_SYSTEM      0x04u
 #define FILE_ATTRIBUTE_ARCHIVE     0x20u
@@ -475,6 +477,18 @@ static s8 os_error(os *ctx)
         return S("File exists");
     }
     return S("");
+}
+
+// By the system's OEM code page, as Info-ZIP's port converts names with
+// OemToAnsi. A name has at most 65,535 bytes, each at most one unit.
+static s8 os_fromoem(os *ctx, s8 name, arena *perm, arena scratch)
+{
+    (void)ctx;
+    i32  len = (i32)name.len;
+    c16 *w   = new(&scratch, len+1, c16);
+    i32  n   = MultiByteToWideChar(CP_OEMCP, 0, name.s, len, w, len);
+    w[n>0 ? n : 0] = 0;
+    return n>0 ? towtf8(perm, w) : (s8){0};
 }
 
 // An environment variable as WTF-8, or a null string if it is unset.

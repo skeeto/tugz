@@ -90,6 +90,8 @@ static b32  os_isatty(os *, i32 fd);
 // library's strerror, as Info-ZIP reports I/O errors, or an empty string
 // if unknown.
 static s8   os_error(os *);
+// A name in the OEM code page, as UTF-8 (Windows), or a null string.
+static s8   os_fromoem(os *, s8 name, arena *perm, arena scratch);
 
 static void os_oom(os *ctx)
 {
@@ -1165,10 +1167,31 @@ static b32 scan_arg(zip *z, s8 arg, arena scratch)
 typedef struct {
     i32     fd;
     i64     size;
-    i64     beg;  // of the first entry, after any preamble
+    i64     beg;     // of the first entry, after any preamble
     zend    end;
     zentry *entries;
+    s8     *unames;  // their Unicode names, where those differ, else null
 } zarchive;
+
+// An entry's name in Unicode, by which Info-ZIP also finds the entry for
+// a file, when it differs from the stored name: from a Unicode path field
+// (written by Info-ZIP's Windows port, WinZip, 7-Zip) that checks out,
+// else on Windows, as Info-ZIP's port reads them, from the OEM code page
+// for names made on DOS or Windows. Returns a null string if none.
+static s8 entry_uname(zip *z, zentry *e, arena *perm, arena scratch)
+{
+    if (e->flags & ZIP_FLAG_UTF8) {
+        return (s8){0};
+    }
+    u32 crc = crc32_update(0, e->name.s, e->name.len);
+    s8  u   = zip_extra_upath(e->cextra, crc);
+    if (!u.s || zip_utf8(u)<0) {
+        b32 oem = z->windows && zip_oem_name(e) && zip_utf8(e->name);
+        u = oem ? os_fromoem(z->ctx, e->name, perm, scratch) : (s8){0};
+    }
+    b32 bad = zip_has(u, 0) || zip_has(e->name, 0);
+    return !u.len || bad || zequals(u, e->name) ? (s8){0} : u;
+}
 
 static i32 not_zip(zip *z, arena scratch)
 {
@@ -1255,7 +1278,19 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
     for (i64 i = 0; i < ar->end.count; i++) {
         ar->beg = MIN(ar->beg, ar->entries[i].offset);
     }
+
+    ar->unames = new(&z->perm, (iz)ar->end.count, s8);
+    for (i64 i = 0; i < ar->end.count; i++) {
+        ar->unames[i] = entry_uname(z, ar->entries+i, &z->perm, scratch);
+    }
     return 0;
+}
+
+// An entry's name for messages: in Unicode, if it has that too.
+static s8 shown_name(zarchive *ar, zentry *e)
+{
+    s8 u = ar->unames[e - ar->entries];
+    return u.s ? u : e->name;
 }
 
 // Output: buffered positioned writes into the temporary file
@@ -1791,7 +1826,7 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
         zentry *copy = 0;
         switch (it->kind) {
         case ITEM_DELETE:
-            report(z, S("deleting: "), it->old->name, 0, scratch);
+            report(z, S("deleting: "), shown_name(ar, it->old), 0, scratch);
             break;
         case ITEM_KEEP:
             copy = it->old;
@@ -1836,8 +1871,8 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
             if (it->old) {
                 // Keep the entry it was to replace, which Info-ZIP counts
                 // as read
-                warn(z, S("will just copy entry over: "), it->old->name,
-                     scratch);
+                warn(z, S("will just copy entry over: "),
+                     shown_name(ar, it->old), scratch);
                 copy = it->old;
                 z->nread++;
                 z->bread += size;
@@ -1927,16 +1962,35 @@ static i32 parse_epoch(zip *z, s8 s, arena scratch)
     return 0;
 }
 
+// An entry's name as Info-ZIP matches patterns and filters against it,
+// and finds its file by it: the stored name, except on Windows, where
+// its port decodes names, the Unicode name if there is one.
+static s8 port_name(zip *z, zarchive *ar, iz i)
+{
+    s8 u = ar->unames[i];
+    return z->windows && u.s ? u : ar->entries[i].name;
+}
+
+// Whether a pattern matches an entry's name for Info-ZIP's port, or its
+// stored name, which on Windows tugz matches too.
+static b32 pattern_hit(zip *z, s8 pattern, zarchive *ar, iz i)
+{
+    s8s one  = {&pattern, 1, 1};
+    s8  name = ar->entries[i].name;
+    s8  port = port_name(z, ar, i);
+    return any_match(z, &one, name) ||
+           (port.s!=name.s && any_match(z, &one, port));
+}
+
 // Mark the entries matching a -d pattern that pass -i and -x, which
 // Info-ZIP applies to deletions too. Returns whether any entry matched,
 // marked or not.
-static b32 mark_deletes(zip *z, zentry *entries, iz n, s8 pattern, b32 *hit)
+static b32 mark_deletes(zip *z, zarchive *ar, iz n, s8 pattern, b32 *hit)
 {
-    s8s one = {&pattern, 1, 1};
     b32 any = 0;
     for (iz i = 0; i < n; i++) {
-        if (any_match(z, &one, entries[i].name)) {
-            hit[i] |= included(z, entries[i].name);
+        if (pattern_hit(z, pattern, ar, i)) {
+            hit[i] |= included(z, port_name(z, ar, i));
             any = 1;
         }
     }
@@ -2007,19 +2061,18 @@ static b32 plain_name(zip *z, s8 name, arena scratch)
 // or -j, if the name passes -i and -x and no path named it already. A
 // missing file leaves its entry as it is (deleted, under -FS). Returns
 // whether any entry matched.
-static b32 scan_entries(zip *z, zentry *entries, iz n, zmap *old, s8 pattern,
+static b32 scan_entries(zip *z, zarchive *ar, iz n, zmap *old, s8 pattern,
                         b32 *taken, arena scratch)
 {
-    s8s one = {&pattern, 1, 1};
     b32 any = 0;
     for (iz i = 0; i < n; i++) {
-        s8 name = entries[i].name;
-        if (pattern.s && !any_match(z, &one, name)) {
+        if (pattern.s && !pattern_hit(z, pattern, ar, i)) {
             continue;
         }
         any = 1;
 
         // Of entries with one name, files replace the first
+        s8  name  = port_name(z, ar, i);
         iz *first = zmap_upsert(&old, entry_key(z, name, &scratch), 0);
         if (*first!=i || taken[i] || !included(z, name) ||
             !plain_name(z, name, scratch)) {
@@ -2152,14 +2205,20 @@ static i32 zip_main(zipconfig *conf)
         warn(z, z->archive, S(" not found or empty"), scratch);
     }
 
-    // Existing entries by name, the first of any duplicates. On Windows,
-    // a file then replaces an entry whose name differs only in case, as
-    // in Info-ZIP, and the entry keeps its name.
+    // Existing entries by name, the first of any duplicates, and failing
+    // that by Unicode name, as Info-ZIP looks them up. On Windows, a file
+    // then replaces an entry whose name differs only in case, as in
+    // Info-ZIP, and the entry keeps its name.
     zmap *old = 0;
-    for (iz i = 0; i < nold; i++) {
-        s8  key = entry_key(z, entries[i].name, &scratch);
-        iz *v   = zmap_upsert(&old, key, &scratch);
-        *v = *v<0 ? i : *v;
+    for (i32 pass = 0; pass < 2; pass++) {
+        for (iz i = 0; i < nold; i++) {
+            s8 name = pass ? ar->unames[i] : entries[i].name;
+            if (name.s) {
+                iz *v = zmap_upsert(&old, entry_key(z, name, &scratch),
+                                    &scratch);
+                *v = *v<0 ? i : *v;
+            }
+        }
     }
 
     zitems items = {0};
@@ -2174,7 +2233,7 @@ static i32 zip_main(zipconfig *conf)
                 mark_named(z, old, arg, &info, hit, scratch);
             } else {
                 s8 pattern = zip_name(&scratch, arg, z->windows);
-                if (!mark_deletes(z, entries, nold, pattern, hit)) {
+                if (!mark_deletes(z, &arc, nold, pattern, hit)) {
                     warn(z, S("name not matched: "), arg, scratch);
                 }
             }
@@ -2210,13 +2269,12 @@ static i32 zip_main(zipconfig *conf)
         }
         for (iz p = 0; p < missing.len; p++) {
             s8 pattern = zip_name(&scratch, missing.data[p], z->windows);
-            if (!scan_entries(z, entries, nold, old, pattern, taken,
-                              scratch)) {
+            if (!scan_entries(z, &arc, nold, old, pattern, taken, scratch)) {
                 warn(z, S("name not matched: "), missing.data[p], scratch);
             }
         }
         if (refresh && !z->paths.len) {
-            scan_entries(z, entries, nold, old, (s8){0}, taken, scratch);
+            scan_entries(z, &arc, nold, old, (s8){0}, taken, scratch);
         }
 
         if (z->mode==MODE_SYNC && !z->files.len) {
@@ -2232,8 +2290,9 @@ static i32 zip_main(zipconfig *conf)
         }
 
         for (iz i = 0; i < z->files.len; i++) {
-            zfile *f = z->files.data + i;
-            iz *v = zmap_upsert(&old, entry_key(z, f->name, &scratch), 0);
+            zfile *f   = z->files.data + i;
+            s8     key = entry_key(z, f->name, &scratch);
+            iz    *v   = zmap_upsert(&old, key, 0);
             if (!v) {
                 if (z->mode != MODE_FRESHEN) {
                     zitem *it = push(&z->perm, &items);
@@ -2267,9 +2326,12 @@ static i32 zip_main(zipconfig *conf)
                 break;
             }
             if (replace) {
+                // The entry keeps its name, in Unicode if the file matched
+                // that, which is then written as UTF-8
+                b32 stored = zequals(entry_key(z, e->name, &scratch), key);
                 it->kind = z->mode==MODE_FRESHEN ? ITEM_FRESHEN : ITEM_UPDATE;
                 it->file = f;
-                f->name  = e->name;
+                f->name  = stored ? e->name : ar->unames[*v];
                 changed  = 1;
             }
         }

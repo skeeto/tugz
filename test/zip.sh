@@ -687,6 +687,45 @@ open(sys.argv[1], "wb").write(loc + cen + end)' nofit.zip
     cmp -s nofit.zip nofit0.zip || fail "a refused copy changed the archive"
 fi
 
+# As in Info-ZIP, a file replaces an entry whose stored name, in a code
+# page (here CP437, as Windows tools write it), it matches only by the
+# entry's Info-ZIP Unicode path field, if that is for the stored name;
+# the entry is then written under its Unicode name, flagged UTF-8
+if printf u >"$u" 2>/dev/null && [ -n "$PY" ]; then
+    for crc in good stale; do
+        $PY -c 'import struct, sys, zlib
+n = b"caf\x82.txt"
+c = zlib.crc32(n) if sys.argv[2] == "good" else 0
+x = b"up" + struct.pack("<HBI", 14, 1, c) + "café.txt".encode()
+d = b"old"
+loc = struct.pack("<IHHHHHIIIHH", 0x04034b50, 10, 0, 0, 0, 0x5021,
+                  zlib.crc32(d), len(d), len(d), len(n), len(x)) + n + x + d
+cen = struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 0xb14, 10, 0, 0, 0,
+                  0x5021, zlib.crc32(d), len(d), len(d), len(n), len(x), 0,
+                  0, 0, 0x20, 0) + n + x
+end = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 1, 1, len(cen), len(loc), 0)
+open(sys.argv[1], "wb").write(loc + cen + end)' up-$crc.zip $crc
+    done
+    for mode in '' -u -f -FS; do
+        cp up-good.zip up.zip
+        "$ZIP" $mode up.zip "$u" >out
+        verify up.zip
+        [ "$(wc -l <check.out | tr -d ' ')" = 1 ] &&
+            grep -q "^$u [08] 0x800 " check.out ||
+            fail "$mode by Unicode path: $(cat check.out)"
+        progress out | grep -qx "[a-z]*: $u" ||
+            fail "$mode by Unicode path: $(cat out)"
+    done
+    cp up-good.zip up.zip
+    "$ZIP" -d up.zip "$u" >out 2>&1
+    grep -qx "deleting: $u" out || fail "-d by Unicode path: $(cat out)"
+    cp up-stale.zip up.zip
+    "$ZIP" -q up.zip "$u"
+    verify up.zip
+    [ "$(wc -l <check.out | tr -d ' ')" = 2 ] ||
+        fail "stale Unicode path matched: $(cat check.out)"
+fi
+
 # Data before the first entry that offsets account for, such as a
 # self-extractor's stub after zip -A, is kept, as in Info-ZIP, and the
 # offsets stay absolute; offsets that do not account for it are refused.

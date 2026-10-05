@@ -34,6 +34,7 @@ enum {
 enum {
     ZIP_EXTRA_ZIP64     = 0x0001,
     ZIP_EXTRA_TIME      = 0x5455,  // "UT": Unix times
+    ZIP_EXTRA_UPATH     = 0x7075,  // "up": Info-ZIP Unicode path
     ZIP_EXTRA_UNIX      = 0x7875,  // "ux": Unix UID and GID
 };
 
@@ -444,6 +445,41 @@ static b32 zip_extra_mtime(s8 x, i64 *t)
         i += 4 + len;
     }
     return 0;
+}
+
+// The UTF-8 name in an Info-ZIP Unicode path field among extra fields,
+// if, as Info-ZIP and UnZip check, its version is at most 1 and it gives
+// crc as the stored name's CRC-32, else a null string. An empty name
+// means the stored one is UTF-8.
+static s8 zip_extra_upath(s8 x, u32 crc)
+{
+    for (iz i = 0; x.len-i >= 4;) {
+        u32 id  = get16(x.s+i);
+        iz  len = get16(x.s+i+2);
+        if (len > x.len-i-4) {
+            break;
+        }
+        if (id == ZIP_EXTRA_UPATH) {
+            u8 *f = x.s + i + 4;
+            b32 ok = len>=5 && f[0]<=1 && get32(f+1)==crc;
+            return ok ? (s8){f+5, len-5} : (s8){0};
+        }
+        i += 4 + len;
+    }
+    return (s8){0};
+}
+
+// Whether a name, not flagged UTF-8, is in an OEM (IBM PC) code page,
+// as Info-ZIP's Windows port judges by the host that made it: MS-DOS,
+// except PKZIP 2.5, 2.6, and 4.0 for Windows (known by attributes beyond
+// DOS's), which use the ANSI code page, OS/2, and WinZip's NTFS 5.0.
+static b32 zip_oem_name(zentry const *e)
+{
+    u32 host  = e->made >> 8;
+    u32 ver   = e->made & 0xff;
+    b32 pkwin = (e->extattr>>16) && (ver==25 || ver==26 || ver==40);
+    return !(e->flags & ZIP_FLAG_UTF8) &&
+           ((host==0 && !pkwin) || host==6 || (host==11 && ver==50));
 }
 
 // Apply a central header's Zip64 extra field to the entry. Returns false

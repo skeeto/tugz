@@ -523,6 +523,52 @@ static void test_extras(arena a)
     TEST(!zip_extra_mtime(shortut, &t));
     s8 cut = S("UT\x09\x00\x03\x80\x5d\x8b\x65");
     TEST(!zip_extra_mtime(cut, &t));
+
+    // The Unicode path, after other fields, if its CRC is the stored
+    // name's (here "caf\x82.txt") and its version at most 1
+    u32 crc   = 0xa0976e8f;
+    u8  buf[] = "UT\x05\x00\x03\x80\x5d\x8b\xfe"
+                "up\x0e\x00\x01\x8f\x6e\x97\xa0" "caf\xc3\xa9.txt";
+    s8  up    = {buf, countof(buf)-1};
+    TEST(equals(zip_extra_upath(up, crc), "caf\xc3\xa9.txt"));
+    TEST(!zip_extra_upath(up, crc^1).s);
+    up.s[13] = 0;
+    TEST(equals(zip_extra_upath(up, crc), "caf\xc3\xa9.txt"));
+    up.s[13] = 2;
+    TEST(!zip_extra_upath(up, crc).s);
+    s8 same = S("up\x05\x00\x01\x8f\x6e\x97\xa0");  // the stored name is UTF-8
+    s8 r2   = zip_extra_upath(same, crc);
+    TEST(r2.s && !r2.len);
+    TEST(!zip_extra_upath(S("up\x04\x00\x01\x8f\x6e\x97"), crc).s);
+    TEST(!zip_extra_upath(S("up\x0e\x00\x01\x8f\x6e\x97\xa0"), crc).s);
+    TEST(!zip_extra_upath(S("UT\x05\x00\x03\x80\x5d\x8b\xfe"), crc).s);
+}
+
+// Names not flagged UTF-8 are in an OEM code page if made on MS-DOS
+// (but for PKZIP for Windows), OS/2, or by WinZip on NTFS, as Info-ZIP's
+// Windows port judges.
+static void test_oem(void)
+{
+    zentry e = {0};
+    e.made = 0x0014;
+    TEST(zip_oem_name(&e));
+    e.flags = ZIP_FLAG_UTF8;
+    TEST(!zip_oem_name(&e));
+    e.flags = 0;
+    e.made  = 0x0019;  // PKZIP 2.5, but no Unix attributes
+    TEST(zip_oem_name(&e));
+    e.extattr = 0x81a40020;
+    TEST(!zip_oem_name(&e));
+    e.made = 0x003f;   // 7-Zip
+    TEST(zip_oem_name(&e));
+    e.made = 0x0614;   // OS/2
+    TEST(zip_oem_name(&e));
+    e.made = 0x0b32;   // WinZip on NTFS
+    TEST(zip_oem_name(&e));
+    e.made = 0x0b14;
+    TEST(!zip_oem_name(&e));
+    e.made = 0x031e;   // Unix
+    TEST(!zip_oem_name(&e));
 }
 
 // Zip64 end records are relied upon only when they check out, or when
@@ -767,6 +813,7 @@ int main(void)
     test_roundtrip_headers(a);
     test_zip64(a);
     test_extras(a);
+    test_oem();
     test_end_records(a);
     test_central64(a);
     test_fits();

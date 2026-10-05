@@ -335,6 +335,34 @@ ps "Expand-Archive -Path at.zip -DestinationPath x4"
 ps "if (!(Test-Path -LiteralPath ('x4\tree\caf' + [char]0xe9 + '.txt'))) { exit 1 }" ||
     fail "-@ UTF-8 name"
 
+# Names in the OEM code page, flag bit 11 clear and no Unicode path
+# field, as Explorer's zip folder writes them, are decoded to match
+# files, as Info-ZIP's port does (0x82 is e-acute in code pages 437 and
+# 850); the entry is then written under the decoded name
+oem() {  # archive: an empty caf\x82.txt from 2020, made on FAT
+    { printf 'PK\003\004\012\0\0\0\0\0\0\0\041P\0\0\0\0\0\0\0\0\0\0\0\0'
+      printf '\010\0\0\0caf\202.txt'
+      printf 'PK\001\002\024\0\012\0\0\0\0\0\0\0\041P\0\0\0\0\0\0\0\0\0\0\0\0'
+      printf '\010\0\0\0\0\0\0\0\0\0\040\0\0\0\0\0\0\0caf\202.txt'
+      printf 'PK\005\006\0\0\0\0\001\0\001\0\066\0\0\0\046\0\0\0\0\0'; } >"$1"
+}
+ps "Set-Content -LiteralPath ('caf' + [char]0xe9 + '.txt') -Value new -NoNewline"
+u=$(printf 'caf\303\251.txt')
+oem o1.zip
+printf '%s\r\n' "$u" | "$ZIP" o1.zip -@ >out
+grep -q "^updating: $u" out || fail "OEM name: $(cat out)"
+[ "$(list o1.zip | wc -l)" = 1 ] || fail "OEM name duplicated"
+oem o2.zip
+"$ZIP" -f o2.zip >out
+grep -q "^freshening: $u" out || fail "-f OEM name: $(cat out)"
+oem o3.zip
+printf '%s\r\n' "$u" | "$ZIP" -d o3.zip -@ >out 2>&1
+grep -q "^deleting: $u" out || fail "-d OEM name: $(cat out)"
+oem o4.zip
+"$ZIP" -d o4.zip 'caf?.txt' >out 2>&1
+grep -q '^deleting: caf' out || fail "-d OEM name pattern: $(cat out)"
+rm caf*.txt
+
 # Long paths beyond MAX_PATH
 long=$(printf '%0100d' 0 | tr 0 d)/$(printf '%0100d' 0 | tr 0 e)/$(printf '%0100d' 0 | tr 0 f)
 ps "\$p = '\\\\?\\' + (Resolve-Path .).Path + '\\deep\\$long' -replace '/', '\\';

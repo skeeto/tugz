@@ -108,12 +108,15 @@ replaced in place (keeping their comments), new ones appended, and the
 rest copied without recompression, with their extra fields, as `-X`
 applies only to entries written. Also as there, `-u` and `-f` without
 paths refresh every entry, and a path not on disk, such as a quoted
-wildcard, selects the entries it matches. Data before the first entry,
-such as a self-extractor's stub or a Python zipapp's `#!` line, is kept
-when the archive's offsets account for it (as after `zip -A`), as in
-Info-ZIP, while an archive whose offsets do not is refused (3), as
-there. The new archive is written to a temporary file and renamed over
-the old one. Headers, attributes,
+wildcard, selects the entries it matches. As in Info-ZIP, a file also
+matches an entry by its Unicode path field, which Windows tools add to
+names they store in a code page, and on Windows by its name decoded
+from the OEM code page, in which Explorer stores names. Data before the
+first entry, such as a self-extractor's stub or a Python zipapp's `#!`
+line, is kept when the archive's offsets account for it (as after
+`zip -A`), as in Info-ZIP, while an archive whose offsets do not is
+refused (3), as there. The new archive is written to a temporary file
+and renamed over the old one. Headers, attributes,
 extra fields, messages, and exit statuses match Info-ZIP's, but for
 three friendlier statuses: `-u` or `-f` with nothing newer exits 0
 (Info-ZIP: 12), an unreadable directory or a dangling link met while
