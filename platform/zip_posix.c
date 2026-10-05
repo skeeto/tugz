@@ -125,21 +125,22 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
 {
     char *dst = tocstr(&scratch, path);
     struct stat st;
-    mode_t mode;
     if (!stat(dst, &st)) {
-        mode = st.st_mode & 0777;
-    } else {
-        mode_t mask = umask(0);
-        umask(mask);
-        mode = 0666 & ~mask;
+        fchmod(fd, st.st_mode & 0777);
     }
-    fchmod(fd, mode);
+
+    // Flush and close before replacing anything, since deferred write
+    // errors (NFS, quotas) may surface only now. Until the rename, the
+    // file is still discarded on failure or interruption.
+    b32 ok = !fsync(fd) || errno==EINVAL || errno==ENOTSUP;
+    ok &= !close(fd) || errno==EINTR;
+    ctx->outfd = -1;
 
     sigset_t old = block_signals();
-    b32 ok = !rename(pending_output, dst);
-    ctx->keep = ok;
+    ok = ok && !rename(pending_output, dst);
+    release_output(ok);
     restore_signals(old);
-    return ok && os_close(ctx, fd);
+    return ok;
 }
 
 static void os_localtime(os *ctx, i64 t, i32 tm[6])

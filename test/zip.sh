@@ -305,6 +305,14 @@ expect_status 0 "$ZIP" -h
 "$ZIP" >out
 grep -q usage out || fail "no usage without arguments"
 
+# A new archive gets the permissions of a new file, while a replaced
+# one keeps its own
+(umask 077 && "$ZIP" -q perm.zip tree/a.txt)
+[ "$(ls -l perm.zip | cut -c1-10)" = "-rw-------" ] || fail "new archive mode"
+chmod 640 perm.zip
+(umask 022 && "$ZIP" -q perm.zip tree/b.txt)
+[ "$(ls -l perm.zip | cut -c1-10)" = "-rw-r-----" ] || fail "replaced mode"
+
 if [ -n "$SLOW" ]; then
     # Zip64: a 5 GiB file, compressed and stored (pushing a following
     # entry's offset past 4 GiB), then merged into

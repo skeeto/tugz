@@ -16,12 +16,12 @@
 #endif
 
 // Path of the output file being written, deleted if a signal interrupts
-// the program. The signal handler is why this one variable is global.
+// the program, and null once the file is kept. The signal handler is why
+// this one variable is global.
 static char *volatile pending_output;
 
 struct os {
-    i32 outfd;  // descriptor of pending_output, or -1
-    b32 keep;   // keep pending_output when closed
+    i32 outfd;  // descriptor of the created output file, or -1
 };
 
 static s8 cstr(char *z)
@@ -68,6 +68,19 @@ static void restore_signals(sigset_t old)
     sigprocmask(SIG_SETMASK, &old, 0);
 }
 
+// Forget the pending output file, first deleting it unless kept.
+static void release_output(b32 keep)
+{
+    sigset_t old = block_signals();
+    char *path = pending_output;
+    if (path && !keep) {
+        unlink(path);
+    }
+    pending_output = 0;
+    restore_signals(old);
+    free(path);
+}
+
 static i32 open_output(os *ctx, char *cpath, i32 mode)
 {
     if (mode & OS_FORCE) {
@@ -83,10 +96,10 @@ static i32 open_output(os *ctx, char *cpath, i32 mode)
     strcpy(copy, cpath);
 
     sigset_t old = block_signals();
-    int fd = open(cpath, O_WRONLY|O_CREAT|O_EXCL, 0600);
+    mode_t perm = mode & OS_DEFPERMS ? 0666 : 0600;
+    int fd = open(cpath, O_WRONLY|O_CREAT|O_EXCL, perm);
     if (fd >= 0) {
         ctx->outfd = fd;
-        ctx->keep = 0;
         pending_output = copy;
     }
     restore_signals(old);
@@ -139,20 +152,11 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
 
 static b32 os_close(os *ctx, i32 fd)
 {
-    if (fd != ctx->outfd) {
-        return !close(fd) || errno==EINTR;
-    }
-
-    sigset_t old = block_signals();
     b32 ok = !close(fd) || errno==EINTR;
-    char *path = pending_output;
-    if (!ctx->keep) {
-        unlink(path);
+    if (fd == ctx->outfd) {
+        ctx->outfd = -1;
+        release_output(0);
     }
-    pending_output = 0;
-    ctx->outfd = -1;
-    restore_signals(old);
-    free(path);
     return ok;
 }
 
@@ -193,14 +197,15 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
 [[maybe_unused]] static void os_keep(os *ctx, i32 fd)
 {
     if (fd == ctx->outfd) {
-        ctx->keep = 1;
+        release_output(1);
     }
 }
 
 static void os_exit(os *ctx, i32 status)
 {
+    (void)ctx;
     char *path = pending_output;
-    if (path && !ctx->keep) {
+    if (path) {
         unlink(path);
     }
     _exit(status);

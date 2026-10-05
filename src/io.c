@@ -15,10 +15,12 @@ enum {
     OS_ONELINK  = 1 << 2,  // refuse files with multiple hard links
 
     // Create a file for writing. It is created inaccessible to others
-    // until os_copymeta, and it is discarded when closed, or if the
-    // process is interrupted, unless os_keep was called first.
+    // until os_copymeta, or with the defaults for a new file (umask,
+    // inherited ACL) given OS_DEFPERMS. It is discarded when closed, or
+    // if the process is interrupted, unless os_keep was called first.
     OS_CREATE   = 1 << 3,  // fail if it exists
     OS_FORCE    = 1 << 4,  // replace if it exists
+    OS_DEFPERMS = 1 << 5,
 };
 enum {
     OS_ERR      = -1,

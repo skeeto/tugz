@@ -110,7 +110,8 @@ The zip program shares the deflate core and `src/io.c`, adding a
 portable format layer (`src/zip.c`, no I/O, fuzzed) and a driver
 (`src/zipcli.c`) over a few more platform functions: `os_stat`,
 `os_listdir`, `os_readlink`, positioned `os_readat`/`os_writeat`,
-`os_truncate`, `os_commit` (atomic rename over the target), and
+`os_truncate`, `os_commit` (atomic rename over the target, only once
+the file is flushed and closed without error), and
 `os_localtime`. It needs neither inflate nor the gzip container.
 
 - Scope: batch use by release scripts. Everything interactive or legacy

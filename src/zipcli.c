@@ -48,9 +48,9 @@ static s8   os_readlink(os *, s8 path, arena *perm, arena scratch);
 static b32  os_readat(os *, i32 fd, u8 *buf, iz len, i64 off);
 static b32  os_writeat(os *, i32 fd, u8 *buf, iz len, i64 off);
 static b32  os_truncate(os *, i32 fd, i64 len);
-// Move a created file over path, keep it, and close it. It takes the
-// permissions of the file it replaces, or defaults for a new file. On
-// failure the file remains open and will be discarded.
+// Close a created file and move it over path, keeping it. It takes the
+// permissions of a file it replaces. The descriptor is closed even on
+// failure, which discards the file.
 static b32  os_commit(os *, i32 fd, s8 path, arena scratch);
 // Broken-down local time {year, month, day, hour, minute, second}.
 static void os_localtime(os *, i64 t, i32 tm[6]);
@@ -1179,16 +1179,18 @@ static void report(zip *z, s8 verb, s8 name, zentry *e, arena scratch)
     say(z, 1, JOIN(&scratch, verb, name, how, S("\n")));
 }
 
-// Temporary file beside the archive, created discarded-on-close.
+// Temporary file beside the archive, created discarded-on-close. For a
+// new archive it has the permissions of a new file from the start.
 static i32 create_temp(zip *z, s8 *path, arena scratch)
 {
     iz cut = z->archive.len;
     for (; cut>0 && !is_sep(z, z->archive.s[cut-1]); cut--) {}
     s8 dir = {z->archive.s, cut};
+    i32 mode = OS_CREATE | (z->arcinfo.type==FT_NONE ? OS_DEFPERMS : 0);
     for (i32 i = 0; i < 1000000; i++) {
         s8 num = znum(&scratch, 1000000 + i);
         *path = JOIN(&z->perm, dir, S("zi"), (s8){num.s+1, 6});
-        i32 fd = os_open(z->ctx, *path, OS_CREATE, scratch);
+        i32 fd = os_open(z->ctx, *path, mode, scratch);
         if (fd != OS_EEXIST) {
             return fd;
         }
@@ -1283,7 +1285,6 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
         warn(z, S("zip file empty"), S(""), scratch);
     }
     if (!os_commit(z->ctx, fd, z->archive, scratch)) {
-        os_close(z->ctx, fd);
         return fail(z, ZE_CREAT, S("Could not replace archive"), z->archive,
                     scratch);
     }

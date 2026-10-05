@@ -231,6 +231,7 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
 {
     c16 *wpath = winpath(&scratch, path);
     if (!wpath) {
+        os_close(ctx, fd);
         return 0;
     }
     s16 name = s16lit(wpath);
@@ -244,6 +245,7 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
     iptr h = ctx->handles[fd];
     u8 keep = 0;
     if (!SetFileInformationByHandle(h, FileDispositionInfo, &keep, 1)) {
+        os_close(ctx, fd);
         return 0;
     }
     if (!SetFileInformationByHandle(h, FileRenameInfoEx, ri, (u32)size)) {
@@ -253,6 +255,7 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
         if (!SetFileInformationByHandle(h, FileRenameInfo, ri, (u32)size)) {
             u8 discard = 1;
             SetFileInformationByHandle(h, FileDispositionInfo, &discard, 1);
+            os_close(ctx, fd);
             return 0;
         }
     }
