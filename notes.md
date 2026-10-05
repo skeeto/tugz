@@ -218,7 +218,14 @@ neither inflate nor the gzip container.
 - Entry names in code pages: files match an entry by its stored name,
   then, as in Info-ZIP, by an Info-ZIP Unicode path field (0x7075) whose
   CRC is the stored name's, as Info-ZIP's Windows port, WinZip, and
-  7-Zip write one for a name not stored as UTF-8. On Windows, as in
+  7-Zip write one for a name not stored as UTF-8. Info-ZIP warns of a
+  stale field, of version 0 or 1 (it skips later ones with another
+  warning) but without that CRC or too short to hold one, in an entry
+  without flag bit 11, and so does tugz, naming the entry where
+  Info-ZIP prints "(null)" (and a stray debugging line on standard
+  output, `unicode_mismatch = 1`, even under `-q`); it warns again of
+  one in a local header, which tugz does not read until copying, and
+  then ignores. On Windows, as in
   Info-ZIP's port, a name without flag bit 11 or such a field, made on
   DOS or Windows (or OS/2, or WinZip's NTFS), is decoded from the OEM
   code page (`MultiByteToWideChar`), as Explorer's zip folder stores

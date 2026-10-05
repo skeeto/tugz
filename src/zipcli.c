@@ -1384,7 +1384,8 @@ typedef struct {
 // a file, when it differs from the stored name: from a Unicode path field
 // (written by Info-ZIP's Windows port, WinZip, 7-Zip) that checks out,
 // else on Windows, as Info-ZIP's port reads them, from the OEM code page
-// for names made on DOS or Windows. Returns a null string if none.
+// for names made on DOS or Windows. Returns a null string if none. As
+// Info-ZIP does, warns of a field that does not check out.
 static s8 entry_uname(zip *z, zentry *e, arena *perm, arena scratch)
 {
     if (e->flags & ZIP_FLAG_UTF8) {
@@ -1395,6 +1396,11 @@ static s8 entry_uname(zip *z, zentry *e, arena *perm, arena scratch)
     if (!u.s || zip_utf8(u)<0) {
         b32 oem = z->windows && zip_oem_name(e) && zip_utf8(e->name);
         u = oem ? os_fromoem(z->ctx, e->name, perm, scratch) : (s8){0};
+    }
+    if (zip_extra_upath_stale(e->cextra, crc)) {
+        s8 name = u.len ? u : e->name;  // Info-ZIP gives "(null)"
+        warn(z, S("Unicode does not match path - ignoring Unicode: "), name,
+             scratch);
     }
     b32 bad = zip_has(u, 0) || zip_has(e->name, 0);
     return !u.len || bad || zequals(u, e->name) ? (s8){0} : u;

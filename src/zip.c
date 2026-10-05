@@ -447,26 +447,40 @@ static b32 zip_extra_mtime(s8 x, i64 *t)
     return 0;
 }
 
+// The data of the first extra field with an ID, else a null string.
+static s8 zip_extra_field(s8 x, u32 id)
+{
+    for (iz i = 0; x.len-i >= 4;) {
+        iz len = get16(x.s+i+2);
+        if (len > x.len-i-4) {
+            break;
+        } else if (get16(x.s+i) == id) {
+            return (s8){x.s+i+4, len};
+        }
+        i += 4 + len;
+    }
+    return (s8){0};
+}
+
 // The UTF-8 name in an Info-ZIP Unicode path field among extra fields,
 // if, as Info-ZIP and UnZip check, its version is at most 1 and it gives
 // crc as the stored name's CRC-32, else a null string. An empty name
 // means the stored one is UTF-8.
 static s8 zip_extra_upath(s8 x, u32 crc)
 {
-    for (iz i = 0; x.len-i >= 4;) {
-        u32 id  = get16(x.s+i);
-        iz  len = get16(x.s+i+2);
-        if (len > x.len-i-4) {
-            break;
-        }
-        if (id == ZIP_EXTRA_UPATH) {
-            u8 *f = x.s + i + 4;
-            b32 ok = len>=5 && f[0]<=1 && get32(f+1)==crc;
-            return ok ? (s8){f+5, len-5} : (s8){0};
-        }
-        i += 4 + len;
-    }
-    return (s8){0};
+    s8  f  = zip_extra_field(x, ZIP_EXTRA_UPATH);
+    b32 ok = f.len>=5 && f.s[0]<=1 && get32(f.s+1)==crc;
+    return ok ? (s8){f.s+5, f.len-5} : (s8){0};
+}
+
+// Whether extra fields hold a Unicode path field that Info-ZIP reads but
+// finds stale, the stored name having changed since it was made: of a
+// version at most 1, without crc, the stored name's CRC-32, or too short
+// to hold one.
+static b32 zip_extra_upath_stale(s8 x, u32 crc)
+{
+    s8 f = zip_extra_field(x, ZIP_EXTRA_UPATH);
+    return f.s && (!f.len || f.s[0]<=1) && (f.len<5 || get32(f.s+1)!=crc);
 }
 
 // Whether a name, not flagged UTF-8, is in an OEM (IBM PC) code page,

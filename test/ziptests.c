@@ -549,6 +549,17 @@ static void test_extras(arena a)
     TEST(!zip_extra_upath(S("up\x04\x00\x01\x8f\x6e\x97"), crc).s);
     TEST(!zip_extra_upath(S("up\x0e\x00\x01\x8f\x6e\x97\xa0"), crc).s);
     TEST(!zip_extra_upath(S("UT\x05\x00\x03\x80\x5d\x8b\xfe"), crc).s);
+
+    // Info-ZIP warns of one it reads, of version at most 1, but finds
+    // stale: for another name, or too short to tell
+    up.s[13] = 1;
+    TEST(!zip_extra_upath_stale(up, crc));
+    TEST( zip_extra_upath_stale(up, crc^1));
+    up.s[13] = 2;
+    TEST(!zip_extra_upath_stale(up, crc^1));
+    TEST( zip_extra_upath_stale(S("up\x04\x00\x01\x8f\x6e\x97"), crc));
+    TEST( zip_extra_upath_stale(S("up\x00\x00"), crc));
+    TEST(!zip_extra_upath_stale(S("UT\x05\x00\x03\x80\x5d\x8b\xfe"), crc));
 }
 
 // Names not flagged UTF-8 are in an OEM code page if made on MS-DOS
