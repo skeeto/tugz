@@ -225,7 +225,11 @@ the file is flushed and closed without error), and
   depends on it) and raw data copies. A Zip64 end record is trusted only
   if it checks out or the plain end record calls for it, since bytes
   resembling a Zip64 locator may precede the end record by chance (found
-  by fuzzing).
+  by fuzzing). Only a missing archive is new: anything else at its path
+  must be a zip file, so an empty file, a directory, a FIFO, or a device
+  fails with 3 before any work, as Info-ZIP fails (it waits on a FIFO,
+  and cannot open a socket, 15). An empty file therefore never adds
+  itself.
 - Windows: made-by host 0 (FAT, the most widely understood), DOS
   attributes, `UT` extra field. Names drop a drive or a UNC
   `//server/share/` prefix, as Info-ZIP's do, and likewise a device

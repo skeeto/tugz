@@ -1070,8 +1070,22 @@ typedef struct {
     zentry *entries;
 } zarchive;
 
+static i32 not_zip(zip *z, arena scratch)
+{
+    warn(z, S("missing end signature--probably not a zip file"), S(""),
+         scratch);
+    return fail(z, ZE_FORM, S("Zip file structure invalid"), z->archive,
+                scratch);
+}
+
 static i32 read_archive(zip *z, zarchive *ar, arena scratch)
 {
+    if (z->arcinfo.type != FT_FILE) {
+        // A directory or device, which Info-ZIP reads as an empty file,
+        // or a FIFO, on which it waits for data
+        return not_zip(z, scratch);
+    }
+
     ar->fd = os_open(z->ctx, z->archive, OS_READ|OS_REGULAR, scratch);
     if (ar->fd < 0) {
         return fail(z, ZE_READ, S("Could not open archive"), z->archive,
@@ -1099,9 +1113,7 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
     case ZIP_OK:
         break;
     case ZIP_ENOEND:
-        warn(z, S("missing end signature--probably not a zip file"), S(""),
-             scratch);
-        // fallthrough
+        return not_zip(z, scratch);
     case ZIP_EFORMAT:
         return fail(z, ZE_FORM, S("Zip file structure invalid"), z->archive,
                     scratch);
@@ -1880,10 +1892,11 @@ static i32 zip_main(zipconfig *conf)
         z->paths = names;
     }
 
+    // Whatever is at the archive path must be a zip file, as Info-ZIP
+    // finds before any work: an empty file, or a directory, is not
     zarchive  arc = {0};
     zarchive *ar  = 0;
-    z->arcexists = os_stat(z->ctx, z->archive, 1, &z->arcinfo, scratch) &&
-                   z->arcinfo.type==FT_FILE && z->arcinfo.size>0;
+    z->arcexists = os_stat(z->ctx, z->archive, 1, &z->arcinfo, scratch);
     if (z->arcexists) {
         ar = &arc;
         err = read_archive(z, ar, scratch);

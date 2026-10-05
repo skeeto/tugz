@@ -525,6 +525,26 @@ echo junk >junk.zip
 expect_status 3 "$ZIP" junk.zip tree/a.txt
 head -c 100 t.zip >trunc.zip
 expect_status 3 "$ZIP" trunc.zip tree/a.txt
+
+# Whatever is at the archive path must be a zip file, as Info-ZIP finds
+# before any work: not an empty file (not even to add to itself), a
+# directory, a FIFO, or a device
+: >empty.zip
+for mode in -q -qu -qf -qd -qFS; do
+    expect_status 3 "$ZIP" $mode empty.zip tree/a.txt
+done
+[ ! -s empty.zip ] || fail "an empty archive was written"
+(cd tree && : >self.zip && expect_status 3 "$ZIP" -r self.zip . && rm self.zip)
+mkdir isdir.zip
+"$ZIP" -r isdir.zip tree >out 2>&1 && fail "directory archive succeeded"
+grep -q 'adding:' out && fail "directory archive did work first: $(cat out)"
+grep -q 'structure invalid' out || fail "directory archive: $(cat out)"
+if mkfifo fifo.zip 2>/dev/null; then
+    expect_status 3 "$ZIP" fifo.zip tree/a.txt
+    [ -p fifo.zip ] || fail "FIFO archive replaced"
+fi
+ln -s /dev/null null.zip && expect_status 3 "$ZIP" null.zip tree/a.txt
+
 if [ "$(id -u)" != 0 ]; then
     cp tree/a.txt unreadable
     chmod 000 unreadable
