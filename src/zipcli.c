@@ -1455,6 +1455,28 @@ static u16 level_flags(i32 level)
     return level>=8 ? 2 : level<=2 ? 4 : 0;
 }
 
+// Whether a path ends in a suffix of Info-ZIP's default -n list, of
+// files already compressed, matched as there: ignoring case on Windows.
+static b32 store_suffix(zip *z, s8 path)
+{
+    static s8 const suffixes[] = {
+        S8(".Z"), S8(".zip"), S8(".zoo"), S8(".arc"), S8(".lzh"), S8(".arj"),
+    };
+    i32 fold = z->windows ? ZIP_FOLD : 0;
+    for (iz i = 0; i < countof(suffixes); i++) {
+        s8  s     = suffixes[i];
+        b32 match = path.len >= s.len;
+        for (iz j = 0; match && j < s.len; j++) {
+            u8 c = path.s[path.len-s.len+j];
+            match = zip_fold(c, fold) == zip_fold(s.s[j], fold);
+        }
+        if (match) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 enum { WRITE_OK, WRITE_EOPEN, WRITE_EREAD, WRITE_EDIRFILE };
 
 // Compress a new entry. Returns WRITE_OK, or, having left the output
@@ -1494,8 +1516,10 @@ static i32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
     }
 
     // As in Info-ZIP, only regular files with data may be compressed:
-    // links are always stored
-    b32 tryz = z->level>0 && f->info.type==FT_FILE && f->info.size;
+    // links are always stored, and so, below -9, are files named with
+    // its default -n suffixes, without trying
+    b32 tryz = z->level>0 && f->info.type==FT_FILE && f->info.size &&
+               (z->level==9 || !store_suffix(z, f->path));
     if (tryz) {
         e->flags |= level_flags(z->level);
     }

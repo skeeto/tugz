@@ -106,6 +106,26 @@ for level in 0 1 2 3 4 5 6 7 8 9; do
     fi
 done
 
+# Below -9, files with the suffixes of Info-ZIP's default -n list are
+# stored without trying to compress them, as there: so without level
+# flag bits, as with -0. Case matters on POSIX.
+mkdir sfx
+for name in a.zip b.Z c.zoo d.arc e.lzh f.arj; do
+    head -c 4000 tree/sub/deeper/text >sfx/$name
+done
+"$ZIP" -qX0 sfx0.zip sfx/*
+for level in 1 2 6 8; do
+    rm -f sfx$level.zip
+    "$ZIP" -qX$level sfx$level.zip sfx/*
+    cmp -s sfx0.zip sfx$level.zip || fail "suffixes compressed at -$level"
+done
+"$ZIP" -q9 sfx9.zip sfx/*
+[ "$(zipinfo sfx9.zip | grep -c defX)" = 6 ] || fail "suffixes stored at -9"
+head -c 4000 tree/sub/deeper/text >sfx/g.ZIP
+"$ZIP" sfx.zip sfx/a.zip sfx/g.ZIP >out
+grep -q 'sfx/a.zip (stored 0%)' out || fail "suffix progress: $(cat out)"
+grep -q 'sfx/g.ZIP (deflated' out || fail "suffix case: $(cat out)"
+
 # Progress messages
 "$ZIP" p.zip tree/a.txt tree/empty >out
 progress out >got

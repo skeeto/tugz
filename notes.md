@@ -131,7 +131,10 @@ the file is closed, or on Windows flushed, without error), and
   compression was attempted), method, external attributes, local and
   central `UT`/`ux` extra fields, times, and CRCs are byte-identical.
   Symbolic links (`-y`) are always stored, never compressed, as in
-  Info-ZIP.
+  Info-ZIP. So, below `-9`, are files whose names end in a suffix of
+  its default `-n` list (`.Z .zip .zoo .arc .lzh .arj`, ignoring case
+  only on Windows), with no level flag bits, as it does not try to
+  compress them; `-n` itself is rejected.
   Messages, warnings, and exit statuses (12 nothing to do, silently for
   `-u` and `-f`; 16 usage; 18 unreadable files; 3 bad archive; 10
   temporary file failure, including failing to replace the archive;
