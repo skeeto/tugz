@@ -146,6 +146,20 @@ cmp -s got want.txt || fail "*.*: $(cat got)"
 "$ZIP" -q w5.zip 'tree/one.*'
 [ "$(list w5.zip)" = tree/one ] || fail "name.*: $(list w5.zip)"
 
+# Freshening matches wildcards against entries rather than the disk, as
+# Info-ZIP's port does: case matters, * spans directories, and the
+# current directory need have no matches (here it has want.txt)
+mkdir -p fr/sub
+printf 1 >fr/a.txt
+printf 2 >fr/sub/b.txt
+"$ZIP" -qr fr.zip fr
+ps "foreach (\$f in 'fr\\a.txt', 'fr\\sub\\b.txt') {
+        (Get-Item \$f).LastWriteTime = '2030-01-01' }"
+expect_status 12 "$ZIP" -f fr.zip '*.TXT'
+"$ZIP" -f fr.zip '*.txt' >out
+grep -c '^freshening: ' out | grep -qx 2 || fail "-f '*.txt': $(cat out)"
+list fr.zip | grep -q want.txt && fail "-f added a file"
+
 # -nw leaves ? a wildcard, as in Info-ZIP
 "$ZIP" -q -nw nw.zip 'tree/?.txt'
 list nw.zip | sort >got

@@ -344,6 +344,69 @@ expect_status 12 "$ZIP" -FS -r fs.zip fs -x '*'
 expect_status 12 "$ZIP" -FS -@ fs.zip </dev/null
 cmp -s fs.zip fs0.zip || fail "-FS with nothing found changed the archive"
 
+# As in Info-ZIP, a path not on disk selects the entries it matches as
+# a pattern, and -u and -f without paths select every entry: the file
+# each names is examined (without recursion, -D, or -j), and if it is
+# gone the entry is kept, or deleted under -FS
+mkdir -p sel/d1/s sel/d2
+printf a >sel/d1/a.txt
+printf b >sel/d1/b.log
+printf c >sel/d1/s/c.txt
+printf g >sel/d1/gone
+printf d >sel/d2/d.txt
+(cd sel && touch -t 202001010000 d1/* d1/s/c.txt d2/d.txt d2 d1 &&
+ "$ZIP" -qr ../sel.zip d1 d2 && rm d1/gone &&
+ touch -t 202301010000 d1/a.txt d1/s/c.txt && touch -t 202001010000 d1)
+selz() {  # expected-progress zip-arguments...
+    want=$1
+    shift
+    cp sel.zip sel/t.zip
+    (cd sel && "$ZIP" "$@" >../out 2>../err) || true
+    progress out | tr '\n' ' ' >got
+    [ "$(cat got)" = "$want" ] || fail "zip $*: $(cat got) $(cat err)"
+}
+selz 'updating: d1/a.txt updating: d1/s/c.txt ' -u t.zip d2/d.txt 'd1/*'
+selz 'updating: d1/a.txt updating: d1/s/c.txt ' -u -@ t.zip <<EOF
+d1/*.txt
+EOF
+selz 'updating: d1/a.txt updating: d1/s/c.txt ' -u t.zip
+selz 'freshening: d1/a.txt freshening: d1/s/c.txt ' -f t.zip
+selz 'freshening: d1/a.txt freshening: d1/s/c.txt ' -f t.zip '*'
+selz 'updating: d1/a.txt ' -u t.zip -x '*s/*'
+selz 'updating: d1/a.txt ' -u -nw -D -j t.zip 'd1/a?txt'
+selz 'updating: d1/a.txt updating: d1/s/c.txt ' -u t.zip 'd1/*' ./d1/a.txt
+selz 'updating: d1/ updating: d1/a.txt updating: d1/b.log updating: d1/s/ updating: d1/s/c.txt ' t.zip 'd1/*'
+names sel/t.zip | grep -q d1/gone || fail "a missing file's entry was lost"
+selz 'deleting: d1/ updating: d1/a.txt deleting: d1/b.log deleting: d1/gone deleting: d1/s/ updating: d1/s/c.txt ' -FS t.zip d2 d2/d.txt 'd1/*.txt'
+cp sel.zip sel/t.zip
+(cd sel && expect_status 12 "$ZIP" -u t.zip 'd1/g*')
+(cd sel && expect_status 12 "$ZIP" -u -nw t.zip 'd1/*')
+(cd sel && "$ZIP" -u t.zip 'nomatch*' 2>&1 | grep -q 'not matched: nomatch') ||
+    fail "pattern matching no entry"
+(cd sel && "$ZIP" -u t.zip 'd1/g*' 2>&1 | grep -q 'not matched') &&
+    fail "pattern matching an entry of a missing file"
+
+# An entry selected by name that has changed between file and directory
+# is kept, with Info-ZIP's warning
+rm sel/d1/b.log
+mkdir sel/d1/b.log
+touch -t 202001010000 sel/d1
+selz 'updating: d1/a.txt updating: d1/s/c.txt ' -u t.zip
+grep -q 'file and directory with the same name: d1/b.log' err ||
+    fail "file then directory: $(cat err)"
+[ "$(unzip -p sel/t.zip d1/b.log)" = b ] || fail "file then directory kept"
+(cd sel && expect_status 18 "$ZIP" -u t.zip)
+
+# Entry names zip would not make are not read as paths, so that an
+# untrusted archive cannot select any file
+if [ -n "$PY" ]; then
+    $PY -c 'import sys, zipfile as z
+a = z.ZipFile(sys.argv[1], "w"); a.writestr(z.ZipInfo(sys.argv[2]), "x")' \
+        abs.zip "$tmp/tree/a.txt"
+    expect_status 12 "$ZIP" -f abs.zip
+    [ "$(unzip -p abs.zip)" = x ] || fail "absolute entry name freshened"
+fi
+
 # Delete
 "$ZIP" -d m.zip 'tree/o*' nomatch >out 2>&1
 grep -q 'deleting: tree/one' out || fail "-d: $(cat out)"
@@ -388,6 +451,17 @@ names lit.zip >got
 printf 'lit/\nlit/s*/q\nlit/sx/\nlit/sx/r\n' >want
 cmp -s got want || fail "-d of a name on disk: $(cat got)"
 expect_status 12 "$ZIP" -qdD lit.zip lit
+
+# A -d name that is a special file on disk marks nothing
+mkdir ffd
+printf x >ffd/fifo
+(cd ffd && "$ZIP" -q ../ff.zip fifo)
+if mkfifo fifo 2>/dev/null; then
+    "$ZIP" -d ff.zip fifo >out 2>&1 && fail "-d of a FIFO name succeeded"
+    grep -q 'special file: fifo' out || fail "-d of a FIFO: $(cat out)"
+    [ "$(names ff.zip)" = fifo ] || fail "-d of a FIFO deleted the entry"
+    rm fifo
+fi
 
 # Copied entries keep their bytes; -X strips their extra fields
 "$ZIP" -qr k1.zip tree

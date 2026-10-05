@@ -156,6 +156,19 @@ the file is flushed and closed without error), and
   twice (`f f`, `d d/a`, `d d/`, `find d | zip -r@`) is added once,
   silently, as in Info-ZIP; different paths giving one name
   (`./d/a d/a`, or a `-j` collision) are an error (16).
+- Selection: as Info-ZIP's procname does, a path not on disk is a
+  pattern for the archive's entries (taken up after the paths on disk,
+  which come first), and `-u` and `-f` without paths select every
+  entry. The file a selected entry names is examined without recursion,
+  `-D`, or `-j` (which does not cut the pattern either), if the name
+  passes `-i` and `-x`. A missing file leaves its entry (deleted by
+  `-FS`). One that has changed between file and directory keeps it,
+  with Info-ZIP's warning and status 18. Only names zip would make are
+  read, so an untrusted archive's absolute names select nothing
+  (Info-ZIP reads them). Info-ZIP's Windows port does this only when
+  freshening; otherwise it expands wildcards on disk and stops there,
+  and so does tugz. A `-d` name that is a special file on disk, such as
+  a FIFO, marks nothing (with a warning), as in Info-ZIP.
 - Patterns: `-x`, `-i`, and `-d` patterns, `@file` lines included, are
   normalized as names are, so that `./` and `/` prefixes (and on
   Windows, backslashes and drives) match. Matching follows Info-ZIP's
@@ -209,10 +222,11 @@ the file is flushed and closed without error), and
   `//server/share/` prefix, as Info-ZIP's do, and likewise a device
   path's `//?/X:/` or `//?/UNC/server/share/`. Wildcard arguments,
   drive-relative ones (`C:*.txt`) included, are expanded per component
-  and matched as Info-ZIP's Windows port does: ignoring case, without
-  `[sets]`, and by its dosmatch, under which a name without a period
-  matches as if it ended in one (`*.*` matches every name). Filters
-  match the same way, except that case matters against archive entries
+  (except when freshening, when, as in Info-ZIP's port, they only match
+  entries) and matched as Info-ZIP's Windows port does: ignoring case,
+  without `[sets]`, and by its dosmatch, under which a name without a
+  period matches as if it ended in one (`*.*` matches every name).
+  Filters match the same way, except that case matters against entries
   (`-d`) and when freshening. Files replace existing entries whose
   names differ only in case, and those keep their names. Hidden and
   system files are skipped unless `-S`, even when named; recursion and

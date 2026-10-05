@@ -807,10 +807,14 @@ static b32 included(zip *z, s8 name)
     return !any_match(z, &z->exclude, name);
 }
 
+static b32 is_dirname(s8 name)
+{
+    return name.len && name.s[name.len-1]=='/';
+}
+
 static b32 selected(zip *z, s8 name)
 {
-    b32 dir = name.len && name.s[name.len-1]=='/';
-    if (dir && (z->nodirs || z->junk)) {
+    if (is_dirname(name) && (z->nodirs || z->junk)) {
         return 0;
     }
     return included(z, name);
@@ -860,11 +864,26 @@ static s8 trim_path(zip *z, s8 path, arena *a)
     return r;
 }
 
+static b32 is_archive(zip *z, os_info *info)
+{
+    return z->arcexists && info->type==FT_FILE &&
+           same_file(info, &z->arcinfo);
+}
+
+static void push_file(zip *z, s8 path, s8 name, os_info *info)
+{
+    zfile *f = push(&z->perm, &z->files);
+    f->path    = path;
+    f->name    = name;
+    f->info    = *info;
+    f->dostime = file_dostime(z, info->mtime);
+}
+
 // Add a file under its archive name, which -i and -x see whole, before
 // -j junks its directories, as in Info-ZIP.
 static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
 {
-    if (z->arcexists && info->type==FT_FILE && same_file(info, &z->arcinfo)) {
+    if (is_archive(z, info)) {
         return;  // the archive itself
     } else if (!name.len || !selected(z, name)) {
         return;
@@ -892,12 +911,7 @@ static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
         return;
     }
     *seen = z->files.len;
-
-    zfile *f = push(&z->perm, &z->files);
-    f->path    = path;
-    f->name    = name;
-    f->info    = *info;
-    f->dostime = file_dostime(z, info->mtime);
+    push_file(z, path, name, info);
 }
 
 static void scan(zip *z, s8 path, s8 name, os_info *info, dirid *up,
@@ -1026,17 +1040,23 @@ static iz expand(zip *z, s8 path, arena scratch)
     return count;
 }
 
-static void scan_arg(zip *z, s8 arg, arena scratch)
+// Scan a path argument. Returns false if it is not on disk, for it to
+// be matched against the archive's entries, as Info-ZIP's procname
+// does. Its Windows port does so only when freshening: otherwise it
+// expands wildcards on disk, as Windows shells do not, and stops there.
+static b32 scan_arg(zip *z, s8 arg, arena scratch)
 {
     os_info info = {0};
     if (os_stat(z->ctx, arg, !z->symlinks, &info, scratch)) {
         if (!hidden_file(z, &info)) {
             scan(z, arg, arg_name(z, arg), &info, 0, scratch);
         }
-    } else if (!z->windows || !zip_haswild(arg, 0) ||
-               !expand(z, arg, scratch)) {
+    } else if (!z->windows || z->mode==MODE_FRESHEN) {
+        return 0;
+    } else if (!zip_haswild(arg, 0) || !expand(z, arg, scratch)) {
         warn(z, S("name not matched: "), arg, scratch);
     }
+    return 1;
 }
 
 // The existing archive
@@ -1555,16 +1575,22 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
             copy = it->old;
             break;
         default:
-            if (write_file(z, &k, it->file, e, scratch)) {
+            // An entry selected by name may have changed between file
+            // and directory, which Info-ZIP reports, keeping the entry
+            if (is_dirname(it->file->name) != (it->file->info.type==FT_DIR)) {
+                warn(z, S("file and directory with the same name: "),
+                     it->file->name, scratch);
+            } else if (write_file(z, &k, it->file, e, scratch)) {
                 s8 verb = it->kind==ITEM_ADD    ? S("  adding: ") :
                           it->kind==ITEM_UPDATE ? S("updating: ") :
                                                   S("freshening: ");
                 report(z, verb, e->name, e, scratch);
                 count++;
                 break;
+            } else {
+                warn(z, S("could not open for reading: "), it->file->path,
+                     scratch);
             }
-            warn(z, S("could not open for reading: "), it->file->path,
-                 scratch);
             z->status = ZE_OPEN;
             if (it->old) {
                 // Keep the entry it was to replace, as Info-ZIP does
@@ -1685,12 +1711,16 @@ static s8 entry_key(zip *z, s8 name, arena *a)
 
 // Mark the entry for a -d name on disk, which Info-ZIP takes literally,
 // wildcards and all: a directory names its "dir/" entry, unless -D, and
-// a hidden or system file (Windows) nothing, unless -S.
+// a hidden or system file (Windows) nothing, unless -S, nor does a
+// special file (FIFO, device).
 static void mark_named(zip *z, zmap *old, s8 path, os_info *info, b32 *hit,
                        arena scratch)
 {
     s8 name = zip_name(&scratch, path, z->windows);
-    if (info->type == FT_DIR) {
+    if (info->type == FT_OTHER) {
+        warn(z, S("skipping special file: "), path, scratch);
+        return;
+    } else if (info->type == FT_DIR) {
         if (z->nodirs || !name.len) {
             return;
         } else if (name.s[name.len-1] != '/') {
@@ -1703,6 +1733,57 @@ static void mark_named(zip *z, zmap *old, s8 path, os_info *info, b32 *hit,
     if (v && included(z, name)) {
         hit[*v] = 1;
     }
+}
+
+// Whether a name is one zip would make, and so safe to read as a path:
+// in an untrusted archive, absolute names (and on Windows, drives and
+// backslashes) could otherwise reach any file.
+static b32 plain_name(zip *z, s8 name, arena scratch)
+{
+    for (iz i = 0; i < name.len; i++) {
+        if (!name.s[i]) {
+            return 0;
+        }
+    }
+    return zequals(zip_name(&scratch, name, z->windows), name);
+}
+
+// Select existing entries as Info-ZIP's procname does for a path not on
+// disk, matching it as a pattern against their names, and as it does
+// for -u and -f without paths, taking every entry (a null pattern). The
+// file that a selected entry names is examined, without recursion, -D,
+// or -j, if the name passes -i and -x and no path named it already. A
+// missing file leaves its entry as it is (deleted, under -FS). Returns
+// whether any entry matched.
+static b32 scan_entries(zip *z, zentry *entries, iz n, zmap *old, s8 pattern,
+                        b32 *taken, arena scratch)
+{
+    s8s one = {&pattern, 1, 1};
+    b32 any = 0;
+    for (iz i = 0; i < n; i++) {
+        s8 name = entries[i].name;
+        if (pattern.s && !any_match(z, &one, name)) {
+            continue;
+        }
+        any = 1;
+
+        // Of entries with one name, files replace the first
+        iz *first = zmap_upsert(&old, entry_key(z, name, &scratch), 0);
+        if (*first!=i || taken[i] || !included(z, name) ||
+            !plain_name(z, name, scratch)) {
+            continue;
+        }
+        taken[i] = 1;
+
+        s8 path = {name.s, name.len-is_dirname(name)};
+        os_info info = {0};
+        if (path.len && os_stat(z->ctx, path, !z->symlinks, &info, scratch) &&
+            !is_archive(z, &info)) {
+            *zmap_upsert(&z->names, name, &z->perm) = z->files.len;
+            push_file(z, path, name, &info);
+        }
+    }
+    return any;
 }
 
 static i32 zip_main(zipconfig *conf)
@@ -1826,13 +1907,41 @@ static i32 zip_main(zipconfig *conf)
             changed |= hit[i];
         }
     } else {
+        s8s missing = {0};
         for (iz p = 0; p < z->paths.len; p++) {
-            scan_arg(z, z->paths.data[p], scratch);
+            if (!scan_arg(z, z->paths.data[p], scratch)) {
+                *push(&scratch, &missing) = z->paths.data[p];
+            }
         }
         if (z->duplicate) {
             return fail(z, ZE_PARMS, S("Invalid command arguments"),
                         S("cannot repeat names in zip file"), scratch);
-        } else if (z->mode==MODE_SYNC && !z->files.len) {
+        }
+
+        // Then paths not on disk select entries, as do -u and -f without
+        // paths, except entries that paths on disk already selected
+        b32    *taken   = new(&scratch, nold, b32);
+        zentry *entries = ar ? ar->entries : 0;
+        for (iz i = 0; i < z->files.len; i++) {
+            s8  key = entry_key(z, z->files.data[i].name, &scratch);
+            iz *v   = zmap_upsert(&old, key, 0);
+            if (v) {
+                taken[*v] = 1;
+            }
+        }
+        for (iz p = 0; p < missing.len; p++) {
+            s8 pattern = zip_name(&scratch, missing.data[p], z->windows);
+            if (!scan_entries(z, entries, nold, old, pattern, taken,
+                              scratch)) {
+                warn(z, S("name not matched: "), missing.data[p], scratch);
+            }
+        }
+        b32 refresh = z->mode==MODE_UPDATE || z->mode==MODE_FRESHEN;
+        if (refresh && !z->paths.len) {
+            scan_entries(z, entries, nold, old, (s8){0}, taken, scratch);
+        }
+
+        if (z->mode==MODE_SYNC && !z->files.len) {
             // Rather than delete every entry, as for a misspelled path
             return fail(z, ZE_NONE, S("Nothing to do!"), z->archive, scratch);
         }
