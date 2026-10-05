@@ -500,6 +500,21 @@ static void test_zip64(arena a)
     got = zip_parse_central(buf, p-buf, 1, (i64)0xffffffff + 100, &a);
     TEST(got && got->usize==0xffffffff && got->csize==10);
 
+    // Except one holding just a saturated offset, which Info-ZIP writes
+    // past 4 GiB beside literal sizes of exactly 0xffffffff
+    lit.cextra = S("\x01\x00\x08\x00" "\x00\x00\x00\x40\x01\x00\x00\x00");
+    p = zip_central(buf, &lit);
+    put32(buf+24, 0xffffffff);
+    put32(buf+42, 0xffffffff);
+    got = zip_parse_central(buf, p-buf, 1, (i64)6 << 30, &a);
+    TEST(got && got->usize==0xffffffff && got->csize==10);
+    TEST(got->offset==(i64)5<<30 && !got->cextra.len);
+    put32(buf+20, 0xffffffff);
+    TEST(!zip_parse_central(buf, p-buf, 1, (i64)6 << 30, &a));  // bounds
+    got = zip_parse_central(buf, p-buf, 1, (i64)10 << 30, &a);
+    TEST(got && got->usize==0xffffffff && got->csize==0xffffffff);
+    TEST(got->offset == (i64)5<<30);
+
     // Data descriptors: 32-bit sizes, or 64-bit for Zip64 entries
     u8 desc[24];
     TEST(zip_desc(desc, &f) - desc == 16);

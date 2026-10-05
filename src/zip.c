@@ -501,7 +501,11 @@ static b32 zip_oem_name(zentry const *e)
 // offset are literal, as Info-ZIP, which uses Zip64 only past 0xffffffff,
 // writes a file of exactly 4 GiB - 1 bytes, and as UnZip, Python, and
 // Info-ZIP read it; the bounds checks that follow catch a bogus offset.
-// A saturated disk number still needs it.
+// So are saturated sizes beside an extra that holds just a saturated
+// offset, as Info-ZIP writes such a file past 4 GiB: APPNOTE would have
+// the sizes first, and UnZip and Info-ZIP itself take the offset for
+// the uncompressed size, while Python refuses it. A saturated disk
+// number still needs the extra.
 static b32 zip_apply64(zentry *e, s8 x, b32 diskmax)
 {
     b32 want[3] = {e->usize==ZIP_MAX32, e->csize==ZIP_MAX32,
@@ -516,6 +520,9 @@ static b32 zip_apply64(zentry *e, s8 x, b32 diskmax)
             break;
         }
         if (id == ZIP_EXTRA_ZIP64) {
+            if (want[2] && len==8 && !diskmax) {
+                want[0] = want[1] = 0;  // only the offset: Info-ZIP's
+            }
             u8 *f = x.s + i + 4;
             i64 *fields[3] = {&e->usize, &e->csize, &e->offset};
             for (i32 k = 0; k < 3; k++) {

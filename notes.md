@@ -371,7 +371,15 @@ neither inflate nor the gzip container.
   needs is an error (3), not a wrapped length. Saturated sizes without a
   Zip64 extra are literal, as Info-ZIP, which uses Zip64 only beyond
   them, writes a file of exactly 4 GiB - 1 bytes, and as it, UnZip, and
-  Python read it; such an entry is copied with Zip64. A replaced entry
+  Python read it; such an entry is copied with Zip64. Departure: so are
+  they beside a Zip64 extra that holds only a saturated offset, as
+  Info-ZIP writes such a file past 4 GiB, though APPNOTE would have the
+  extra begin with the sizes. UnZip and Info-ZIP itself so take the
+  offset for the uncompressed size, and Info-ZIP then cannot copy the
+  entry (3, "Did not find entry"), while Python refuses the archive. The
+  other reading, from Info-ZIP an entry past 4 GiB that begins at
+  exactly 0xffffffff, is far less likely, and for it a local header
+  would not be found when copying (3). A replaced entry
   keeps its comment, as in Info-ZIP. Data before the first entry (a
   self-extractor's stub after `zip -A`, a Python zipapp's `#!` line) is
   copied first, as Info-ZIP copies it, so that offsets accounting for it
