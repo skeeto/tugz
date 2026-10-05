@@ -1550,9 +1550,17 @@ static i32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
         zout_write(w, h, zip_local(h, e)-h);
         return WRITE_OK;
     } else if (f->info.type == FT_LINK) {
+        // Read by path, then found to be the link the scan found, as a
+        // file is when opened, rather than one swapped in since
         src.mem = os_readlink(z->ctx, f->path, &z->perm, scratch);
         if (!src.mem.s) {
             return WRITE_EOPEN;
+        }
+        os_info now  = {0};
+        b32     seen = f->info.ino[0] || f->info.ino[1];
+        if (seen && (!os_stat(z->ctx, f->path, 0, &now, scratch) ||
+                     !same_file(&now, &f->info))) {
+            return WRITE_ECHANGED;
         }
     }
 

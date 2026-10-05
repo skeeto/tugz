@@ -273,7 +273,9 @@ neither inflate nor the gzip container.
   scan found, by identity, so that nothing is read through a link
   swapped in for it or for a directory above it (Info-ZIP examines each
   file again just before reading it, but reads through such a
-  directory). Output is buffered 1 MiB at a time, and rewinding to an
+  directory). Likewise a link's target, read by path, is stored only if
+  the link is still the one scanned (Info-ZIP stores whichever link is
+  there). Output is buffered 1 MiB at a time, and rewinding to an
   entry's start or patching its header stays in the buffer when it can,
   so small entries cost no writes of their own. The file is truncated to
   its final length and renamed over the target. On POSIX that follows
