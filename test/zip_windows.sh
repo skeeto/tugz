@@ -114,8 +114,16 @@ ps "\$d = Get-Item hid;
 "$ZIP" -qr jt.zip jt
 list jt.zip | grep -qx jt/link/j.txt || fail "junction to a hidden directory"
 
+# ...and a junction to an ancestor is a loop, found by file identity
+mkdir -p lp/sub
+ps "New-Item -ItemType Junction -Path lp\\sub\\up -Target (Resolve-Path lp).Path |
+    Out-Null"
+"$ZIP" -r lp.zip lp 2>&1 | grep -q 'skipping directory loop: lp/sub/up' ||
+    fail "junction loop"
+
 # Recursion describes files from the listing, but still examines those
-# the archive's size: the archive is left out, a copy of it is not
+# the archive's size: the archive is left out, a copy of it is not, nor
+# is a hard link to it
 mkdir self
 printf x >self/x
 "$ZIP" -qr self/s.zip self
@@ -123,6 +131,10 @@ cp self/s.zip self/copy.zip
 "$ZIP" -qr self/s.zip self
 list self/s.zip | grep -qx self/s.zip && fail "archive added to itself"
 list self/s.zip | grep -qx self/copy.zip || fail "same-size file left out"
+ps "New-Item -ItemType HardLink -Path self\\link.zip -Target (Resolve-Path self\\s.zip).Path |
+    Out-Null"
+"$ZIP" -qr self/s.zip self
+list self/s.zip | grep -q link.zip && fail "archive added through a hard link"
 
 # Wildcards are expanded by zip, case-insensitively, either separator
 "$ZIP" -q w1.zip 'tree/*.txt'
@@ -167,10 +179,15 @@ printf 'tree/a.txt\ntree/b.txt\n' >want.txt
 cmp -s got want.txt || fail "-nw ?: $(cat got)"
 expect_status 12 "$ZIP" -nw nw2.zip 'tree/*.txt'
 
-# A hidden or system file is left out even when named, unless -S
+# A hidden or system file is left out even when named, by a wildcard
+# or in a -@ list, unless -S
 expect_status 12 "$ZIP" h3.zip tree/hidden.txt
 "$ZIP" -qS h4.zip tree/hidden.txt tree/system.txt
 [ "$(list h4.zip | wc -l)" = 2 ] || fail "-S with named hidden files"
+printf 'tree/hidden.txt\ntree/one\n' | "$ZIP" -q h5.zip -@
+[ "$(list h5.zip)" = tree/one ] || fail "-@ hidden file: $(list h5.zip)"
+"$ZIP" -qS h6.zip 'tree/*.txt'
+list h6.zip | grep -q system.txt || fail "-S with a wildcard"
 
 # Patterns and -d names are normalized as names are (backslashes, ./),
 # and filters match as wildcards do, ignoring case and with DOS rules,
