@@ -199,6 +199,27 @@ if [ -n "$windows" ]; then
     done
 fi
 
+# Windows: -f replaces a read-only output, as unlinking it does on POSIX,
+# though the file's other hard links stay read-only, and without -f it
+# is refused
+if [ -n "$windows" ]; then
+    printf old >ro
+    "$GZIP" -k ro
+    cp ro.gz ro.old
+    ln ro.gz ro.link
+    attrib +r ro.gz
+    printf new >ro
+    expect_status 2 "$GZIP" -k ro
+    cmp -s ro.gz ro.old || fail "read-only output replaced without -f"
+    "$GZIP" -kf ro || fail "-f over a read-only output"
+    "$GZIP" -dc ro.gz | cmp -s - ro || fail "-f read-only output contents"
+    cmp -s ro.link ro.old || fail "-f read-only output: other link changed"
+    if (: >>ro.link) 2>/dev/null; then
+        fail "-f read-only output: other link writable"
+    fi
+    attrib -r ro.link
+fi
+
 # Windows: an output name that another process holds delete-pending, as
 # gzip holds its own until done, is refused, an error under -f
 if [ -n "$windows" ]; then

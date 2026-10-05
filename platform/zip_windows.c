@@ -49,7 +49,6 @@ W32(u32)  GetFinalPathNameByHandleW(iptr, c16 *, u32, u32);
 W32(void) SetLastError(u32);
 W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 
-#define FILE_ATTRIBUTE_READONLY    0x01u
 #define FILE_ATTRIBUTE_HIDDEN      0x02u
 #define FILE_ATTRIBUTE_SYSTEM      0x04u
 #define FILE_ATTRIBUTE_ARCHIVE     0x20u

@@ -30,10 +30,12 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define DELETE                     0x00010000u
 #define GENERIC_READ               0x80000000u
 #define GENERIC_WRITE              0x40000000u
+#define FILE_WRITE_ATTRIBUTES      0x100u
 #define FILE_SHARE_ALL             7u
 #define CREATE_NEW                 1u
 #define CREATE_ALWAYS              2u
 #define OPEN_EXISTING              3u
+#define FILE_ATTRIBUTE_READONLY    0x01u
 #define FILE_ATTRIBUTE_NORMAL      0x80u
 #define FILE_ATTRIBUTE_DIRECTORY   0x10u
 #define FILE_ATTRIBUTE_REPARSE     0x400u
@@ -427,12 +429,43 @@ static i32 open_input(c16 *wpath, i32 mode, iptr *out)
     return 0;
 }
 
+// Delete a file, or a link rather than its target, as POSIX unlink
+// does, which ignores the read-only attribute that refuses DeleteFileW:
+// clear it through a handle, mark the file deleted, then restore it,
+// which the deletion survives, for any other hard links to the file. A
+// directory, read-only or not, is left alone.
+static void remove_file(c16 *wpath)
+{
+    if (DeleteFileW(wpath) || GetLastError()!=ERROR_ACCESS_DENIED) {
+        return;
+    }
+    u32 attr = GetFileAttributesW(wpath);
+    u32 kind = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_DIRECTORY;
+    if (attr==INVALID_FILE_ATTRIBUTES || (attr&kind)!=FILE_ATTRIBUTE_READONLY) {
+        return;
+    }
+    iptr h = CreateFileW(wpath, DELETE|FILE_WRITE_ATTRIBUTES, FILE_SHARE_ALL,
+                         0, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE, 0);
+    if (h == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    basic_info info = {0};
+    info.attributes = FILE_ATTRIBUTE_NORMAL;
+    if (SetFileInformationByHandle(h, FileBasicInfo, &info, sizeof(info))) {
+        u8 discard = 1;
+        SetFileInformationByHandle(h, FileDispositionInfo, &discard, 1);
+        info.attributes = attr;
+        SetFileInformationByHandle(h, FileBasicInfo, &info, sizeof(info));
+    }
+    CloseHandle(h);
+}
+
 // Created files are marked delete-pending immediately, so that the file
 // system removes them however the process ends, until os_keep.
 static i32 open_output(os *ctx, i32 fd, c16 *wpath, i32 mode)
 {
     if (mode & OS_FORCE) {
-        DeleteFileW(wpath);  // replace rather than write through a link
+        remove_file(wpath);  // replace rather than write through a link
     }
     iptr h = CreateFileW(wpath, GENERIC_WRITE|DELETE, 0, 0, CREATE_NEW,
                          FILE_ATTRIBUTE_NORMAL, 0);
