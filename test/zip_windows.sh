@@ -331,6 +331,16 @@ expect_status 15 "$ZIP" -d ro.zip tree/a.txt
 cmp -s ro.zip ro.orig || fail "read-only archive changed"
 attrib -r ro.zip
 
+# A replaced archive keeps its hidden, system, and not-indexed
+# attributes, as POSIX keeps the mode, with the archive bit set
+"$ZIP" -q ha.zip tree/a.txt
+attrib +h +s +i -a ha.zip
+"$ZIP" -q ha.zip tree/b.txt
+[ "$(list ha.zip | wc -l)" = 2 ] || fail "hidden archive not updated"
+got=$(ps "(Get-Item -Force ha.zip).Attributes" | tr -d '\r')
+[ "$got" = "Hidden, System, Archive, NotContentIndexed" ] ||
+    fail "replaced archive attributes: $got"
+
 # Replacing an archive that another process holds open with delete
 # sharing, as scanners and indexers do
 ps "\$f = [IO.File]::Open('m.zip', 'Open', 'Read', 'ReadWrite, Delete');

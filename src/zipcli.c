@@ -66,9 +66,14 @@ static s8   os_resolve(os *, s8 path, arena *perm, arena scratch);
 // Whether an existing file may be replaced as though written: on POSIX,
 // that the user may write it; on Windows, that it is not read-only.
 static b32  os_writable(os *, s8 path, arena scratch);
-// Close a created file and move it over path, keeping it. It takes the
-// permissions of a file it replaces. The descriptor is closed even on
-// failure, which discards the file.
+// Close a created file and move it over path, keeping it. A file there
+// is replaced by this new one, so its other hard links keep the old. On
+// POSIX it takes the replaced file's mode, though not its owner, group,
+// or ACL; without one it has a new file's permissions (0666 less the
+// umask, and a default ACL if created with OS_DEFPERMS). On Windows it
+// takes the replaced file's hidden, system, and not-indexed attributes,
+// but like any new file gets its access control from the directory. The
+// descriptor is closed even on failure, which discards the file.
 static b32  os_commit(os *, i32 fd, s8 path, arena scratch);
 // Broken-down local time {year, month, day, hour, minute, second}.
 static void os_localtime(os *, i64 t, i32 tm[6]);

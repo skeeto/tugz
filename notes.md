@@ -238,19 +238,24 @@ the file is flushed and closed without error), and
   existing name and the next is tried, up to 64 in a row: a directory
   that refuses even the check (no traverse rights) makes every name
   look taken.
-- Links: the target is the archive past any symbolic links at its path,
-  so that they survive an atomic update, as Info-ZIP updates archives
-  through them (by copying into the file). On POSIX the links are read
-  one at a time, so that a dangling one leads where it points, but only
-  links the system would follow are: not a loop, nor one that Linux's
-  `protected_symlinks` refuses. On Windows, links and junctions are
-  resolved by opening the file and asking for its final path, or for a
-  dangling link, by creating the file, discarded at once. A link that
-  cannot be followed cannot be written (15, as in Info-ZIP). Departures:
-  a hard-linked archive is replaced by a new file, which its other
-  names do not share (Info-ZIP copies into it); a dangling link gets its
-  target created (Info-ZIP leaves an empty file there and replaces the
-  link with the archive).
+- Replacing: the archive replaced is the file that any symbolic links
+  at its path lead to, so that they survive an atomic update, as
+  Info-ZIP updates archives through them (by copying into the file). On
+  POSIX the links are read one at a time, so that a dangling one leads
+  where it points, but only links the system would follow are: not a
+  loop, nor one that Linux's `protected_symlinks` refuses. On Windows,
+  links and junctions are resolved by opening the file and asking for
+  its final path, or for a dangling link, by creating the file,
+  discarded at once. A link that cannot be followed cannot be written
+  (15, as in Info-ZIP). The new archive keeps the old one's mode on
+  POSIX (not its owner, group, or ACL), and on Windows its hidden,
+  system, and not-indexed attributes, with the archive bit set, but not
+  its access control: as for gzip's outputs, that is inherited from the
+  directory (copying it would take advapi32). Departures: a hard-linked
+  archive is replaced by a new file, which its other names do not share
+  (Info-ZIP copies into it); a dangling link gets its target created
+  (Info-ZIP leaves an empty file there and replaces the link with the
+  archive).
 - Merging: the central directory is parsed with every field bounds
   checked; copied entries get regenerated local headers (descriptor flag
   cleared, except for traditionally encrypted entries, whose check byte

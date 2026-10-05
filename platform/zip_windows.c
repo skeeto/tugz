@@ -52,6 +52,8 @@ W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 #define FILE_ATTRIBUTE_READONLY    0x01u
 #define FILE_ATTRIBUTE_HIDDEN      0x02u
 #define FILE_ATTRIBUTE_SYSTEM      0x04u
+#define FILE_ATTRIBUTE_ARCHIVE     0x20u
+#define FILE_ATTRIBUTE_NOT_INDEXED 0x2000u
 #define FILE_READ_ATTRIBUTES       0x80u
 #define FILE_FLAG_BACKUP_SEMANTICS 0x02000000u
 #define FILE_FLAG_DELETE_ON_CLOSE  0x04000000u
@@ -307,6 +309,21 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
         os_close(ctx, fd);
         return 0;
     }
+
+    // Keep a replaced archive's attributes, as POSIX keeps its mode:
+    // hidden, system, and not indexed. Read-only was refused, and the
+    // archive bit stays set, as for any changed file. Access control is
+    // inherited from the directory, as for any new file, since copying
+    // the old would take advapi32.
+    u32 old  = GetFileAttributesW(wpath);
+    u32 kept = FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM |
+               FILE_ATTRIBUTE_NOT_INDEXED;
+    if (old!=INVALID_FILE_ATTRIBUTES && (old & kept)) {
+        basic_info info = {0};
+        info.attributes = (old & kept) | FILE_ATTRIBUTE_ARCHIVE;
+        SetFileInformationByHandle(h, FileBasicInfo, &info, sizeof(info));
+    }
+
     s16 name = s16lit(wpath);
     iz  size = (iz)sizeof(rename_info) + (name.len+1)*(iz)sizeof(c16);
     rename_info *ri = (rename_info *)newbytes(&scratch, size);
