@@ -2232,8 +2232,9 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     // The preamble comes first, so that offsets stay absolute
     i32 got = ar ? zin_copy(&ar->in, &w, 0, ar->beg) : 1;
     if (got <= 0) {
+        i32 err = read_failed(z, got, (s8){0}, scratch);  // before closing
         os_close(z->ctx, fd);
-        return read_failed(z, got, (s8){0}, scratch);
+        return err;
     }
 
     iz count = 0;
