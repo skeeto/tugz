@@ -43,6 +43,7 @@ typedef struct {
 W32(b32)  FindClose(iptr);
 W32(iptr) FindFirstFileExW(c16 *, i32, find_data *, i32, uptr, u32);
 W32(b32)  FindNextFileW(iptr, find_data *);
+W32(b32)  FlushFileBuffers(iptr);
 W32(u32)  GetEnvironmentVariableW(c16 *, c16 *, u32);
 W32(void) SetLastError(u32);
 W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
@@ -54,8 +55,10 @@ W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 #define FIND_FIRST_EX_LARGE_FETCH  2u
 #define FILE_RENAME_REPLACE        1u
 #define FILE_RENAME_POSIX          2u
+#define ERROR_INVALID_FUNCTION     1u
 #define ERROR_FILE_NOT_FOUND       2u
 #define ERROR_NO_MORE_FILES        18u
+#define ERROR_NOT_SUPPORTED        50u
 #define ERROR_ENVVAR_NOT_FOUND     203u
 
 enum {
@@ -241,11 +244,22 @@ static b32 os_truncate(os *ctx, i32 fd, i64 len)
 // Rename by handle while the file is still open, replacing the target,
 // so that it is never visible incomplete under its final name. POSIX
 // semantics replace a target that others hold open with delete sharing
-// (scanners, indexers), which the classic rename refuses.
+// (scanners, indexers), which the classic rename refuses. Flush first,
+// while the file is still delete-pending, since deferred write errors
+// (network, quotas) may surface only then. Once renamed, the archive is
+// replaced, and closing, after the flush, can lose nothing.
 static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
 {
+    iptr h = ctx->handles[fd];
     c16 *wpath = winpath(&scratch, path);
-    if (!wpath) {
+    b32  ok    = wpath && FlushFileBuffers(h);
+    if (wpath && !ok) {
+        // As POSIX accepts EINVAL and ENOTSUP from fsync: a file system
+        // that cannot flush (some network and virtual ones) defers nothing
+        u32 err = GetLastError();
+        ok = err==ERROR_INVALID_FUNCTION || err==ERROR_NOT_SUPPORTED;
+    }
+    if (!ok) {
         os_close(ctx, fd);
         return 0;
     }
@@ -257,7 +271,6 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
     ri->len   = (u32)(name.len * (iz)sizeof(c16));
     bytecopy(ri->name, name.s, name.len*(iz)sizeof(c16));
 
-    iptr h = ctx->handles[fd];
     u8 keep = 0;
     if (!SetFileInformationByHandle(h, FileDispositionInfo, &keep, 1)) {
         os_close(ctx, fd);
@@ -274,7 +287,8 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
             return 0;
         }
     }
-    return os_close(ctx, fd);
+    os_close(ctx, fd);
+    return 1;
 }
 
 static void os_localtime(os *ctx, i64 t, i32 tm[6])

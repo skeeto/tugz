@@ -84,6 +84,7 @@ struct os {
     u32  consoles;    // bit for each standard handle that is a console
     u8   held[3][4];  // for each, an incomplete UTF-8 sequence written
     u8   nheld[3];
+    i32  unsure;      // creations refused in a row, each name maybe taken
 };
 
 typedef struct {
@@ -384,15 +385,24 @@ static i32 open_output(os *ctx, i32 fd, c16 *wpath, i32 mode)
     }
     iptr h = CreateFileW(wpath, GENERIC_WRITE|DELETE, 0, 0, CREATE_NEW,
                          FILE_ATTRIBUTE_NORMAL, 0);
+    i32 unsure = ctx->unsure;
+    ctx->unsure = 0;
     if (h == INVALID_HANDLE_VALUE) {
         // A name that another process holds delete-pending (its output
         // not yet kept) refuses access rather than reporting that it
-        // exists, so check for it
+        // exists, and so does checking for it. But where the directory
+        // refuses that check for any name (no traverse rights), every
+        // name looks taken, so after a run of 64 such names give up
+        // rather than let a caller seeking a free name try them all.
         u32 err = GetLastError();
         if (err==ERROR_ACCESS_DENIED || err==ERROR_SHARING_VIOLATION) {
             b32 found = GetFileAttributesW(wpath) != INVALID_FILE_ATTRIBUTES;
-            err = found || GetLastError()==ERROR_ACCESS_DENIED ?
-                  ERROR_FILE_EXISTS : err;
+            if (found) {
+                err = ERROR_FILE_EXISTS;
+            } else if (GetLastError()==ERROR_ACCESS_DENIED && unsure<64) {
+                ctx->unsure = unsure + 1;
+                err = ERROR_FILE_EXISTS;
+            }
         }
         return err==ERROR_FILE_EXISTS ? OS_EEXIST : OS_ERR;
     }

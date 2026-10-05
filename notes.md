@@ -149,12 +149,14 @@ the file is flushed and closed without error), and
   entry's start or patching its header stays in the buffer when it can,
   so small entries cost no writes of their own. The file is truncated to
   its final length and renamed over the target; on Windows by handle,
-  after clearing delete-pending, so it never appears incomplete.
-  `FileRenameInfoEx` with POSIX semantics replaces an archive that a
-  scanner or indexer holds open (with delete sharing); `FileRenameInfo`
-  is the fallback. A concurrent run's temporary file, delete-pending,
-  refuses access on Windows, so that counts as an existing name and the
-  next is tried.
+  after flushing and clearing delete-pending, so it never appears
+  incomplete. `FileRenameInfoEx` with POSIX semantics replaces an
+  archive that a scanner or indexer holds open (with delete sharing);
+  `FileRenameInfo` is the fallback. A concurrent run's temporary file,
+  delete-pending, refuses access on Windows, so that counts as an
+  existing name and the next is tried, up to 64 in a row: a directory
+  that refuses even the check (no traverse rights) makes every name
+  look taken.
 - Merging: the central directory is parsed with every field bounds
   checked; copied entries get regenerated local headers (descriptor flag
   cleared, except for traditionally encrypted entries, whose check byte
