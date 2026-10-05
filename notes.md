@@ -252,7 +252,10 @@ the file is flushed and closed without error), and
   period matches as if it ended in one (`*.*` matches every name).
   Filters match the same way, except that case matters against entries
   (`-d`) and when freshening. Files replace existing entries whose
-  names differ only in case, and those keep their names. Hidden and
+  names differ only in case, and those keep their names. A path given
+  again in another case (`D/A.txt d/a.txt`) is skipped like any repeat,
+  keeping the first spelling, and different files whose names differ
+  only in case collide, as exactly repeated names do. Hidden and
   system files are skipped unless `-S`, even when named; recursion and
   wildcards judge them, as Info-ZIP does, by the listing (a link's own
   attributes), so that unopenable ones like `pagefile.sys` are never

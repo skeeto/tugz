@@ -190,6 +190,20 @@ expect_status 12 "$ZIP" -d x2.zip 'TREE/*'
 "$ZIP" -q c1.zip TREE/A.TXT
 [ "$(list c1.zip)" = tree/a.txt ] || fail "case-only update: $(list c1.zip)"
 
+# Paths that differ only in case are one path, added once under the
+# first spelling, but different files whose names so differ collide
+"$ZIP" -q c2.zip TREE/A.TXT tree/a.txt 'Tree/*.txt'
+list c2.zip | grep -v caf >got
+printf 'TREE/A.TXT\nTree/b.txt\nTree/literals.txt\n' >want.txt
+cmp -s got want.txt || fail "case-only repeat: $(cat got)"
+printf 'tree/b.txt\r\nTREE/B.TXT\r\n' | "$ZIP" -q c3.zip -@
+[ "$(list c3.zip)" = tree/b.txt ] || fail "case-only repeat (-@): $(list c3.zip)"
+"$ZIP" -qr c4.zip tree/sub TREE/SUB
+[ "$(list c4.zip | wc -l)" = 3 ] || fail "case-only repeat (-r)"
+cp tree/b.txt tree/sub/B.TXT
+expect_status 16 "$ZIP" -j c5.zip tree/b.txt tree/sub/B.TXT
+rm tree/sub/B.TXT
+
 # Lists lose trailing spaces and periods, as with Info-ZIP's getnam,
 # such as from cmd's "echo name > list"
 printf 'tree/a.txt \r\ntree/one.\r\n' | "$ZIP" -q at2.zip -@
