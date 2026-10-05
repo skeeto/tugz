@@ -794,6 +794,76 @@ open(sys.argv[1], "wb").write(loc + cen + end)' nofit.zip
     "$ZIP" nofit.zip tree/a.txt >out 2>&1 && fail "no room for Zip64"
     grep -q 'structure invalid (big: no room' out || fail "no room: $(cat out)"
     cmp -s nofit.zip nofit0.zip || fail "a refused copy changed the archive"
+
+    # Archives made by other tools: entries a streaming writer gave data
+    # descriptors lose them when copied, their sizes now known, and the
+    # comments of entries and of the archive are kept
+    $PY -c 'import sys, zipfile as z
+class Stream:  # unseekable, so that zipfile writes data descriptors
+    def __init__(self, f): self.f = f
+    def write(self, b): return self.f.write(b)
+    def flush(self): self.f.flush()
+with open(sys.argv[1], "wb") as f, z.ZipFile(Stream(f), "w") as a:
+    a.comment = b"archive note"
+    for n, m in ("s/one.txt", z.ZIP_DEFLATED), ("s/two.txt", z.ZIP_STORED):
+        i = z.ZipInfo(n, (2020, 1, 1, 0, 0, 0))
+        i.compress_type = m
+        i.comment = n.encode()
+        a.writestr(i, n * 100)' dd.zip
+    verify dd.zip
+    grep -q '^s/one.txt 8 0x8 ' check.out ||
+        fail "no descriptors: $(cat check.out)"
+    "$ZIP" -q dd.zip tree/a.txt
+    verify dd.zip
+    grep -q '^s/one.txt 8 0x0 .* s/one.txt$' check.out &&
+        grep -q '^s/two.txt 0 0x0 .* s/two.txt$' check.out ||
+        fail "copied descriptor entries: $(cat check.out)"
+    $PY -c 'import sys
+sys.exit(b"PK\7\10" in open(sys.argv[1], "rb").read())' dd.zip ||
+        fail "a data descriptor was copied"
+    [ "$(unzip -z dd.zip | sed 1d)" = "archive note" ] ||
+        fail "archive comment: $(unzip -z dd.zip)"
+    "$ZIP" -qd dd.zip s/two.txt
+    [ "$(unzip -z dd.zip | sed 1d)" = "archive note" ] ||
+        fail "archive comment after -d: $(unzip -z dd.zip)"
+
+    # Traditionally encrypted entries with descriptors keep them, as the
+    # check byte of their encryption header is then the time's, not the
+    # CRC's (zip cannot encrypt, so this one is made here)
+    $PY -c 'import struct, sys, zlib
+def crc(k, b):  # the CRC-32 step of the cipher
+    return zlib.crc32(bytes([b]), k ^ 0xffffffff) ^ 0xffffffff
+k = [0x12345678, 0x23456789, 0x34567890]
+def update(b):
+    k[0] = crc(k[0], b)
+    k[1] = ((k[1] + (k[0] & 0xff)) * 134775813 + 1) & 0xffffffff
+    k[2] = crc(k[2], k[1] >> 24)
+def encrypt(data):
+    r = bytearray()
+    for b in data:
+        t = k[2] & 0xffff | 2
+        r.append(b ^ (t * (t ^ 1) >> 8 & 0xff))
+        update(b)
+    return bytes(r)
+for b in b"secret":
+    update(b)
+n, d, time, date = b"enc.txt", b"hidden text", 0x6000, 0x5021
+x = encrypt(bytes(range(11)) + bytes([time >> 8]) + d)
+c = zlib.crc32(d)
+loc = struct.pack("<IHHHHHIIIHH", 0x04034b50, 20, 9, 0, time, date, 0, 0, 0,
+                  len(n), 0) + n + x
+loc += struct.pack("<IIII", 0x08074b50, c, len(x), len(d))
+cen = struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 0x31e, 20, 9, 0, time,
+                  date, c, len(x), len(d), len(n), 0, 0, 0, 0, 0x81a40000, 0)
+cen += n
+end = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 1, 1, len(cen), len(loc), 0)
+open(sys.argv[1], "wb").write(loc + cen + end)' enc.zip
+    unzip -P secret -tqq enc.zip >/dev/null 2>&1 || fail "enc.zip invalid"
+    "$ZIP" -q enc.zip tree/a.txt
+    unzip -P secret -tqq enc.zip >/dev/null 2>&1 ||
+        fail "copied encrypted entry: $(unzip -P secret -t enc.zip 2>&1)"
+    [ "$(unzip -P secret -p enc.zip enc.txt)" = "hidden text" ] ||
+        fail "copied encrypted entry contents"
 fi
 
 # As in Info-ZIP, a file replaces an entry whose stored name, in a code
