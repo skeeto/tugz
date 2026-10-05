@@ -44,6 +44,7 @@ W32(b32)  FindClose(iptr);
 W32(iptr) FindFirstFileExW(c16 *, i32, find_data *, i32, uptr, u32);
 W32(b32)  FindNextFileW(iptr, find_data *);
 W32(u32)  GetEnvironmentVariableW(c16 *, c16 *, u32);
+W32(void) SetLastError(u32);
 W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 
 #define FILE_ATTRIBUTE_HIDDEN      0x02u
@@ -55,6 +56,7 @@ W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 #define FILE_RENAME_POSIX          2u
 #define ERROR_FILE_NOT_FOUND       2u
 #define ERROR_NO_MORE_FILES        18u
+#define ERROR_ENVVAR_NOT_FOUND     203u
 
 enum {
     FileRenameInfo    = 3,
@@ -297,12 +299,15 @@ void mainCRTStartup(void)
     conf.args  = argv + (argc>0);
 
     c16 epoch[64];
+    SetLastError(0);  // zero is also the length of an empty value
     u32 n = GetEnvironmentVariableW(L"SOURCE_DATE_EPOCH", epoch,
                                     countof(epoch));
     if (n >= countof(epoch)) {
         conf.epoch = S("(too long)");  // rejected as invalid
     } else if (n) {
         conf.epoch = towtf8(&conf.perm, epoch);
+    } else if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
+        conf.epoch = S("");  // set but empty: rejected, as on POSIX
     }
     ExitProcess((u32)zip_main(&conf));
 }

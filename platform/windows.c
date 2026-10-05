@@ -532,7 +532,7 @@ static void os_exit(os *ctx, i32 status)
 }
 
 // Initialize standard handles and allocate a committed arena of cap
-// bytes. Exits on failure.
+// bytes. Exits through os_oom on failure.
 static arena os_init(os *ctx, iz cap)
 {
     ctx->handles[0] = GetStdHandle((u32)-10);
@@ -546,7 +546,7 @@ static arena os_init(os *ctx, iz cap)
     arena a = {0};
     a.beg = VirtualAlloc(0, cap, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
     if (!a.beg) {
-        ExitProcess(1);
+        os_oom(ctx);
     }
     a.end = a.beg + cap;
     a.ctx = ctx;

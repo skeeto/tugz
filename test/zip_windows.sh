@@ -196,6 +196,7 @@ rm big
 SOURCE_DATE_EPOCH=1700000000 "$ZIP" -qX9r d1.zip tree
 SOURCE_DATE_EPOCH=1700000000 "$ZIP" -qX9r d2.zip tree
 cmp -s d1.zip d2.zip || fail "not deterministic"
+expect_status 16 env SOURCE_DATE_EPOCH= "$ZIP" -q ep.zip tree/a.txt
 
 expect_status 12 "$ZIP" none.zip missing
 expect_status 16 "$ZIP" -e bad.zip tree/a.txt
