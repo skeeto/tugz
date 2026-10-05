@@ -24,6 +24,7 @@ W32(iptr)   GetStdHandle(u32);
 W32(b32)    ReadFile(iptr, void *, u32, u32 *, uptr);
 W32(b32)    SetFileInformationByHandle(iptr, i32, void *, u32);
 W32(void *) VirtualAlloc(uptr, iz, u32, u32);
+W32(b32)    WriteConsoleW(iptr, c16 const *, u32, u32 *, uptr);
 W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 
 #define DELETE                     0x00010000u
@@ -80,6 +81,9 @@ enum { MAX_HANDLES = 8 };
 
 struct os {
     iptr handles[MAX_HANDLES];
+    u32  consoles;    // bit for each standard handle that is a console
+    u8   held[3][4];  // for each, an incomplete UTF-8 sequence written
+    u8   nheld[3];
 };
 
 typedef struct {
@@ -120,33 +124,54 @@ static s8 towtf8(arena *a, c16 *w)
     return r;
 }
 
+// Continuation bytes following a UTF-8 lead byte, or 0 if c is not one.
+static i32 wtf8_tail(u32 c)
+{
+    return c>=0xc2 && c<0xe0 ? 1 : c>=0xe0 && c<0xf0 ? 2 :
+           c>=0xf0 && c<0xf5 ? 3 : 0;
+}
+
+// Decode a code point from WTF-8 at s[*i], advancing past it. Invalid
+// sequences become U+FFFD.
+static u32 wtf8_decode(u8 const *s, iz len, iz *i)
+{
+    u32 c = s[(*i)++];
+    if (c >= 0x80) {
+        i32 n   = wtf8_tail(c);
+        u32 min = n==3 ? 0x10000 : n==2 ? 0x800 : 0x80;
+        c = n==3 ? c&7 : n==2 ? c&15 : c&31;
+        i32 k = 0;
+        for (; k<n && *i<len && (s[*i]&0xc0)==0x80; k++) {
+            c = c<<6 | (s[(*i)++] & 63);
+        }
+        if (!n || k<n || c<min || c>0x10ffff) {
+            c = 0xfffd;
+        }
+    }
+    return c;
+}
+
+// Append a code point as UTF-16 and return the new length.
+static iz utf16_put(c16 *d, iz len, u32 c)
+{
+    if (c >= 0x10000) {
+        c -= 0x10000;
+        d[len++] = (c16)(0xd800 | c>>10);
+        d[len++] = (c16)(0xdc00 | (c & 0x3ff));
+    } else {
+        d[len++] = (c16)c;
+    }
+    return len;
+}
+
 // Convert WTF-8 to null-terminated UTF-16. Invalid sequences become
 // U+FFFD and slashes become backslashes.
 static s16 fromwtf8(arena *a, s8 s)
 {
     s16 r = {new(a, s.len+1, c16), 0};
     for (iz i = 0; i < s.len;) {
-        u32 c = s.s[i++];
-        i32 n = c>=0xc2 && c<0xe0 ? 1 : c>=0xe0 && c<0xf0 ? 2 :
-                c>=0xf0 && c<0xf5 ? 3 : 0;
-        if (c >= 0x80) {
-            u32 min = n==3 ? 0x10000 : n==2 ? 0x800 : 0x80;
-            c = n==3 ? c&7 : n==2 ? c&15 : c&31;
-            i32 k = 0;
-            for (; k<n && i<s.len && (s.s[i]&0xc0)==0x80; k++) {
-                c = c<<6 | (s.s[i++] & 63);
-            }
-            if (!n || k<n || c<min || c>0x10ffff) {
-                c = 0xfffd;
-            }
-        }
-        if (c >= 0x10000) {
-            c -= 0x10000;
-            r.s[r.len++] = (c16)(0xd800 | c>>10);
-            r.s[r.len++] = (c16)(0xdc00 | (c & 0x3ff));
-        } else {
-            r.s[r.len++] = c=='/' ? '\\' : (c16)c;
-        }
+        u32 c = wtf8_decode(s.s, s.len, &i);
+        r.len = utf16_put(r.s, r.len, c=='/' ? '\\' : c);
     }
     r.s[r.len] = 0;
     return r;
@@ -427,8 +452,60 @@ static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
     return got;
 }
 
+// Write UTF-8 (WTF-8) to a console as UTF-16, since WriteFile would take
+// the bytes in the console's code page. An incomplete sequence at the
+// end is held for the next write, as output may be split anywhere.
+static b32 write_console(os *ctx, i32 fd, u8 *buf, iz len)
+{
+    u8  in[512];
+    c16 out[countof(in)];  // at most one unit per byte
+    iz  n = ctx->nheld[fd];
+    bytecopy(in, ctx->held[fd], n);
+    for (;;) {
+        iz take = MIN(len, countof(in)-n);
+        bytecopy(in+n, buf, take);
+        buf += take;
+        len -= take;
+        n   += take;
+
+        // Find an incomplete sequence at the end
+        iz end = n;
+        for (iz k = 1; k<=3 && k<=n; k++) {
+            if ((in[n-k]&0xc0) != 0x80) {
+                end -= wtf8_tail(in[n-k]) >= k ? k : 0;
+                break;
+            }
+        }
+
+        iz m = 0;
+        for (iz i = 0; i < end;) {
+            m = utf16_put(out, m, wtf8_decode(in, end, &i));
+        }
+        for (iz i = 0; i < m;) {
+            u32 wrote = 0;
+            if (!WriteConsoleW(ctx->handles[fd], out+i, (u32)(m-i),
+                               &wrote, 0) || !wrote) {
+                return 0;
+            }
+            i += wrote;
+        }
+
+        bytemove(in, in+end, n-end);
+        n -= end;
+        if (!len) {
+            break;
+        }
+    }
+    bytecopy(ctx->held[fd], in, n);
+    ctx->nheld[fd] = (u8)n;
+    return 1;
+}
+
 static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
 {
+    if ((u32)fd<3 && ctx->consoles>>fd & 1) {
+        return write_console(ctx, fd, buf, len);
+    }
     while (len) {
         u32 wrote = 0;
         u32 n = (u32)MIN(len, 1<<30);
@@ -461,6 +538,11 @@ static arena os_init(os *ctx, iz cap)
     ctx->handles[0] = GetStdHandle((u32)-10);
     ctx->handles[1] = GetStdHandle((u32)-11);
     ctx->handles[2] = GetStdHandle((u32)-12);
+    for (i32 fd = 1; fd < 3; fd++) {
+        u32 mode;
+        b32 console = GetConsoleMode(ctx->handles[fd], &mode);
+        ctx->consoles |= (console ? 1u : 0u) << fd;
+    }
     arena a = {0};
     a.beg = VirtualAlloc(0, cap, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
     if (!a.beg) {

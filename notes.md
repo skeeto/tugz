@@ -274,6 +274,10 @@ Fuzzers:
   current directory (UNC or not), a drive's, or the root, dropping `.`,
   `..`, and doubled separators. Trailing dots and spaces are kept, so
   names from a listing round trip. The empty path names no file.
+- Output to a Windows console is converted from UTF-8 (WTF-8, for file
+  names) to UTF-16 for `WriteConsoleW`, since `WriteFile` would take the
+  bytes in the console code page. A sequence split between writes is
+  held until the next. Pipes and files get the bytes unchanged.
 - As in GNU gzip, when using standard input, compressed data is not
   written to, or read from, a terminal without `-f`. Named files with
   `-c` are not checked.
