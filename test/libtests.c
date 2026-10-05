@@ -841,6 +841,60 @@ static void test_inflate_reset(void)
     free(text);
 }
 
+// Init leaves most of an inflator uncleared, so it must decode alike
+// from memory holding anything: stored, fixed, and dynamic blocks, in
+// one piece and byte by byte (through the stash), and after a reset.
+static void test_inflate_init(void)
+{
+    iz n = 20000;
+    u8 *text = textbytes(n, 13);
+    u8 *noise = randbytes(n, 14);
+    s8 const inputs[] = {
+        {text, n}, {noise, n}, {(u8 *)"hello, hello", 12}, {text, 0},
+    };
+    static int const types[] = {2, 0, 1, 1};  // dynamic, stored, fixed
+    static u8 const fills[] = {0, 0xff, 0xa5};
+    for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
+        ptrdiff_t len = tugz_inflate_size(format);
+        u8 *mem = malloc((uz)len);
+        for (i32 i = 0; i < countof(inputs); i++) {
+            s8 in = inputs[i];
+            buf c = tcompress(format, 6, in.s, in.len, 0, 0, 0, 0);
+            if (format == TUGZ_RAW) {
+                TEST((c.s[0]>>1 & 3) == types[i]);  // first block's type
+            }
+            for (i32 fill = 0; fill <= countof(fills); fill++) {
+                for (i32 pass = 0; pass < 3; pass++) {
+                    if (fill < countof(fills)) {
+                        memset(mem, fills[fill], (uz)len);
+                    } else {
+                        u8 *junk = randbytes(len, (u64)(i*3 + pass));
+                        memcpy(mem, junk, (uz)len);
+                        free(junk);
+                    }
+                    tugz_inflator *z = tugz_inflate_init(mem, len, format);
+                    TEST(z);
+                    if (pass == 2) {
+                        // Leave a stream half done, then start over
+                        u8 out[100];
+                        tugz_buf b = {c.s, c.len/2, out, countof(out)};
+                        TEST(tugz_inflate(z, &b) >= 0);
+                        tugz_inflate_reset(z);
+                    }
+                    result r = tdecompress_with(z, c.s, c.len, pass==1, 0);
+                    TEST(r.status==TUGZ_DONE && r.used==c.len);
+                    TEST(same(r.out, in.s, in.len));
+                    free(r.out.s);
+                }
+            }
+            free(c.s);
+        }
+        free(mem);
+    }
+    free(noise);
+    free(text);
+}
+
 static void test_usage(void)
 {
     tugz_inflator *z;
@@ -880,6 +934,7 @@ int main(void)
     test_large();
     test_reset();
     test_inflate_reset();
+    test_inflate_init();
     puts("all library tests pass");
     return 0;
 }

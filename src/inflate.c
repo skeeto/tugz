@@ -72,8 +72,8 @@ enum {
      !((e) & F_SPECIAL) ? ENT_LEN : (e) & F_EOB ? ENT_EOB : ENT_BAD)
 
 typedef struct {
-    u32 *entries;
-    u32  mask;
+    u32 const *entries;
+    u32        mask;
 } htable;
 
 enum {
@@ -106,8 +106,8 @@ typedef struct {
     i32 state;
     b32 final;
     iz  stored;   // stored block bytes remaining
-    htable const *lt;
-    htable const *dt;
+    htable lt;    // the current block's codes: fixed, or in the entries
+    htable dt;
 
     u8 *win;
     iz  wpos;
@@ -116,14 +116,8 @@ typedef struct {
     iz  stashlen;
     u8  stash[INF_STASH];
 
-    htable fixlit;
-    htable fixdist;
-    htable lit;
-    htable dist;
-    u32    fixlit_entries[512];
-    u32    fixdist_entries[32];
-    u32    lit_entries[LIT_ENOUGH];
-    u32    dist_entries[DIST_ENOUGH];
+    u32 lit_entries[LIT_ENOUGH];
+    u32 dist_entries[DIST_ENOUGH];
 } inflator;
 
 static u16 const inf_len_base[29] = {
@@ -144,6 +138,108 @@ static u8 const inf_dist_extra[30] = {
 };
 static u8 const inf_cl_order[19] = {
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
+};
+
+// Decoding tables for the fixed codes (RFC 1951, 3.2.6), exactly as
+// htable_build makes them from the fixed code lengths: 9-bit and 5-bit
+// root tables, the latter with distance codes 30 and 31 invalid. As
+// constants they cost an inflator nothing to set up. test_tables in
+// test/tests.c checks them against htable_build.
+static u32 const inf_fixlit[512] = {
+    0xc0000707, 0x00500888, 0x00100888, 0x0073080c, 0x001f0709, 0x00700888,
+    0x00300888, 0x00c00989, 0x000a0707, 0x00600888, 0x00200888, 0x00a00989,
+    0x00000888, 0x00800888, 0x00400888, 0x00e00989, 0x00060707, 0x00580888,
+    0x00180888, 0x00900989, 0x003b070a, 0x00780888, 0x00380888, 0x00d00989,
+    0x00110708, 0x00680888, 0x00280888, 0x00b00989, 0x00080888, 0x00880888,
+    0x00480888, 0x00f00989, 0x00040707, 0x00540888, 0x00140888, 0x00e3080d,
+    0x002b070a, 0x00740888, 0x00340888, 0x00c80989, 0x000d0708, 0x00640888,
+    0x00240888, 0x00a80989, 0x00040888, 0x00840888, 0x00440888, 0x00e80989,
+    0x00080707, 0x005c0888, 0x001c0888, 0x00980989, 0x0053070b, 0x007c0888,
+    0x003c0888, 0x00d80989, 0x00170709, 0x006c0888, 0x002c0888, 0x00b80989,
+    0x000c0888, 0x008c0888, 0x004c0888, 0x00f80989, 0x00030707, 0x00520888,
+    0x00120888, 0x00a3080d, 0x0023070a, 0x00720888, 0x00320888, 0x00c40989,
+    0x000b0708, 0x00620888, 0x00220888, 0x00a40989, 0x00020888, 0x00820888,
+    0x00420888, 0x00e40989, 0x00070707, 0x005a0888, 0x001a0888, 0x00940989,
+    0x0043070b, 0x007a0888, 0x003a0888, 0x00d40989, 0x00130709, 0x006a0888,
+    0x002a0888, 0x00b40989, 0x000a0888, 0x008a0888, 0x004a0888, 0x00f40989,
+    0x00050707, 0x00560888, 0x00160888, 0x80000808, 0x0033070a, 0x00760888,
+    0x00360888, 0x00cc0989, 0x000f0708, 0x00660888, 0x00260888, 0x00ac0989,
+    0x00060888, 0x00860888, 0x00460888, 0x00ec0989, 0x00090707, 0x005e0888,
+    0x001e0888, 0x009c0989, 0x0063070b, 0x007e0888, 0x003e0888, 0x00dc0989,
+    0x001b0709, 0x006e0888, 0x002e0888, 0x00bc0989, 0x000e0888, 0x008e0888,
+    0x004e0888, 0x00fc0989, 0xc0000707, 0x00510888, 0x00110888, 0x0083080d,
+    0x001f0709, 0x00710888, 0x00310888, 0x00c20989, 0x000a0707, 0x00610888,
+    0x00210888, 0x00a20989, 0x00010888, 0x00810888, 0x00410888, 0x00e20989,
+    0x00060707, 0x00590888, 0x00190888, 0x00920989, 0x003b070a, 0x00790888,
+    0x00390888, 0x00d20989, 0x00110708, 0x00690888, 0x00290888, 0x00b20989,
+    0x00090888, 0x00890888, 0x00490888, 0x00f20989, 0x00040707, 0x00550888,
+    0x00150888, 0x01020808, 0x002b070a, 0x00750888, 0x00350888, 0x00ca0989,
+    0x000d0708, 0x00650888, 0x00250888, 0x00aa0989, 0x00050888, 0x00850888,
+    0x00450888, 0x00ea0989, 0x00080707, 0x005d0888, 0x001d0888, 0x009a0989,
+    0x0053070b, 0x007d0888, 0x003d0888, 0x00da0989, 0x00170709, 0x006d0888,
+    0x002d0888, 0x00ba0989, 0x000d0888, 0x008d0888, 0x004d0888, 0x00fa0989,
+    0x00030707, 0x00530888, 0x00130888, 0x00c3080d, 0x0023070a, 0x00730888,
+    0x00330888, 0x00c60989, 0x000b0708, 0x00630888, 0x00230888, 0x00a60989,
+    0x00030888, 0x00830888, 0x00430888, 0x00e60989, 0x00070707, 0x005b0888,
+    0x001b0888, 0x00960989, 0x0043070b, 0x007b0888, 0x003b0888, 0x00d60989,
+    0x00130709, 0x006b0888, 0x002b0888, 0x00b60989, 0x000b0888, 0x008b0888,
+    0x004b0888, 0x00f60989, 0x00050707, 0x00570888, 0x00170888, 0x80000808,
+    0x0033070a, 0x00770888, 0x00370888, 0x00ce0989, 0x000f0708, 0x00670888,
+    0x00270888, 0x00ae0989, 0x00070888, 0x00870888, 0x00470888, 0x00ee0989,
+    0x00090707, 0x005f0888, 0x001f0888, 0x009e0989, 0x0063070b, 0x007f0888,
+    0x003f0888, 0x00de0989, 0x001b0709, 0x006f0888, 0x002f0888, 0x00be0989,
+    0x000f0888, 0x008f0888, 0x004f0888, 0x00fe0989, 0xc0000707, 0x00500888,
+    0x00100888, 0x0073080c, 0x001f0709, 0x00700888, 0x00300888, 0x00c10989,
+    0x000a0707, 0x00600888, 0x00200888, 0x00a10989, 0x00000888, 0x00800888,
+    0x00400888, 0x00e10989, 0x00060707, 0x00580888, 0x00180888, 0x00910989,
+    0x003b070a, 0x00780888, 0x00380888, 0x00d10989, 0x00110708, 0x00680888,
+    0x00280888, 0x00b10989, 0x00080888, 0x00880888, 0x00480888, 0x00f10989,
+    0x00040707, 0x00540888, 0x00140888, 0x00e3080d, 0x002b070a, 0x00740888,
+    0x00340888, 0x00c90989, 0x000d0708, 0x00640888, 0x00240888, 0x00a90989,
+    0x00040888, 0x00840888, 0x00440888, 0x00e90989, 0x00080707, 0x005c0888,
+    0x001c0888, 0x00990989, 0x0053070b, 0x007c0888, 0x003c0888, 0x00d90989,
+    0x00170709, 0x006c0888, 0x002c0888, 0x00b90989, 0x000c0888, 0x008c0888,
+    0x004c0888, 0x00f90989, 0x00030707, 0x00520888, 0x00120888, 0x00a3080d,
+    0x0023070a, 0x00720888, 0x00320888, 0x00c50989, 0x000b0708, 0x00620888,
+    0x00220888, 0x00a50989, 0x00020888, 0x00820888, 0x00420888, 0x00e50989,
+    0x00070707, 0x005a0888, 0x001a0888, 0x00950989, 0x0043070b, 0x007a0888,
+    0x003a0888, 0x00d50989, 0x00130709, 0x006a0888, 0x002a0888, 0x00b50989,
+    0x000a0888, 0x008a0888, 0x004a0888, 0x00f50989, 0x00050707, 0x00560888,
+    0x00160888, 0x80000808, 0x0033070a, 0x00760888, 0x00360888, 0x00cd0989,
+    0x000f0708, 0x00660888, 0x00260888, 0x00ad0989, 0x00060888, 0x00860888,
+    0x00460888, 0x00ed0989, 0x00090707, 0x005e0888, 0x001e0888, 0x009d0989,
+    0x0063070b, 0x007e0888, 0x003e0888, 0x00dd0989, 0x001b0709, 0x006e0888,
+    0x002e0888, 0x00bd0989, 0x000e0888, 0x008e0888, 0x004e0888, 0x00fd0989,
+    0xc0000707, 0x00510888, 0x00110888, 0x0083080d, 0x001f0709, 0x00710888,
+    0x00310888, 0x00c30989, 0x000a0707, 0x00610888, 0x00210888, 0x00a30989,
+    0x00010888, 0x00810888, 0x00410888, 0x00e30989, 0x00060707, 0x00590888,
+    0x00190888, 0x00930989, 0x003b070a, 0x00790888, 0x00390888, 0x00d30989,
+    0x00110708, 0x00690888, 0x00290888, 0x00b30989, 0x00090888, 0x00890888,
+    0x00490888, 0x00f30989, 0x00040707, 0x00550888, 0x00150888, 0x01020808,
+    0x002b070a, 0x00750888, 0x00350888, 0x00cb0989, 0x000d0708, 0x00650888,
+    0x00250888, 0x00ab0989, 0x00050888, 0x00850888, 0x00450888, 0x00eb0989,
+    0x00080707, 0x005d0888, 0x001d0888, 0x009b0989, 0x0053070b, 0x007d0888,
+    0x003d0888, 0x00db0989, 0x00170709, 0x006d0888, 0x002d0888, 0x00bb0989,
+    0x000d0888, 0x008d0888, 0x004d0888, 0x00fb0989, 0x00030707, 0x00530888,
+    0x00130888, 0x00c3080d, 0x0023070a, 0x00730888, 0x00330888, 0x00c70989,
+    0x000b0708, 0x00630888, 0x00230888, 0x00a70989, 0x00030888, 0x00830888,
+    0x00430888, 0x00e70989, 0x00070707, 0x005b0888, 0x001b0888, 0x00970989,
+    0x0043070b, 0x007b0888, 0x003b0888, 0x00d70989, 0x00130709, 0x006b0888,
+    0x002b0888, 0x00b70989, 0x000b0888, 0x008b0888, 0x004b0888, 0x00f70989,
+    0x00050707, 0x00570888, 0x00170888, 0x80000808, 0x0033070a, 0x00770888,
+    0x00370888, 0x00cf0989, 0x000f0708, 0x00670888, 0x00270888, 0x00af0989,
+    0x00070888, 0x00870888, 0x00470888, 0x00ef0989, 0x00090707, 0x005f0888,
+    0x001f0888, 0x009f0989, 0x0063070b, 0x007f0888, 0x003f0888, 0x00df0989,
+    0x001b0709, 0x006f0888, 0x002f0888, 0x00bf0989, 0x000f0888, 0x008f0888,
+    0x004f0888, 0x00ff0989,
+};
+static u32 const inf_fixdist[32] = {
+    0x00010505, 0x0101050c, 0x00110508, 0x10010510, 0x00050506, 0x0401050e,
+    0x0041050a, 0x40010512, 0x00030505, 0x0201050d, 0x00210509, 0x20010511,
+    0x00090507, 0x0801050f, 0x0081050b, 0x80000505, 0x00020505, 0x0181050c,
+    0x00190508, 0x18010510, 0x00070506, 0x0601050e, 0x0061050a, 0x60010512,
+    0x00040505, 0x0301050d, 0x00310509, 0x30010511, 0x000d0507, 0x0c01050f,
+    0x00c1050b, 0x80000505,
 };
 
 static u32 sym_entry(i32 sym, i32 len, i32 kind)
@@ -301,23 +397,14 @@ static void inflate_reset(inflator *s)
     s->stashlen = 0;
 }
 
+// Only the fields inflate_reset sets need a value: each block header
+// sets lt and dt (building the dynamic tables) before any symbol is
+// decoded, and the stash is filled before it is read. So the state
+// starts uncleared, and costs no more to set up than to reset.
 static inflator *inflate_new(arena *a)
 {
-    inflator *s = new(a, 1, inflator);
+    inflator *s = alloc(a, 1, sizeof(inflator), _Alignof(inflator), 0);
     s->win = newbytes(a, INF_WINCAP);
-
-    u16 lens[288];
-    for (i32 i = 0; i < 288; i++) {
-        lens[i] = (u16)(i<144 ? 8 : i<256 ? 9 : i<280 ? 7 : 8);
-    }
-    htable_build(&s->fixlit, s->fixlit_entries, countof(s->fixlit_entries),
-                 lens, 288, HUFF_LITLEN, LIT_ROOT);
-    // All 32 fixed distance codes exist, though 30 and 31 are invalid
-    for (i32 i = 0; i < 32; i++) {
-        lens[i] = 5;
-    }
-    htable_build(&s->fixdist, s->fixdist_entries,
-                 countof(s->fixdist_entries), lens, 32, HUFF_DIST, DIST_ROOT);
     inflate_reset(s);
     return s;
 }
@@ -490,8 +577,8 @@ static u8 *copy_match(u8 *out, iz dist, iz len)
 // careful path (or on error).
 static b32 decode_fast(inflator *s)
 {
-    htable const *lt = s->lt;
-    htable const *dt = s->dt;
+    htable const *lt = &s->lt;
+    htable const *dt = &s->dt;
     u8 const *in    = s->in;
     u8 const *inend = s->inend;
     u8 *win    = s->win;
@@ -590,7 +677,7 @@ static b32 decode_fast(inflator *s)
 // block. Output is only written once the whole unit has been decoded.
 static void inf_symbol(inflator *s)
 {
-    u32 e = inf_decode(s, s->lt);
+    u32 e = inf_decode(s, &s->lt);
     if (s->err) {
         return;
     } else if (e & F_LIT) {
@@ -601,7 +688,7 @@ static void inf_symbol(inflator *s)
         return;
     }
     iz len = ENT_VAL(e) + inf_bits(s, ENT_EXTRA(e));
-    e = inf_decode(s, s->dt);
+    e = inf_decode(s, &s->dt);
     if (s->err) {
         return;
     }
@@ -619,7 +706,8 @@ static void inf_symbol(inflator *s)
     s->wpos += len;
 }
 
-// Read a dynamic block's code descriptions and build its tables.
+// Read a dynamic block's code descriptions and build its tables into lt
+// and dt.
 static void inf_dynamic(inflator *s)
 {
     i32 hlit  = (i32)inf_bits(s, 5) + 257;
@@ -686,9 +774,9 @@ static void inf_dynamic(inflator *s)
     }
 
     if (!lens[256] ||
-        !htable_build(&s->lit, s->lit_entries, countof(s->lit_entries),
+        !htable_build(&s->lt, s->lit_entries, countof(s->lit_entries),
                       lens, hlit, HUFF_LITLEN, LIT_ROOT) ||
-        !htable_build(&s->dist, s->dist_entries, countof(s->dist_entries),
+        !htable_build(&s->dt, s->dist_entries, countof(s->dist_entries),
                       lens+hlit, hdist, HUFF_DIST, DIST_ROOT)) {
         s->err = GZ_EDATA;
     }
@@ -719,17 +807,15 @@ static void inf_header(inflator *s)
         s->state = INF_STORED;
     } break;
     case 1:
-        s->lt = &s->fixlit;
-        s->dt = &s->fixdist;
+        s->lt = (htable){inf_fixlit, countof(inf_fixlit) - 1};
+        s->dt = (htable){inf_fixdist, countof(inf_fixdist) - 1};
         s->state = INF_SYMBOLS;
         break;
     case 2:
-        inf_dynamic(s);
+        inf_dynamic(s);  // into lt and dt
         if (s->err) {
             return;
         }
-        s->lt = &s->lit;
-        s->dt = &s->dist;
         s->state = INF_SYMBOLS;
         break;
     default:

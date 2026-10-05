@@ -624,6 +624,24 @@ static void test_tables(void)
         TEST(dist >= def_dist_base[c]);
         TEST(dist < def_dist_base[c] + (1<<def_dist_extra[c]));
     }
+
+    // The fixed codes' constant decoding tables are htable_build's
+    u16 lens[288];
+    for (i32 i = 0; i < 288; i++) {
+        lens[i] = (u16)(i<144 ? 8 : i<256 ? 9 : i<280 ? 7 : 8);
+    }
+    u32 fixed[512];
+    htable h;
+    TEST(htable_build(&h, fixed, countof(fixed), lens, 288, HUFF_LITLEN,
+                      LIT_ROOT));
+    TEST(h.mask == countof(inf_fixlit)-1);
+    TEST(!memcmp(fixed, inf_fixlit, sizeof(inf_fixlit)));
+    for (i32 i = 0; i < 32; i++) {
+        lens[i] = 5;
+    }
+    TEST(htable_build(&h, fixed, 32, lens, 32, HUFF_DIST, DIST_ROOT));
+    TEST(h.mask == countof(inf_fixdist)-1);
+    TEST(!memcmp(fixed, inf_fixdist, sizeof(inf_fixdist)));
 }
 
 // Reference unlimited Huffman cost via repeated minimum extraction.

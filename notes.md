@@ -71,14 +71,14 @@ CPU models with and without PCLMUL.
 - Sizes are `ptrdiff_t`; statuses, formats, levels, and flushes are
   `int`. No `long`, no `size_t`.
 - State is fixed-size and lives in caller memory of any alignment
-  (`tugz_*_size`, `tugz_*_init`): 310 KB to inflate and 2.7 MB to
+  (`tugz_*_size`, `tugz_*_init`): 308 KB to inflate and 2.7 MB to
   deflate. The optional allocator has the Lua shape
   `(ctx, ptr, old, new)` and is called once to allocate and once to free,
-  with the size. Init on the same memory starts over; `tugz_*_reset`
-  does so far more cheaply (below). `os_oom` traps in the library: init
-  checks the size first, so it is unreachable. Programs allocate their
-  codecs from exactly-sized sub-arenas, so every program run checks the
-  size calculation.
+  with the size. Init on the same memory starts over, as does a reset,
+  which for deflate is far cheaper (below). `os_oom` traps in the
+  library: init checks the size first, so it is unreachable. Programs
+  allocate their codecs from exactly-sized sub-arenas, so every program
+  run checks the size calculation.
 - Inflate decodes in atomic units: a block header (with a whole dynamic
   table description, at most ~300 bytes) or one literal or
   length/distance pair. If input runs out mid-unit, the unit rolls back
@@ -112,10 +112,17 @@ CPU models with and without PCLMUL.
   per entry, gzip one encoder per file, and the library exposes this as
   `tugz_deflate_reset`; a fresh deflator still zeroes 512 KiB. The reset
   also sets the level, which only selects parameters and the zlib
-  header, so `tugz_deflate_size` takes only the format.
-  `tugz_inflate_reset` skips init's 14 KiB clear and fixed-table build.
-  Per 100-byte gzip stream (M4 Max / Pi 4): deflate 11.4 / 78 us after
-  init, 2.5 / 21 us after reset; inflate 3.3 / 19 us, 1.1 / 6.9 us.
+  header, so `tugz_deflate_size` takes only the format. Per 100-byte
+  gzip stream (M4 Max / Pi 4): deflate 11.4 / 78 us after init, 2.5 /
+  21 us after reset.
+- An inflator starts uncleared: the fixed codes' decoding tables are
+  constants (2 KiB, which `test_tables` checks against `htable_build`),
+  and every other field is written before it is read, so init sets only
+  what `tugz_inflate_reset` does. On the M4 Max / Pi 4, init took
+  2.0 / 12.6 us, clearing 14 KiB and building the fixed tables, and now
+  takes 3 / 39 ns. A 100-byte gzip stream decodes in 1.2 / 7.3 us after
+  init or reset, where it took 3.2 / 19.9 us after init. The library
+  object grew by 2 KiB (+5%) of constant tables.
 - Programs reach the buffers without copying (`*_pending`/`*_consume`),
   so the program's throughput is unchanged by the restructure.
 - `make libtugz.o` builds an object exporting only `tugz_*` (no writable
