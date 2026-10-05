@@ -742,6 +742,134 @@ static void test_huffman(void)
     }
 }
 
+// Bit reader over a raw DEFLATE stream, for inspecting block headers.
+typedef struct {
+    u8 const *p;
+    iz        len;
+    iz        bit;
+} bitreader;
+
+static u32 getbits(bitreader *r, i32 n)
+{
+    u32 v = 0;
+    for (i32 i = 0; i < n; i++, r->bit++) {
+        TEST(r->bit>>3 < r->len);
+        v |= (u32)(r->p[r->bit>>3] >> (r->bit&7) & 1) << i;
+    }
+    return v;
+}
+
+// Kraft sum of code lengths in units of 2^-15: 1<<15 when complete.
+static u32 kraft(u8 const *lens, i32 n)
+{
+    u32 sum = 0;
+    for (i32 i = 0; i < n; i++) {
+        sum += lens[i] ? 1u << (15 - lens[i]) : 0;
+    }
+    return sum;
+}
+
+// Every code in the stream's first block, which must be dynamic, is
+// complete. Some decoders, notably Windows' zip folder, reject the
+// incomplete codes that DEFLATE permits (libdeflate issue #323), such as
+// a lone distance code when a block has at most one distinct distance.
+static void check_complete_codes(s8 z)
+{
+    static u8 const order[19] = {
+        16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
+    };
+    bitreader r = {z.s, z.len, 0};
+    getbits(&r, 1);
+    TEST(getbits(&r, 2) == 2);
+    i32 hlit  = (i32)getbits(&r, 5) + 257;
+    i32 hdist = (i32)getbits(&r, 5) + 1;
+    i32 hclen = (i32)getbits(&r, 4) + 4;
+    u8 cl[19] = {0};
+    for (i32 i = 0; i < hclen; i++) {
+        cl[order[i]] = (u8)getbits(&r, 3);
+    }
+    TEST(kraft(cl, 19) == 1u<<15);
+
+    // Canonical decoding of the code length code, one bit at a time
+    u16 code[19];
+    u16 next[8] = {0};
+    u16 count[8] = {0};
+    for (i32 i = 0; i < 19; i++) {
+        count[cl[i]]++;
+    }
+    count[0] = 0;
+    for (i32 b = 1, c = 0; b < 8; b++) {
+        c = (c + count[b-1]) << 1;
+        next[b] = (u16)c;
+    }
+    for (i32 i = 0; i < 19; i++) {
+        code[i] = cl[i] ? next[cl[i]]++ : 0;
+    }
+
+    u8 lens[286+30] = {0};
+    for (i32 n = 0; n < hlit+hdist;) {
+        i32 sym = -1;
+        u32 c = 0;
+        for (i32 len = 1; sym<0 && len<=7; len++) {
+            c = c<<1 | getbits(&r, 1);
+            for (i32 i = 0; i < 19; i++) {
+                if (cl[i]==len && code[i]==c) {
+                    sym = i;
+                }
+            }
+        }
+        TEST(sym >= 0);
+        if (sym < 16) {
+            lens[n++] = (u8)sym;
+        } else {
+            i32 rep = sym==16 ? 3+(i32)getbits(&r, 2) :
+                      sym==17 ? 3+(i32)getbits(&r, 3) : 11+(i32)getbits(&r, 7);
+            u8 v = sym==16 ? lens[n-1] : 0;
+            for (; rep--; n++) {
+                lens[n] = v;
+            }
+        }
+    }
+    TEST(kraft(lens, hlit) == 1u<<15);
+    TEST(kraft(lens+hlit, hdist) == 1u<<15);
+}
+
+// de Bruijn sequence over 26 letters of order 3: no three-byte string
+// repeats, so a compressor finds no matches, though literals compress.
+static iz debruijn(u8 *out, iz len, u8 *a, i32 t, i32 p)
+{
+    if (t > 3) {
+        for (i32 j = 1; 3%p==0 && j<=p; j++) {
+            out[len++] = (u8)('a' + a[j]);
+        }
+        return len;
+    }
+    a[t] = a[t-p];
+    len = debruijn(out, len, a, t+1, p);
+    for (i32 j = a[t-p]+1; j < 26; j++) {
+        a[t] = (u8)j;
+        len = debruijn(out, len, a, t+1, t);
+    }
+    return len;
+}
+
+static void test_complete_codes(os *ctx, arena a)
+{
+    u8  *p = new(&a, 17576+64, u8);
+    u8   state[4] = {0};
+    iz   len = debruijn(p, 0, state, 1, 1);
+    TEST(len == 17576);
+
+    for (i32 level = 1; level <= 9; level++) {
+        // Literals only: no distance codes used at all
+        check_complete_codes(do_deflate(ctx, a, p, len, level, 0, 0));
+
+        // One match: a single distance code used
+        bytecopy(p+len, p, 40);
+        check_complete_codes(do_deflate(ctx, a, p, len+40, level, 0, 0));
+    }
+}
+
 static void test_inflate_vectors(os *ctx, arena a)
 {
     s8 out;
@@ -1944,6 +2072,7 @@ int main(void)
 
     test_tables();
     test_huffman();
+    test_complete_codes(&ctx, a);
     test_inflate_vectors(&ctx, a);
     test_inflate_repeats(&ctx, a);
     test_container(&ctx, a);
