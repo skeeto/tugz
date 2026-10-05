@@ -1523,6 +1523,64 @@ static void test_large_offset(os *ctx, arena a)
     free(p);
 }
 
+// Inputs from a fixed generator, apart from the other tests' random
+// state: text of words and numbers, or 16 letters at random, favoring
+// 3-byte matches.
+static u8 *golden_input(iz len, b32 letters)
+{
+    static char const words[][9] = {
+        "the ", "of ", "deflate ", "window ", "and ", "a ", "huffman\n",
+        "zlib ",
+    };
+    u8 *p = malloc((uz)len);
+    u64 s = 1 + letters;
+    for (iz i = 0; i < len;) {
+        s = s*0x3243f6a8885a308d + 1;
+        if (letters) {
+            p[i++] = (u8)('a' + (s >> 60));
+        } else if (s>>58 & 3) {
+            for (char const *w = words[s>>61]; *w && i<len; w++) {
+                p[i++] = (u8)*w;
+            }
+        } else {
+            for (u32 n = (u32)(s >> 32) % 1000; i < len; n /= 10) {
+                p[i++] = (u8)('0' + n%10);
+                if (n < 10) {
+                    break;
+                }
+            }
+            if (i < len) {
+                p[i++] = ' ';
+            }
+        }
+    }
+    return p;
+}
+
+// Compressed output is pinned, so that no change to it passes unnoticed,
+// even one that still decodes: CRC-32s of the gzip format at each level,
+// recorded from commit eb73afb, of text long enough to slide the window
+// and of data favoring 3-byte matches.
+static void test_golden(arena a)
+{
+    static iz const lens[] = {1100000, 200000};
+    static u32 const crcs[2][9] = {
+        {0xcf800ee7, 0x9aa4a7b6, 0xf61fdcd7, 0x12b51908,
+         0x62d88a64, 0x401c9543, 0x12d61d4f, 0x2c3f4802, 0x7765c8a5},
+        {0x1325006c, 0x61c7c7d0, 0x36266ef9, 0xe63b2e04,
+         0x9456a39d, 0x9456a39d, 0x112f0260, 0x112f0260, 0x112f0260},
+    };
+    for (i32 k = 0; k < 2; k++) {
+        u8 *p = golden_input(lens[k], k);
+        for (i32 level = 1; level <= 9; level++) {
+            s8 z = zcompress(a, FMT_GZIP, p, lens[k], level, 0, 0, 0);
+            TEST(crc32_update(0, z.s, z.len) == crcs[k][level-1]);
+            free(z.s);
+        }
+        free(p);
+    }
+}
+
 static s8 gzbytes(u8 const *p, iz len)
 {
     s8 r = {malloc((uz)len), len};
@@ -2218,6 +2276,7 @@ int main(void)
     test_oom(&ctx, a);
     test_push_invariance(&ctx, a);
     test_large_offset(&ctx, a);
+    test_golden(a);
     test_inflate_zlib(&ctx, a);
     test_roundtrip(&ctx, a);
 

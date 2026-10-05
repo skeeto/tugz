@@ -105,12 +105,21 @@ CPU models with and without PCLMUL.
   the program's driver applies the GNU trailing-data policy.
 - Of the deflator's large tables only the hash heads start zeroed:
   tokens and chain links are always written before use. Forgetting
-  history (a FULL flush, or `deflate_reset` before a new stream) clears
-  the heads by rehashing the inserted positions when there are at most
-  8192, else by zeroing them, so a reused deflator costs time in
-  proportion to the stream, not the table sizes. zip resets one deflator
-  per entry, gzip one encoder per file, and the library exposes this as
-  `tugz_deflate_reset`; a fresh deflator still zeroes 512 KiB. The reset
+  history (a FULL flush, or `deflate_reset` before a new stream) must
+  empty the heads. After at most 1024 inserted positions, it rehashes
+  them and clears their slots. After more, rather than clear 512 KiB, it
+  advances a stamp: each hash table entry is its position plus one plus
+  the stamp, which moves in steps of 2^21, beyond any window position,
+  and `find_match` measures distances from p's own entry, so an older
+  entry lies more than a window back and ends a chain as an empty one
+  does. Slides zero such entries, and after 2,047 advances the heads are
+  zeroed and the stamp starts over. A reset or FULL flush thus costs at
+  most a 1024-position rehash (and once in 2,048, the clearing).
+  Sampling for 3-byte matching keeps its own 8 KiB bitmap, since the
+  3-byte heads it borrowed may now hold forgotten entries. zip resets
+  one deflator per entry, gzip one encoder per file, and the library
+  exposes this as `tugz_deflate_reset`; a fresh deflator still zeroes
+  512 KiB. The reset
   also sets the level, which only selects parameters and the zlib
   header, so `tugz_deflate_size` takes only the format. Per 100-byte
   gzip stream (M4 Max / Pi 4): deflate 11.4 / 78 us after init, 2.5 /
@@ -885,3 +894,31 @@ costs little; the program avoids it via `*_pending`/`*_consume`.
 Fuzzing after the restructure: one hour per harness on 16 cores, about
 93 million executions in all, no findings beyond the empty code length
 timing difference fixed above.
+
+Deflate resets: emptying the hash heads costs 5.5 us on the M4 Max and
+24 us on the Pi 4 (256 KiB; 7 and 48 us with the 3-byte heads), and
+rehashing costs 0.33 and 4 ns per position (0.85 and 8.5 with them), so
+the old threshold of 8,192 positions sat near the crossover: raising it
+slowed resets after 12-64 KiB streams by 2-7% per stream on the M4 Max,
+and lowering it to 4,096 changed little. Clearing only touched slots
+cannot help, as hashes spread evenly: 8,192 insertions touch 86% of the
+table's cache lines. Stamps (see Library) make forgetting a long history
+free, but a lookup that meets a stale entry takes a step more than one
+that meets an empty slot, so short histories are still rehashed: stamping
+from 256 positions on made 300-byte streams 1-9% slower on the M4 Max,
+while from 1,024 on, small streams change by no more than code placement
+alone moves them (about 1%). Per stream, best of seven interleaved runs
+over slices of dickens and ooffice at levels 1, 6, and 9, change against
+the previous code:
+
+|                | 100 B, 1 KB | 4 KiB     | 8 KiB    | 16 KiB   | 32-64 KiB          | 2 MB              |
+|----------------|-------------|-----------|----------|----------|--------------------|-------------------|
+| M4 Max         | -1..+2%     | -4..-7%   | -5..-9%  | -2..-4%  | 0 / -3..-8%        | 0 / -1..-2%       |
+| Pi 4 (noisy)   | -1..+2%     | -2..-14%  | -6..-11% | -4..+3%  | -6..+6%            | -11..+5%          |
+
+(M4 Max 32 KiB and up: dickens / ooffice; Pi 4: 64 KiB only. Its L2,
+shared with other work, moves runs of 16 KiB and up by about 6%.) gzip
+-c over many files, user+sys CPU, median of seven (M4 Max) or five (Pi
+4) interleaved runs: 10,000 files of 64 B to 8 KiB took 4-10% less (Pi
+4: 6-9%), 3,000 of 8-64 KiB 2-4% less (Pi 4: within 2.3% either way),
+and 20,000 of 200-360 B and the Silesia files one at a time no more.

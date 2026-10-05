@@ -781,6 +781,80 @@ static void test_reset(void)
     free(text);
 }
 
+// Forgetting more than a short history advances a stamp on the hash
+// table entries rather than clearing them, until the stamps run out after
+// 2,047 advances and the heads are cleared. Across that, streams compress
+// as new ones: after a dense history (which, were sampling to see its
+// 3-byte heads, would flip the next stream's choice of 3-byte matching),
+// across the clearing, and long enough to slide the window past older
+// entries.
+static void test_reset_stamps(void)
+{
+    iz n = (iz)1100000;  // past the window
+    u8 *rnd = randbytes(n, 15);
+    u8 *text = textbytes(n, 16);
+    u8 *abc = randbytes(n, 17);
+    for (iz i = 0; i < n; i++) {
+        abc[i] = (u8)('a' + abc[i]%11);  // 3-byte matching, barely
+    }
+    u8 *zeros = calloc(2000, 1);
+    tugz_deflator *d;
+    void *mem = mem_deflator(TUGZ_RAW, 1, &d);
+    deflator *def = d->e->def;
+
+    // Stamps whose many bits stand out in the 3-byte heads
+    free(tcompress_with(d, rnd, 30000, 0, 0, 0, 0).s);  // stamp zero
+    TEST(!def->stamp && def->use3);
+    while (def->stamp < 1023*STAMP_STEP) {
+        tugz_deflate_reset(d, 1);
+        free(tcompress_with(d, zeros, 2000, 0, 0, 0, 0).s);
+    }
+    tugz_deflate_reset(d, 1);
+    free(tcompress_with(d, rnd, 1000000, 0, 0, 0, 0).s);
+    TEST(def->use3);
+    tugz_deflate_reset(d, 1);
+    buf ref = tcompress(TUGZ_RAW, 1, abc, 40000, 0, 0, 0, 0);
+    buf c = tcompress_with(d, abc, 40000, 0, 0, 0, 0);
+    TEST(def->use3);
+    TEST(same(c, ref.s, ref.len));
+    free(c.s);
+    free(ref.s);
+
+    // Run the stamps out
+    while (def->stamp != STAMP_LAST) {
+        tugz_deflate_reset(d, 1);
+        free(tcompress_with(d, zeros, 2000, 0, 0, 0, 0).s);
+    }
+    tugz_deflate_reset(d, 9);
+    TEST(!def->stamp);
+    for (i32 i = 0; i < HASH_SIZE; i++) {
+        TEST(!def->head[i] && !def->head3[i]);
+    }
+    ref = tcompress(TUGZ_RAW, 9, rnd+40000, 30000, 0, 0, 0, 0);
+    c = tcompress_with(d, rnd+40000, 30000, 0, 0, 0, 0);
+    TEST(same(c, ref.s, ref.len));
+    free(c.s);
+    free(ref.s);
+
+    // Long streams, with and without 3-byte matching
+    for (i32 k = 0; k < 2; k++) {
+        u8 *p = k ? abc : text;
+        ref = tcompress(TUGZ_RAW, 1, p, n, 0, 0, 0, 0);
+        tugz_deflate_reset(d, 1);
+        TEST(def->stamp);
+        c = tcompress_with(d, p, n, 0, 0, 0, 0);
+        TEST(same(c, ref.s, ref.len));
+        free(c.s);
+        free(ref.s);
+    }
+
+    free(mem);
+    free(zeros);
+    free(abc);
+    free(text);
+    free(rnd);
+}
+
 // A reset inflator decodes as a new one, after its previous stream ended,
 // failed, or was abandoned at any point: in a header, block, trailer,
 // or the stash, or with output pending.
@@ -933,6 +1007,7 @@ int main(void)
     test_roundtrip();
     test_large();
     test_reset();
+    test_reset_stamps();
     test_inflate_reset();
     test_inflate_init();
     puts("all library tests pass");

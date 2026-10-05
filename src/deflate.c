@@ -4,7 +4,8 @@
 // the window fills (or at a flush), so output depends only on the input
 // and flush points, not on how input and output buffers are split
 // across calls. Hash chains store window-relative positions plus one
-// (zero is "none"), rebased whenever the window slides.
+// (zero is "none") plus a stamp (see forget), rebased whenever the
+// window slides.
 //
 // Output is staged in a buffer from which the caller drains it. Each
 // emission step (one block, a window slide, or a flush) requires
@@ -34,7 +35,12 @@
 #define NOBS          10    // block split observation categories
 #define OBS_BATCH     512   // observations between block split checks
 #define MIN_BLOCK     10000 // minimum block size in bytes for splitting
-#define FORGET_REHASH 8192  // longest history to clear by rehashing
+#define FORGET_REHASH 1024  // longest history to clear by rehashing
+#define STAMP_STEP    (1u << 21)  // stamps' unit, above any position
+#define STAMP_LAST    (0u - STAMP_STEP)
+
+_Static_assert(WIN_CAP < STAMP_STEP, "a stamp step exceeds positions");
+_Static_assert(STAMP_STEP%DEF_WSIZE == 0, "stamps keep chain slots");
 
 // Flush modes, matching the library's
 enum {
@@ -112,6 +118,8 @@ typedef struct {
     u32 *prev;
     u32 *head3;
     u32 *prev3;
+    u32 *seen;    // sample's bitmap of hashes, zero between samples
+    u32  stamp;   // added to hash table entries; see forget
 
     token *toks;
     iz     ntok;
@@ -715,6 +723,13 @@ static u32 chain_slot(deflator *d, iz p)
     return (u32)(d->base + (u64)p) & DEF_WMASK;
 }
 
+// Index into prev tables for a hash table entry's position. Stamps are
+// multiples of the window size, so they drop out.
+static u32 entry_slot(deflator *d, u32 entry)
+{
+    return ((u32)d->base + entry - 1) & DEF_WMASK;
+}
+
 // Little-endian, so hashes (and therefore output) match across hosts.
 static u32 load32(u8 const *p)
 {
@@ -736,15 +751,16 @@ static u32 hash_insert(deflator *d, iz p)
 {
     u32 v = load32(d->win + p);
     u32 slot = chain_slot(d, p);
+    u32 entry = (u32)p + 1 + d->stamp;
     u32 h = hash4(v);
     d->prev[slot] = d->head[h];
-    d->head[h] = (u32)p + 1;
+    d->head[h] = entry;
     u32 prev3 = 0;
     if (d->use3) {
         u32 h3 = hash3(v);
         prev3 = d->head3[h3];
         d->prev3[slot] = prev3;
-        d->head3[h3] = (u32)p + 1;
+        d->head3[h3] = entry;
     }
     return prev3;
 }
@@ -781,25 +797,29 @@ typedef struct {
     i32 dist;
 } match;
 
+// Candidates are hash table entries, from which distances are measured
+// against p's own entry: a forgotten entry is farther than any match.
 static match find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth)
 {
     u8 *win = d->win;
     i32 maxlen = (i32)MIN(d->win_len - p, MAX_MATCH);
     i32 best = MIN_MATCH - 1;
     iz  best_pos = 0;
+    u32 here = (u32)p + 1 + d->stamp;
 
     for (; cand && depth > 0; depth--) {
-        iz c = (iz)cand - 1;
-        if (p-c > DEF_WSIZE) {
+        u32 dist = here - cand;
+        if (dist > DEF_WSIZE) {
             break;
         }
+        iz c = p - (iz)dist;
         // A candidate exactly WSIZE back shares p's prev slot, where
         // inserting p linked this walk's first candidate. Revisiting
         // candidates cannot beat best, so make this one the last.
-        if (p-c == DEF_WSIZE) {
+        if (dist == DEF_WSIZE) {
             depth = 1;
         }
-        cand = d->prev[chain_slot(d, c)];
+        cand = d->prev[entry_slot(d, cand)];
         if (win[c+best]==win[p+best] && win[c]==win[p]) {
             i32 len = match_len(win+c, win+p, maxlen);
             if (len > best) {
@@ -818,16 +838,17 @@ static match find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth)
     // Fall back to short, close 3-byte matches
     i32 depth3 = best<MIN_MATCH ? d->lvl.depth3 : 0;
     for (; cand3 && depth3 > 0; depth3--) {
-        iz c = (iz)cand3 - 1;
-        if (p-c > D3_MAX) {
+        u32 dist = here - cand3;
+        if (dist > D3_MAX) {
             break;
         }
+        iz c = p - (iz)dist;
         if (win[c]==win[p] && win[c+1]==win[p+1] && win[c+2]==win[p+2]) {
             best = MIN_MATCH;
             best_pos = c;
             break;
         }
-        cand3 = d->prev3[chain_slot(d, c)];
+        cand3 = d->prev3[entry_slot(d, cand3)];
     }
 
     match r = {0, 0};
@@ -852,8 +873,7 @@ static match match_at(deflator *d, iz p, i32 depth)
 }
 
 // Decide whether 3-byte matching is worthwhile by sampling how often
-// 4-byte hashes collide in the first part of the input. The 3-byte heads,
-// still empty, briefly serve as a bitmap of the hashes seen.
+// 4-byte hashes collide in the first part of the input.
 static void sample(deflator *d)
 {
     d->sampled = 1;
@@ -861,7 +881,7 @@ static void sample(deflator *d)
     if (n < 64) {
         return;
     }
-    u32 *seen = d->head3;
+    u32 *seen = d->seen;
     u32  hits = 0;
     for (iz i = 0; i+4 <= n; i++) {
         u32 h   = hash4(load32(d->win + i));
@@ -911,9 +931,11 @@ static void parse(deflator *d, iz end)
     d->pos = p;
 }
 
-static u32 slide_entry(u32 v, u32 shift)
+// Rebase an entry, emptying it if its position falls out of the window
+// or it was forgotten, either way at or below lim.
+static u32 slide_entry(u32 v, u32 lim, u32 shift)
 {
-    return v>shift ? v-shift : 0;
+    return v>lim ? v-shift : 0;
 }
 
 // Discard window contents more than WSIZE behind the parse position.
@@ -933,44 +955,51 @@ static void slide(deflator *d)
     d->ins     -= shift;
 
     u32 s = (u32)shift;
+    u32 lim = d->stamp + s;
     for (i32 i = 0; i < HASH_SIZE; i++) {
-        d->head[i] = slide_entry(d->head[i], s);
+        d->head[i] = slide_entry(d->head[i], lim, s);
     }
     for (i32 i = 0; i < DEF_WSIZE; i++) {
-        d->prev[i] = slide_entry(d->prev[i], s);
+        d->prev[i] = slide_entry(d->prev[i], lim, s);
     }
     if (d->use3) {
         for (i32 i = 0; i < HASH_SIZE; i++) {
-            d->head3[i] = slide_entry(d->head3[i], s);
+            d->head3[i] = slide_entry(d->head3[i], lim, s);
         }
         for (i32 i = 0; i < DEF_WSIZE; i++) {
-            d->prev3[i] = slide_entry(d->prev3[i], s);
+            d->prev3[i] = slide_entry(d->prev3[i], lim, s);
         }
     }
 }
 
-// Forget all history by emptying the hash chains. Clearing the heads is
+// Forget all history by emptying the hash chains. Emptying the heads is
 // enough: chains then lead only to positions inserted afterward, whose
 // links are written on insertion. Positions inserted since the heads
-// were last empty all lie below ins, still in the window (a slide empties
-// the heads of positions it discards), so after a short history it is
-// cheaper to rehash them and clear only their slots.
+// were last emptied all lie below ins, still in the window (a slide
+// empties the heads of positions it discards), so after a short history
+// it is cheapest to rehash them and clear only their slots. Otherwise,
+// rather than clear 512 KiB, advance the stamp added to new entries by
+// more than any position: measured from a new entry, as find_match does,
+// every older one then lies farther back than any match reaches, as good
+// as empty. When the stamps run out, after 2,047 advances, the heads are
+// cleared after all.
 static void forget(deflator *d)
 {
     iz n = MIN(d->ins, d->win_len - (HASH_LEN - 1));
-    if (n > FORGET_REHASH) {
+    if (n <= FORGET_REHASH) {
+        for (iz p = 0; p < n; p++) {
+            u32 v = load32(d->win + p);
+            d->head[hash4(v)] = 0;
+            if (d->use3) {
+                d->head3[hash3(v)] = 0;
+            }
+        }
+    } else if (d->stamp < STAMP_LAST) {
+        d->stamp += STAMP_STEP;
+    } else {
         bytefill(d->head, 0, HASH_SIZE*(iz)sizeof(u32));
-        if (d->use3) {
-            bytefill(d->head3, 0, HASH_SIZE*(iz)sizeof(u32));
-        }
-        return;
-    }
-    for (iz p = 0; p < n; p++) {
-        u32 v = load32(d->win + p);
-        d->head[hash4(v)] = 0;
-        if (d->use3) {
-            d->head3[hash3(v)] = 0;
-        }
+        bytefill(d->head3, 0, HASH_SIZE*(iz)sizeof(u32));
+        d->stamp = 0;
     }
 }
 
@@ -1006,11 +1035,12 @@ static iz deflate_memsize(void)
 {
     return (iz)sizeof(deflator) + WIN_CAP + 2*HASH_SIZE*(iz)sizeof(u32) +
            2*DEF_WSIZE*(iz)sizeof(u32) + TOK_CAP*(iz)sizeof(token) +
-           DEF_STAGE + 8*64;
+           DEF_STAGE + HASH_SIZE/8 + 9*64;
 }
 
 // Tokens and chain links are always written before they are used (see
-// forget), so of the large tables only the hash heads start zeroed.
+// forget), so of the large tables only the hash heads (and the sampling
+// bitmap) start zeroed.
 static deflator *deflate_new(arena *a, i32 level)
 {
     deflator *d = new(a, 1, deflator);
@@ -1020,6 +1050,7 @@ static deflator *deflate_new(arena *a, i32 level)
     d->head  = new(a, HASH_SIZE, u32);
     d->prev  = alloc(a, DEF_WSIZE, sizeof(u32), _Alignof(u32), 0);
     d->head3 = new(a, HASH_SIZE, u32);
+    d->seen  = new(a, HASH_SIZE/32, u32);
     d->prev3 = alloc(a, DEF_WSIZE, sizeof(u32), _Alignof(u32), 0);
     d->toks  = alloc(a, TOK_CAP, sizeof(token), _Alignof(token), 0);
 
