@@ -145,13 +145,16 @@ the file is flushed and closed without error), and
   are written. An entry that does not shrink is rewritten stored, from
   the input buffer if one read got it all, else by reopening the input;
   one that grows past 4 GiB while being read is redone with a Zip64
-  local header. The file is truncated to its final length and renamed
-  over the target; on Windows by handle, after clearing delete-pending,
-  so it never appears incomplete. `FileRenameInfoEx` with POSIX
-  semantics replaces an archive that a scanner or indexer holds open
-  (with delete sharing); `FileRenameInfo` is the fallback. A concurrent
-  run's temporary file, delete-pending, refuses access on Windows, so
-  that counts as an existing name and the next is tried.
+  local header. Output is buffered 1 MiB at a time, and rewinding to an
+  entry's start or patching its header stays in the buffer when it can,
+  so small entries cost no writes of their own. The file is truncated to
+  its final length and renamed over the target; on Windows by handle,
+  after clearing delete-pending, so it never appears incomplete.
+  `FileRenameInfoEx` with POSIX semantics replaces an archive that a
+  scanner or indexer holds open (with delete sharing); `FileRenameInfo`
+  is the fallback. A concurrent run's temporary file, delete-pending,
+  refuses access on Windows, so that counts as an existing name and the
+  next is tried.
 - Merging: the central directory is parsed with every field bounds
   checked; copied entries get regenerated local headers (descriptor flag
   cleared, except for traditionally encrypted entries, whose check byte
@@ -247,7 +250,9 @@ Fuzzers:
   SHELL32, and has no stack frame over 4000 bytes (no `__chkstk`).
 - zip speed versus Info-ZIP 3.0 on the 267 MB benchmark corpus (Apple
   M-series): -1 2.2 s vs 1.9 s (4% smaller), -6 3.1 s vs 4.9 s, -9 6.8 s
-  vs 12.6 s (smaller). 10,000 small files: 0.26 s vs 0.25 s.
+  vs 12.6 s (smaller). 10,000 small files (64 B to 8 KiB, -6): 0.32 s
+  vs 0.47 s; on a Raspberry Pi 4, 1.7 s vs 2.0 s, and 20,000 files of
+  about 280 bytes at -9 1.2 s vs 2.0 s.
 
 ## Behavior decisions
 

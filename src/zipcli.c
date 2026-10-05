@@ -857,8 +857,14 @@ static i64 zout_tell(zout *w)
     return w->pos + w->len;
 }
 
+// Move the write position, such as back to the start of an entry. What
+// followed is dropped if still buffered, else overwritten or truncated.
 static void zout_seek(zout *w, i64 off)
 {
+    if (off>=w->pos && off-w->pos<=w->len) {
+        w->len = (iz)(off - w->pos);
+        return;
+    }
     zout_flush(w);
     w->pos = off;
 }
@@ -866,6 +872,10 @@ static void zout_seek(zout *w, i64 off)
 // Rewrite bytes already written, such as a local header.
 static void zout_patch(zout *w, i64 off, u8 *p, iz n)
 {
+    if (off>=w->pos && off-w->pos<=w->len-n) {
+        bytecopy(w->buf+(off-w->pos), p, n);  // still buffered
+        return;
+    }
     zout_flush(w);
     if (!w->err) {
         w->err = !os_writeat(w->ctx, w->fd, p, n, off);
