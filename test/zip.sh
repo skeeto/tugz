@@ -2,7 +2,7 @@
 # End-to-end tests of a zip binary, verified with unzip, zipinfo, and
 # Python's zipfile (via uv when available).
 # Usage: sh test/zip.sh ./zip
-# Set SLOW=1 to include Zip64 tests: a 5 GiB file and 70,000 entries.
+# Set SLOW=1 to include Zip64 tests: 4 and 5 GiB files, 70,000 entries.
 set -e
 
 unset ZIPOPT ZIP  # options for zip, and ZIP unexported for the binary
@@ -1066,6 +1066,56 @@ if [ -n "$SLOW" ]; then
     [ "$(unzip -p big0.zip tree/a.txt)" = "hello hello hello hello" ] ||
         fail "entry past 4 GiB"
     rm big big1.zip big0.zip
+
+    # Zip64 for a file of exactly 4 GiB - 1 bytes, after which an entry
+    # past 4 GiB stays readable by UnZip 6.0, as every central Zip64 extra
+    # holds both sizes
+    dd if=/dev/zero of=ff bs=1 count=0 seek=4294967295 2>/dev/null
+    "$ZIP" -q0 ff0.zip ff tree/a.txt
+    verify ff0.zip
+    [ "$(unzip -p ff0.zip tree/a.txt)" = "hello hello hello hello" ] ||
+        fail "entry past 4 GiB after 4 GiB - 1"
+    rm ff0.zip
+
+    # Info-ZIP writes that size literally, without Zip64, and merging into
+    # such an archive works (made here by removing the Zip64 fields)
+    "$ZIP" -q1 ff1.zip ff
+    if [ -n "$PY" ]; then
+        $PY -c 'import struct, sys
+d = open(sys.argv[1], "rb").read()
+def strip(x):  # extra fields but Zip64
+    r = b""
+    while len(x) >= 4:
+        i, n = struct.unpack("<HH", x[:4])
+        r += x[:4+n] if i != 1 else b""
+        x = x[4+n:]
+    return r
+h = struct.unpack("<IHHHHHIIIHH", d[:30])
+p = d.rfind(b"PK\x01\x02")
+c = struct.unpack("<IHHHHHHIIIHHHHHII", d[p:p+46])
+name = d[30:30+h[9]]
+data = d[30+h[9]+h[10]:p]
+lx = strip(d[30+h[9]:30+h[9]+h[10]])
+cx = strip(d[p+46+c[10]:p+46+c[10]+c[11]])
+loc = struct.pack("<IHHHHHIIIHH", 0x04034b50, 20, h[2], h[3], h[4], h[5],
+                  h[6], len(data), 0xffffffff, len(name), len(lx))
+cen = struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, c[1], 20, c[3], c[4],
+                  c[5], c[6], c[7], len(data), 0xffffffff, len(name),
+                  len(cx), 0, 0, c[14], c[15], 0)
+loc += name + lx
+cen += name + cx
+end = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 1, 1, len(cen),
+                  len(loc) + len(data), 0)
+open(sys.argv[1], "wb").write(loc + data + cen + end)' ff1.zip
+        verify ff1.zip
+        "$ZIP" -q ff1.zip tree/b.txt
+        verify ff1.zip
+        [ "$(names ff1.zip | tr '\n' ' ')" = "ff tree/b.txt " ] ||
+            fail "merge after a literal 4 GiB - 1: $(names ff1.zip)"
+        "$ZIP" -qd ff1.zip ff
+        [ "$(names ff1.zip)" = tree/b.txt ] || fail "-d of a literal 4 GiB - 1"
+    fi
+    rm ff ff1.zip
 
     # Zip64: more than 65,535 entries
     mkdir many

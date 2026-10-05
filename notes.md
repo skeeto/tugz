@@ -267,7 +267,14 @@ neither inflate nor the gzip container.
   are written. An entry that does not shrink is rewritten stored, from
   the input buffer if one read got it all, else by reopening the input;
   one that grows past 4 GiB while being read is redone with a Zip64
-  local header. A file is opened only as a regular file, so a FIFO
+  local header. A size of exactly 0xffffffff gets Zip64 too, as APPNOTE
+  reserves that value, and a central Zip64 extra, once there is one,
+  always holds both sizes (their 32-bit fields saturated), then the
+  offset if it overflows. APPNOTE allows the offset alone, as Info-ZIP
+  writes it, but having read a size of exactly 0xffffffff from one Zip64
+  extra, UnZip 6.0 takes every later one to start with a size, so that a
+  later entry's offset became its size. A file is opened only as a
+  regular file, so a FIFO
   swapped in since the scan fails as unreadable (18) rather than block
   (Info-ZIP blocks), and under `-y` only if it is still the file the
   scan found, by identity, so that nothing is read through a link
@@ -327,8 +334,11 @@ neither inflate nor the gzip container.
   with `-X`, which as in Info-ZIP applies only to entries written (some
   fields are needed to extract, such as AES's), except Zip64 fields,
   made anew; one whose fields leave no room for a Zip64 field it now
-  needs is an error (3), not a wrapped length. A replaced entry keeps
-  its comment, as in Info-ZIP. Data before the first entry (a
+  needs is an error (3), not a wrapped length. Saturated sizes without a
+  Zip64 extra are literal, as Info-ZIP, which uses Zip64 only beyond
+  them, writes a file of exactly 4 GiB - 1 bytes, and as it, UnZip, and
+  Python read it; such an entry is copied with Zip64. A replaced entry
+  keeps its comment, as in Info-ZIP. Data before the first entry (a
   self-extractor's stub after `zip -A`, a Python zipapp's `#!` line) is
   copied first, as Info-ZIP copies it, so that offsets accounting for it
   stay absolute and the file still runs. Offsets that do not account for
@@ -391,7 +401,7 @@ neither inflate nor the gzip container.
     ./fuzz-zipread -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zipread
     make bench && ./bench -l 1,6,9 bench_corpus/silesia/*
     make amalgamation          # single-file Windows sources, gzip.c and zip.c
-    SLOW=1 sh test/zip.sh ./zip    # adds Zip64: 5 GiB file, 70,000 entries
+    SLOW=1 sh test/zip.sh ./zip    # adds Zip64: 4 and 5 GiB files, 70,000 entries
     sh test/zip_windows.sh ./zip.exe   # on Windows, under w64devkit
     make tugz.c libtugz.o      # single-file library source, library object
 

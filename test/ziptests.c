@@ -411,23 +411,67 @@ static void test_zip64(arena a)
     TEST(got->usize==e.usize && got->csize==e.csize && got->offset==e.offset);
     TEST(!got->cextra.len);  // the Zip64 extra is consumed
 
-    // Only overflowing fields appear: a big offset alone
+    // Both sizes always appear, saturated, even with a big offset alone,
+    // which UnZip 6.0 needs after a size of exactly 0xffffffff
     zentry f = {0};
     f.name   = str("f");
     f.usize  = 10;
     f.csize  = 10;
     f.offset = (i64)5 << 30;
-    TEST(zip_central64_len(&f) == 12);
+    TEST(zip_central64_len(&f) == 28);
     TEST(zip_needed(&f) == 45);
     p = zip_central(buf, &f);
+    TEST(get32(buf+20)==0xffffffff && get32(buf+24)==0xffffffff);
+    TEST(get64(buf+ZIP_CENTRAL_LEN+1+4) == 10);
     got = zip_parse_central(buf, p-buf, 1, (i64)6 << 30, &a);
-    TEST(got && got->offset==f.offset && got->usize==10);
+    TEST(got && got->offset==f.offset && got->usize==10 && got->csize==10);
 
-    // A missing Zip64 extra is malformed
+    // A size of exactly 0xffffffff needs Zip64, and the offset no field
+    zentry ff = {0};
+    ff.name   = str("ff");
+    ff.method = ZIP_DEFLATE;
+    ff.usize  = 0xffffffff;
+    ff.csize  = 4200000;
+    ff.offset = 100;
+    TEST(zip_central64_len(&ff) == 20);
+    TEST(zip_needed(&ff) == 45);
+    p = zip_central(buf, &ff);
+    TEST(get32(buf+42) == 100);
+    got = zip_parse_central(buf, p-buf, 1, 5000000, &a);
+    TEST(got && got->usize==0xffffffff && got->csize==4200000);
+    TEST(got->offset==100 && !got->cextra.len);
+
+    // Without a Zip64 extra, saturated fields are literal, as Info-ZIP
+    // writes a size of exactly 0xffffffff, which bounds checks then judge
+    zentry lit = ff;
+    lit.usize = 10;
+    p = zip_central(buf, &lit);
+    put32(buf+24, 0xffffffff);
+    got = zip_parse_central(buf, p-buf, 1, 5000000, &a);
+    TEST(got && got->usize==0xffffffff && got->csize==4200000);
+    lit.method = ZIP_STORE;
+    lit.csize  = 10;
+    p = zip_central(buf, &lit);
+    put32(buf+20, 0xffffffff);
+    put32(buf+24, 0xffffffff);
+    TEST(!zip_parse_central(buf, p-buf, 1, 0xffffffff, &a));
+    got = zip_parse_central(buf, p-buf, 1, (i64)0xffffffff + 100, &a);
+    TEST(got && got->usize==0xffffffff && got->csize==0xffffffff);
     f.offset = 100;
     p = zip_central(buf, &f);
+    TEST(zip_central64_len(&f) == 0);
     put32(buf+42, 0xffffffff);
     TEST(!zip_parse_central(buf, p-buf, 1, 1000, &a));
+
+    // But a Zip64 extra too short for the saturated fields is malformed
+    lit.cextra = S("\x01\x00\x08\x00" "\xff\xff\xff\xff\x00\x00\x00\x00");
+    p = zip_central(buf, &lit);
+    put32(buf+20, 0xffffffff);
+    put32(buf+24, 0xffffffff);
+    TEST(!zip_parse_central(buf, p-buf, 1, (i64)0xffffffff + 100, &a));
+    put32(buf+20, 10);
+    got = zip_parse_central(buf, p-buf, 1, (i64)0xffffffff + 100, &a);
+    TEST(got && got->usize==0xffffffff && got->csize==10);
 
     // Data descriptors: 32-bit sizes, or 64-bit for Zip64 entries
     u8 desc[24];
@@ -659,7 +703,7 @@ static void test_central64(arena a)
 }
 
 // Name, extra, and comment lengths are 16 bits in both headers, where
-// Zip64 extra fields add 20 bytes (local) or up to 28 (central).
+// Zip64 extra fields add 20 bytes (local) or 20 or 28 (central).
 static void test_fits(void)
 {
     static u8 big[0x10000];
@@ -681,12 +725,12 @@ static void test_fits(void)
     e.usize  = (i64)5 << 30;
     TEST(!zip_fits(&e));
     e.lextra.len = 0xffff - 20;
-    TEST(!zip_fits(&e));  // central: 12 more bytes
-    e.cextra.len = 0xffff - 12;
+    TEST(!zip_fits(&e));  // central: 20 more bytes
+    e.cextra.len = 0xffff - 20;
     TEST(zip_fits(&e));
     e.offset = (i64)6 << 30;
     TEST(!zip_fits(&e));  // and 8 more for the offset
-    e.cextra.len = 0xffff - 20;
+    e.cextra.len = 0xffff - 28;
     TEST(zip_fits(&e));
 }
 

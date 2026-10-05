@@ -181,11 +181,17 @@ static u8 *zip_desc(u8 *p, zentry const *e)
     return put32(p, (u32)e->usize);
 }
 
+// A central Zip64 extra, when anything overflows, holds both sizes, with
+// their 32-bit fields saturated, and then the offset if it overflows.
+// Holding only the fields that overflow, as APPNOTE also allows, trips
+// UnZip 6.0: once it has read a size of exactly 0xffffffff from one, it
+// expects every later Zip64 extra to begin with that size, and so reads
+// an entry's offset as its size.
 static iz zip_central64_len(zentry const *e)
 {
-    iz n = (e->usize >=ZIP_MAX32 ? 8 : 0) + (e->csize>=ZIP_MAX32 ? 8 : 0) +
-           (e->offset>=ZIP_MAX32 ? 8 : 0);
-    return n ? 4+n : 0;
+    b32 off = e->offset >= ZIP_MAX32;
+    b32 any = off || e->usize>=ZIP_MAX32 || e->csize>=ZIP_MAX32;
+    return any ? 4 + 16 + (off ? 8 : 0) : 0;
 }
 
 static iz zip_central_len(zentry const *e)
@@ -194,8 +200,7 @@ static iz zip_central_len(zentry const *e)
            e->cextra.len + e->comment.len;
 }
 
-// Encode a central directory header, zip_central_len bytes. Its Zip64
-// extra holds only the fields that overflow.
+// Encode a central directory header, zip_central_len bytes.
 static u8 *zip_central(u8 *p, zentry const *e)
 {
     iz z64 = zip_central64_len(e);
@@ -207,8 +212,8 @@ static u8 *zip_central(u8 *p, zentry const *e)
     p = put16(p, e->dostime & 0xffff);
     p = put16(p, e->dostime >> 16);
     p = put32(p, e->crc);
-    p = put32(p, min32(e->csize));
-    p = put32(p, min32(e->usize));
+    p = put32(p, z64 ? (u32)ZIP_MAX32 : (u32)e->csize);
+    p = put32(p, z64 ? (u32)ZIP_MAX32 : (u32)e->usize);
     p = put16(p, (u32)e->name.len);
     p = put16(p, (u32)(z64 + e->cextra.len));
     p = put16(p, (u32)e->comment.len);
@@ -220,12 +225,8 @@ static u8 *zip_central(u8 *p, zentry const *e)
     if (z64) {
         p = put16(p, ZIP_EXTRA_ZIP64);
         p = put16(p, (u32)(z64 - 4));
-        if (e->usize >= ZIP_MAX32) {
-            p = put64(p, (u64)e->usize);
-        }
-        if (e->csize >= ZIP_MAX32) {
-            p = put64(p, (u64)e->csize);
-        }
+        p = put64(p, (u64)e->usize);
+        p = put64(p, (u64)e->csize);
         if (e->offset >= ZIP_MAX32) {
             p = put64(p, (u64)e->offset);
         }
@@ -446,7 +447,11 @@ static b32 zip_extra_mtime(s8 x, i64 *t)
 }
 
 // Apply a central header's Zip64 extra field to the entry. Returns false
-// if a needed field is missing.
+// if a needed field is missing. Without that extra, saturated sizes and
+// offset are literal, as Info-ZIP, which uses Zip64 only past 0xffffffff,
+// writes a file of exactly 4 GiB - 1 bytes, and as UnZip, Python, and
+// Info-ZIP read it; the bounds checks that follow catch a bogus offset.
+// A saturated disk number still needs it.
 static b32 zip_apply64(zentry *e, s8 x, b32 diskmax)
 {
     b32 want[3] = {e->usize==ZIP_MAX32, e->csize==ZIP_MAX32,
@@ -482,7 +487,7 @@ static b32 zip_apply64(zentry *e, s8 x, b32 diskmax)
         }
         i += 4 + len;
     }
-    return 0;
+    return !diskmax;
 }
 
 // Parse a central directory of n bytes, expected to hold count entries
