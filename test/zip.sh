@@ -165,6 +165,26 @@ names n.zip >got
 printf '%s\n' a.txt sub/random ../tree/b.txt "${tmp#/}/tree/one" >want
 cmp -s got want || fail "path names: $(cat got)"
 
+# A leading //host/share/ is dropped, as Info-ZIP's Unix ex2in does
+unc="/$tmp/tree/a.txt"
+"$ZIP" -q unc.zip "$unc"
+[ "$(names unc.zip)" = "${unc#//*/*/}" ] || fail "//host/share/: $(names unc.zip)"
+
+# The same path reached twice is added once, as in Info-ZIP, while
+# different paths for one name are an error
+"$ZIP" -q dup1.zip tree/a.txt tree/a.txt tree//a.txt
+[ "$(names dup1.zip)" = tree/a.txt ] || fail "same path twice: $(names dup1.zip)"
+"$ZIP" -qr dup2.zip tree tree/a.txt tree/ tree/sub/deeper tree/sub
+names dup2.zip >got
+names t.zip >want
+cmp -s got want || fail "overlapping paths: $(cat got)"
+find tree | "$ZIP" -qr -@ dup3.zip
+[ "$(names dup3.zip | wc -l)" = "$(wc -l <want)" ] || fail "find | zip -r@"
+expect_status 16 "$ZIP" dup4.zip tree/a.txt ./tree/a.txt
+"$ZIP" -j dup5.zip tree/a.txt tree/sub/../a.txt 2>out && fail "-j collision"
+grep -q 'result of using -j' out || fail "-j collision: $(cat out)"
+[ ! -e dup4.zip ] && [ ! -e dup5.zip ] || fail "made an archive with dups"
+
 # The archive never includes itself
 (cd tree && "$ZIP" -qr self.zip . && names self.zip >../got && rm self.zip)
 grep -q self got && fail "archive includes itself"

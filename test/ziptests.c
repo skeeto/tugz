@@ -190,7 +190,8 @@ static void test_names(arena a)
     TEST(equals(zip_name(&a, str("./a/b"), 0), "a/b"));
     TEST(equals(zip_name(&a, str("././a"), 0), "a"));
     TEST(equals(zip_name(&a, str("/abs/x"), 0), "abs/x"));
-    TEST(equals(zip_name(&a, str("//x//y"), 0), "x/y"));
+    TEST(equals(zip_name(&a, str("a//x//y"), 0), "a/x/y"));
+    TEST(equals(zip_name(&a, str("///x//y"), 0), "x/y"));
     TEST(equals(zip_name(&a, str("../x"), 0), "../x"));
     TEST(equals(zip_name(&a, str("a/./b"), 0), "a/./b"));
     TEST(equals(zip_name(&a, str("."), 0), ""));
@@ -228,7 +229,14 @@ static void test_names(arena a)
     TEST(equals(zip_name(&a, str("\\\\?\\Volume{1}\\d\\x"), 1), "d/x"));
     TEST(equals(zip_name(&a, str("\\\\?x\\UNC\\srv\\shr\\x"), 1),
                 "srv/shr/x"));
-    TEST(equals(zip_name(&a, str("//server/share/f"), 0), "server/share/f"));
+
+    // Info-ZIP's Unix ex2in drops "//host/share/" too, but knows only
+    // slashes and no device paths
+    TEST(equals(zip_name(&a, str("//server/share/d/f"), 0), "d/f"));
+    TEST(equals(zip_name(&a, str("//x//y"), 0), "y"));
+    TEST(equals(zip_name(&a, str("//server/share"), 0), "server/share"));
+    TEST(equals(zip_name(&a, str("//a\\b/c/d"), 0), "d"));
+    TEST(equals(zip_name(&a, str("//?/UNC/srv/shr/x"), 0), "srv/shr/x"));
 }
 
 static void test_percent(void)

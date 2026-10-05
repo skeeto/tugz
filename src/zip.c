@@ -761,30 +761,32 @@ static b32 zip_haswild(s8 s, i32 flags)
     return 0;
 }
 
-static b32 zip_winsep(u8 c)
+static b32 zip_sep(u8 c, b32 windows)
 {
-    return c=='/' || c=='\\';
+    return c=='/' || (windows && c=='\\');
 }
 
-// Length of a Windows UNC prefix "//server/share/" (either separator)
-// to drop from a name, as Info-ZIP does, or zero. Without its final
-// separator, "//server/share" is kept. A device path "//?/X:/" counts
-// as server "?" and share "X:", and "//?/UNC/server/share/" as a whole.
-static iz zip_unc(s8 p)
+// Length of a UNC prefix "//server/share/" to drop from a name, as
+// Info-ZIP does on Unix too, or zero. Without its final separator,
+// "//server/share" is kept. On Windows either separator counts, a
+// device path "//?/X:/" counts as server "?" and share "X:", and
+// "//?/UNC/server/share/" as a whole.
+static iz zip_unc(s8 p, b32 windows)
 {
-    if (p.len<3 || !zip_winsep(p.s[0]) || !zip_winsep(p.s[1]) ||
-        zip_winsep(p.s[2])) {
+    if (p.len<3 || !zip_sep(p.s[0], windows) ||
+        !zip_sep(p.s[1], windows) || zip_sep(p.s[2], windows)) {
         return 0;
     }
     iz drop = 0;
     iz i    = 2;
     for (i32 k = 0, parts = 2; k < parts; k++) {
         iz beg = i;
-        for (; i<p.len && !zip_winsep(p.s[i]); i++) {}
+        for (; i<p.len && !zip_sep(p.s[i], windows); i++) {}
         if (i++ == p.len) {
             break;
         }
-        b32 dev = k==1 && beg==4 && (p.s[2]=='?' || p.s[2]=='.');
+        b32 dev = windows && k==1 && beg==4 &&
+                  (p.s[2]=='?' || p.s[2]=='.');
         if (dev && i-beg==4 && (p.s[beg]|32)=='u' &&
             (p.s[beg+1]|32)=='n' && (p.s[beg+2]|32)=='c') {
             parts = 4;
@@ -795,9 +797,9 @@ static iz zip_unc(s8 p)
 }
 
 // Archive name for a path: backslashes become slashes on Windows; a
-// drive or UNC prefix, leading slashes, and leading ./ components are
-// dropped; and doubled slashes collapse. Like Info-ZIP, ../ components
-// are kept.
+// drive (Windows) or UNC prefix, leading slashes, and leading ./
+// components are dropped; and doubled slashes collapse. Like Info-ZIP,
+// ../ components are kept.
 static s8 zip_name(arena *a, s8 path, b32 windows)
 {
     s8 r = {newbytes(a, path.len), 0};
@@ -805,8 +807,8 @@ static s8 zip_name(arena *a, s8 path, b32 windows)
     u8 drive = path.len>=2 && path.s[1]==':' ? (u8)(path.s[0] | 0x20) : 0;
     if (windows && drive>='a' && drive<='z') {
         i = 2;  // only a letter is a drive: "1:x" is a stream of file "1"
-    } else if (windows) {
-        i = zip_unc(path);
+    } else {
+        i = zip_unc(path, windows);
     }
     for (b32 lead = 1; i < path.len; i++) {
         u8 c = path.s[i];

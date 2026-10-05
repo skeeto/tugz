@@ -846,6 +846,20 @@ static s8 basename(zip *z, s8 path)
     return (s8){path.s+i, path.len-i};
 }
 
+// A path without repeated or trailing separators.
+static s8 trim_path(zip *z, s8 path, arena *a)
+{
+    s8 r = {newbytes(a, path.len), 0};
+    for (iz i = 0; i < path.len; i++) {
+        b32 sep = is_sep(z, path.s[i]);
+        if (!sep || !r.len || r.s[r.len-1]!='/') {
+            r.s[r.len++] = sep ? '/' : path.s[i];
+        }
+    }
+    r.len -= r.len>1 && r.s[r.len-1]=='/';
+    return r;
+}
+
 // Add a file under its archive name, which -i and -x see whole, before
 // -j junks its directories, as in Info-ZIP.
 static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
@@ -857,12 +871,23 @@ static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
     }
     name = z->junk ? basename(z, name) : name;
 
+    // The same path reached twice (f f, d d/a, d d/) is skipped, as
+    // Info-ZIP does. It compares paths whole, but gives directories
+    // their slashes itself, and as tugz collapses doubled slashes in
+    // names, it does in paths too.
     iz *seen = zmap_upsert(&z->names, name, &z->perm);
     if (*seen >= 0) {
         s8 first = z->files.data[*seen].path;
+        if (zequals(trim_path(z, first, &scratch),
+                    trim_path(z, path,  &scratch))) {
+            return;
+        }
         warn(z, S("  first full name: "), first, scratch);
         warn(z, S(" second full name: "), path, scratch);
         warn(z, S("name in zip file repeated: "), name, scratch);
+        if (z->junk) {
+            warn(z, S("this may be a result of using -j"), S(""), scratch);
+        }
         z->duplicate = 1;
         return;
     }

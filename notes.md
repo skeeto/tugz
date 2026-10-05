@@ -150,6 +150,12 @@ the file is flushed and closed without error), and
   streams to standard output; that is rejected as streaming. A terminal
   gets the usage, or Info-ZIP's "cannot write zip file to terminal".
   `-d` warns, as Info-ZIP does, that `-r` and `-0` are ignored.
+- Names: as Info-ZIP's ex2in makes them, `/` and `./` prefixes are
+  dropped and `../` kept, and on POSIX too a leading `//host/share/`
+  is dropped (`zip t.zip //h/s/f` stores `f`). The same path reached
+  twice (`f f`, `d d/a`, `d d/`, `find d | zip -r@`) is added once,
+  silently, as in Info-ZIP; different paths giving one name
+  (`./d/a d/a`, or a `-j` collision) are an error (16).
 - Patterns: `-x`, `-i`, and `-d` patterns, `@file` lines included, are
   normalized as names are, so that `./` and `/` prefixes (and on
   Windows, backslashes and drives) match. Matching follows Info-ZIP's
@@ -162,7 +168,10 @@ the file is flushed and closed without error), and
   Info-ZIP's getnam does (any CR or LF ends a line, a NUL ends a name),
   and `-@` names come before the arguments.
 - Departures: entries are sorted by name within each directory (Info-ZIP
-  uses readdir order), doubled slashes collapse (in patterns too),
+  uses readdir order), doubled slashes collapse (in patterns too, and
+  so `d/a d//a` is one path rather than two entries), different paths
+  giving one name are an error even when the archive has an entry of
+  that name (Info-ZIP lets the last path replace it, silently),
   `SOURCE_DATE_EPOCH` clamps times and makes them UTC, names that are
   valid non-ASCII UTF-8 always get flag bit 11, an entry whose
   replacement cannot be read is kept under `-FS` as in other modes
