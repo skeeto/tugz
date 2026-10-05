@@ -672,6 +672,21 @@ expect_status 16 "$ZIP" -K bad.zip tree/a.txt
 expect_status 16 "$ZIP" -e bad.zip tree/a.txt
 expect_status 16 "$ZIP" --bogus bad.zip tree/a.txt
 expect_status 16 "$ZIP" - tree/a.txt
+
+# As in Info-ZIP, -x and -i patterns need something to select from:
+# paths, even from -@, or for -u and -f the archive's entries
+"$ZIP" -q ns.zip tree/a.txt
+cp ns.zip ns.orig
+for mode in -q -qd -qFS; do
+    "$ZIP" $mode ns.zip -x '*.tmp' >out 2>&1 && fail "$mode -x, no paths"
+    grep -q 'nothing to select from' out || fail "$mode -x: $(cat out)"
+done
+printf '\n' | "$ZIP" -@ ns.zip -i '*.txt' >out 2>&1 && fail "-@ -i, no paths"
+grep -q 'nothing to select from' out || fail "-@ -i: $(cat out)"
+expect_status 16 "$ZIP" -x '*.tmp'
+expect_status 16 "$ZIP" -d ns-gone.zip -x '*.tmp'
+cmp -s ns.zip ns.orig || fail "nothing to select from changed the archive"
+expect_status 0 "$ZIP" -qu ns.zip -x '*.tmp'
 echo junk >junk.zip
 expect_status 3 "$ZIP" junk.zip tree/a.txt
 head -c 100 t.zip >trunc.zip

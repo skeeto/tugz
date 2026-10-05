@@ -1974,21 +1974,17 @@ static i32 zip_main(zipconfig *conf)
     if (err) {
         return err;
     }
+    // As Info-ZIP finds first, -x and -i patterns need something to
+    // select from: paths, or archive entries for -u and -f to refresh
+    b32 patterns = z->include.len || z->exclude.len;
+    b32 refresh  = z->mode==MODE_UPDATE || z->mode==MODE_FRESHEN;
+    s8  nothing  = S("nothing to select from");
     if (!z->archive.s) {
-        s8 why = os_isatty(z->ctx, 1) ? S("cannot write zip file to terminal")
+        s8 why = patterns ? nothing
+               : os_isatty(z->ctx, 1) ? S("cannot write zip file to terminal")
                : S("streaming to standard output not supported");
         return fail(z, ZE_PARMS, S("Invalid command arguments"), why, scratch);
     }
-    if (z->mode==MODE_DELETE && (z->recurse || !z->level)) {
-        warn(z, S("invalid option(s) used with -d; ignored."), S(""),
-             scratch);
-    }
-    if (z->filesync && z->mode!=MODE_ADD) {
-        return fail(z, ZE_PARMS, S("Invalid command arguments"),
-                    S("can't use -d, -f, -u, -U, or -g with filesync -FS"),
-                    scratch);
-    }
-    z->mode = z->filesync ? MODE_SYNC : z->mode;
     if (!has_extension(z, z->archive)) {
         z->archive = JOIN(&z->perm, z->archive, S(".zip"));
     }
@@ -2006,6 +2002,20 @@ static i32 zip_main(zipconfig *conf)
         }
         z->paths = names;
     }
+    if (patterns && !z->paths.len && !refresh) {
+        return fail(z, ZE_PARMS, S("Invalid command arguments"), nothing,
+                    scratch);
+    }
+    if (z->mode==MODE_DELETE && (z->recurse || !z->level)) {
+        warn(z, S("invalid option(s) used with -d; ignored."), S(""),
+             scratch);
+    }
+    if (z->filesync && z->mode!=MODE_ADD) {
+        return fail(z, ZE_PARMS, S("Invalid command arguments"),
+                    S("can't use -d, -f, -u, -U, or -g with filesync -FS"),
+                    scratch);
+    }
+    z->mode = z->filesync ? MODE_SYNC : z->mode;
 
     // The archive is replaced past any links at its path, so that they
     // survive, as Info-ZIP updates it through them. A link that cannot
