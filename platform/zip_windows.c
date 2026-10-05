@@ -210,17 +210,20 @@ static b32 os_fstat(os *ctx, i32 fd, os_info *info)
 // reparse points, are left to os_stat, which follows them. A directory
 // entry's size and times can lag for a file changed through another of
 // its hard links, as Microsoft documents, where a handle's would not.
+// The search pattern, dead once the search begins, is overwritten by the
+// listing, so that a deep tree's directories do not each keep theirs.
 static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
-                             arena *perm, arena scratch)
+                             arena *a)
 {
     (void)ctx;
-    c16 *wpath = winpath(&scratch, path);
+    arena tmp   = *a;
+    c16  *wpath = winpath(&tmp, path);
     if (!wpath) {
         return 0;
     }
     s16 dir = s16lit(wpath);
     b32 sep = dir.len && dir.s[dir.len-1]=='\\';
-    c16 *pattern = s16cat(&scratch, dir, s16lit(sep ? L"*" : L"\\*"));
+    c16 *pattern = s16cat(&tmp, dir, s16lit(sep ? L"*" : L"\\*"));
 
     os_dirents list = {0};
     find_data fd = {0};
@@ -238,11 +241,11 @@ static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
             if (fd.attributes & skip) {
                 continue;
             }
-            s8 name = towtf8(perm, fd.name);
+            s8 name = towtf8(a, fd.name);
             if (zequals(name, S(".")) || zequals(name, S(".."))) {
                 continue;
             }
-            os_dirent *e = push(perm, &list);
+            os_dirent *e = push(a, &list);
             *e = (os_dirent){name, {0}};  // type FT_NONE
             if (!(fd.attributes & FILE_ATTRIBUTE_REPARSE)) {
                 b32 isdir = fd.attributes & FILE_ATTRIBUTE_DIRECTORY;
@@ -260,7 +263,7 @@ static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
         }
     }
     *count = list.len;
-    return list.data ? list.data : new(perm, 1, os_dirent);
+    return list.data ? list.data : new(a, 1, os_dirent);
 }
 
 static s8 os_readlink(os *ctx, s8 path, arena *a)

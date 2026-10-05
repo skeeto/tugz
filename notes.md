@@ -438,6 +438,15 @@ neither inflate nor the gzip container.
   buffers and deflate state; and a megabyte of room for any one entry's
   headers and messages, each forgotten before the next. So running out
   of memory cannot strike once output has started.
+- Scanning: the directories being listed form a stack in scratch
+  rather than on the call stack, so that only memory bounds a tree's
+  depth (with `\\?\` paths of up to 32K characters, the Windows build's
+  2 MiB stack overflowed at about 4,400 levels). Each listing is sorted
+  as pointers to its entries rather than moving them, and each entry's
+  strings are forgotten as the next is taken. `os_listdir` and
+  `os_readlink` take a single arena for their results and temporaries,
+  since callers that wanted transient results passed one arena as both
+  `perm` and `scratch`, whose allocations then overlapped.
 - libdeflate issue #323: Windows' zip folder rejects incomplete Huffman
   codes (such as a lone distance code in a block with at most one
   distinct distance), which DEFLATE permits. `huff_build` always codes at

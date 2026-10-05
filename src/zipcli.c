@@ -50,9 +50,9 @@ static b32  os_stat(os *, s8 path, b32 follow, os_info *, arena scratch);
 static b32  os_fstat(os *, i32 fd, os_info *);
 // Entries within a directory, excluding . and .., in any order. Unless
 // all, hidden and system entries (Windows) are left out, judged by the
-// entry itself rather than a link's target. Returns null on error.
-static os_dirent *os_listdir(os *, s8 path, b32 all, iz *count,
-                             arena *perm, arena scratch);
+// entry itself rather than a link's target. Returns null on error. The
+// listing and any temporaries come from one arena.
+static os_dirent *os_listdir(os *, s8 path, b32 all, iz *count, arena *);
 // Target of a symbolic link, or a null string on error. It and any
 // temporaries come from one arena.
 static s8   os_readlink(os *, s8 path, arena *);
@@ -185,12 +185,6 @@ struct zmap {
     zmap *child[4];
     s8    key;
     iz    value;
-};
-
-typedef struct dirid dirid;
-struct dirid {
-    dirid   *up;
-    os_info *info;
 };
 
 typedef struct {
@@ -330,17 +324,23 @@ static i32 zcompare(s8 a, s8 b)
     return r ? r : a.len<b.len ? -1 : a.len>b.len;
 }
 
-// Stable bottom-up merge sort of directory entries by name bytes.
-static void zsort(os_dirent *v, iz n, arena scratch)
+// A directory listing sorted by name bytes, as pointers to its entries,
+// which are large to move: a stable bottom-up merge sort.
+static os_dirent **zsort(os_dirent *list, iz n, arena *a)
 {
-    os_dirent *tmp = new(&scratch, n, os_dirent);
+    os_dirent **v = new(a, n, os_dirent *);
+    for (iz i = 0; i < n; i++) {
+        v[i] = list + i;
+    }
+    arena       t   = *a;
+    os_dirent **tmp = new(&t, n, os_dirent *);
     for (iz w = 1; w < n; w *= 2) {
         for (iz lo = 0; lo < n; lo += 2*w) {
             iz mid = MIN(lo+w, n);
             iz hi  = MIN(lo+2*w, n);
             iz i = lo, j = mid, k = lo;
             while (i<mid && j<hi) {
-                b32 lt = zcompare(v[j].name, v[i].name) < 0;
+                b32 lt = zcompare(v[j]->name, v[i]->name) < 0;
                 tmp[k++] = lt ? v[j++] : v[i++];
             }
             while (i < mid) {
@@ -352,6 +352,7 @@ static void zsort(os_dirent *v, iz n, arena scratch)
         }
         bytecopy(v, tmp, n*(iz)sizeof(*v));
     }
+    return v;
 }
 
 static u64 zhash(s8 s)
@@ -1094,62 +1095,100 @@ static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
     push_file(z, path, name, info);
 }
 
-static void scan(zip *z, s8 path, s8 name, os_info *info, dirid *up,
-                 arena scratch)
-{
-    switch (info->type) {
-    case FT_FILE:
-    case FT_LINK:
-        add_file(z, path, name, info, scratch);
-        return;
-    case FT_DIR:
-        break;
-    default:
-        warn(z, S("skipping special file: "), path, scratch);
-        return;
-    }
+// A directory being scanned, within those it is in
+typedef struct zdir zdir;
+struct zdir {
+    zdir       *up;
+    s8          path;
+    s8          sep;    // to join to path
+    s8          name;   // ending in a slash, unless empty
+    os_info    *info;
+    os_dirent **kids;   // sorted
+    iz          nkids;
+    iz          next;   // kid to scan next
+    arena       base;   // scratch once listed, for each kid to start from
+};
 
+// Add a directory and, with -r, list it, to scan its entries next.
+// Returns the innermost directory being scanned.
+static zdir *enter(zip *z, zdir *up, s8 path, s8 name, os_info *info,
+                   arena *scratch)
+{
     s8 dname = name;
     if (name.len && name.s[name.len-1]!='/') {
-        dname = JOIN(&scratch, name, S("/"));
+        dname = JOIN(scratch, name, S("/"));
     }
-    add_file(z, path, dname, info, scratch);
+    add_file(z, path, dname, info, *scratch);
     if (!z->recurse) {
-        return;
+        return up;
     }
 
-    for (dirid *d = up; d; d = d->up) {
+    for (zdir *d = up; d; d = d->up) {
         if (same_file(d->info, info)) {
-            warn(z, S("skipping directory loop: "), path, scratch);
-            return;
+            warn(z, S("skipping directory loop: "), path, *scratch);
+            return up;
         }
     }
-    dirid self = {up, info};
 
     iz         n    = 0;
-    os_dirent *kids = os_listdir(z->ctx, path, z->hidden, &n, &scratch,
-                                 scratch);
-    if (!kids) {
-        warn(z, S("could not read directory: "), path, scratch);
+    os_dirent *list = os_listdir(z->ctx, path, z->hidden, &n, scratch);
+    if (!list) {
+        warn(z, S("could not read directory: "), path, *scratch);
         z->status = ZE_OPEN;
-        return;
+        return up;
     }
-    zsort(kids, n, scratch);
+    zdir *d  = new(scratch, 1, zdir);
+    d->up    = up;
+    d->path  = path;
+    d->sep   = path.len && is_sep(z, path.s[path.len-1]) ? S("") : S("/");
+    d->name  = dname;
+    d->info  = info;
+    d->kids  = zsort(list, n, scratch);
+    d->nkids = n;
+    d->base  = *scratch;
+    return d;
+}
 
-    s8 sep = path.len && is_sep(z, path.s[path.len-1]) ? S("") : S("/");
-    for (iz i = 0; i < n; i++) {
-        arena    iter  = scratch;  // forgets each entry's strings
-        s8       kpath = JOIN(&iter, path, sep, kids[i].name);
-        s8       kname = JOIN(&iter, dname, kids[i].name);
-        os_info *k     = &kids[i].info;
-        if (!listed(z, k) && !os_stat(z->ctx, kpath, !z->symlinks, k,
-                                      iter)) {
-            warn(z, S("could not open for reading: "), kpath, iter);
+// Scan a path and, with -r, everything under it, in sorted order. The
+// directories being listed form a stack in scratch rather than on the
+// call stack, which a deep enough tree would overflow: Windows paths
+// reach 32K characters, while its 2 MiB stack held about 4,400 levels.
+static void scan(zip *z, s8 path, s8 name, os_info *info, arena scratch)
+{
+    zdir *dir = 0;  // innermost
+    for (;;) {
+        switch (info->type) {
+        case FT_FILE:
+        case FT_LINK:
+            add_file(z, path, name, info, scratch);
+            break;
+        case FT_DIR:
+            dir = enter(z, dir, path, name, info, &scratch);
+            break;
+        default:
+            warn(z, S("skipping special file: "), path, scratch);
+        }
+
+        // Then the next entry of the innermost directory with any left,
+        // forgetting what scanning the one before allocated
+        for (;;) {
+            for (; dir && dir->next==dir->nkids; dir = dir->up) {}
+            if (!dir) {
+                return;
+            }
+            scratch = dir->base;
+            os_dirent *k = dir->kids[dir->next++];
+            path = JOIN(&scratch, dir->path, dir->sep, k->name);
+            name = JOIN(&scratch, dir->name, k->name);
+            info = &k->info;
+            if (listed(z, info) ||
+                os_stat(z->ctx, path, !z->symlinks, info, scratch)) {
+                break;
+            }
+            warn(z, S("could not open for reading: "), path, scratch);
             z->status = ZE_OPEN;
             z->nskipped++;
-            continue;
         }
-        scan(z, kpath, kname, k, &self, iter);
     }
 }
 
@@ -1196,32 +1235,31 @@ static iz expand(zip *z, s8 path, arena scratch)
     s8 pat  = {path.s+beg, end-beg};
     s8 rest = {path.s+end, path.len-end};
     iz         n    = 0;
-    os_dirent *kids = os_listdir(z->ctx, dir, z->hidden, &n, &scratch,
-                                 scratch);
-    if (!kids) {
+    os_dirent *list = os_listdir(z->ctx, dir, z->hidden, &n, &scratch);
+    if (!list) {
         return 0;
     }
-    zsort(kids, n, scratch);
+    os_dirent **kids = zsort(list, n, &scratch);
 
     i32 flags = ZIP_FOLD | ZIP_DOS | (z->nowild ? ZIP_NOWILD : 0);
     iz  count = 0;
     for (iz i = 0; i < n; i++) {
-        if (!zip_match(pat, kids[i].name, flags)) {
+        if (!zip_match(pat, kids[i]->name, flags)) {
             continue;
         }
         arena iter = scratch;  // forgets each match's strings
-        s8    cand = JOIN(&iter, (s8){path.s, beg}, kids[i].name, rest);
+        s8    cand = JOIN(&iter, (s8){path.s, beg}, kids[i]->name, rest);
         if (zip_haswild(rest, 0)) {
             count += expand(z, cand, iter);
             continue;
         }
         // The listing describes the match only if nothing follows it, and
         // a bare name, like an argument, may instead name a device (NUL)
-        os_info *info  = &kids[i].info;
+        os_info *info  = &kids[i]->info;
         b32      known = beg && !rest.len && listed(z, info);
         if (known || os_stat(z->ctx, cand, !z->symlinks, info, iter)) {
             s8 name = arg_name(z, cand, info, &iter);
-            scan(z, cand, name, info, 0, iter);
+            scan(z, cand, name, info, iter);
             count++;
         }
     }
@@ -1238,7 +1276,7 @@ static b32 scan_arg(zip *z, s8 arg, arena scratch)
     if (os_stat(z->ctx, arg, !z->symlinks, &info, scratch)) {
         if (!hidden_file(z, &info)) {
             s8 name = arg_name(z, arg, &info, &scratch);
-            scan(z, arg, name, &info, 0, scratch);
+            scan(z, arg, name, &info, scratch);
         }
     } else if (!z->windows || z->mode==MODE_FRESHEN) {
         return 0;

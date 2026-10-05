@@ -116,11 +116,12 @@ static b32 os_fstat(os *ctx, i32 fd, os_info *info)
 
 // Entries tell only names: each is left for os_stat.
 static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
-                             arena *perm, arena scratch)
+                             arena *a)
 {
     (void)ctx;
     (void)all;  // no hidden or system attributes
-    DIR *d = opendir(tocstr(&scratch, path));
+    arena tmp = *a;  // the path, which the listing then overwrites
+    DIR  *d   = opendir(tocstr(&tmp, path));
     if (!d) {
         return 0;
     }
@@ -135,9 +136,9 @@ static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
         if (zequals(name, S(".")) || zequals(name, S(".."))) {
             continue;
         }
-        s8 copy = {newstr(perm, name.len), name.len};
+        s8 copy = {newstr(a, name.len), name.len};
         bytecopy(copy.s, name.s, name.len);
-        *push(perm, &names) = (os_dirent){copy, {0}};  // type FT_NONE
+        *push(a, &names) = (os_dirent){copy, {0}};  // type FT_NONE
     }
     int err = errno;
     closedir(d);
@@ -145,7 +146,7 @@ static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
         return 0;
     }
     *count = names.len;
-    return names.data ? names.data : new(perm, 1, os_dirent);
+    return names.data ? names.data : new(a, 1, os_dirent);
 }
 
 static s8 os_readlink(os *ctx, s8 path, arena *a)
