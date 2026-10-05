@@ -52,7 +52,9 @@ shell_extract() {  # archive directory count
 }
 
 # Inputs: the literal-only file is a de Bruijn sequence, in which no
-# three-byte string repeats, so its compressed blocks use no distances
+# three-byte string repeats, so its compressed blocks use no distances.
+# Explorer, which rejects incomplete codes, must extract it from t.zip
+# (listing an archive inflates nothing).
 mkdir -p tree/sub
 printf 'hello hello hello hello\n' >tree/a.txt
 printf b >tree/b.txt
@@ -82,8 +84,6 @@ nfiles=7  # files expected, plus the Unicode-named one
 for level in 1 6 9; do
     rm -rf t.zip x1 x2 x3
     "$ZIP" -qr -$level t.zip tree
-    "$ZIP" -qX -$level lit.zip tree/literals.txt
-    "$TAR" -tf lit.zip >/dev/null || fail "tar -t of literals"
 
     ps "Expand-Archive -Path t.zip -DestinationPath x1" ||
         fail "Expand-Archive -$level"
