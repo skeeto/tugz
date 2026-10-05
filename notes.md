@@ -137,8 +137,10 @@ the file is flushed and closed without error), and
   do not shrink are stored, odd seconds round up.
 - Departures: entries are sorted by name within each directory (Info-ZIP
   uses readdir order), doubled slashes collapse, `SOURCE_DATE_EPOCH`
-  clamps times and makes them UTC, and names that are valid non-ASCII
-  UTF-8 always get flag bit 11.
+  clamps times and makes them UTC, names that are valid non-ASCII
+  UTF-8 always get flag bit 11, and an entry whose replacement cannot be
+  read is kept under `-FS` as in other modes (Info-ZIP warns that it
+  will copy it over, then drops it).
 - Writing: entries go to a temporary file beside the archive (created
   discard-on-close, like gzip's outputs), at explicit offsets so that a
   local header can be patched once sizes are known. No data descriptors

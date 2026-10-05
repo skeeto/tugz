@@ -259,6 +259,15 @@ grep -q 'fs/a.txt' out && fail "-FS updated an unchanged file: $(cat out)"
 verify fs.zip
 extract_same fs.zip fs
 
+# Filesync that finds nothing has nothing to do, rather than deleting
+# every entry
+cp fs.zip fs0.zip
+expect_status 12 "$ZIP" -FS fs.zip
+expect_status 12 "$ZIP" -FS fs.zip missing
+expect_status 12 "$ZIP" -FS -r fs.zip fs -x '*'
+expect_status 12 "$ZIP" -FS -@ fs.zip </dev/null
+cmp -s fs.zip fs0.zip || fail "-FS with nothing found changed the archive"
+
 # Delete
 "$ZIP" -d m.zip 'tree/o*' nomatch >out 2>&1
 grep -q 'deleting: tree/one' out || fail "-d: $(cat out)"
@@ -269,6 +278,25 @@ expect_status 12 "$ZIP" -d m.zip nomatch
 expect_status 12 "$ZIP" -d missing.zip tree/a.txt
 "$ZIP" -qd m.zip '*'
 [ "$(wc -c <m.zip | tr -d ' ')" = 22 ] || fail "emptied archive not 22 bytes"
+
+# Deletion honors -x and -i, and a directory on disk names its entry
+"$ZIP" -qr dx.zip tree
+"$ZIP" -qd dx.zip '*' -x '*.txt'
+names dx.zip >got
+printf 'tree/Z.txt\ntree/a.txt\ntree/b.txt\n' >want
+cmp -s got want || fail "-d -x: $(cat got)"
+"$ZIP" -qd dx.zip '*' -i 'tree/a*'
+names dx.zip >got
+printf 'tree/Z.txt\ntree/b.txt\n' >want
+cmp -s got want || fail "-d -i: $(cat got)"
+cp dx.zip dx0.zip
+expect_status 12 "$ZIP" -d dx.zip '*' -x '*'
+cmp -s dx.zip dx0.zip || fail "-d of only excluded entries changed the archive"
+"$ZIP" -qr dir.zip tree/sub
+"$ZIP" -qd dir.zip tree/sub 2>out || fail "-d of a directory: $(cat out)"
+names dir.zip >got
+printf 'tree/sub/deeper/\ntree/sub/deeper/text\ntree/sub/random\n' >want
+cmp -s got want || fail "-d of a directory: $(cat got)"
 
 # Copied entries keep their bytes; -X strips their extra fields
 "$ZIP" -qr k1.zip tree
@@ -300,6 +328,35 @@ if [ "$(id -u)" != 0 ]; then
     printf 'tree/b.txt\n' >want
     cmp -s got want || fail "unreadable file: $(cat got)"
     chmod 644 unreadable
+
+    # A directory after a failed file gets none of its fields
+    mkdir -p fd/sub
+    printf x >fd/a
+    chmod 000 fd/a
+    expect_status 18 "$ZIP" -r fd.zip fd
+    verify fd.zip
+    names fd.zip >got
+    printf 'fd/\nfd/sub/\n' >want
+    cmp -s got want || fail "failed file then directory: $(cat got)"
+    chmod 644 fd/a
+
+    # An entry whose replacement cannot be read is kept, in every mode
+    for mode in -q -qu -qf -qFS; do
+        rm -f s.zip
+        printf old >stale
+        "$ZIP" -q s.zip stale tree/b.txt
+        chmod 000 stale
+        touch -t 203001010000 stale
+        expect_status 18 "$ZIP" $mode s.zip stale tree/b.txt
+        verify s.zip
+        [ "$(unzip -p s.zip stale)" = old ] || fail "$mode dropped the entry"
+        chmod 644 stale
+    done
+    chmod 000 stale
+    "$ZIP" s.zip stale >out 2>&1 && fail "unreadable replacement succeeded"
+    grep -qx 'zip warning: will just copy entry over: stale' out ||
+        fail "copy over warning: $(cat out)"
+    chmod 644 stale
 fi
 expect_status 0 "$ZIP" -h
 "$ZIP" >out

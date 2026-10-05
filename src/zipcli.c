@@ -585,15 +585,22 @@ static b32 any_match(zip *z, s8s *patterns, s8 name)
     return 0;
 }
 
+// Whether a name passes the -i and -x patterns.
+static b32 included(zip *z, s8 name)
+{
+    if (z->include.len && !any_match(z, &z->include, name)) {
+        return 0;
+    }
+    return !any_match(z, &z->exclude, name);
+}
+
 static b32 selected(zip *z, s8 name)
 {
     b32 dir = name.len && name.s[name.len-1]=='/';
     if (dir && (z->nodirs || z->junk)) {
         return 0;
-    } else if (z->include.len && !any_match(z, &z->include, name)) {
-        return 0;
     }
-    return !any_match(z, &z->exclude, name);
+    return included(z, name);
 }
 
 // Whether two files are known to be one: an unknown ID matches nothing.
@@ -1075,6 +1082,7 @@ static b32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
     if (utf8 < 0 && z->windows) {
         warn(z, S("name is not valid UTF-8: "), f->path, scratch);
     }
+    *e = (zentry){0};  // the slot may hold a failed attempt's fields
     e->name    = f->name;
     e->made    = z->windows ? 0x001e : 0x031e;  // FAT or Unix, Zip 3.0
     e->flags   = utf8>0 ? ZIP_FLAG_UTF8 : 0;
@@ -1108,11 +1116,11 @@ static b32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
         e->method = tryz ? ZIP_DEFLATE : ZIP_STORE;
         e->crc    = 0;
         e->usize  = 0;
+        zout_seek(w, start);  // drop an abandoned attempt, even on failure
         if (!src_open(z, &src, scratch)) {
             return 0;
         }
 
-        zout_seek(w, start);
         iz  hlen = zip_local_len(e);
         u8 *h    = newbytes(&scratch, hlen);
         zip_local(h, e);
@@ -1282,20 +1290,16 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     zentry *entries = new(&scratch, items->len, zentry);
     iz      count   = 0;
     for (iz i = 0; i < items->len; i++) {
-        zitem *it = items->data + i;
-        zentry *e = entries + count;
+        zitem  *it   = items->data + i;
+        zentry *e    = entries + count;
+        zentry *copy = 0;
         switch (it->kind) {
         case ITEM_DELETE:
             report(z, S("deleting: "), it->old->name, 0, scratch);
             break;
-        case ITEM_KEEP: {
-            i32 err = copy_entry(z, ar, &k, it->old, e, scratch);
-            if (err) {
-                os_close(z->ctx, fd);
-                return err;
-            }
-            count++;
-        } break;
+        case ITEM_KEEP:
+            copy = it->old;
+            break;
         default:
             if (write_file(z, &k, it->file, e, scratch)) {
                 s8 verb = it->kind==ITEM_ADD    ? S("  adding: ") :
@@ -1303,13 +1307,28 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
                                                   S("freshening: ");
                 report(z, verb, e->name, e, scratch);
                 count++;
-            } else {
-                warn(z, S("could not open for reading: "), it->file->path,
+                break;
+            }
+            warn(z, S("could not open for reading: "), it->file->path,
+                 scratch);
+            z->status = ZE_OPEN;
+            if (it->old) {
+                // Keep the entry it was to replace, as Info-ZIP does
+                warn(z, S("will just copy entry over: "), it->old->name,
                      scratch);
-                z->status = ZE_OPEN;
+                copy = it->old;
+            } else {
                 z->nskipped++;
                 z->bskipped += it->file->info.size;
             }
+        }
+        if (copy) {
+            i32 err = copy_entry(z, ar, &k, copy, e, scratch);
+            if (err) {
+                os_close(z->ctx, fd);
+                return err;
+            }
+            count++;
         }
         if (w.err) {
             break;
@@ -1380,6 +1399,22 @@ static i32 parse_epoch(zip *z, s8 s, arena scratch)
     return 0;
 }
 
+// Mark the entries matching a -d pattern that pass -i and -x, which
+// Info-ZIP applies to deletions too. Returns whether any entry matched,
+// marked or not.
+static b32 mark_deletes(zip *z, zentry *entries, iz n, s8 pattern, b32 *hit)
+{
+    s8s one = {&pattern, 1, 1};
+    b32 any = 0;
+    for (iz i = 0; i < n; i++) {
+        if (any_match(z, &one, entries[i].name)) {
+            hit[i] |= included(z, entries[i].name);
+            any = 1;
+        }
+    }
+    return any;
+}
+
 static i32 zip_main(zipconfig *conf)
 {
     zip *z = new(&conf->perm, 1, zip);
@@ -1448,21 +1483,27 @@ static i32 zip_main(zipconfig *conf)
     if (z->mode == MODE_DELETE) {
         b32 *hit = new(&scratch, nold, b32);
         for (iz p = 0; p < z->paths.len; p++) {
-            s8s one = {z->paths.data+p, 1, 1};
-            b32 any = 0;
-            for (iz i = 0; i < nold; i++) {
-                if (any_match(z, &one, ar->entries[i].name)) {
-                    hit[i] = any = 1;
-                }
+            s8  name  = z->paths.data[p];
+            b32 found = mark_deletes(z, ar->entries, nold, name, hit);
+            os_info info = {0};
+            b32 ondisk = !found &&
+                         os_stat(z->ctx, name, !z->symlinks, &info, scratch);
+            if (ondisk && info.type==FT_DIR && name.len &&
+                name.s[name.len-1]!='/') {
+                // A directory names its entry, as in Info-ZIP
+                s8 dir = JOIN(&scratch, name, S("/"));
+                mark_deletes(z, ar->entries, nold, dir, hit);
             }
-            if (!any) {
-                warn(z, S("name not matched: "), z->paths.data[p], scratch);
+            if (!found && !ondisk) {
+                // Info-ZIP does not warn about names on disk
+                warn(z, S("name not matched: "), name, scratch);
             }
         }
         for (iz i = 0; i < nold; i++) {
             zitem *it = push(&z->perm, &items);
             it->kind = hit[i] ? ITEM_DELETE : ITEM_KEEP;
             it->old  = ar->entries + i;
+            it->file = 0;
             changed |= hit[i];
         }
     } else {
@@ -1472,6 +1513,9 @@ static i32 zip_main(zipconfig *conf)
         if (z->duplicate) {
             return fail(z, ZE_PARMS, S("Invalid command arguments"),
                         S("cannot repeat names in zip file"), scratch);
+        } else if (z->mode==MODE_SYNC && !z->files.len) {
+            // Rather than delete every entry, as for a misspelled path
+            return fail(z, ZE_NONE, S("Nothing to do!"), z->archive, scratch);
         }
 
         zmap *old = 0;
@@ -1483,6 +1527,7 @@ static i32 zip_main(zipconfig *conf)
             zitem *it = push(&z->perm, &items);
             it->kind = z->mode==MODE_SYNC ? ITEM_DELETE : ITEM_KEEP;
             it->old  = ar->entries + i;
+            it->file = 0;
         }
 
         for (iz i = 0; i < z->files.len; i++) {
@@ -1492,6 +1537,7 @@ static i32 zip_main(zipconfig *conf)
                 if (z->mode != MODE_FRESHEN) {
                     zitem *it = push(&z->perm, &items);
                     it->kind = ITEM_ADD;
+                    it->old  = 0;
                     it->file = f;
                     changed  = 1;
                 }
