@@ -448,7 +448,8 @@ Fuzzers:
   names from a listing round trip. A path written exactly `\\?\`
   passes through, as in Win32, but other device paths (`//?/`, `\\.\`)
   are resolved too, as Win32 resolves them, except that `..` stops at
-  their volume or share. The empty path names no file. A bare
+  their volume or share. The empty path names no file, nor does a root
+  missing its server, share, or device (`\\server\`, `//?/`). A bare
   DOS device name (`NUL`, `CON`, `COM1`, as `GetFullPathNameW` judges
   it) is the device, as in other Windows programs: zip skips it as a
   special file, `gzip -c NUL` reads nothing, and no output goes to one.

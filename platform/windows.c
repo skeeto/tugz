@@ -211,7 +211,8 @@ static b32 isverbatim(s8 path)
 // Length of an absolute path's root: a drive "X:", a share
 // "\\server\share", or a device path through its first component
 // ("\\?\X:", "\\?\Volume{...}") or share ("\\?\UNC\server\share").
-// Zero for a relative path.
+// Zero for a relative path, and negative for a root missing one of
+// these parts ("\\server\", "\\?\"), which names nothing.
 static iz rootlen(s16 p)
 {
     c16 *s = p.s;
@@ -231,7 +232,11 @@ static iz rootlen(s16 p)
     }
     for (i32 k = 0; k < parts; k++) {
         i += k && i<p.len;  // separator
+        iz beg = i;
         for (; i<p.len && s[i]!='\\'; i++) {}
+        if (i == beg) {
+            return -1;
+        }
     }
     return i;
 }
@@ -288,8 +293,8 @@ static c16 *dosdevice(arena *a, s16 p)
 // A path written exactly \\?\ passes through, as Win32 passes it, and a
 // bare DOS device name (NUL) becomes its device as in any Windows
 // program. Within a directory such names stay files, as they are in a
-// listing, since other systems make them. Returns null for an empty
-// path, which names no file.
+// listing, since other systems make them. Returns null for a path that
+// names no file: an empty one, or one with an incomplete root.
 static c16 *winpath(arena *a, s8 path)
 {
     s16 p = fromwtf8(a, path);
@@ -307,12 +312,15 @@ static c16 *winpath(arena *a, s8 path)
     b32 devpath = isdevice(p);
     iz  root    = rootlen(p);
     s16 base    = {0};
-    if (!root) {
+    if (root < 0) {
+        return 0;
+    } else if (!root) {
         base = curdir(a, 0);
-        if (!base.s) {
-            return 0;
-        } else if (p.s[0] == '\\') {
+        if (base.s && p.s[0]=='\\') {
             base.len = rootlen(base);  // root-relative
+        }
+        if (base.len <= 0) {
+            return 0;
         }
     } else if (p.s[1]==':' && (p.len==2 || p.s[2]!='\\')) {
         base = curdir(a, p.s[0]);  // drive-relative, "X:name"
@@ -330,7 +338,7 @@ static c16 *winpath(arena *a, s8 path)
         p.s   = s;
         p.len = base.len + 1 + p.len;
         root  = rootlen(p);
-        if (!root) {
+        if (root <= 0) {
             return 0;
         }
     }

@@ -193,6 +193,10 @@ if [ -n "$windows" ]; then
     win=$(printf %s "$here" | tr / '\\')
     expect_status 0 "$GZIP" -c "\\\\?\\$win\\one"
     expect_status 1 "$GZIP" -c "\\\\?\\$win\\names\\..\\one"
+    # ...but one missing its device, server, or share names nothing
+    for p in "//?/" "//./" "//?/UNC/localhost/" "\\\\localhost\\" "//"; do
+        expect_status 1 "$GZIP" -c "$p"
+    done
 fi
 
 # Windows: an output name that another process holds delete-pending, as

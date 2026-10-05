@@ -268,6 +268,10 @@ printf '%s/tree/sub/../one\n%s/tree/./b.txt\n%s/tree/a.txt\n%s/tree/empty\n' \
 cmp -s got want.txt || fail "device paths: $(cat got)"
 expect_status 12 "$ZIP" p10.zip "\\\\?\\$win\\tree\\sub\\..\\one"
 
+# ...but one missing its device, server, or share names nothing
+expect_status 12 "$ZIP" p11.zip "//?/" "//./" "//?/UNC/localhost/" \
+    "\\\\localhost\\" "//localhost//tree/one" "//"
+
 # A share root is named as with its separator, as Info-ZIP names any
 # directory: by nothing, so that its entries drop the whole prefix
 share="//localhost/${here%%:*}\$"  # an administrative share, if shared
