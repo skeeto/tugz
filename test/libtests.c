@@ -64,7 +64,7 @@ static b32 same(buf a, u8 const *p, iz len)
 
 static void *mem_deflator(int format, int level, tugz_deflator **d)
 {
-    ptrdiff_t len = tugz_deflate_size(format, level);
+    ptrdiff_t len = tugz_deflate_size(format);
     void *mem = malloc((uz)len);
     *d = tugz_deflate_init(mem, len, format, level);
     TEST(*d);
@@ -80,14 +80,12 @@ static void *mem_inflator(int format, tugz_inflator **z)
     return mem;
 }
 
-// Compress through the library, feeding input and taking output in
-// pieces (0 for unlimited). Flushes of the given mode are requested at
-// every multiple of flushat input bytes (0 for none).
-static buf tcompress(int format, int level, u8 const *p, iz len,
-                    iz inpiece, iz outpiece, int fmode, iz flushat)
+// Compress a stream with a new or reset deflator, feeding input and
+// taking output in pieces (0 for unlimited). Flushes of the given mode
+// are requested at every multiple of flushat input bytes (0 for none).
+static buf tcompress_with(tugz_deflator *d, u8 const *p, iz len,
+                          iz inpiece, iz outpiece, int fmode, iz flushat)
 {
-    tugz_deflator *d;
-    void *mem = mem_deflator(format, level, &d);
     iz cap = len + len/4 + (1<<16) + (flushat ? 6*(len/flushat+1) : 0);
     buf r = {malloc((uz)cap), 0};
 
@@ -121,6 +119,16 @@ static buf tcompress(int format, int level, u8 const *p, iz len,
     b.in = p;
     b.inlen = 1;
     TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_EUSAGE);
+    return r;
+}
+
+// Compress as tcompress_with, with a new deflator.
+static buf tcompress(int format, int level, u8 const *p, iz len,
+                    iz inpiece, iz outpiece, int fmode, iz flushat)
+{
+    tugz_deflator *d;
+    void *mem = mem_deflator(format, level, &d);
+    buf r = tcompress_with(d, p, len, inpiece, outpiece, fmode, flushat);
     free(mem);
     return r;
 }
@@ -131,12 +139,11 @@ typedef struct {
     iz  used;  // input bytes consumed
 } result;
 
-// Decompress one stream (or gzip member) with pieces as for compress.
-static result tdecompress(int format, u8 const *p, iz len, iz inpiece,
-                         iz outpiece)
+// Decompress one stream (or gzip member) with a new or reset inflator,
+// with pieces as for compress.
+static result tdecompress_with(tugz_inflator *z, u8 const *p, iz len,
+                               iz inpiece, iz outpiece)
 {
-    tugz_inflator *z;
-    void *mem = mem_inflator(format, &z);
     iz cap = 1 << 22;
     result r = {0};
     r.out.s = malloc((uz)cap);
@@ -160,6 +167,16 @@ static result tdecompress(int format, u8 const *p, iz len, iz inpiece,
         }
         break;
     }
+    return r;
+}
+
+// Decompress as tdecompress_with, with a new inflator.
+static result tdecompress(int format, u8 const *p, iz len, iz inpiece,
+                         iz outpiece)
+{
+    tugz_inflator *z;
+    void *mem = mem_inflator(format, &z);
+    result r = tdecompress_with(z, p, len, inpiece, outpiece);
     free(mem);
     return r;
 }
@@ -192,7 +209,7 @@ static void test_memory(void)
 {
     for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
         ptrdiff_t ilen = tugz_inflate_size(format);
-        ptrdiff_t dlen = tugz_deflate_size(format, 6);
+        ptrdiff_t dlen = tugz_deflate_size(format);
         TEST(ilen>0 && dlen>0);
         u8 *mem = malloc((uz)MAX(ilen, dlen) + 64);
         for (iz off = 0; off < 64; off += 7) {
@@ -205,7 +222,7 @@ static void test_memory(void)
         free(mem);
     }
     TEST(!tugz_inflate_size(3));
-    TEST(!tugz_deflate_size(-1, 6));
+    TEST(!tugz_deflate_size(-1));
     TEST(!tugz_inflate_init(0, 1<<30, TUGZ_RAW));
 }
 
@@ -235,7 +252,7 @@ static void test_allocator(void)
 {
     allocstats st = {0};
     tugz_deflator *d = tugz_deflate_new(test_alloc, &st, TUGZ_GZIP, 6);
-    TEST(d && st.allocs==1 && st.size==tugz_deflate_size(TUGZ_GZIP, 6));
+    TEST(d && st.allocs==1 && st.size==tugz_deflate_size(TUGZ_GZIP));
     u8 out[64];
     tugz_buf b = {(u8 const *)"hello", 5, out, countof(out)};
     TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_DONE);
@@ -632,6 +649,198 @@ static void test_large(void)
     free(p);
 }
 
+enum { PREV_FINISH, PREV_SYNC, PREV_FULL, PREV_NONE, PREV_STALLED, NPREV };
+
+// Compress a stream that ends as given, unfinished but for PREV_FINISH:
+// flushed with more input pending, input consumed but not yet compressed
+// (past the window, compressed and slid in part), or output left staged.
+static void prev_stream(tugz_deflator *d, u8 const *p, iz len, int how)
+{
+    iz cap = len + len/4 + (1<<16);
+    u8 *z = malloc((uz)cap);
+    tugz_buf b = {p, len, z, cap};
+    switch (how) {
+    case PREV_FINISH:
+        TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_DONE);
+        break;
+    case PREV_SYNC:
+    case PREV_FULL:
+        TEST(tugz_deflate(d, &b, how==PREV_SYNC ? TUGZ_SYNC : TUGZ_FULL)
+             == TUGZ_DONE);
+        b.in = p;
+        b.inlen = len/2;
+        TEST(tugz_deflate(d, &b, TUGZ_NONE) == TUGZ_NEED_INPUT);
+        break;
+    case PREV_NONE:
+        TEST(tugz_deflate(d, &b, TUGZ_NONE) == TUGZ_NEED_INPUT);
+        break;
+    case PREV_STALLED:
+        b.outlen = 1;
+        TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_NEED_OUTPUT);
+        break;
+    }
+    free(z);
+}
+
+// A reset deflator compresses exactly as a new one, at any level and in
+// any format, whatever its previous stream and however it ended: short
+// or long (the reset clears history in two ways), compressible or not
+// (with and without 3-byte matching, which a stream too short to sample
+// never uses).
+static void test_reset(void)
+{
+    iz n = (iz)1300000;  // past the window
+    u8 *text = textbytes(n, 9);
+    u8 *noise = randbytes(n, 10);
+    iz m = 30000;
+    u8 *next = textbytes(m, 11);
+    for (iz i = m/3; i < m; i++) {
+        next[i] = (u8)('a' + (noise[i] & 15));  // for 3-byte matching
+    }
+    u8 const *tiny = (u8 const *)"abc1abc2abc3abc4abc5abc6abc7abc8abc9";
+    iz tinylen = 36;
+    iz const prevlens[] = {0, 300, 20000, n};
+
+    // Check that the inputs cover what they are meant to
+    tugz_deflator *d;
+    void *mem = mem_deflator(TUGZ_RAW, 6, &d);
+    free(tcompress_with(d, next, m, 0, 0, 0, 0).s);
+    TEST(d->e->def->use3);
+    tugz_deflate_reset(d, 6);
+    free(tcompress_with(d, text, 20000, 0, 0, 0, 0).s);
+    TEST(!d->e->def->use3);
+    tugz_deflate_reset(d, 6);
+    free(tcompress_with(d, noise, 300, 0, 0, 0, 0).s);
+    TEST(d->e->def->use3);
+    free(mem);
+
+    for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
+        for (int level = 1; level <= 9; level++) {
+            buf tref = tcompress(format, level, tiny, tinylen, 0, 0, 0, 0);
+            buf ref = tcompress(format, level, next, m, 0, 0, 0, 0);
+            buf sync = tcompress(format, level, next, m, 0, 0, TUGZ_SYNC,
+                                 7000);
+            buf full = tcompress(format, level, next, m, 0, 0, TUGZ_FULL,
+                                 5000);
+            mem = mem_deflator(format, 10-level, &d);
+            for (int how = 0; how < NPREV; how++) {
+                for (i32 k = 0; k < 2*countof(prevlens); k++) {
+                    u8 *p = k&1 ? noise : text;
+                    iz len = prevlens[k>>1];
+                    if (len==n && (format!=TUGZ_RAW || level%4!=1)) {
+                        continue;  // slow, and raw at 1, 5, 9 suffices
+                    }
+                    tugz_deflate_reset(d, k&2 ? level : 10-level);
+                    prev_stream(d, p, len, how);
+                    tugz_deflate_reset(d, level);
+                    buf c;
+                    switch ((how + k) % 4) {
+                    case 0:
+                        c = tcompress_with(d, next, m, 777, 333, 0, 0);
+                        TEST(same(c, ref.s, ref.len));
+                        break;
+                    case 1:
+                        c = tcompress_with(d, next, m, 0, 100, TUGZ_SYNC,
+                                           7000);
+                        TEST(same(c, sync.s, sync.len));
+                        break;
+                    case 2:
+                        c = tcompress_with(d, next, m, 1000, 0, TUGZ_FULL,
+                                           5000);
+                        TEST(same(c, full.s, full.len));
+                        break;
+                    default:
+                        c = tcompress_with(d, tiny, tinylen, 1, 1, 0, 0);
+                        TEST(same(c, tref.s, tref.len));
+                    }
+                    free(c.s);
+                }
+            }
+
+            // Reset with no stream in between, and back to back
+            tugz_deflate_reset(d, level);
+            tugz_deflate_reset(d, level);
+            buf c = tcompress_with(d, next, m, 0, 0, 0, 0);
+            TEST(same(c, ref.s, ref.len));
+            free(c.s);
+            tugz_deflate_reset(d, level);
+            c = tcompress_with(d, next, m, 0, 0, 0, 0);
+            TEST(same(c, ref.s, ref.len));
+            free(c.s);
+
+            free(mem);
+            free(full.s);
+            free(sync.s);
+            free(ref.s);
+            free(tref.s);
+        }
+    }
+    tugz_deflate_reset(0, 6);  // ignored
+    free(next);
+    free(noise);
+    free(text);
+}
+
+// A reset inflator decodes as a new one, after its previous stream ended,
+// failed, or was abandoned at any point: in a header, block, trailer,
+// or the stash, or with output pending.
+static void test_inflate_reset(void)
+{
+    iz n = 30000;
+    u8 *text = textbytes(n, 12);
+    for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
+        buf c = tcompress(format, 6, text, n, 0, 0, 0, 0);
+        // Corrupt in the middle, and in the header (raw: block type 3)
+        buf bad[2];
+        for (i32 i = 0; i < 2; i++) {
+            bad[i].s = malloc((uz)c.len);
+            bad[i].len = c.len;
+            memcpy(bad[i].s, c.s, (uz)c.len);
+        }
+        bad[0].s[c.len/2] ^= 0x10;
+        bad[1].s[0] ^= format==TUGZ_RAW ? (~c.s[0] & 6) : 0x40;
+        tugz_inflator *z;
+        void *mem = mem_inflator(format, &z);
+        u8 *out = malloc((uz)n);
+        for (iz cut = 0; cut <= c.len; cut += cut<40 ? 1 : 97) {
+            for (i32 k = 0; k < 4; k++) {
+                buf prev = k<2 ? c : bad[k-2];
+                tugz_buf b = {prev.s, cut, out, k==1 ? 100 : n};
+                tugz_inflate_reset(z);
+                int status = tugz_inflate(z, &b);
+                if (k == 0) {
+                    TEST(status == (cut==c.len ? TUGZ_DONE : TUGZ_NEED_INPUT));
+                } else if (k == 1) {
+                    TEST(status==TUGZ_NEED_INPUT || status==TUGZ_NEED_OUTPUT);
+                } else if (k==3 && cut>=2) {
+                    TEST(status < 0);
+                }
+                tugz_inflate_reset(z);
+                result r = tdecompress_with(z, c.s, c.len, cut%5 ? 0 : 7,
+                                            cut%3 ? 0 : 50);
+                TEST(r.status==TUGZ_DONE && r.used==c.len);
+                TEST(same(r.out, text, n));
+                free(r.out.s);
+            }
+        }
+        // A finished stream starts over, rather than staying done (or for
+        // gzip, going on to the next member)
+        tugz_buf b = {c.s, c.len, out, n};
+        TEST(tugz_inflate(z, &b) == TUGZ_DONE);
+        tugz_inflate_reset(z);
+        b = (tugz_buf){c.s, c.len, out, n};
+        TEST(tugz_inflate(z, &b) == TUGZ_DONE);
+        TEST(!b.inlen && !b.outlen && !memcmp(out, text, (uz)n));
+        free(out);
+        free(mem);
+        free(bad[1].s);
+        free(bad[0].s);
+        free(c.s);
+    }
+    tugz_inflate_reset(0);  // ignored
+    free(text);
+}
+
 static void test_usage(void)
 {
     tugz_inflator *z;
@@ -669,6 +878,8 @@ int main(void)
     test_flush();
     test_roundtrip();
     test_large();
+    test_reset();
+    test_inflate_reset();
     puts("all library tests pass");
     return 0;
 }

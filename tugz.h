@@ -11,9 +11,19 @@
 //
 // Each call advances b.in/b.out and decreases b.inlen/b.outlen by what it
 // consumed and produced. The state is fixed in size and never grows, so
-// it needs no cleanup beyond releasing its memory. Calling init again on
-// the same memory starts over. States are independent, so separate
-// states may be used concurrently from different threads.
+// it needs no cleanup beyond releasing its memory. States are
+// independent, so separate states may be used concurrently from
+// different threads.
+//
+// To compress or decompress many streams, reset one state rather than
+// init it again: init clears about 512 KiB to deflate and 14 KiB to
+// inflate, and builds tables, while a deflate reset takes time in
+// proportion to the previous stream's input, clearing the 512 KiB only
+// past about 8 KiB of it, and an inflate reset takes constant time. For
+// 100-byte streams this makes deflate about 4x and inflate 3x faster. A
+// reset may come at any point in a stream and keeps the format. The
+// deflate reset sets the level, so a deflate state's size depends only
+// on its format.
 //
 // Inflate returns TUGZ_DONE at the end of the stream (for gzip, the end
 // of each member), with b.in pointing just past its last byte. Calling
@@ -92,12 +102,16 @@ TUGZ_API ptrdiff_t      tugz_inflate_size(int format);
 TUGZ_API tugz_inflator *tugz_inflate_init(void *mem, ptrdiff_t len,
                                           int format);
 TUGZ_API int            tugz_inflate(tugz_inflator *, tugz_buf *);
+// Discard the current stream and start another in the same format.
+TUGZ_API void           tugz_inflate_reset(tugz_inflator *);
 
-TUGZ_API ptrdiff_t      tugz_deflate_size(int format, int level);
+TUGZ_API ptrdiff_t      tugz_deflate_size(int format);
 TUGZ_API tugz_deflator *tugz_deflate_init(void *mem, ptrdiff_t len,
                                           int format, int level);
 TUGZ_API int            tugz_deflate(tugz_deflator *, tugz_buf *,
                                      int flush);
+// Discard the current stream and start another in the same format.
+TUGZ_API void           tugz_deflate_reset(tugz_deflator *, int level);
 
 // Convenience: one allocation of the state's size, freed with its size.
 TUGZ_API tugz_inflator *tugz_inflate_new(tugz_allocator *, void *ctx,

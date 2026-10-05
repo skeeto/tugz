@@ -83,6 +83,7 @@ static iz decoder_memsize(void)
     return (iz)sizeof(decoder) + 64 + inflate_memsize();
 }
 
+// Start a new stream (or gzip member) in the same format, from any state.
 static void decoder_reset(decoder *z)
 {
     inflate_reset(z->inf);
@@ -290,15 +291,19 @@ static iz encoder_memsize(void)
     return (iz)sizeof(encoder) + 64 + deflate_memsize();
 }
 
-static encoder *encoder_new(arena *a, i32 format, i32 level)
+// Start a new stream in the same format at a level, which may differ
+// from the previous stream's. Like deflate_reset, this costs time in
+// proportion to the previous stream.
+static void encoder_reset(encoder *e, i32 level)
 {
     level = MAX(1, MIN(level, 9));
-    encoder *e = new(a, 1, encoder);
-    e->def = deflate_new(a, level);
-    e->format = format;
-    e->check = check_init(format);
+    deflate_reset(e->def);
+    deflate_setlevel(e->def, level);
+    e->check = check_init(e->format);
+    e->total = 0;
+    e->done  = 0;
 
-    switch (format) {
+    switch (e->format) {
     case FMT_GZIP: {
         static u8 const header[10] = {0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3};
         deflate_bytes(e->def, header, countof(header));
@@ -313,6 +318,14 @@ static encoder *encoder_new(arena *a, i32 format, i32 level)
         deflate_bytes(e->def, header, countof(header));
     } break;
     }
+}
+
+static encoder *encoder_new(arena *a, i32 format, i32 level)
+{
+    encoder *e = new(a, 1, encoder);
+    e->def = deflate_new(a, level);
+    e->format = format;
+    encoder_reset(e, level);
     return e;
 }
 

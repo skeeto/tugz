@@ -974,9 +974,10 @@ static void forget(deflator *d)
     }
 }
 
-// Prepare to compress a new stream at the same level. This costs time in
-// proportion to the previous stream, up to clearing the hash heads, and
-// so is far cheaper than deflate_new for short streams.
+// Prepare to compress a new stream at the same level, unless changed
+// with deflate_setlevel. This costs time in proportion to the previous
+// stream, up to clearing the hash heads, and so is far cheaper than
+// deflate_new for short streams.
 static void deflate_reset(deflator *d)
 {
     forget(d);
@@ -994,6 +995,12 @@ static void deflate_reset(deflator *d)
     clear_block(d);
 }
 
+// Levels 1 through 9; others are clamped. Only at the start of a stream.
+static void deflate_setlevel(deflator *d, i32 level)
+{
+    d->lvl = deflate_levels[MAX(1, MIN(level, 9))];
+}
+
 // Memory needed by deflate_new, including alignment padding.
 static iz deflate_memsize(void)
 {
@@ -1002,14 +1009,13 @@ static iz deflate_memsize(void)
            DEF_STAGE + 8*64;
 }
 
-// Levels 1 through 9; others are clamped. Tokens and chain links are
-// always written before they are used (see forget), so of the large
-// tables only the hash heads start zeroed.
+// Tokens and chain links are always written before they are used (see
+// forget), so of the large tables only the hash heads start zeroed.
 static deflator *deflate_new(arena *a, i32 level)
 {
     deflator *d = new(a, 1, deflator);
+    deflate_setlevel(d, level);
     d->obuf  = newbytes(a, DEF_STAGE);
-    d->lvl   = deflate_levels[MAX(1, MIN(level, 9))];
     d->win   = newbytes(a, WIN_CAP);
     d->head  = new(a, HASH_SIZE, u32);
     d->prev  = alloc(a, DEF_WSIZE, sizeof(u32), _Alignof(u32), 0);

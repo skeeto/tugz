@@ -46,7 +46,12 @@ int status = tugz_inflate(z, &b);  // TUGZ_DONE, NEED_INPUT, NEED_OUTPUT, or err
 ```
 
 Deflate supports SYNC, FULL, and FINISH flushes, and a Lua-style
-allocator callback is available in place of caller memory. Build
+allocator callback is available in place of caller memory. For many
+streams, reset a state rather than initialize it again:
+`tugz_deflate_reset` (which also sets the level) takes time in
+proportion to the previous stream's input, at most init's clearing of
+512 KiB, and `tugz_inflate_reset` takes constant time. For 100-byte
+streams, compression is then about 4x faster and decompression 3x. Build
 `platform/libtugz.c` as an object (`make libtugz.o`), or use `make tugz.c` for a
 single-file amalgamation with the header inlined.
 

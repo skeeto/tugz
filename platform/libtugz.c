@@ -112,9 +112,15 @@ TUGZ_DEF int tugz_inflate(tugz_inflator *s, tugz_buf *b)
     return tugz_status(status);
 }
 
-TUGZ_DEF ptrdiff_t tugz_deflate_size(int format, int level)
+TUGZ_DEF void tugz_inflate_reset(tugz_inflator *s)
 {
-    (void)level;
+    if (s) {
+        decoder_reset(s->z);
+    }
+}
+
+TUGZ_DEF ptrdiff_t tugz_deflate_size(int format)
+{
     if (!valid_format(format)) {
         return 0;
     }
@@ -124,8 +130,7 @@ TUGZ_DEF ptrdiff_t tugz_deflate_size(int format, int level)
 TUGZ_DEF tugz_deflator *tugz_deflate_init(void *mem, ptrdiff_t len,
                                           int format, int level)
 {
-    if (!mem || !valid_format(format) ||
-        len<tugz_deflate_size(format, level)) {
+    if (!mem || !valid_format(format) || len<tugz_deflate_size(format)) {
         return 0;
     }
     arena a = mem_arena(mem, len);
@@ -150,6 +155,13 @@ TUGZ_DEF int tugz_deflate(tugz_deflator *s, tugz_buf *b, int flush)
     return tugz_status(status);
 }
 
+TUGZ_DEF void tugz_deflate_reset(tugz_deflator *s, int level)
+{
+    if (s) {
+        encoder_reset(s->e, level);
+    }
+}
+
 TUGZ_DEF tugz_inflator *tugz_inflate_new(tugz_allocator *alloc, void *ctx,
                                          int format)
 {
@@ -172,7 +184,7 @@ TUGZ_DEF void tugz_inflate_free(tugz_inflator *s, tugz_allocator *alloc,
 TUGZ_DEF tugz_deflator *tugz_deflate_new(tugz_allocator *alloc, void *ctx,
                                          int format, int level)
 {
-    ptrdiff_t len = tugz_deflate_size(format, level);
+    ptrdiff_t len = tugz_deflate_size(format);
     if (!len) {
         return 0;
     }

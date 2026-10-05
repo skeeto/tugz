@@ -71,10 +71,11 @@ CPU models with and without PCLMUL.
   (`tugz_*_size`, `tugz_*_init`): 310 KB to inflate and 2.7 MB to
   deflate. The optional allocator has the Lua shape
   `(ctx, ptr, old, new)` and is called once to allocate and once to free,
-  with the size. Init on the same memory resets. `os_oom` traps in the
-  library: init checks the size first, so it is unreachable. Programs
-  allocate their codecs from exactly-sized sub-arenas, so every program
-  run checks the size calculation.
+  with the size. Init on the same memory starts over; `tugz_*_reset`
+  does so far more cheaply (below). `os_oom` traps in the library: init
+  checks the size first, so it is unreachable. Programs allocate their
+  codecs from exactly-sized sub-arenas, so every program run checks the
+  size calculation.
 - Inflate decodes in atomic units: a block header (with a whole dynamic
   table description, at most ~300 bytes) or one literal or
   length/distance pair. If input runs out mid-unit, the unit rolls back
@@ -105,7 +106,13 @@ CPU models with and without PCLMUL.
   the heads by rehashing the inserted positions when there are at most
   8192, else by zeroing them, so a reused deflator costs time in
   proportion to the stream, not the table sizes. zip resets one deflator
-  per entry; a fresh deflator still zeroes 512 KiB.
+  per entry, and the library exposes this as `tugz_deflate_reset`; a
+  fresh deflator still zeroes 512 KiB. The reset also sets the level,
+  which only selects parameters and the zlib header, so
+  `tugz_deflate_size` takes only the format. `tugz_inflate_reset` skips
+  init's 14 KiB clear and fixed-table build. Per 100-byte gzip stream
+  (M4 Max / Pi 4): deflate 11.4 / 78 us after init, 2.5 / 21 us after
+  reset; inflate 3.3 / 19 us, 1.1 / 6.9 us.
 - Programs reach the buffers without copying (`*_pending`/`*_consume`),
   so the program's throughput is unchanged by the restructure.
 - `make libtugz.o` builds an object exporting only `tugz_*` (no writable
@@ -509,7 +516,9 @@ Fuzzers:
 
 - `fuzz-inflate`: arbitrary input to raw and gzip decoders
 - `fuzz-roundtrip`: deflate then inflate; output must not depend on push
-  sizes or stream offset (including past 4 GiB); zlib must agree
+  sizes or stream offset (including past 4 GiB), nor, in any format, on
+  an encoder reset after other streams at the same or another level;
+  zlib must agree
 - `fuzz-diff-inflate`: exact accept/reject and output agreement with zlib,
   for raw DEFLATE and for multi-member gzip (GNU trailing-data policy);
   then streaming in raw, zlib, and gzip formats with fuzzer-chosen input

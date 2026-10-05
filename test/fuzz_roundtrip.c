@@ -1,24 +1,24 @@
 // libFuzzer harness: compress then decompress must reproduce the input
 // The first bytes select the level, push size, and stream offset. Output
-// must also be identical regardless of push size and offset, and from a
-// deflator reset after another stream, and must decompress identically
-// under zlib.
+// must also be identical regardless of push size and offset, and from an
+// encoder reset after other streams, in each format, and must decompress
+// identically under zlib.
 // $ clang -g -O1 -fsanitize=fuzzer,address,undefined test/fuzz_roundtrip.c -lz
 #include "fuzzos.c"
 #include <zlib.h>
 
 // Compress all input with a flush, appending output to env->ctx.out.
-static void deflate_all(fuzzenv *env, deflator *d, u8 const *in, iz len,
-                        i32 flush)
+static void encode_all(fuzzenv *env, encoder *e, u8 const *in, iz len,
+                       i32 flush)
 {
     zbuf b = {in, len, 0, 0};
     for (;;) {
-        i32 status = deflate_stream(d, &b, flush);
-        s8  p = deflate_pending(d);
+        i32 status = encoder_run(e, &b, flush);
+        s8  p = encoder_pending(e);
         CHECK(p.len <= env->ctx.outcap-env->ctx.outlen);
         memcpy(env->ctx.out+env->ctx.outlen, p.s, (uz)p.len);
         env->ctx.outlen += p.len;
-        deflate_consume(d, p.len);
+        encoder_consume(e, p.len);
         if (status != GZ_NEEDOUT) {
             CHECK(status == (flush==DEF_NONE ? GZ_NEEDIN : GZ_OK));
             return;
@@ -26,23 +26,23 @@ static void deflate_all(fuzzenv *env, deflator *d, u8 const *in, iz len,
     }
 }
 
-// Raw deflate with a deflator that first compressed the input repeated
-// one to eight times, through a sync flush or to the end, then was reset.
-// Output goes to env->ctx.out.
-static void reused_deflate(fuzzenv *env, u8 const *in, iz len, i32 level,
-                           u8 how)
+// Compress with an encoder that first compressed the input repeated one
+// to eight times, at the same or another level, through a sync flush or
+// to the end, then was reset. Output goes to env->ctx.out.
+static void reused_encode(fuzzenv *env, i32 format, u8 const *in, iz len,
+                          i32 level, u8 how)
 {
     arena a = env->perm;
-    deflator *d = deflate_new(&a, level);
+    encoder *e = encoder_new(&a, format, how&0x40 ? level : 10-level);
     env->ctx.outlen = 0;
     i32 reps = 1 + (how>>1)%8;
     for (i32 i = 0; i < reps; i++) {
         i32 flush = i<reps-1 ? DEF_NONE : how&1 ? DEF_FINISH : DEF_SYNC;
-        deflate_all(env, d, in, len, flush);
+        encode_all(env, e, in, len, flush);
     }
-    deflate_reset(d);
+    encoder_reset(e, level);
     env->ctx.outlen = 0;
-    deflate_all(env, d, in, len, DEF_FINISH);
+    encode_all(env, e, in, len, DEF_FINISH);
 }
 
 int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
@@ -70,9 +70,17 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     CHECK(env->ctx.outlen == zlen);
     CHECK(!memcmp(env->ctx.out, z, (uz)zlen));
 
-    reused_deflate(env, in, len, level, data[2]);
-    CHECK(env->ctx.outlen == zlen);
-    CHECK(!memcmp(env->ctx.out, z, (uz)zlen));
+    i32 format = (data[2]>>4) % 3;
+    s8  ref = {z, zlen};
+    if (format != FMT_RAW) {
+        ref = fuzz_encode(env, format, level, in, len, 0, 0, 0);
+    }
+    reused_encode(env, format, in, len, level, data[2]);
+    CHECK(env->ctx.outlen == ref.len);
+    CHECK(!memcmp(env->ctx.out, ref.s, (uz)ref.len));
+    if (format != FMT_RAW) {
+        free(ref.s);
+    }
 
     CHECK(fuzz_inflate(env, z, zlen) == GZ_OK);
     CHECK(env->ctx.outlen == len);
