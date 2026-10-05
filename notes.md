@@ -167,6 +167,7 @@ portable format layer (`src/zip.c`, no I/O, fuzzed) and a driver
     make fuzz                  # build the five fuzzers
     make fuzz-seeds            # seed corpora in fuzz/corpus/
     ./fuzz-diff-inflate -fork=3 -max_len=65536 fuzz/corpus/diff-inflate
+    ./fuzz-zipread -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zipread
     make bench && ./bench -l 1,6,9 bench_corpus/silesia/*
     make amalgamation          # single-file Windows sources, gzip.c and zip.c
     SLOW=1 sh test/zip.sh ./zip    # adds Zip64: 5 GiB file, 70,000 entries
