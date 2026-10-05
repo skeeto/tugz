@@ -423,6 +423,21 @@ neither inflate nor the gzip container.
   address space, or of the system's commit limit on Windows) is still
   "zip error: Out of memory" (4). gzip and the library keep their fixed
   arenas: their hooks only report running out.
+- Memory per entry: perm keeps only what is recorded. A file's path and
+  name are built in scratch and copied to perm once it is added, as one
+  string when the name ends the path, as most do (`d/f`, `./d/f`, `-j`'s
+  `f`), so files excluded, hidden, unreadable, or repeated leave nothing
+  behind. Strings are packed (`newstr`, byte-aligned; `newbytes` keeps
+  64-byte alignment for buffers). Each file's record is allocated alone,
+  so that only an array of pointers moves as it grows. Arrays that are
+  perm's last allocation grow in place (`push` returns zeroed slots), as
+  `-@` lists and their text do, and the list of items is sized exactly.
+  Whatever the write grows with is allocated before the temporary file
+  is created: the central directory, as pointers to entries, kept ones
+  updated in place; new entries and their central extra fields; the
+  buffers and deflate state; and a megabyte of room for any one entry's
+  headers and messages, each forgotten before the next. So running out
+  of memory cannot strike once output has started.
 - libdeflate issue #323: Windows' zip folder rejects incomplete Huffman
   codes (such as a lone distance code in a block with at most one
   distinct distance), which DEFLATE permits. `huff_build` always codes at

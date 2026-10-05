@@ -19,7 +19,8 @@ typedef char                byte;
 #define assert(c)       while (!(c)) __builtin_unreachable()
 #define countof(a)      (iz)(sizeof(a) / sizeof(*(a)))
 #define new(a, n, t)    (t *)alloc(a, n, sizeof(t), _Alignof(t), 1)
-#define newbytes(a, n)  (u8 *)alloc(a, n, 1, 64, 0)
+#define newbytes(a, n)  (u8 *)alloc(a, n, 1, 64, 0)  // buffers
+#define newstr(a, n)    (u8 *)alloc(a, n, 1, 1, 0)   // strings, packed
 #define S8(s)           {(u8 *)s, countof(s)-1}
 #define S(s)            (s8)S8(s)
 #define MIN(a, b)       ((a) < (b) ? (a) : (b))

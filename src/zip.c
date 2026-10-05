@@ -411,7 +411,7 @@ static i32 zip_parse_end64(u8 const *p, zend *e)
 // (0x9901). Malformed trailing data is dropped.
 static s8 zip_filter_extra(arena *a, s8 x)
 {
-    s8 r = {newbytes(a, x.len), 0};
+    s8 r = {newstr(a, x.len), 0};
     for (iz i = 0; x.len-i >= 4;) {
         u32 id  = get16(x.s+i);
         iz  len = get16(x.s+i+2);
@@ -876,7 +876,7 @@ static iz zip_unc(s8 p, b32 windows)
 // ../ components are kept.
 static s8 zip_name(arena *a, s8 path, b32 windows)
 {
-    s8 r = {newbytes(a, path.len), 0};
+    s8 r = {newstr(a, path.len), 0};
     iz i = 0;
     u8 drive = path.len>=2 && path.s[1]==':' ? (u8)(path.s[0] | 0x20) : 0;
     if (windows && drive>='a' && drive<='z') {

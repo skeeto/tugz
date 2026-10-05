@@ -135,7 +135,7 @@ static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
         if (zequals(name, S(".")) || zequals(name, S(".."))) {
             continue;
         }
-        s8 copy = {newbytes(perm, name.len), name.len};
+        s8 copy = {newstr(perm, name.len), name.len};
         bytecopy(copy.s, name.s, name.len);
         *push(perm, &names) = (os_dirent){copy, {0}};  // type FT_NONE
     }
@@ -148,19 +148,17 @@ static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
     return names.data ? names.data : new(perm, 1, os_dirent);
 }
 
-static s8 os_readlink(os *ctx, s8 path, arena *perm, arena scratch)
+static s8 os_readlink(os *ctx, s8 path, arena *a)
 {
     (void)ctx;
-    char *cpath = tocstr(&scratch, path);
+    char *cpath = tocstr(a, path);
     for (iz cap = 256;; cap *= 2) {
-        u8 *buf = newbytes(&scratch, cap);
+        u8 *buf = newstr(a, cap);
         iz  n   = readlink(cpath, (char *)buf, (uz)cap);
         if (n < 0) {
             return (s8){0};
         } else if (n < cap) {
-            s8 r = {newbytes(perm, n), n};
-            bytecopy(r.s, buf, n);
-            return r;
+            return (s8){buf, n};
         }
     }
 }
@@ -176,7 +174,7 @@ static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
         return (s8){0};
     }
     for (i32 hops = 0; hops < 40; hops++) {
-        s8 target = os_readlink(ctx, path, perm, scratch);
+        s8 target = os_readlink(ctx, path, &scratch);
         if (!target.s) {
             // Not a link (EINVAL), or nothing there
             return errno==EINVAL || errno==ENOENT ? path : (s8){0};
@@ -186,7 +184,7 @@ static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
             cut = 0;
         }
         for (; cut>0 && path.s[cut-1]!='/'; cut--) {}
-        s8 next = {newbytes(perm, cut+target.len), cut+target.len};
+        s8 next = {newstr(perm, cut+target.len), cut+target.len};
         bytecopy(next.s, path.s, cut);
         bytecopy(next.s+cut, target.s, target.len);
         path = next;

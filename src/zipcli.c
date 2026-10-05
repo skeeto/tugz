@@ -53,8 +53,9 @@ static b32  os_fstat(os *, i32 fd, os_info *);
 // entry itself rather than a link's target. Returns null on error.
 static os_dirent *os_listdir(os *, s8 path, b32 all, iz *count,
                              arena *perm, arena scratch);
-// Target of a symbolic link, or a null string on error.
-static s8   os_readlink(os *, s8 path, arena *perm, arena scratch);
+// Target of a symbolic link, or a null string on error. It and any
+// temporaries come from one arena.
+static s8   os_readlink(os *, s8 path, arena *);
 // Positioned reads and writes of exactly len bytes, which may not be
 // mixed with os_read and os_write on the same descriptor.
 static b32  os_readat(os *, i32 fd, u8 *buf, iz len, i64 off);
@@ -171,10 +172,12 @@ typedef struct {
     u32     dostime;
 } zfile;
 
+// Each file is allocated alone, as names are allocated between them, so
+// that only the array of pointers moves as it grows.
 typedef struct {
-    zfile *data;
-    iz     len;
-    iz     cap;
+    zfile **data;
+    iz      len;
+    iz      cap;
 } zfiles;
 
 typedef struct zmap zmap;
@@ -226,15 +229,31 @@ typedef struct {
     i64     bskipped;
 } zip;
 
+// Append a zeroed slot to a dynamic array, returning a pointer to it.
 #define push(a, s) \
     ((s)->len==(s)->cap ? grow(a, (void **)&(s)->data, &(s)->cap, \
                                sizeof(*(s)->data)) : (void)0, \
      (s)->data + (s)->len++)
 
+// Whether data of len bytes ends where the arena's next allocation
+// begins, so that it can grow in place.
+static b32 at_tip(arena *a, void *data, iz len)
+{
+    return !a->down && data && (byte *)data+len==a->beg;
+}
+
+// Double an array's capacity: in place if it is the last allocation in
+// an arena that grows up (perm), else by moving it, which leaves the
+// old copy as garbage until the arena is freed (in perm, never).
 static void grow(arena *a, void **data, iz *cap, iz size)
 {
+    if (at_tip(a, *data, *cap*size)) {
+        alloc(a, *cap, size, 1, 1);
+        *cap *= 2;
+        return;
+    }
     iz   n = *cap ? 2 * *cap : 16;
-    void *r = alloc(a, n, size, 16, 0);
+    void *r = alloc(a, n, size, 16, 1);
     bytecopy(r, *data, *cap*size);
     *data = r;
     *cap  = n;
@@ -246,7 +265,7 @@ static s8 zjoin(arena *a, s8 const *parts, iz n)
     for (iz i = 0; i < n; i++) {
         len += parts[i].len;
     }
-    s8 r = {newbytes(a, len), 0};
+    s8 r = {newstr(a, len), 0};
     for (iz i = 0; i < n; i++) {
         bytecopy(r.s+r.len, parts[i].s, parts[i].len);
         r.len += parts[i].len;
@@ -268,7 +287,7 @@ static s8 znum(arena *a, i64 v)
     if (v < 0) {
         *--p = '-';
     }
-    s8 r = {newbytes(a, e-p), e-p};
+    s8 r = {newstr(a, e-p), e-p};
     bytecopy(r.s, p, r.len);
     return r;
 }
@@ -401,9 +420,12 @@ static s8 read_all(zip *z, i32 fd, arena *perm)
     s8 r  = {0};
     iz cap = 0;
     for (;;) {
-        if (r.len == cap) {
+        if (r.len==cap && at_tip(perm, r.s, cap)) {
+            newstr(perm, cap);  // grow in place
+            cap *= 2;
+        } else if (r.len == cap) {
             iz ncap = cap ? 2*cap : 1<<12;
-            u8 *buf = newbytes(perm, ncap);
+            u8 *buf = newstr(perm, ncap);
             bytecopy(buf, r.s, r.len);
             r.s = buf;
             cap = ncap;
@@ -934,7 +956,7 @@ static s8 basename(zip *z, s8 path)
 static s8 trim_path(zip *z, s8 path, arena *a)
 {
     i32 fold = z->windows ? ZIP_FOLD : 0;
-    s8  r    = {newbytes(a, path.len), 0};
+    s8  r    = {newstr(a, path.len), 0};
     for (iz i = 0; i < path.len; i++) {
         b32 sep = is_sep(z, path.s[i]);
         if (!sep || !r.len || r.s[r.len-1]!='/') {
@@ -960,13 +982,34 @@ static b32 is_archive(zip *z, s8 path, os_info *info, arena scratch)
     return zequals(full, z->arcpath);
 }
 
+// Record a file to add, its path and name already in perm.
 static void push_file(zip *z, s8 path, s8 name, os_info *info)
 {
-    zfile *f = push(&z->perm, &z->files);
+    zfile *f = new(&z->perm, 1, zfile);
     f->path    = path;
     f->name    = name;
     f->info    = *info;
     f->dostime = file_dostime(z, info->mtime, 1);
+    *push(&z->perm, &z->files) = f;
+}
+
+// Copy a file's path and name into perm to record it, sharing bytes
+// where the name ends the path, as most do ("d/f", "./d/f", -j's "f"),
+// or the path begins it, as for a directory ("d" and "d/").
+static void keep_names(arena *perm, s8 *path, s8 *name)
+{
+    iz n = path->len;
+    iz m = name->len;
+    if (m<=n && zequals((s8){path->s+n-m, m}, *name)) {
+        *path = JOIN(perm, *path);
+        *name = (s8){path->s+n-m, m};
+    } else if (n<=m && zequals((s8){name->s, n}, *path)) {
+        *name = JOIN(perm, *name);
+        *path = (s8){name->s, n};
+    } else {
+        *path = JOIN(perm, *path);
+        *name = JOIN(perm, *name);
+    }
 }
 
 // Key for finding an archive entry, or a file to add, by name: on
@@ -976,7 +1019,7 @@ static s8 entry_key(zip *z, s8 name, arena *a)
     if (!z->windows) {
         return name;
     }
-    s8 key = {newbytes(a, name.len), name.len};
+    s8 key = {newstr(a, name.len), name.len};
     for (iz i = 0; i < name.len; i++) {
         key.s[i] = zip_fold(name.s[i], ZIP_FOLD);
     }
@@ -1027,9 +1070,9 @@ static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
     // their slashes itself, and as tugz collapses doubled slashes in
     // names, it does in paths too. On Windows, names and paths that
     // differ only in case are the same (D/A.txt d/a.txt).
-    iz *seen = zmap_upsert(&z->names, entry_key(z, name, &z->perm), &z->perm);
-    if (*seen >= 0) {
-        s8 first = z->files.data[*seen].path;
+    iz *seen = zmap_upsert(&z->names, entry_key(z, name, &scratch), 0);
+    if (seen) {
+        s8 first = z->files.data[*seen]->path;
         if (zequals(trim_path(z, first, &scratch),
                     trim_path(z, path,  &scratch))) {
             return;
@@ -1043,7 +1086,11 @@ static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
         z->duplicate = 1;
         return;
     }
-    *seen = z->files.len;
+
+    // Only now, recorded, does the file take any permanent memory
+    keep_names(&z->perm, &path, &name);
+    *zmap_upsert(&z->names, entry_key(z, name, &z->perm), &z->perm) =
+        z->files.len;
     push_file(z, path, name, info);
 }
 
@@ -1064,7 +1111,7 @@ static void scan(zip *z, s8 path, s8 name, os_info *info, dirid *up,
 
     s8 dname = name;
     if (name.len && name.s[name.len-1]!='/') {
-        dname = JOIN(&z->perm, name, S("/"));
+        dname = JOIN(&scratch, name, S("/"));
     }
     add_file(z, path, dname, info, scratch);
     if (!z->recurse) {
@@ -1091,17 +1138,18 @@ static void scan(zip *z, s8 path, s8 name, os_info *info, dirid *up,
 
     s8 sep = path.len && is_sep(z, path.s[path.len-1]) ? S("") : S("/");
     for (iz i = 0; i < n; i++) {
-        s8 kpath = JOIN(&z->perm, path, sep, kids[i].name);
-        s8 kname = JOIN(&z->perm, dname, kids[i].name);
-        os_info *k = &kids[i].info;
+        arena    iter  = scratch;  // forgets each entry's strings
+        s8       kpath = JOIN(&iter, path, sep, kids[i].name);
+        s8       kname = JOIN(&iter, dname, kids[i].name);
+        os_info *k     = &kids[i].info;
         if (!listed(z, k) && !os_stat(z->ctx, kpath, !z->symlinks, k,
-                                      scratch)) {
-            warn(z, S("could not open for reading: "), kpath, scratch);
+                                      iter)) {
+            warn(z, S("could not open for reading: "), kpath, iter);
             z->status = ZE_OPEN;
             z->nskipped++;
             continue;
         }
-        scan(z, kpath, kname, k, &self, scratch);
+        scan(z, kpath, kname, k, &self, iter);
     }
 }
 
@@ -1161,18 +1209,19 @@ static iz expand(zip *z, s8 path, arena scratch)
         if (!zip_match(pat, kids[i].name, flags)) {
             continue;
         }
-        s8 cand = JOIN(&z->perm, (s8){path.s, beg}, kids[i].name, rest);
+        arena iter = scratch;  // forgets each match's strings
+        s8    cand = JOIN(&iter, (s8){path.s, beg}, kids[i].name, rest);
         if (zip_haswild(rest, 0)) {
-            count += expand(z, cand, scratch);
+            count += expand(z, cand, iter);
             continue;
         }
         // The listing describes the match only if nothing follows it, and
         // a bare name, like an argument, may instead name a device (NUL)
         os_info *info  = &kids[i].info;
         b32      known = beg && !rest.len && listed(z, info);
-        if (known || os_stat(z->ctx, cand, !z->symlinks, info, scratch)) {
-            scan(z, cand, arg_name(z, cand, info, &z->perm), info, 0,
-                 scratch);
+        if (known || os_stat(z->ctx, cand, !z->symlinks, info, iter)) {
+            s8 name = arg_name(z, cand, info, &iter);
+            scan(z, cand, name, info, 0, iter);
             count++;
         }
     }
@@ -1188,8 +1237,8 @@ static b32 scan_arg(zip *z, s8 arg, arena scratch)
     os_info info = {0};
     if (os_stat(z->ctx, arg, !z->symlinks, &info, scratch)) {
         if (!hidden_file(z, &info)) {
-            scan(z, arg, arg_name(z, arg, &info, &z->perm), &info, 0,
-                 scratch);
+            s8 name = arg_name(z, arg, &info, &scratch);
+            scan(z, arg, name, &info, 0, scratch);
         }
     } else if (!z->windows || z->mode==MODE_FRESHEN) {
         return 0;
@@ -1458,9 +1507,10 @@ static iz src_read(zip *z, zsrc *s, u8 *buf, iz cap)
 
 typedef struct {
     zout     *out;
-    u8       *buf;  // input buffer
+    u8       *buf;     // input buffer
     iz        cap;
-    deflator *def;  // reset for each entry
+    deflator *def;     // reset for each entry
+    arena     extras;  // new entries' central extra fields
 } zwork;
 
 static void store_data(zip *z, zwork *k, zsrc *s, u32 *crc, i64 *usize)
@@ -1513,14 +1563,19 @@ static u8 *put_time(u8 *p, zip *z, i64 t)
     return put32(p, (u32)t);
 }
 
-// Info-ZIP's extended timestamp and Unix ownership extra fields.
-static void file_extras(zip *z, zfile *f, zentry *e)
+// Info-ZIP's extended timestamp and Unix ownership extra fields: the
+// local ones, needed only until the local header is written, from
+// scratch, and the central ones from k->extras, set aside before any
+// output, at most CEXTRA_MAX bytes for each new entry.
+enum { CEXTRA_MAX = 9 + 15 };
+static void file_extras(zip *z, zwork *k, zfile *f, zentry *e,
+                        arena *scratch)
 {
     if (z->noextra) {
         return;
     }
-    u8 *l = newbytes(&z->perm, 13+15);
-    u8 *c = newbytes(&z->perm,  9+15);
+    u8 *l = newstr(scratch, 13+15);
+    u8 *c = newstr(&k->extras, z->windows ? 9 : CEXTRA_MAX);
     e->lextra.s = l;
     e->cextra.s = c;
 
@@ -1620,7 +1675,7 @@ static i32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
     e->extattr = file_extattr(z, &f->info);
     e->offset  = start;
     e->zip64   = f->info.type==FT_FILE && f->info.size>=ZIP_MAX32;
-    file_extras(z, f, e);
+    file_extras(z, k, f, e, &scratch);
 
     zsrc src = {0};
     src.path = f->path;
@@ -1633,7 +1688,7 @@ static i32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
     } else if (f->info.type == FT_LINK) {
         // Read by path, then found to be the link the scan found, as a
         // file is when opened, rather than one swapped in since
-        src.mem = os_readlink(z->ctx, f->path, &z->perm, scratch);
+        src.mem = os_readlink(z->ctx, f->path, &scratch);
         if (!src.mem.s) {
             return WRITE_EOPEN;
         }
@@ -1698,38 +1753,38 @@ static i32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
     }
 }
 
-// Copy an entry from the existing archive without recompressing it.
-static i32 copy_entry(zip *z, zarchive *ar, zwork *k, zentry *old,
-                      zentry *e, arena scratch)
+// Copy an entry from the existing archive without recompressing it,
+// updating it in place for the central directory.
+static i32 copy_entry(zip *z, zarchive *ar, zwork *k, zentry *e,
+                      arena scratch)
 {
     zout *w = k->out;
     u8 fixed[ZIP_LOCAL_LEN];
-    if (!os_readat(z->ctx, ar->fd, fixed, ZIP_LOCAL_LEN, old->offset)) {
+    if (!os_readat(z->ctx, ar->fd, fixed, ZIP_LOCAL_LEN, e->offset)) {
         return fail(z, ZE_READ, S("Could not read archive"), z->archive,
                     scratch);
     }
     iz varlen = zip_local_varlen(fixed);
-    i64 data  = old->offset + ZIP_LOCAL_LEN + varlen;
-    if (varlen<0 || data>ar->end.cdoff || old->csize>ar->end.cdoff-data) {
-        return fail(z, ZE_FORM, S("Zip file structure invalid"), old->name,
+    i64 data  = e->offset + ZIP_LOCAL_LEN + varlen;
+    if (varlen<0 || data>ar->end.cdoff || e->csize>ar->end.cdoff-data) {
+        return fail(z, ZE_FORM, S("Zip file structure invalid"), e->name,
                     scratch);
     }
     u8 *var = newbytes(&scratch, varlen);
-    if (!os_readat(z->ctx, ar->fd, var, varlen, old->offset+ZIP_LOCAL_LEN)) {
+    if (!os_readat(z->ctx, ar->fd, var, varlen, e->offset+ZIP_LOCAL_LEN)) {
         return fail(z, ZE_READ, S("Could not read archive"), z->archive,
                     scratch);
     }
 
     // Its extra fields are kept, as Info-ZIP keeps them even with -X,
     // except that Zip64 fields are made anew. Those must leave room.
-    *e = *old;
     iz nlen = get16(fixed+26);
     s8 lextra = {var+nlen, varlen-nlen};
     e->lextra = zip_filter_extra(&scratch, lextra);
     e->offset = zout_tell(w);
     e->zip64  = e->usize>=ZIP_MAX32 || e->csize>=ZIP_MAX32;
     if (!zip_fits(e)) {
-        s8 why = JOIN(&scratch, old->name, S(": no room for Zip64 fields"));
+        s8 why = JOIN(&scratch, e->name, S(": no room for Zip64 fields"));
         return fail(z, ZE_FORM, S("Zip file structure invalid"), why,
                     scratch);
     }
@@ -1757,6 +1812,7 @@ static i32 copy_entry(zip *z, zarchive *ar, zwork *k, zentry *old,
         u8 d[24];
         zout_write(w, d, zip_desc(d, e)-d);
     }
+    e->lextra = (s8){0};  // in scratch, and written
     return 0;
 }
 
@@ -1817,6 +1873,38 @@ static i32 create_temp(zip *z, s8 *path, arena scratch)
 
 static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
 {
+    // Whatever grows with the number of entries is allocated before any
+    // output, so that running out of memory cannot waste the work: the
+    // central directory, as pointers to entries, kept ones updated in
+    // place, new ones' entries and extra fields, and the buffers.
+    iz nnew = 0;
+    for (iz i = 0; i < items->len; i++) {
+        i32 kind = items->data[i].kind;
+        nnew += kind!=ITEM_KEEP && kind!=ITEM_DELETE;
+    }
+    zentry **cd    = new(&scratch, items->len, zentry *);
+    zentry  *fresh = new(&scratch, nnew, zentry);
+
+    zout w = {0};
+    w.ctx = z->ctx;
+    w.cap = 1 << 20;
+    w.buf = newbytes(&scratch, w.cap);
+
+    zwork k = {0};
+    k.out    = &w;
+    k.cap    = 1 << 18;
+    k.buf    = newbytes(&scratch, k.cap);
+    k.extras = subarena(&scratch, z->noextra ? 0 : nnew*CEXTRA_MAX);
+    if (z->level) {
+        arena a = subarena(&scratch, deflate_memsize());
+        k.def = deflate_new(&a, z->level);
+    }
+
+    // Then room for any one entry's headers, names, and messages, which
+    // each is done with before the next, and for replacing the archive
+    arena room = scratch;
+    newbytes(&room, 1<<20);
+
     // As in Info-ZIP, failing to replace an archive is a temporary file
     // failure, naming that file, and to create one is about the archive
     s8  temp = {0};
@@ -1827,21 +1915,7 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
         return fail(z, ZE_CREAT, S("Could not create output file"),
                     z->archive, scratch);
     }
-
-    zout w = {0};
-    w.ctx = z->ctx;
-    w.fd  = fd;
-    w.cap = 1 << 20;
-    w.buf = newbytes(&scratch, w.cap);
-
-    zwork k = {0};
-    k.out = &w;
-    k.cap = 1 << 18;
-    k.buf = newbytes(&scratch, k.cap);
-    if (z->level) {
-        arena a = subarena(&scratch, deflate_memsize());
-        k.def = deflate_new(&a, z->level);
-    }
+    w.fd = fd;
 
     // The preamble comes first, so that offsets stay absolute
     for (i64 off = 0; ar && off<ar->beg;) {
@@ -1855,11 +1929,9 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
         off += n;
     }
 
-    zentry *entries = new(&scratch, items->len, zentry);
-    iz      count   = 0;
-    for (iz i = 0; i < items->len; i++) {
+    iz count = 0;
+    for (iz i = 0, n = 0; i < items->len; i++) {
         zitem  *it   = items->data + i;
-        zentry *e    = entries + count;
         zentry *copy = 0;
         switch (it->kind) {
         case ITEM_DELETE:
@@ -1869,10 +1941,11 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
             copy = it->old;
             break;
         default: {
-            zfile *f    = it->file;
-            s8     verb = it->kind==ITEM_ADD    ? S("  adding: ") :
-                          it->kind==ITEM_UPDATE ? S("updating: ") :
-                                                  S("freshening: ");
+            zentry *e    = fresh + n++;
+            zfile  *f    = it->file;
+            s8      verb = it->kind==ITEM_ADD    ? S("  adding: ") :
+                           it->kind==ITEM_UPDATE ? S("updating: ") :
+                                                   S("freshening: ");
             // An entry selected by name may have changed between file
             // and directory, which Info-ZIP reports, keeping the entry
             i32 r = WRITE_EDIRFILE;
@@ -1885,7 +1958,8 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
                 report(z, verb, e->name, e, scratch);
                 z->nread++;
                 z->bread += e->usize;
-                count++;
+                e->lextra = (s8){0};  // in write_file's scratch, and written
+                cd[count++] = e;
                 break;
             }
 
@@ -1895,8 +1969,9 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
             s8 reason = r==WRITE_EOPEN ? os_error(z->ctx) : S("");
             report(z, verb, f->name, 0, scratch);
             if (reason.len && !z->quiet) {
-                s8 who = it->old ? f->name : S("zip warning");
-                say(z, 2, JOIN(&scratch, who, S(": "), reason, S("\n")));
+                arena tmp = scratch;
+                s8    who = it->old ? f->name : S("zip warning");
+                say(z, 2, JOIN(&tmp, who, S(": "), reason, S("\n")));
             }
             s8 why = S("could not open for reading: ");
             why = r==WRITE_EREAD    ? S("could not read input file: ") :
@@ -1920,12 +1995,12 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
         }
         }
         if (copy) {
-            i32 err = copy_entry(z, ar, &k, copy, e, scratch);
+            i32 err = copy_entry(z, ar, &k, copy, scratch);
             if (err) {
                 os_close(z->ctx, fd);
                 return err;
             }
-            count++;
+            cd[count++] = copy;
         }
         if (w.err) {
             break;
@@ -1934,8 +2009,9 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
 
     i64 cdoff = zout_tell(&w);
     for (iz i = 0; i < count; i++) {
-        u8 *h = newbytes(&scratch, zip_central_len(entries+i));
-        zout_write(&w, h, zip_central(h, entries+i)-h);
+        arena tmp = scratch;  // each header is forgotten once written
+        u8   *h   = newbytes(&tmp, zip_central_len(cd[i]));
+        zout_write(&w, h, zip_central(h, cd[i])-h);
     }
     i64 cdsize  = zout_tell(&w) - cdoff;
     s8  comment = ar ? ar->end.comment : (s8){0};
@@ -2109,18 +2185,19 @@ static b32 scan_entries(zip *z, zarchive *ar, iz n, zmap *old, s8 pattern,
         any = 1;
 
         // Of entries with one name, files replace the first
-        s8  name  = port_name(z, ar, i);
-        iz *first = zmap_upsert(&old, entry_key(z, name, &scratch), 0);
+        arena iter  = scratch;
+        s8    name  = port_name(z, ar, i);
+        iz   *first = zmap_upsert(&old, entry_key(z, name, &iter), 0);
         if (*first!=i || taken[i] || !included(z, name) ||
-            !plain_name(z, name, scratch)) {
+            !plain_name(z, name, iter)) {
             continue;
         }
         taken[i] = 1;
 
         s8 path = {name.s, name.len-is_dirname(name)};
         os_info info = {0};
-        if (path.len && os_stat(z->ctx, path, !z->symlinks, &info, scratch) &&
-            !is_archive(z, path, &info, scratch)) {
+        if (path.len && os_stat(z->ctx, path, !z->symlinks, &info, iter) &&
+            !is_archive(z, path, &info, iter)) {
             s8 key = entry_key(z, name, &z->perm);
             *zmap_upsert(&z->names, key, &z->perm) = z->files.len;
             push_file(z, path, name, &info);
@@ -2272,6 +2349,8 @@ static i32 zip_main(zipconfig *conf)
                 }
             }
         }
+        items.cap  = nold;
+        items.data = new(&z->perm, items.cap, zitem);
         for (iz i = 0; i < nold; i++) {
             zitem *it = push(&z->perm, &items);
             it->kind = hit[i] ? ITEM_DELETE : ITEM_KEEP;
@@ -2295,8 +2374,9 @@ static i32 zip_main(zipconfig *conf)
         // paths, except entries that paths on disk already selected
         b32 *taken = new(&scratch, nold, b32);
         for (iz i = 0; i < z->files.len; i++) {
-            s8  key = entry_key(z, z->files.data[i].name, &scratch);
-            iz *v   = zmap_upsert(&old, key, 0);
+            arena tmp = scratch;
+            s8    key = entry_key(z, z->files.data[i]->name, &tmp);
+            iz   *v   = zmap_upsert(&old, key, 0);
             if (v) {
                 taken[*v] = 1;
             }
@@ -2316,6 +2396,9 @@ static i32 zip_main(zipconfig *conf)
             return fail(z, ZE_NONE, S("Nothing to do!"), z->archive, scratch);
         }
 
+        // An item for each entry, and at most one for each file
+        items.cap  = nold + z->files.len;
+        items.data = new(&z->perm, items.cap, zitem);
         for (iz i = 0; i < nold; i++) {
             zitem *it = push(&z->perm, &items);
             it->kind = z->mode==MODE_SYNC ? ITEM_DELETE : ITEM_KEEP;
@@ -2324,8 +2407,9 @@ static i32 zip_main(zipconfig *conf)
         }
 
         for (iz i = 0; i < z->files.len; i++) {
-            zfile *f   = z->files.data + i;
-            s8     key = entry_key(z, f->name, &scratch);
+            arena  tmp = scratch;
+            zfile *f   = z->files.data[i];
+            s8     key = entry_key(z, f->name, &tmp);
             iz    *v   = zmap_upsert(&old, key, 0);
             if (!v) {
                 if (z->mode != MODE_FRESHEN) {
@@ -2362,7 +2446,7 @@ static i32 zip_main(zipconfig *conf)
             if (replace) {
                 // The entry keeps its name, in Unicode if the file matched
                 // that, which is then written as UTF-8
-                b32 stored = zequals(entry_key(z, e->name, &scratch), key);
+                b32 stored = zequals(entry_key(z, e->name, &tmp), key);
                 it->kind = z->mode==MODE_FRESHEN ? ITEM_FRESHEN : ITEM_UPDATE;
                 it->file = f;
                 f->name  = stored ? e->name : ar->unames[*v];

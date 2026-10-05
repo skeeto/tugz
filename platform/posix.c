@@ -36,7 +36,7 @@ static s8 cstr(char *z)
 
 static char *tocstr(arena *a, s8 s)
 {
-    char *r = (char *)newbytes(a, s.len+1);
+    char *r = (char *)newstr(a, s.len+1);
     bytecopy(r, s.s, s.len);
     r[s.len] = 0;
     return r;

@@ -105,7 +105,7 @@ static s8 towtf8(arena *a, c16 *w)
     iz wlen = 0;
     for (; w[wlen]; wlen++) {}
 
-    s8 r = {newbytes(a, 3*wlen), 0};
+    s8 r = {newstr(a, 3*wlen), 0};
     for (iz i = 0; i < wlen; i++) {
         u32 c = w[i];
         if (c>=0xd800 && c<=0xdbff && i+1<wlen &&

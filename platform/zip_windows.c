@@ -263,12 +263,11 @@ static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
     return list.data ? list.data : new(perm, 1, os_dirent);
 }
 
-static s8 os_readlink(os *ctx, s8 path, arena *perm, arena scratch)
+static s8 os_readlink(os *ctx, s8 path, arena *a)
 {
     (void)ctx;
     (void)path;
-    (void)perm;
-    (void)scratch;
+    (void)a;
     return (s8){0};  // never asked: links are followed
 }
 
