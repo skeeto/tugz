@@ -201,7 +201,11 @@ neither inflate nor the gzip container.
   (`zip -r t.zip //h/s` stores `f`). The same path reached
   twice (`f f`, `d d/a`, `d d/`, `find d | zip -r@`) is added once,
   silently, as in Info-ZIP; different paths giving one name
-  (`./d/a d/a`, or a `-j` collision) are an error (16). Also as there, a
+  (`./d/a d/a`, or a `-j` collision) are an error (16), reported as
+  there once every path is scanned and matched: only the first name
+  repeated in order of names, by the first two of its paths in order
+  (a directory's with a slash), in one warning whose lines Info-ZIP
+  indents to line up past its tab. Also as there, a
   file whose name is the archive's path as given (with `.zip` added) is
   left out silently even when it is another file, as `-j` may name it
   (`zip -j dist.zip build/dist.zip`).

@@ -187,6 +187,12 @@ struct zmap {
     iz    value;
 };
 
+// A file whose name another file also has
+typedef struct {
+    s8 name;  // in the archive
+    s8 path;  // a directory's with a slash, as Info-ZIP names it
+} zdup;
+
 typedef struct {
     os     *ctx;
     arena   perm;
@@ -212,7 +218,7 @@ typedef struct {
     s8s     exclude;
     zfiles  files;
     zmap   *names;
-    b32     duplicate;
+    zdup    dups[2];  // the repeated name to report, if any: two files
     os_info arcinfo;
     b32     arcexists;
     s8      arcpath;  // full path, if the archive's file ID is unknown
@@ -1043,6 +1049,72 @@ static b32 names_archive(zip *z, s8 name)
     return 1;
 }
 
+// Info-ZIP's namecmp, by which it orders names to find repeats: by
+// bytes, but on Windows ignoring case, as upper case.
+static i32 namecmp(zip *z, s8 a, s8 b)
+{
+    for (iz i = 0; i<a.len && i<b.len; i++) {
+        i32 x = a.s[i];
+        i32 y = b.s[i];
+        if (z->windows) {
+            x -= x>='a' && x<='z' ? 'a'-'A' : 0;
+            y -= y>='a' && y<='z' ? 'a'-'A' : 0;
+        }
+        if (x != y) {
+            return x - y;
+        }
+    }
+    return a.len<b.len ? -1 : a.len>b.len;
+}
+
+// Note a file whose name an earlier file has. Info-ZIP sorts files by
+// path, then stably by name, and reports only the first repeat, so of
+// the first name repeated in that order, the first two paths are kept.
+// It names a directory with a slash.
+static void note_repeat(zip *z, zfile *first, s8 path, s8 name, b32 dir)
+{
+    zdup *r    = z->dups;
+    b32   seen = r[0].name.s != 0;
+    i32   cmp  = seen ? namecmp(z, name, r[0].name) : -1;
+    if (cmp > 0) {
+        return;
+    }
+    b32  slash = dir && path.len && !is_sep(z, path.s[path.len-1]);
+    zdup d     = {JOIN(&z->perm, name),
+                  JOIN(&z->perm, path, slash ? S("/") : S(""))};
+    if (cmp < 0) {
+        // A new first repeat: the file that first had the name, and this
+        s8 p = first->path;
+        slash = first->info.type==FT_DIR && p.len && !is_sep(z, p.s[p.len-1]);
+        r[0] = (zdup){first->name, JOIN(&z->perm, p, slash ? S("/") : S(""))};
+        r[1] = d;
+    } else {
+        r[1] = namecmp(z, d.path, r[1].path)<0 ? d : r[1];
+    }
+    if (namecmp(z, r[1].path, r[0].path) < 0) {
+        d    = r[0];
+        r[0] = r[1];
+        r[1] = d;
+    }
+}
+
+// Fail on the repeat noted, warning of it as Info-ZIP does, once all
+// paths are scanned and matched: in one warning, whose lines it indents
+// by 21 spaces, to line up past its "\tzip warning: ".
+static i32 repeated(zip *z, arena scratch)
+{
+    s8 in  = S("\n                     ");
+    s8 j   = JOIN(&scratch, in, S("this may be a result of using -j"));
+    s8 msg = JOIN(&scratch,
+        S("  first full name: "), z->dups[0].path, in,
+        S(" second full name: "), z->dups[1].path, in,
+        S("name in zip file repeated: "), z->dups[1].name,
+        z->junk ? j : S(""));
+    warn(z, msg, S(""), scratch);
+    return fail(z, ZE_PARMS, S("Invalid command arguments"),
+                S("cannot repeat names in zip file"), scratch);
+}
+
 // Add a file under its archive name, which -i and -x see whole, before
 // -j junks its directories, as in Info-ZIP. Also as there, a file whose
 // name is the archive's path is left out silently even if it is another
@@ -1073,18 +1145,11 @@ static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
     // differ only in case are the same (D/A.txt d/a.txt).
     iz *seen = zmap_upsert(&z->names, entry_key(z, name, &scratch), 0);
     if (seen) {
-        s8 first = z->files.data[*seen]->path;
-        if (zequals(trim_path(z, first, &scratch),
-                    trim_path(z, path,  &scratch))) {
-            return;
+        zfile *first = z->files.data[*seen];
+        if (!zequals(trim_path(z, first->path, &scratch),
+                     trim_path(z, path, &scratch))) {
+            note_repeat(z, first, path, name, info->type==FT_DIR);
         }
-        warn(z, S("  first full name: "), first, scratch);
-        warn(z, S(" second full name: "), path, scratch);
-        warn(z, S("name in zip file repeated: "), name, scratch);
-        if (z->junk) {
-            warn(z, S("this may be a result of using -j"), S(""), scratch);
-        }
-        z->duplicate = 1;
         return;
     }
 
@@ -2403,10 +2468,6 @@ static i32 zip_main(zipconfig *conf)
                 *push(&scratch, &missing) = z->paths.data[p];
             }
         }
-        if (z->duplicate) {
-            return fail(z, ZE_PARMS, S("Invalid command arguments"),
-                        S("cannot repeat names in zip file"), scratch);
-        }
 
         // Then paths not on disk select entries, as do -u and -f without
         // paths, except entries that paths on disk already selected
@@ -2427,6 +2488,9 @@ static i32 zip_main(zipconfig *conf)
         }
         if (refresh && !z->paths.len) {
             scan_entries(z, &arc, nold, old, (s8){0}, taken, scratch);
+        }
+        if (z->dups[0].name.s) {
+            return repeated(z, scratch);
         }
 
         if (z->mode==MODE_SYNC && !z->files.len) {

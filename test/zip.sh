@@ -369,6 +369,19 @@ expect_status 16 "$ZIP" dup4.zip tree/a.txt ./tree/a.txt
 grep -q 'result of using -j' out || fail "-j collision: $(cat out)"
 [ ! -e dup4.zip ] && [ ! -e dup5.zip ] || fail "made an archive with dups"
 
+# As in Info-ZIP, only the first repeat in order of names is reported,
+# by the first two of its paths in order, in one indented warning
+"$ZIP" -j dup6.zip tree/b.txt ./tree/b.txt tree/a.txt tree/sub ./tree/a.txt \
+    ./tree/sub/../a.txt 2>out && fail "dup6.zip"
+in='                     '
+printf '%s\n' "zip warning:   first full name: ./tree/a.txt" \
+    "$in second full name: ./tree/sub/../a.txt" \
+    "${in}name in zip file repeated: a.txt" \
+    "${in}this may be a result of using -j" "" \
+    "zip error: Invalid command arguments (cannot repeat names in zip file)" \
+    >want
+cmp -s want out || fail "repeated names: $(cat out)"
+
 # The archive never includes itself, which it knows by identity, though
 # named otherwise than given (s.zip, ./s.zip) or through a hard link,
 # while a copy of it is just a file
