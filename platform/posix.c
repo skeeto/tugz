@@ -108,6 +108,7 @@ static i32 open_output(os *ctx, char *cpath, i32 mode)
     sigset_t old = block_signals();
     mode_t perm = mode & OS_DEFPERMS ? 0666 : 0600;
     int fd = open(cpath, O_WRONLY|O_CREAT|O_EXCL, perm);
+    int err = errno;
     if (fd >= 0) {
         ctx->outfd = fd;
         pending_output = copy;
@@ -116,7 +117,7 @@ static i32 open_output(os *ctx, char *cpath, i32 mode)
 
     if (fd < 0) {
         free(copy);
-        return errno==EEXIST ? OS_EEXIST : OS_ERR;
+        return err==EEXIST ? OS_EEXIST : OS_ERR;
     }
     return fd;
 }
@@ -135,9 +136,16 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
     flags |= mode & OS_REGULAR  ? O_NONBLOCK : 0;
     int fd = open(cpath, flags);
     if (fd < 0) {
-        // Refused symbolic links are ELOOP on Linux, EMLINK on FreeBSD
-        b32 link = (mode & OS_NOFOLLOW) && (errno==ELOOP || errno==EMLINK);
-        return link ? OS_ESYMLINK : errno==EISDIR ? OS_EISDIR : OS_ERR;
+        // Refused symbolic links are ELOOP on Linux, EMLINK on FreeBSD,
+        // and EFTYPE on NetBSD
+        b32 link = errno==ELOOP || errno==EMLINK;
+#ifdef EFTYPE
+        link |= errno==EFTYPE;
+#endif
+        if ((mode & OS_NOFOLLOW) && link) {
+            return OS_ESYMLINK;
+        }
+        return errno==EISDIR ? OS_EISDIR : OS_ERR;
     }
 
     struct stat st;

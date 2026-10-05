@@ -3,6 +3,7 @@
 #define _POSIX_C_SOURCE 200809L  // sigaction, futimens, O_NOFOLLOW, ...
 #define _DARWIN_C_SOURCE         // macOS hides O_NOFOLLOW otherwise
 #define _FILE_OFFSET_BITS 64     // large files on 32-bit hosts
+#define _TIME_BITS 64            // and times past 2038 (glibc)
 #include "../src/base.c"
 #include "../src/crc32.c"
 #include "../src/adler32.c"

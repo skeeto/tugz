@@ -3,6 +3,7 @@
 #define _POSIX_C_SOURCE 200809L  // sigaction, pread, O_NOFOLLOW, ...
 #define _DARWIN_C_SOURCE         // macOS hides O_NOFOLLOW otherwise
 #define _FILE_OFFSET_BITS 64     // large files on 32-bit hosts
+#define _TIME_BITS 64            // and times past 2038 (glibc)
 #include "../src/base.c"
 #include "../src/crc32.c"
 #include "../src/deflate.c"
@@ -50,7 +51,12 @@ static s8 *os_listdir(os *ctx, s8 path, b32 all, iz *count, arena *perm,
         return 0;
     }
     s8s names = {0};
-    for (struct dirent *e; (e = readdir(d));) {
+    for (;;) {
+        errno = 0;  // distinguishes an error from the end
+        struct dirent *e = readdir(d);
+        if (!e) {
+            break;
+        }
         s8 name = cstr(e->d_name);
         if (zequals(name, S(".")) || zequals(name, S(".."))) {
             continue;
@@ -59,7 +65,11 @@ static s8 *os_listdir(os *ctx, s8 path, b32 all, iz *count, arena *perm,
         bytecopy(copy.s, name.s, name.len);
         *push(perm, &names) = copy;
     }
+    int err = errno;
     closedir(d);
+    if (err) {
+        return 0;
+    }
     *count = names.len;
     return names.data ? names.data : new(perm, 1, s8);
 }
@@ -170,7 +180,7 @@ int main(int argc, char **argv)
     iz cap = (iz)1 << 28;
     byte *mem = malloc((uz)cap);
     if (!mem) {
-        return ZE_MEM;
+        os_oom(&ctx);
     }
     zipconfig conf = {0};
     conf.perm.beg = mem;
