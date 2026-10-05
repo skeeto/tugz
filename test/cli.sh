@@ -200,6 +200,15 @@ if [ $st -ne 0 ]; then  # otherwise it finished first; nothing to check
     [ ! -e big.gz ] || fail "partial output left on interrupt"
 fi
 rm -f big big.gz
+
+# So does exceeding the file size limit (SIGXFSZ). An inner shell
+# reports the signal, so that its notice goes to /dev/null.
+head -c 300000 /dev/urandom >big
+st=$(sh -c 'ulimit -f 100; "$1" big; echo $?' sh "$GZIP" 2>/dev/null)
+[ "$st" -ne 0 ] || fail "file size limit not reached"
+[ -e big ] || fail "input lost at file size limit"
+[ ! -e big.gz ] || fail "partial output left at file size limit"
+rm -f big
 fi
 
 if [ -n "$SLOW" ]; then

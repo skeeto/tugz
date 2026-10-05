@@ -313,6 +313,15 @@ chmod 640 perm.zip
 (umask 022 && "$ZIP" -q perm.zip tree/b.txt)
 [ "$(ls -l perm.zip | cut -c1-10)" = "-rw-r-----" ] || fail "replaced mode"
 
+# With standard output closed, progress lines stay out of the archive
+"$ZIP" -r closed.zip tree >&-
+verify closed.zip
+
+# A reader that goes away (SIGPIPE) leaves no temporary file behind
+mkdir pipe
+(cd pipe && "$ZIP" -r out.zip ../tree | true)
+case "$(ls pipe)" in zi*) fail "temporary file left on SIGPIPE";; esac
+
 if [ -n "$SLOW" ]; then
     # Zip64: a 5 GiB file, compressed and stored (pushing a following
     # entry's offset past 4 GiB), then merged into

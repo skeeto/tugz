@@ -48,6 +48,7 @@ int main(int argc, char **argv)
     os ctx = {0};
     ctx.outfd = -1;
 
+    reserve_stdfds();
     install_signals();
 
     iz cap = (iz)1 << 25;

@@ -265,9 +265,13 @@ Fuzzers:
   access control is inherited from the directory, as with GNU gzip.
 - Outputs are discarded unless explicitly kept after success
   (`os_keep`): on failure, on a failed close (which may mean lost data),
-  and on interruption. POSIX uses a SIGHUP/SIGINT/SIGTERM handler
-  (inherited "ignore" dispositions are respected, as under nohup). Windows marks the file delete-pending at
-  creation, so even `TerminateProcess` cleans up.
+  and on interruption. POSIX uses a handler for SIGHUP, SIGINT,
+  SIGPIPE, SIGQUIT, SIGTERM, SIGXCPU, and SIGXFSZ (inherited "ignore"
+  dispositions are respected, as under nohup). Windows marks the file
+  delete-pending at creation, so even `TerminateProcess` cleans up.
+- At startup, a closed standard descriptor is reopened on `/dev/null`,
+  keeping output files off it; the opposite access mode makes using it
+  fail as before.
 - `-f` replaces an existing output by unlinking it first, never writing
   through a link.
 - Windows paths get the `\\?\` prefix, lifting MAX_PATH. It turns off

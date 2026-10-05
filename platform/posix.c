@@ -39,7 +39,17 @@ static char *tocstr(arena *a, s8 s)
     return r;
 }
 
-static int const cleanup_signals[] = {SIGHUP, SIGINT, SIGTERM};
+// Signals that commonly end a run early: hangup, the terminal, kill, a
+// closed pipe, and resource limits
+static int const cleanup_signals[] = {
+    SIGHUP, SIGINT, SIGPIPE, SIGQUIT, SIGTERM,
+#ifdef SIGXCPU
+    SIGXCPU,
+#endif
+#ifdef SIGXFSZ
+    SIGXFSZ,
+#endif
+};
 
 static void on_signal(int sig)
 {
@@ -209,6 +219,18 @@ static void os_exit(os *ctx, i32 status)
         unlink(path);
     }
     _exit(status);
+}
+
+// Occupy any closed standard descriptor, so that a file opened later
+// cannot take its place and receive messages. The opposite access mode
+// makes using it fail as though it were still closed.
+static void reserve_stdfds(void)
+{
+    for (int fd = 0; fd <= 2; fd++) {
+        if (fcntl(fd, F_GETFD) < 0) {
+            open("/dev/null", fd ? O_RDONLY : O_WRONLY);  // lowest is fd
+        }
+    }
 }
 
 // Install handlers that remove the pending output file on interruption.
