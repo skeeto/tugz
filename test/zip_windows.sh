@@ -221,6 +221,12 @@ cp tree/b.txt tree/sub/B.TXT
 expect_status 16 "$ZIP" -j c5.zip tree/b.txt tree/sub/B.TXT
 rm tree/sub/B.TXT
 
+# A file named as the archive's path is left out, ignoring case
+mkdir ja
+printf x >ja/c6.zip
+expect_status 12 "$ZIP" -j C6.ZIP ja/c6.zip
+[ ! -e c6.zip ] || fail "made an archive of a file named as it"
+
 # Lists lose trailing spaces and periods, as with Info-ZIP's getnam,
 # such as from cmd's "echo name > list"
 printf 'tree/a.txt \r\ntree/one.\r\n' | "$ZIP" -q at2.zip -@

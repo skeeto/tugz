@@ -200,7 +200,10 @@ neither inflate nor the gzip container.
   (`zip -r t.zip //h/s` stores `f`). The same path reached
   twice (`f f`, `d d/a`, `d d/`, `find d | zip -r@`) is added once,
   silently, as in Info-ZIP; different paths giving one name
-  (`./d/a d/a`, or a `-j` collision) are an error (16).
+  (`./d/a d/a`, or a `-j` collision) are an error (16). Also as there, a
+  file whose name is the archive's path as given (with `.zip` added) is
+  left out silently even when it is another file, as `-j` may name it
+  (`zip -j dist.zip build/dist.zip`).
 - Entry names in code pages: files match an entry by its stored name,
   then, as in Info-ZIP, by an Info-ZIP Unicode path field (0x7075) whose
   CRC is the stored name's, as Info-ZIP's Windows port, WinZip, and

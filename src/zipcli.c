@@ -979,8 +979,26 @@ static s8 entry_key(zip *z, s8 name, arena *a)
     return key;
 }
 
+// Whether a name is the archive's path as given, compared as Info-ZIP
+// compares names: ignoring ASCII case on Windows.
+static b32 names_archive(zip *z, s8 name)
+{
+    i32 fold = z->windows ? ZIP_FOLD : 0;
+    if (name.len != z->archive.len) {
+        return 0;
+    }
+    for (iz i = 0; i < name.len; i++) {
+        if (zip_fold(name.s[i], fold) != zip_fold(z->archive.s[i], fold)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 // Add a file under its archive name, which -i and -x see whole, before
-// -j junks its directories, as in Info-ZIP.
+// -j junks its directories, as in Info-ZIP. Also as there, a file whose
+// name is the archive's path is left out silently even if it is another
+// file, such as one that -j names so (zip -j dist.zip build/dist.zip).
 static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
 {
     if (is_archive(z, path, info, scratch)) {
@@ -989,7 +1007,9 @@ static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
         return;
     }
     name = z->junk ? basename(z, name) : name;
-    if (name.len > ZIP_MAX16) {
+    if (names_archive(z, name)) {
+        return;
+    } else if (name.len > ZIP_MAX16) {
         // Possible in deep Windows paths, but not in zip headers
         warn(z, S("name too long for a zip entry: "), path, scratch);
         z->status = ZE_OPEN;

@@ -272,6 +272,21 @@ grep -q 'result of using -j' out || fail "-j collision: $(cat out)"
 grep -q self got && fail "archive includes itself"
 grep -qx a.txt got || fail "recursing . names: $(cat got)"
 
+# Nor, as in Info-ZIP, another file named as the archive's path is
+# given, as -j may name one, which leaves nothing to do if it is alone
+mkdir build
+printf artifact >build/dist.zip
+"$ZIP" -qj dist.zip build/dist.zip tree/a.txt
+[ "$(names dist.zip)" = a.txt ] || fail "named as the archive: $(names dist.zip)"
+expect_status 12 "$ZIP" -jr dist.zip build
+[ "$(names dist.zip)" = a.txt ] || fail "named as the archive (-r)"
+expect_status 12 "$ZIP" -j dist build/dist.zip
+mv build/dist.zip build/dist2.zip
+expect_status 12 "$ZIP" -j dist2.zip build/dist2.zip
+[ ! -e dist2.zip ] || fail "made an archive of a file named as it"
+"$ZIP" -qj ./dist2.zip build/dist2.zip  # the path as given differs
+[ "$(names dist2.zip)" = dist2.zip ] || fail "./: $(names dist2.zip)"
+
 # Junk paths, no directory entries, include and exclude patterns
 "$ZIP" -qrj j.zip tree/sub
 names j.zip >got
