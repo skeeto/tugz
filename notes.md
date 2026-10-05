@@ -145,7 +145,12 @@ neither inflate nor the gzip container.
   (10, 11, 14, 15, 18) first gives the system's reason, worded by
   `strerror` ("zip I/O error: Permission denied"), when there is one;
   on Windows, for the common errors, worded as its C runtime would
-  (unverified against Info-ZIP's port). A read-only archive fails
+  (unverified against Info-ZIP's port). The reason is the one found
+  when the error occurred, never a later call's (Info-ZIP's can be
+  stale), and an archive that ends early, having shrunk while zip
+  works, is Info-ZIP's "Unexpected end of zip file" (2), naming the
+  entry being copied, not a read error (Info-ZIP notices this only at
+  an entry's header, and copies a cut-off entry's data without error). A read-only archive fails
   with 15 once there is something to do, before doing it, as Info-ZIP
   finds by opening it to update it (replacing it needs no permission to
   write it): as `access` judges on POSIX, and on Windows by the

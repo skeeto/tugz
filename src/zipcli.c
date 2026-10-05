@@ -6,6 +6,7 @@
 
 enum {
     ZE_OK    = 0,
+    ZE_EOF   = 2,   // unexpected end of zip file, as one that has shrunk
     ZE_FORM  = 3,   // zip file structure invalid
     ZE_MEM   = 4,
     ZE_TEMP  = 10,  // temporary file failure, as in replacing the archive
@@ -57,8 +58,9 @@ static os_dirent *os_listdir(os *, s8 path, b32 all, iz *count, arena *);
 // temporaries come from one arena.
 static s8   os_readlink(os *, s8 path, arena *);
 // Positioned reads and writes of exactly len bytes, which may not be
-// mixed with os_read and os_write on the same descriptor.
-static b32  os_readat(os *, i32 fd, u8 *buf, iz len, i64 off);
+// mixed with os_read and os_write on the same descriptor. A read returns
+// 1, or 0 if the file ends first, which is no system error, or -1.
+static i32  os_readat(os *, i32 fd, u8 *buf, iz len, i64 off);
 static b32  os_writeat(os *, i32 fd, u8 *buf, iz len, i64 off);
 static b32  os_truncate(os *, i32 fd, i64 len);
 // The path to replace for path, so that symbolic links there survive
@@ -402,16 +404,24 @@ static void warn(zip *z, s8 msg, s8 arg, arena scratch)
 }
 
 // Report a fatal error and return its exit status. Info-ZIP gives an I/O
-// error's system reason first, in place of the blank line.
-static i32 fail(zip *z, i32 status, s8 msg, s8 arg, arena scratch)
+// error's system reason first, in place of the blank line: why, which
+// os_error gave when the error occurred, if it could tell.
+static i32 fail_why(zip *z, i32 status, s8 why, s8 msg, s8 arg,
+                    arena scratch)
 {
-    b32 io = status==ZE_TEMP  || status==ZE_READ || status==ZE_WRITE ||
-             status==ZE_CREAT || status==ZE_OPEN;
-    s8 why  = io ? os_error(z->ctx) : S("");
     s8 head = why.len ? JOIN(&scratch, S("zip I/O error: "), why) : S("");
     s8 tail = arg.s ? JOIN(&scratch, S(" ("), arg, S(")")) : S("");
     say(z, 2, JOIN(&scratch, head, S("\nzip error: "), msg, tail, S("\n")));
     return status;
+}
+
+// Report a fatal error that has just occurred.
+static i32 fail(zip *z, i32 status, s8 msg, s8 arg, arena scratch)
+{
+    b32 io = status==ZE_TEMP  || status==ZE_READ || status==ZE_WRITE ||
+             status==ZE_CREAT || status==ZE_OPEN;
+    s8 why = io ? os_error(z->ctx) : S("");
+    return fail_why(z, status, why, msg, arg, scratch);
 }
 
 static i32 badopt(zip *z, s8 kind, s8 opt, arena scratch)
@@ -492,14 +502,17 @@ static i32 add_patterns(zip *z, s8s *list, s8 arg, arena scratch)
         s8  path = {arg.s+1, arg.len-1};
         i32 fd   = os_open(z->ctx, path, OS_READ, scratch);
         s8  text = fd<0 ? (s8){0} : read_all(z, fd, &z->perm);
+        b32 sys  = fd>=0 || fd==OS_ERR;  // not so for a directory
+        s8  why  = !text.s && sys ? os_error(z->ctx) : S("");
         if (fd >= 0) {
             os_close(z->ctx, fd);
         }
         if (!text.s) {
             s8 opt = list==&z->exclude ? S("x") : S("i");
             s8 msg = JOIN(&scratch, opt, S(" pattern file '"), arg, S("'"));
-            return fail(z, ZE_OPEN, S("File not found or no read permission"),
-                        msg, scratch);
+            return fail_why(z, ZE_OPEN, why,
+                            S("File not found or no read permission"), msg,
+                            scratch);
         }
         push_lines(z, list, text);
     }
@@ -1395,6 +1408,26 @@ static i32 not_zip(zip *z, arena scratch)
                 scratch);
 }
 
+// Read from the archive, else fail as Info-ZIP does: as an I/O error
+// (11), or at its end, which comes early only if it has shrunk since it
+// was examined, as an unexpected end (2), naming any entry being copied.
+static i32 read_at(zip *z, zarchive *ar, u8 *buf, iz len, i64 off,
+                   s8 copying, arena scratch)
+{
+    i32 r = os_readat(z->ctx, ar->fd, buf, len, off);
+    if (r > 0) {
+        return 0;
+    } else if (r < 0) {
+        return fail(z, ZE_READ, S("Could not read archive"), z->archive,
+                    scratch);
+    }
+    s8 arg = z->archive;
+    if (copying.s) {
+        arg = JOIN(&scratch, S("was copying "), copying);
+    }
+    return fail(z, ZE_EOF, S("Unexpected end of zip file"), arg, scratch);
+}
+
 // Returns an exit status on failure, or -1 for an archive that is to be
 // taken for a missing one.
 static i32 read_archive(zip *z, zarchive *ar, arena scratch)
@@ -1409,27 +1442,29 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
     if (ar->fd < 0) {
         // One that cannot be written either is, as in Info-ZIP, taken
         // for a missing archive, which then cannot be written
+        s8 why = ar->fd==OS_ERR ? os_error(z->ctx) : S("");
         if (!os_writable(z->ctx, z->target, scratch)) {
             return -1;
         }
-        return fail(z, ZE_READ, S("Could not open archive"), z->archive,
-                    scratch);
+        return fail_why(z, ZE_READ, why, S("Could not open archive"),
+                        z->archive, scratch);
     }
     ar->size = z->arcinfo.size;
 
     iz  n    = (iz)MIN(ar->size, ZIP_END_LEN + ZIP_MAX16 + ZIP_LOC64_LEN);
     u8 *tail = newbytes(&z->perm, n);
-    if (!os_readat(z->ctx, ar->fd, tail, n, ar->size-n)) {
-        return fail(z, ZE_READ, S("Could not read archive"), z->archive,
-                    scratch);
+    i32 err  = read_at(z, ar, tail, n, ar->size-n, (s8){0}, scratch);
+    if (err) {
+        return err;
     }
 
     i32 r = zip_find_end(tail, n, ar->size, &ar->end);
     if (r==ZIP_OK && ar->end.end64>=0) {
         u8 rec[ZIP_END64_LEN];
-        if (!os_readat(z->ctx, ar->fd, rec, ZIP_END64_LEN, ar->end.end64)) {
-            return fail(z, ZE_READ, S("Could not read archive"), z->archive,
-                        scratch);
+        err = read_at(z, ar, rec, ZIP_END64_LEN, ar->end.end64, (s8){0},
+                      scratch);
+        if (err) {
+            return err;
         }
         r = zip_parse_end64(rec, &ar->end);
     }
@@ -1454,9 +1489,9 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
         os_oom(z->ctx);  // larger than the address space (32-bit hosts)
     }
     u8 *cd = newbytes(&z->perm, (iz)cdsize);
-    if (!os_readat(z->ctx, ar->fd, cd, (iz)cdsize, ar->end.cdoff)) {
-        return fail(z, ZE_READ, S("Could not read archive"), z->archive,
-                    scratch);
+    err = read_at(z, ar, cd, (iz)cdsize, ar->end.cdoff, (s8){0}, scratch);
+    if (err) {
+        return err;
     }
     ar->entries = zip_parse_central(cd, (iz)cdsize, ar->end.count,
                                     ar->end.cdoff, &z->perm);
@@ -1497,12 +1532,21 @@ typedef struct {
     iz   cap;
     i64  pos;  // file offset of buf[0]
     b32  err;
+    s8   why;  // of the error, told before anything else could fail
 } zout;
+
+static void zout_writeat(zout *w, u8 *p, iz n, i64 off)
+{
+    if (!w->err && !os_writeat(w->ctx, w->fd, p, n, off)) {
+        w->err = 1;
+        w->why = os_error(w->ctx);
+    }
+}
 
 static void zout_flush(zout *w)
 {
-    if (w->len && !w->err) {
-        w->err = !os_writeat(w->ctx, w->fd, w->buf, w->len, w->pos);
+    if (w->len) {
+        zout_writeat(w, w->buf, w->len, w->pos);
     }
     w->pos += w->len;
     w->len  = 0;
@@ -1547,9 +1591,7 @@ static void zout_patch(zout *w, i64 off, u8 *p, iz n)
         return;
     }
     zout_flush(w);
-    if (!w->err) {
-        w->err = !os_writeat(w->ctx, w->fd, p, n, off);
-    }
+    zout_writeat(w, p, n, off);
 }
 
 // Entry data source: a file, or memory (a symbolic link's target)
@@ -1866,11 +1908,12 @@ static i32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
 static i32 copy_entry(zip *z, zarchive *ar, zwork *k, zentry *e,
                       arena scratch)
 {
-    zout *w = k->out;
+    zout *w    = k->out;
+    s8    name = shown_name(ar, e);
     u8 fixed[ZIP_LOCAL_LEN];
-    if (!os_readat(z->ctx, ar->fd, fixed, ZIP_LOCAL_LEN, e->offset)) {
-        return fail(z, ZE_READ, S("Could not read archive"), z->archive,
-                    scratch);
+    i32 err = read_at(z, ar, fixed, ZIP_LOCAL_LEN, e->offset, name, scratch);
+    if (err) {
+        return err;
     }
     iz varlen = zip_local_varlen(fixed);
     i64 data  = e->offset + ZIP_LOCAL_LEN + varlen;
@@ -1879,9 +1922,9 @@ static i32 copy_entry(zip *z, zarchive *ar, zwork *k, zentry *e,
                     scratch);
     }
     u8 *var = newbytes(&scratch, varlen);
-    if (!os_readat(z->ctx, ar->fd, var, varlen, e->offset+ZIP_LOCAL_LEN)) {
-        return fail(z, ZE_READ, S("Could not read archive"), z->archive,
-                    scratch);
+    err = read_at(z, ar, var, varlen, e->offset+ZIP_LOCAL_LEN, name, scratch);
+    if (err) {
+        return err;
     }
 
     // Its extra fields are kept, as Info-ZIP keeps them even with -X,
@@ -1909,9 +1952,9 @@ static i32 copy_entry(zip *z, zarchive *ar, zwork *k, zentry *e,
     zout_write(w, h, zip_local(h, e)-h);
     for (i64 off = 0; off < e->csize;) {
         iz n = (iz)MIN(k->cap, e->csize-off);
-        if (!os_readat(z->ctx, ar->fd, k->buf, n, data+off)) {
-            return fail(z, ZE_READ, S("Could not read archive"), z->archive,
-                        scratch);
+        err = read_at(z, ar, k->buf, n, data+off, name, scratch);
+        if (err) {
+            return err;
         }
         zout_write(w, k->buf, n);
         off += n;
@@ -2027,11 +2070,11 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
 
     // The preamble comes first, so that offsets stay absolute
     for (i64 off = 0; ar && off<ar->beg;) {
-        iz n = (iz)MIN(k.cap, ar->beg-off);
-        if (!os_readat(z->ctx, ar->fd, k.buf, n, off)) {
+        iz  n   = (iz)MIN(k.cap, ar->beg-off);
+        i32 err = read_at(z, ar, k.buf, n, off, (s8){0}, scratch);
+        if (err) {
             os_close(z->ctx, fd);
-            return fail(z, ZE_READ, S("Could not read archive"), z->archive,
-                        scratch);
+            return err;
         }
         zout_write(&w, k.buf, n);
         off += n;
@@ -2133,9 +2176,10 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
         ar->fd = -1;
     }
     if (w.err || !os_truncate(z->ctx, fd, zout_tell(&w))) {
+        s8 why = w.err ? w.why : os_error(z->ctx);
         os_close(z->ctx, fd);
-        return fail(z, ZE_WRITE, S("Output file write failure"), temp,
-                    scratch);
+        return fail_why(z, ZE_WRITE, why, S("Output file write failure"),
+                        temp, scratch);
     }
     if (!count) {
         warn(z, S("zip file empty"), S(""), scratch);
@@ -2397,8 +2441,10 @@ static i32 zip_main(zipconfig *conf)
     // The archive is replaced past any links at its path, so that they
     // survive, as Info-ZIP updates it through them. A link that cannot
     // be followed leaves no archive to read, and as in Info-ZIP, once
-    // there is something to do, none can be written.
+    // there is something to do, none can be written, for the reason
+    // found now.
     z->target = os_resolve(z->ctx, z->archive, &z->perm, scratch);
+    s8 unfollowed = z->target.s ? S("") : JOIN(&z->perm, os_error(z->ctx));
 
     // Whatever is at the archive path must be a zip file, as Info-ZIP
     // finds before any work: an empty file, or a directory, is not
@@ -2584,8 +2630,9 @@ static i32 zip_main(zipconfig *conf)
     // against changing it, though replacing it needs no such permission
     b32 readonly = z->arcexists && !os_writable(z->ctx, z->target, scratch);
     if (!z->target.s || readonly) {
-        return fail(z, ZE_CREAT, S("Could not create output file"),
-                    z->archive, scratch);
+        s8 why = readonly ? os_error(z->ctx) : unfollowed;
+        return fail_why(z, ZE_CREAT, why, S("Could not create output file"),
+                        z->archive, scratch);
     }
     err = write_archive(z, ar, &items, scratch);
     if (err) {

@@ -413,7 +413,7 @@ static b32 os_writable(os *ctx, s8 path, arena scratch)
     return 1;
 }
 
-static b32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
+static i32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
 {
     while (len) {
         overlapped ov = {0};
@@ -421,7 +421,9 @@ static b32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
         ov.offset_high = (u32)((u64)off >> 32);
         u32 got = 0;
         u32 n   = (u32)MIN(len, 1<<30);
-        if (!ReadFile(ctx->handles[fd], buf, n, &got, (uptr)&ov) || !got) {
+        if (!ReadFile(ctx->handles[fd], buf, n, &got, (uptr)&ov)) {
+            return GetLastError()==ERROR_HANDLE_EOF ? 0 : -1;
+        } else if (!got) {
             return 0;
         }
         buf += got;

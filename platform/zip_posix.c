@@ -201,7 +201,7 @@ static b32 os_writable(os *ctx, s8 path, arena scratch)
     return !access(tocstr(&scratch, path), W_OK);
 }
 
-static b32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
+static i32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
 {
     (void)ctx;
     while (len) {
@@ -209,7 +209,7 @@ static b32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
         if (r < 0 && errno == EINTR) {
             continue;
         } else if (r <= 0) {
-            return 0;
+            return r<0 ? -1 : 0;
         }
         buf += r;
         len -= r;
