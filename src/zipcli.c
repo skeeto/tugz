@@ -923,6 +923,13 @@ typedef struct {
 
 static void store_data(zip *z, zwork *k, zsrc *s, u32 *crc, i64 *usize)
 {
+    if (s->mem.s) {
+        // Written directly, as it may be the input buffer itself
+        *crc = crc32_update(*crc, s->mem.s, s->mem.len);
+        *usize += s->mem.len;
+        zout_write(k->out, s->mem.s, s->mem.len);
+        return;
+    }
     for (iz n; (n = src_read(z, s, k->buf, k->cap));) {
         *crc = crc32_update(*crc, k->buf, n);
         *usize += n;
@@ -930,13 +937,17 @@ static void store_data(zip *z, zwork *k, zsrc *s, u32 *crc, i64 *usize)
     }
 }
 
-static void deflate_data(zip *z, zwork *k, zsrc *s, u32 *crc, i64 *usize)
+// Returns whether the first read got all the input, which is therefore
+// still in the input buffer.
+static b32 deflate_data(zip *z, zwork *k, zsrc *s, u32 *crc, i64 *usize)
 {
     deflator *d = k->def;
     deflate_reset(d);
+    iz first = -1;
     for (b32 more = 1; more;) {
         iz n = src_read(z, s, k->buf, k->cap);
         more = n > 0;
+        first = first<0 ? n : first;
         *crc = crc32_update(*crc, k->buf, n);
         *usize += n;
         zbuf b = {k->buf, n, 0, 0};
@@ -950,6 +961,7 @@ static void deflate_data(zip *z, zwork *k, zsrc *s, u32 *crc, i64 *usize)
             }
         }
     }
+    return *usize == first;
 }
 
 // Unix time as a 32-bit field, as Info-ZIP stores it.
@@ -1066,8 +1078,9 @@ static b32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
         zout_write(w, h, hlen);
         i64 data = zout_tell(w);
 
+        b32 buffered = 0;
         if (tryz) {
-            deflate_data(z, k, &src, &e->crc, &e->usize);
+            buffered = deflate_data(z, k, &src, &e->crc, &e->usize);
         } else {
             store_data(z, k, &src, &e->crc, &e->usize);
         }
@@ -1080,6 +1093,9 @@ static b32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
 
         if (tryz && e->csize>=e->usize) {
             tryz = 0;  // compression did not help: store instead
+            if (buffered) {
+                src.mem = (s8){k->buf, (iz)e->usize};  // no need to reread
+            }
             continue;
         } else if (!e->zip64 && e->usize>=ZIP_MAX32) {
             e->zip64 = 1;  // grew past 4 GiB while reading

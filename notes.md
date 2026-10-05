@@ -142,15 +142,16 @@ the file is flushed and closed without error), and
 - Writing: entries go to a temporary file beside the archive (created
   discard-on-close, like gzip's outputs), at explicit offsets so that a
   local header can be patched once sizes are known. No data descriptors
-  are written. An entry that does not shrink is rewritten stored (input
-  reopened); one that grows past 4 GiB while being read is redone with a
-  Zip64 local header. The file is truncated to its final length and
-  renamed over the target; on Windows by handle, after clearing
-  delete-pending, so it never appears incomplete. `FileRenameInfoEx`
-  with POSIX semantics replaces an archive that a scanner or indexer
-  holds open (with delete sharing); `FileRenameInfo` is the fallback.
-  A concurrent run's temporary file, delete-pending, refuses access on
-  Windows, so that counts as an existing name and the next is tried.
+  are written. An entry that does not shrink is rewritten stored, from
+  the input buffer if one read got it all, else by reopening the input;
+  one that grows past 4 GiB while being read is redone with a Zip64
+  local header. The file is truncated to its final length and renamed
+  over the target; on Windows by handle, after clearing delete-pending,
+  so it never appears incomplete. `FileRenameInfoEx` with POSIX
+  semantics replaces an archive that a scanner or indexer holds open
+  (with delete sharing); `FileRenameInfo` is the fallback. A concurrent
+  run's temporary file, delete-pending, refuses access on Windows, so
+  that counts as an existing name and the next is tried.
 - Merging: the central directory is parsed with every field bounds
   checked; copied entries get regenerated local headers (descriptor flag
   cleared, except for traditionally encrypted entries, whose check byte
