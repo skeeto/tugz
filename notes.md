@@ -144,8 +144,9 @@ the file is flushed and closed without error), and
   warning under its entry's name that tells a failed open from a failed
   read. Info-ZIP's quirks kept: `../` stays in names, an emptied archive
   remains as a 22-byte file, entries that do not shrink are stored, odd
-  seconds round up. A name over 65,535 bytes (possible in deep Windows
-  paths) is skipped with a warning, exiting 18.
+  seconds round up (but not past `SOURCE_DATE_EPOCH`). Times beyond the
+  DOS range clamp to its ends. A name over 65,535 bytes (possible in
+  deep Windows paths) is skipped with a warning, exiting 18.
 - Options: Info-ZIP's grammar and names. Long names may be abbreviated
   to a prefix of exactly one of Info-ZIP's long names (supported or
   not, so `--rec` is ambiguous). Only `-X` is negatable; other negations
@@ -188,7 +189,9 @@ the file is flushed and closed without error), and
   `SOURCE_DATE_EPOCH`, files' times are compared unclamped, so a file
   modified after the epoch is always newer than its entry, which the
   clamped archive could not record; an unchanged one is rewritten with
-  identical bytes.
+  identical bytes. At an odd epoch, a time clamped to it rounds down,
+  and so does one equal to it when compared, so a file modified at the
+  epoch is not newer, and one a second later is.
 - Patterns: `-x`, `-i`, and `-d` patterns, `@file` lines included, are
   normalized as names are, so that `./` and `/` prefixes (and on
   Windows, backslashes and drives) match. Matching follows Info-ZIP's

@@ -75,6 +75,18 @@ static void test_dostime(void)
     TEST(zip_dostime(old) == (1u<<5 | 1) << 16);       // 1980-01-01
     i32 far[6] = {2200, 1, 1, 0, 0, 0};
     TEST(zip_dostime(far)>>16 == (127u<<9 | 12<<5 | 31));
+
+    // Years beyond i32 saturate rather than wrap (to 2000 here)
+    zip_gmtime(-135536075854733232, tm);
+    TEST(tm[0] == -0x7fffffff-1);
+    TEST(zip_dostime(tm) == (1u<<5 | 1) << 16);
+    zip_gmtime(135536077748150352, tm);
+    TEST(tm[0] == 0x7fffffff);
+    TEST(zip_dostime(tm)>>16 == (127u<<9 | 12<<5 | 31));
+    zip_gmtime(-0x7fffffffffffffff-1, tm);
+    TEST(tm[0] == -0x7fffffff-1);
+    zip_gmtime(0x7fffffffffffffff, tm);
+    TEST(tm[0]==0x7fffffff && tm[3]==15 && tm[4]==30 && tm[5]==7);
 }
 
 static void test_utf8(void)

@@ -778,13 +778,19 @@ static s8s env_args(zip *z, s8 env)
 }
 
 // A file's DOS time, in UTC with SOURCE_DATE_EPOCH, and clamped to it
-// if clamp, as it is for writing.
+// if clamp, as it is for writing. Odd seconds round up, as in Info-ZIP,
+// except where that would pass the epoch from a time at or before it,
+// so that a clamped time never exceeds the epoch, and compares equal
+// unclamped. Times far outside the DOS range clamp to its ends, give
+// or take two days for the time zone, before any arithmetic.
 static u32 file_dostime(zip *z, i64 t, b32 clamp)
 {
-    if (clamp && z->haveepoch) {
-        t = MIN(t, z->epoch);
-    }
-    t = (t + 1) & ~(i64)1;  // round odd seconds up, as Info-ZIP does
+    t = MAX(t, (i64)315532800 - 2*86400);   // 1980-01-01
+    t = MIN(t, (i64)4354819200 + 2*86400);  // 2108-01-01
+    b32 cap = z->haveepoch && (clamp || t<=z->epoch);
+    t = cap ? MIN(t, z->epoch) : t;
+    t = (t + 1) & ~(i64)1;
+    t -= cap && t>z->epoch ? 2 : 0;
     i32 tm[6];
     if (z->haveepoch) {
         zip_gmtime(t, tm);

@@ -153,6 +153,26 @@ zipinfo -T e3.zip | grep 'tree/a.txt$' | grep -q 20231114.221320 ||
     fail "newer time not clamped: $(zipinfo -T e3.zip)"
 expect_status 16 env SOURCE_DATE_EPOCH=soon "$ZIP" -q e4.zip tree/one
 
+# With an odd SOURCE_DATE_EPOCH, a clamped time rounds down rather than
+# past it, as do times equal to it; earlier odd seconds round up
+printf odd >odd.txt
+TZ=UTC0 touch -t 202311142213.21 odd.txt  # 1700000001
+SOURCE_DATE_EPOCH=1700000001 "$ZIP" -qX e5.zip tree/a.txt odd.txt tree/one
+zipinfo -T e5.zip >out
+grep 'tree/a.txt$' out | grep -q 20231114.221320 || fail "odd epoch: $(cat out)"
+grep 'odd.txt$' out | grep -q 20231114.221320 || fail "odd epoch: $(cat out)"
+grep 'tree/one$' out | grep -q 20000102.030406 || fail "odd epoch: $(cat out)"
+
+# Times beyond the DOS range clamp to its ends
+printf far >far.txt
+if touch -t 220001010000 far.txt 2>/dev/null; then
+    "$ZIP" -qX far.zip far.txt
+    zipinfo -T far.zip | grep -q 21071231.235958 || fail "far: $(zipinfo -T far.zip)"
+fi
+touch -t 196001010000 far.txt
+"$ZIP" -qX far.zip far.txt
+zipinfo -T far.zip | grep -q 19800101.000000 || fail "old: $(zipinfo -T far.zip)"
+
 # Archive names: .zip appended only without an extension
 "$ZIP" -q noext tree/a.txt
 [ -f noext.zip ] || fail ".zip not appended"
@@ -372,6 +392,21 @@ for v in ver1.zip ver2.zip; do
             fail "$mode $v under SOURCE_DATE_EPOCH"
     done
 done
+
+# With an odd epoch too: a file modified at it is not newer than its
+# entry, and one modified a second later is
+printf v1 >odd.txt
+TZ=UTC0 touch -t 202311142213.21 odd.txt
+SOURCE_DATE_EPOCH=1700000001 "$ZIP" -qX odd.zip odd.txt
+cp odd.zip odd0.zip
+SOURCE_DATE_EPOCH=1700000001 "$ZIP" -u odd.zip odd.txt >out
+[ ! -s out ] && cmp -s odd.zip odd0.zip || fail "-u at an odd epoch: $(cat out)"
+SOURCE_DATE_EPOCH=1700000001 "$ZIP" -FS odd.zip odd.txt >out
+[ "$(cat out)" = "Archive is current" ] || fail "-FS at an odd epoch: $(cat out)"
+printf v2 >odd.txt
+TZ=UTC0 touch -t 202311142213.22 odd.txt
+SOURCE_DATE_EPOCH=1700000001 "$ZIP" -qu odd.zip odd.txt
+[ "$(unzip -p odd.zip odd.txt)" = v2 ] || fail "-u a second past an odd epoch"
 
 # Filesync: changed entries updated, missing ones deleted
 cp -R tree fs

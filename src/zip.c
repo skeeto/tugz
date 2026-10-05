@@ -563,6 +563,7 @@ static u32 zip_dostime(i32 const t[6])
 }
 
 // Broken-down UTC time from Unix seconds (proleptic Gregorian calendar).
+// Years beyond the range of i32 saturate, so zip_dostime clamps them.
 static void zip_gmtime(i64 t, i32 tm[6])
 {
     i64 days = t / 86400;
@@ -580,7 +581,8 @@ static void zip_gmtime(i64 t, i32 tm[6])
     i64 mp  = (5*doy + 2) / 153;
     i64 d   = doy - (153*mp + 2)/5 + 1;
     i64 m   = mp<10 ? mp+3 : mp-9;
-    tm[0] = (i32)(yoe + era*400 + (m <= 2));
+    i64 y   = yoe + era*400 + (m <= 2);
+    tm[0] = (i32)MAX(MIN(y, 0x7fffffff), -0x7fffffff-1);
     tm[1] = (i32)m;
     tm[2] = (i32)d;
     tm[3] = (i32)(secs / 3600);
