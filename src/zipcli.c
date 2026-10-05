@@ -191,6 +191,7 @@ typedef struct {
     b32     hidden;
     b32     nowild;
     b32     names_stdin;
+    b32     filesync;  // -FS, which becomes MODE_SYNC after parsing
     b32     windows;
     b32     haveepoch;
     i64     epoch;
@@ -462,11 +463,13 @@ static i32 take_list(zip *z, s8s *list, s8 value, s8 *args, i32 nargs,
     return 0;
 }
 
+// Set the action, -u, -f, or -d, which as in Info-ZIP may be given only
+// once. -FS is a flag there, checked against these after parsing.
 static i32 set_mode(zip *z, i32 mode, arena scratch)
 {
-    if (z->mode!=MODE_ADD && z->mode!=mode) {
+    if (z->mode != MODE_ADD) {
         return fail(z, ZE_PARMS, S("Invalid command arguments"),
-                    S("conflicting modes"), scratch);
+                    S("specify just one action"), scratch);
     }
     z->mode = mode;
     return 0;
@@ -521,7 +524,7 @@ static zoption const zip_options[] = {
                S8("add/delete entries to make archive match OS"),       0},
     {S8("f"),  S8("freshen"),    S8("freshen existing archive entries"), 0},
     {S8("h"),  S8("help"),           S8("help"),                        0},
-    {S8(""),   S8("more-help"),      S8("extended help"),               0},
+    {S8("h2"), S8("more-help"),      S8("extended help"),               0},
     {S8("i"),  S8("include"),
                S8("include only files matching patterns"),       OPT_LIST},
     {S8("j"),  S8("junk-paths"),
@@ -565,11 +568,22 @@ static char const zip_longnames[] =
     " exclude strip-extra symlinks archive-comment compression-method"
     " names-stdin ";
 
-// Two-letter short options, matched before single letters as Info-ZIP
-// does. Only FS and nw are supported.
-static char const two_letter[] =
-    "FSnwFFFIDFACASMMRETTUNdbdcdddfdgdsdudvicjjlalflillsbscsdsfsosp"
-    "susUsvttws";
+// Whether an argument has one of Info-ZIP's two-letter short options at
+// k, which it matches before single letters, so that each is rejected
+// under its own name. Only FS, nw, and h2 are supported. The last three
+// exist only in its Windows port.
+static b32 two_letter(zip *z, s8 arg, iz k)
+{
+    s8 opts = S("FSnwh2FFFIDFMMRETTUNdbdcdddgdsdudvfdfzlalflillmmsbscsdsf"
+                "sospsusUsvttwsACASic");
+    opts.len -= z->windows ? 0 : 6;
+    for (iz t = 0; k+1<arg.len && t<opts.len; t += 2) {
+        if (arg.s[k]==opts.s[t] && arg.s[k+1]==opts.s[t+1]) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 // A supported option by its short or long name, or null.
 static zoption const *find_option(zip *z, s8 name, b32 islong)
@@ -633,7 +647,7 @@ static i32 apply_option(zip *z, zoption const *o, s8 opt, b32 negate,
     if (key.len==1 && key.s[0]>='0' && key.s[0]<='9') {
         z->level = key.s[0] - '0';
         return 0;
-    } else if (zequals(key, S("h")) || zequals(key, S("more-help"))) {
+    } else if (zequals(key, S("h")) || zequals(key, S("h2"))) {
         return usage(z, 0) - 1;
     } else if (zequals(key, S("version"))) {
         version(z);
@@ -656,9 +670,9 @@ static i32 apply_option(zip *z, zoption const *o, s8 opt, b32 negate,
     if (zequals(key, S("S")))  { z->hidden      = on; return 0; }
     if (zequals(key, S("nw"))) { z->nowild      = on; return 0; }
     if (zequals(key, S("@")))  { z->names_stdin = on; return 0; }
+    if (zequals(key, S("FS"))) { z->filesync    = on; return 0; }
     if (zequals(key, S("u")))  { return set_mode(z, MODE_UPDATE,  scratch); }
     if (zequals(key, S("f")))  { return set_mode(z, MODE_FRESHEN, scratch); }
-    if (zequals(key, S("FS"))) { return set_mode(z, MODE_SYNC,    scratch); }
     if (zequals(key, S("d")))  { return set_mode(z, MODE_DELETE,  scratch); }
     return 0;  // -p (store paths, the default) and -v (verbose): no effect
 }
@@ -715,14 +729,7 @@ static i32 parse_args(zip *z, s8 *args, i32 nargs, arena scratch)
             }
         } else {
             for (iz k = 1; k < arg.len;) {
-                s8 opt = {arg.s+k, 1};
-                for (iz t = 0; t < countof(two_letter)-1; t += 2) {
-                    if (k+1<arg.len && arg.s[k]==two_letter[t] &&
-                        arg.s[k+1]==two_letter[t+1]) {
-                        opt.len = 2;
-                        break;
-                    }
-                }
+                s8 opt = {arg.s+k, 1 + two_letter(z, arg, k)};
                 k += opt.len;
                 zoption const *o = find_option(z, opt, 0);
                 if (!o) {
@@ -1976,6 +1983,12 @@ static i32 zip_main(zipconfig *conf)
         warn(z, S("invalid option(s) used with -d; ignored."), S(""),
              scratch);
     }
+    if (z->filesync && z->mode!=MODE_ADD) {
+        return fail(z, ZE_PARMS, S("Invalid command arguments"),
+                    S("can't use -d, -f, -u, -U, or -g with filesync -FS"),
+                    scratch);
+    }
+    z->mode = z->filesync ? MODE_SYNC : z->mode;
     if (!has_extension(z, z->archive)) {
         z->archive = JOIN(&z->perm, z->archive, S(".zip"));
     }

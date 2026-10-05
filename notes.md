@@ -161,7 +161,13 @@ the file is closed, or on Windows flushed, without error), and
   not, so `--rec` is ambiguous). Only `-X` is negatable; other negations
   and values on options without them are errors, quoting Info-ZIP's
   descriptions. `-y` exists only on POSIX and `-S` only on Windows, as
-  in Info-ZIP's builds. `--` ends options only after the archive name.
+  in Info-ZIP's builds. Its two-letter short options (those of its
+  Windows port there) are matched before single letters, so that
+  unsupported ones are rejected by name (`-fd`), and `-h2` is `-h`. An
+  action, `-u`, `-f`, or `-d`, may be given once ("specify just one
+  action"), and `-FS`, a flag in Info-ZIP, may be repeated but not
+  combined with one (its message, but for a stray line break before the
+  closing parenthesis). `--` ends options only after the archive name.
   `ZIPOPT`, or if it holds only whitespace `ZIP`, supplies options
   before the arguments, split as Info-ZIP's envargs does (whitespace;
   on POSIX, double quotes group, keeping a backslash before an inner

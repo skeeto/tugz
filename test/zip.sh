@@ -137,6 +137,36 @@ done
 "$ZIP" -qr c7.zip tree -x-  # a list's value, not a negation
 names c7.zip | grep -q tree/a.txt || fail "-x- excluded a.txt"
 
+# Info-ZIP's two-letter options are matched before single letters, so
+# that unsupported ones are rejected under their own names, while -h2 is
+# help; -jj is not one of them, but -j twice
+for opt in fd fz mm dd; do
+    "$ZIP" -$opt c8.zip tree/a.txt 2>err && fail "-$opt succeeded"
+    grep -q "short option '$opt' not supported" err || fail "-$opt: $(cat err)"
+done
+"$ZIP" -h2 >out
+grep -q usage out || fail "-h2: $(cat out)"
+"$ZIP" -qjj c8.zip tree/a.txt
+[ "$(names c8.zip)" = a.txt ] || fail "-jj: $(names c8.zip)"
+
+# As in Info-ZIP, one action (-u, -f, -d) may be given, once, while -FS
+# is a flag that may be repeated, but not with an action
+"$ZIP" -q c9.zip tree/a.txt tree/b.txt
+cp c9.zip c9.orig
+for opt in '-u -u' -uu '-f -f' -ff '-d -d' '-u -f' '-d -u' -df; do
+    "$ZIP" $opt c9.zip tree/a.txt >out 2>&1 && fail "$opt succeeded"
+    grep -q 'specify just one action' out || fail "$opt: $(cat out)"
+done
+"$ZIP" -u c9.zip -u tree/a.txt >out 2>&1 && fail "-u, -u later succeeded"
+for opt in '-FS -u' '-f -FS' '-FS -d'; do
+    "$ZIP" $opt c9.zip tree/a.txt >out 2>&1 && fail "$opt succeeded"
+    grep -q "can't use -d, -f, -u, -U, or -g with filesync -FS)" out ||
+        fail "$opt: $(cat out)"
+done
+cmp -s c9.zip c9.orig || fail "a repeated action changed the archive"
+"$ZIP" -q -FS -FS c9.zip tree/a.txt
+[ "$(names c9.zip)" = tree/a.txt ] || fail "-FS -FS: $(names c9.zip)"
+
 # Determinism: -X output depends only on the tree, and SOURCE_DATE_EPOCH
 # makes it independent of the time zone
 "$ZIP" -qX9r d1.zip tree
@@ -642,7 +672,6 @@ expect_status 16 "$ZIP" -K bad.zip tree/a.txt
 expect_status 16 "$ZIP" -e bad.zip tree/a.txt
 expect_status 16 "$ZIP" --bogus bad.zip tree/a.txt
 expect_status 16 "$ZIP" - tree/a.txt
-expect_status 16 "$ZIP" -u -d bad.zip tree/a.txt
 echo junk >junk.zip
 expect_status 3 "$ZIP" junk.zip tree/a.txt
 head -c 100 t.zip >trunc.zip
