@@ -1,10 +1,11 @@
 # tugz: tiny unity gzip
 
 A from-specification implementation of gzip ([RFC 1952][]), zlib
-([RFC 1950][]), and DEFLATE ([RFC 1951][]) in portable C11, as a drop-in
-`gzip` command, a streaming library, and an Info-ZIP compatible `zip`.
-It compresses faster than zlib at every level with equal or better
-ratios, and validates input exactly as strictly as zlib.
+([RFC 1950][]), and DEFLATE ([RFC 1951][]) in C11 with C23 attributes,
+for GCC or Clang, as a drop-in `gzip` command, a streaming library, and
+an Info-ZIP compatible `zip`. It compresses faster than zlib at every
+level with equal or better ratios, and validates input exactly as
+strictly as zlib.
 
 The core has no dependencies, no global state, no platform
 conditionals, and does no I/O. Each program is a unity build: a platform
@@ -102,11 +103,13 @@ releases, such as `zip -qX9r release-1.2.3.zip build/`:
 | `-FS` | filesync: update changed entries, delete missing ones |
 | `-d` | delete entries matching patterns |
 | `-nw` | no wildcards, except `?` (as in Info-ZIP) |
-| `-v`, `-L` | version (alone, or `--version`); license |
+| `-v`, `-L`, `-h` | version (alone, or `--version`); license; help |
 
 Long options are Info-ZIP's (`--recurse-paths`, `--strip-extra`, ...)
 and, as there, may be abbreviated. Only `-X` may be negated (`-X-`).
-Options in `ZIPOPT`, or else `ZIP`, apply before the arguments.
+`-p` (store paths, the default) has no effect, nor does `-v` with other
+arguments. Options in `ZIPOPT`, or else `ZIP`, apply before the
+arguments.
 
 Existing archives are merged as Info-ZIP does: matching entries are
 replaced in place (keeping their comments), new ones appended, and the
@@ -169,7 +172,7 @@ Silesia corpus on Apple M-series, compression ratio @ MB/s:
 
 ## Development
 
-    $ make check     # unit and library tests (ASan/UBSan), end-to-end CLI tests
+    $ make check     # unit and library tests (ASan/UBSan), gzip and zip end to end
     $ make fuzz      # libFuzzer harnesses, including differential
     $ make bench     # benchmark against zlib and libdeflate
 
@@ -178,7 +181,8 @@ archives are verified with unzip, Python's zipfile, and on Windows with
 Explorer, .NET, and tar. So `make check` needs zlib, libdeflate, a
 reference gzip (`/usr/bin/gzip`), and Info-ZIP's `unzip` and `zipinfo`,
 while Python (through `uv` if installed) adds checks. Tested on macOS,
-Linux (x86-64, i386, big-endian PowerPC), and Windows (x86-64, i686).
+Linux (x86-64, i386, aarch64, big-endian PowerPC), and Windows (x86-64,
+i686).
 See [notes.md](notes.md) for design decisions, test coverage, and the
 optimization log.
 

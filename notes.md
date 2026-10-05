@@ -2,14 +2,16 @@
 
 tugz (tiny unity gzip) is a from-specification implementation of gzip
 (RFC 1952), zlib (RFC 1950), and DEFLATE (RFC 1951): a drop-in `gzip`
-command, and a streaming library (`tugz.h`). The command identifies
-itself as `gzip (tugz) 1.0` and is installed under the name `gzip`.
+command, a streaming library (`tugz.h`), and an Info-ZIP compatible
+`zip`. The commands identify themselves as `gzip (tugz) 1.0` and `tugz
+zip 1.0`, and are installed under the names `gzip` and `zip`.
 
 ## Layout
 
 Unity build: each program's platform layer (`platform/*_posix.c`,
 `platform/*_windows.c`, `platform/libtugz.c`, and the test programs)
-includes the sources it needs and defines their hooks. Everything is
+includes the sources it needs, and it or the program's own layer
+(`src/gzipio.c`, `src/zipcli.c`) defines their hooks. Everything is
 `static` except the entry points. Nothing at file scope in the core is
 mutable; platform layers may use globals and `#ifdef`.
 
@@ -18,9 +20,9 @@ no I/O: callers hand it input and output buffers of any size and it
 resumes where it stopped. Its only hooks are `os_oom` and `os_extend`
 (for an arena that runs out). Programs add `src/io.c` (the `os_*` file
 interface and a buffered reader and writer); gzip adds `src/gzipio.c`
-(descriptor drivers) and `src/cli.c`. The library layer adds none of
-them. The shared `os_*` implementations live in `platform/posix.c` and
-`platform/windows.c`.
+(descriptor drivers) and `src/cli.c`, and zip `src/zip.c` and
+`src/zipcli.c`. The library layer adds none of them. The shared `os_*`
+implementations live in `platform/posix.c` and `platform/windows.c`.
 
 | File                     | Purpose                                         |
 |--------------------------|-------------------------------------------------|
@@ -42,11 +44,12 @@ them. The shared `os_*` implementations live in `platform/posix.c` and
 | `platform/libtugz.c`     | library layer; `tugz.h` is its interface        |
 | `test/tests.c`           | test suite (in-memory file system)              |
 | `test/libtests.c`        | library interface tests                         |
-| `test/fuzz_*.c`          | libFuzzer harnesses, sharing `test/fuzzos.c`    |
+| `test/fuzz_*.c`          | libFuzzer harnesses, most sharing `fuzzos.c`    |
 | `test/bench.c`           | benchmark versus zlib and libdeflate            |
 | `test/ziptests.c`        | ZIP format unit tests                           |
-| `test/cli.sh`            | end-to-end tests of the binary                  |
+| `test/cli.sh`            | end-to-end gzip tests                           |
 | `test/zip.sh`            | end-to-end zip tests (unzip, zipinfo, Python)   |
+| `test/zipcheck.py`       | zip.sh's verifier through Python's `zipfile`    |
 | `test/zip_windows.sh`    | zip.exe under Windows' own extractors           |
 | `test/seeds.py`          | fuzzing seed corpus generator                   |
 
@@ -184,63 +187,64 @@ neither inflate nor the gzip container.
   bytes (possible in deep Windows paths) is skipped with a warning,
   exiting 18.
 - Options: Info-ZIP's grammar and names. Long names may be abbreviated
-  to a prefix of exactly one of Info-ZIP's long names (supported or
-  not, so `--rec` is ambiguous). Only `-X` is negatable; other negations
-  and values on options without them are errors, quoting Info-ZIP's
+  to a prefix of exactly one of Info-ZIP's long names (supported or not,
+  so `--rec` is ambiguous). Only `-X` is negatable; other negations and
+  values on options without them are errors, quoting Info-ZIP's
   descriptions. `-y` exists only on POSIX and `-S` only on Windows, as
   in Info-ZIP's builds. Its two-letter short options (those of its
   Windows port there) are matched before single letters, so that
   unsupported ones are rejected by name (`-fd`), `-mm` with Info-ZIP's
-  own message ("Must_Match is -MM"), and `-h2` is `-h`. An
-  action, `-u`, `-f`, or `-d`, may be given once ("specify just one
-  action"), and `-FS`, a flag in Info-ZIP, may be repeated but not
-  combined with one (its message, but for a stray line break before the
-  closing parenthesis). `--` ends options only after the archive name.
-  `ZIPOPT`, or if it holds only whitespace `ZIP`, supplies options
-  before the arguments, split as Info-ZIP's envargs does (whitespace;
-  on POSIX, double quotes group, keeping a backslash before an inner
-  quote). A lone `-v` (after those) or `--version` prints the version,
-  `-L` the license (the Unlicense), `-h` the usage. With no arguments
-  and no terminal on standard output, or no archive name, Info-ZIP
-  streams to standard output; that is rejected as streaming. A terminal
-  gets the usage, or Info-ZIP's "cannot write zip file to terminal".
-  `-d` warns, as Info-ZIP does, that `-r` and `-0` are ignored.
+  own message ("Must_Match is -MM"), and `-h2` is `-h`. An action, `-u`,
+  `-f`, or `-d`, may be given once ("specify just one action"), and
+  `-FS`, a flag in Info-ZIP, may be repeated but not combined with one
+  (its message, but for a stray line break before the closing
+  parenthesis). `--` ends options only after the archive name. `ZIPOPT`,
+  or if it holds only whitespace `ZIP`, supplies options before the
+  arguments, split as Info-ZIP's envargs does (whitespace; on POSIX,
+  double quotes group, keeping a backslash before an inner quote). A
+  lone `-v` (after those) or `--version` prints the version, `-L` the
+  license (the Unlicense), `-h` the usage; `-v` with other arguments
+  (verbose) does nothing, nor does `-p` (store paths, the default). With
+  no arguments and no terminal on standard output, or no archive name,
+  Info-ZIP streams to standard output; that is rejected as streaming. A
+  terminal gets the usage, or Info-ZIP's "cannot write zip file to
+  terminal". `-d` warns, as Info-ZIP does, that `-r` and `-0` are
+  ignored.
 - Names: as Info-ZIP's ex2in makes them, `/` and `./` prefixes are
-  dropped and `../` kept, and on POSIX too a leading `//host/share/`
-  is dropped (`zip t.zip //h/s/f` stores `f`). A directory is named
-  with its separator, as procname names it, so a share root `//h/s`
-  is named by nothing, like `//h/s/`, and so are its entries' prefixes
-  (`zip -r t.zip //h/s` stores `f`). The same path reached
-  twice (`f f`, `d d/a`, `d d/`, `find d | zip -r@`) is added once,
-  silently, as in Info-ZIP; different paths giving one name
-  (`./d/a d/a`, or a `-j` collision) are an error (16), reported as
-  there once every path is scanned and matched: only the first name
-  repeated in order of names, by the first two of its paths in order
-  (a directory's with a slash), in one warning whose lines Info-ZIP
-  indents to line up past its tab. Also as there, a
-  file whose name is the archive's path as given (with `.zip` added) is
-  left out silently even when it is another file, as `-j` may name it
-  (`zip -j dist.zip build/dist.zip`).
+  dropped and `../` kept, and on POSIX too a leading `//host/share/` is
+  dropped (`zip t.zip //h/s/f` stores `f`). A directory is named with
+  its separator, as procname names it, so a share root `//h/s` is named
+  by nothing, like `//h/s/`, and so are its entries' prefixes
+  (`zip -r t.zip //h/s` stores `f`). The same path reached twice (`f f`,
+  `d d/a`, `d d/`, `find d | zip -r@`) is added once, silently, as in
+  Info-ZIP; different paths giving one name (`./d/a d/a`, or a `-j`
+  collision) are an error (16), reported as there once every path is
+  scanned and matched: only the first name repeated in order of names,
+  by the first two of its paths in order (a directory's with a slash),
+  in one warning whose lines Info-ZIP indents to line up past its tab.
+  Also as there, a file whose name is the archive's path as given (with
+  `.zip` added) is left out silently even when it is another file, as
+  `-j` may name it (`zip -j dist.zip build/dist.zip`).
 - Entry names in code pages: files match an entry by its stored name,
   then, as in Info-ZIP, by an Info-ZIP Unicode path field (0x7075) whose
   CRC is the stored name's, as Info-ZIP's Windows port, WinZip, and
   7-Zip write one for a name not stored as UTF-8. Info-ZIP warns of a
   stale field, of version 0 or 1 (it skips later ones with another
   warning) but without that CRC or too short to hold one, in an entry
-  without flag bit 11, and so does tugz, naming the entry where
-  Info-ZIP prints "(null)" (and a stray debugging line on standard
-  output, `unicode_mismatch = 1`, even under `-q`); it warns again of
-  one in a local header, which tugz does not read until copying, and
-  then ignores. On Windows, as in
-  Info-ZIP's port, a name without flag bit 11 or such a field, made on
-  DOS or Windows (or OS/2, or WinZip's NTFS), is decoded from the OEM
-  code page (`MultiByteToWideChar`), as Explorer's zip folder stores
-  names, and there patterns also match the decoded name, which names the
-  file that `-u`, `-f`, and patterns select. A replaced entry is written
-  under the Unicode name, flagged UTF-8; copied entries keep their
-  bytes. Messages give the Unicode name. Elsewhere, as in Info-ZIP's
-  Unix port, patterns match stored names only, and an entry they select
-  names its file by its stored name.
+  without flag bit 11, and so does tugz, naming the entry where Info-ZIP
+  prints "(null)" (and a stray debugging line on standard output,
+  `unicode_mismatch = 1`, even under `-q`); it warns again of one in a
+  local header, which tugz does not read until copying, and then
+  ignores. On Windows, as in Info-ZIP's port, a name without flag bit 11
+  or such a field, made on DOS or Windows (or OS/2, or WinZip's NTFS),
+  is decoded from the OEM code page (`MultiByteToWideChar`), as
+  Explorer's zip folder stores names, and there patterns also match the
+  decoded name, which names the file that `-u`, `-f`, and patterns
+  select. A replaced entry is written under the Unicode name, flagged
+  UTF-8; copied entries keep their bytes. Messages give the Unicode
+  name. Elsewhere, as in Info-ZIP's Unix port, patterns match stored
+  names only, and an entry they select names its file by its stored
+  name.
 - Selection: as Info-ZIP's procname does, a path not on disk is a
   pattern for the archive's entries (taken up after the paths on disk,
   which come first), and `-u` and `-f` without paths select every
@@ -489,15 +493,16 @@ neither inflate nor the gzip container.
   each file's record as in a fresh run (a 112-byte `zfile` holding a
   72-byte `os_info`, its path, and a 56-byte trie node by name), which
   Info-ZIP avoids by marking the entry it found instead.
-- Scanning: the directories being listed form a stack in scratch
-  rather than on the call stack, so that only memory bounds a tree's
-  depth (with `\\?\` paths of up to 32K characters, the Windows build's
-  2 MiB stack overflowed at about 4,400 levels). Each listing is sorted
-  as pointers to its entries rather than moving them, and each entry's
-  strings are forgotten as the next is taken. `os_listdir` and
-  `os_readlink` take a single arena for their results and temporaries,
-  since callers that wanted transient results passed one arena as both
-  `perm` and `scratch`, whose allocations then overlapped.
+- Scanning: the directories being listed form a stack in scratch rather
+  than on the call stack, so that only memory bounds a tree's depth
+  (with `\\?\` paths of up to 32K characters, the recursive x86-64
+  Windows build's 2 MiB stack held 5,000 levels, not 8,000; see
+  Cross-platform verification). Each listing is sorted as pointers to
+  its entries rather than moving them, and each entry's strings are
+  forgotten as the next is taken. `os_listdir` and `os_readlink` take a
+  single arena for their results and temporaries, since callers that
+  wanted transient results passed one arena as both `perm` and
+  `scratch`, whose allocations then overlapped.
 - libdeflate issue #323: Windows' zip folder rejects incomplete Huffman
   codes (such as a lone distance code in a block with at most one
   distinct distance), which DEFLATE permits. `huff_build` always codes at
@@ -584,11 +589,12 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
 
 ## Workflow
 
-    make check                 # unit and library tests (ASan/UBSan), CLI tests
-                               # (needs zlib, libdeflate, /usr/bin/gzip, and
+    make check                 # unit, library, and ZIP format tests
+                               # (ASan/UBSan), gzip and zip end to end
+                               # (needs zlib, libdeflate, /usr/bin/gzip,
                                # Info-ZIP unzip and zipinfo; optional Python)
     SLOW=1 sh test/cli.sh ./gzip   # adds a 5 GiB stream (>4 GiB offsets)
-    make gzip.exe              # Win32 build (w64devkit or CROSS=...)
+    make gzip.exe zip.exe      # Win32 builds (w64devkit or CROSS=...)
     make fuzz                  # build the five fuzzers
     make fuzz-seeds            # seed corpora in fuzz/corpus/
     ./fuzz-diff-inflate -fork=3 -max_len=65536 fuzz/corpus/diff-inflate
@@ -596,6 +602,7 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
     make bench && ./bench -l 1,6,9 bench_corpus/silesia/*
     make amalgamation          # single-file Windows sources, gzip.c and zip.c
     SLOW=1 sh test/zip.sh ./zip    # adds Zip64: 4 and 5 GiB files, 70,000 entries
+                                   # (needs about 10 GiB free in TMPDIR)
     sh test/zip_windows.sh ./zip.exe   # on Windows, under w64devkit
     make tugz.c libtugz.o      # single-file library source, library object
 
@@ -617,7 +624,10 @@ Fuzzers:
   flushes and piece sizes, must produce piece-independent output that
   decodes under zlib, libdeflate, and our streaming decoder
 - `fuzz-zipread`: arbitrary bytes as an existing archive; whatever
-  parses is rewritten as a merge would, and must parse back identically
+  parses is rewritten through `src/zip.c` much as a merge would (but
+  skipping bad local headers, which fail a merge, and dropping every
+  data descriptor), and its central directory must parse back to the
+  same entries
 
 ## Cross-platform verification
 
@@ -647,12 +657,13 @@ Fuzzers:
 - zip: `test/zip.sh` passes on macOS (also `SLOW=1`: 5 GiB entries
   compressed and stored, an entry offset past 4 GiB, merging into a Zip64
   archive, 70,000 entries), on aarch64 Linux, and with the big-endian
-  ppc build under QEMU. Header fields match Info-ZIP 3.0 exactly (see
-  above). `test/zip_windows.sh` passes for the x86-64 build, the
-  amalgamation, and the i686 build on Windows 11: Explorer's zip folder,
-  `Expand-Archive`, and `tar` extract every level identically, including
-  the literal-only input. zip.exe is 68 KiB, imports only KERNEL32 and
-  SHELL32, and has no stack frame over 4000 bytes (no `__chkstk`).
+  ppc build under QEMU. Header fields match Info-ZIP 3.0 (see
+  Compatibility). `test/zip_windows.sh` passes for the x86-64 build,
+  the amalgamation, and the i686 build on Windows 11: Explorer's zip
+  folder, `Expand-Archive`, and `tar` extract levels 1, 6, and 9
+  identically, including the literal-only input. zip.exe is about 100
+  KiB, imports only KERNEL32 and SHELL32, and has no stack frame over
+  4000 bytes (no `__chkstk`).
 - zip speed versus Info-ZIP 3.0 on the 267 MB benchmark corpus (Apple
   M-series): -1 2.2 s vs 1.9 s (4% smaller), -6 3.1 s vs 4.9 s, -9 6.8 s
   vs 12.6 s (smaller). 10,000 small files (64 B to 8 KiB, -6): 0.32 s
@@ -697,7 +708,7 @@ Fuzzers:
   (0.28 s, 2.9 s), and within noise on a loaded Pi (100K, mean of 8:
   2.28 s before, 2.30 s after).
 
-## Behavior decisions
+## gzip and platform behavior
 
 - Decoder strictness matches zlib exactly: incomplete codes rejected except
   a lone 1-bit code; an empty distance code is an error only when used;
@@ -705,7 +716,8 @@ Fuzzers:
 - Concatenated members decode in sequence. Data after the last member is
   ignored with a warning (exit 2) unless it starts with the gzip magic, in
   which case it must be a valid member. Matches GNU gzip.
-- Exit status: 0 success, 1 error, 2 warning; errors take precedence.
+- gzip's exit status: 0 success, 1 error, 2 warning; errors take
+  precedence. (zip's follow Info-ZIP: see its section.)
 - As in GNU gzip, the program name sets the default mode: names starting
   with `un` or `gun` decompress, and `zcat` or `gzcat` decompress to
   standard output (case-insensitive; Windows drops `.exe`). Platform

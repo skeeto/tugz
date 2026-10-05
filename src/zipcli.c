@@ -1251,7 +1251,8 @@ static void ignore_special(zip *z, s8 path, os_info *info, arena scratch)
 // Scan a path and, with -r, everything under it, in sorted order. The
 // directories being listed form a stack in scratch rather than on the
 // call stack, which a deep enough tree would overflow: Windows paths
-// reach 32K characters, while its 2 MiB stack held about 4,400 levels.
+// reach 32K characters, while its 2 MiB stack held 5,000 levels, not
+// 8,000, when this recursed.
 static void scan(zip *z, s8 path, s8 name, os_info *info, arena scratch)
 {
     zdir *dir = 0;  // innermost
