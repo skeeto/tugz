@@ -901,9 +901,9 @@ static u32 file_dostime(zip *z, i64 t, b32 clamp)
     return zip_dostime(tm);
 }
 
-// Pattern matching as Info-ZIP's: [sets] on Unix; on Windows, its DOS
-// rules, ignoring case except against archive entries (-d) and when
-// freshening.
+// Pattern matching as Info-ZIP's: by bytes, with [sets], on Unix; on
+// Windows, by characters, with its DOS rules, ignoring case except
+// against archive entries (-d) and when freshening.
 static i32 match_flags(zip *z)
 {
     i32 flags = z->nowild ? ZIP_NOWILD : 0;
@@ -911,7 +911,7 @@ static i32 match_flags(zip *z)
         return flags | ZIP_SETS;
     }
     b32 exact = z->mode==MODE_DELETE || z->mode==MODE_FRESHEN;
-    return flags | ZIP_DOS | (exact ? 0 : ZIP_FOLD);
+    return flags | ZIP_DOS | ZIP_UTF8 | (exact ? 0 : ZIP_FOLD);
 }
 
 static b32 any_match(zip *z, s8s *patterns, s8 name)
@@ -1295,7 +1295,8 @@ static b32 hidden_file(zip *z, os_info *info)
 
 // Expand wildcards in a path's components against the file system, as
 // Windows shells do not, matching as Info-ZIP does there: ignoring case,
-// with DOS rules, and with -nw only ?. Returns the number of matches.
+// by characters, with DOS rules, and with -nw only ?. Returns the number
+// of matches.
 static iz expand(zip *z, s8 path, arena scratch)
 {
     // Find the first component with a wildcard. A drive ends a component:
@@ -1324,7 +1325,7 @@ static iz expand(zip *z, s8 path, arena scratch)
     }
     os_dirent **kids = zsort(list, n, &scratch);
 
-    i32 flags = ZIP_FOLD | ZIP_DOS | (z->nowild ? ZIP_NOWILD : 0);
+    i32 flags = ZIP_FOLD | ZIP_DOS | ZIP_UTF8 | (z->nowild ? ZIP_NOWILD : 0);
     iz  count = 0;
     for (iz i = 0; i < n; i++) {
         if (!zip_match(pat, kids[i]->name, flags)) {

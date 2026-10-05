@@ -681,6 +681,7 @@ enum {
     ZIP_FOLD   = 1 << 1,  // ASCII case-insensitive, for Windows file names
     ZIP_NOWILD = 1 << 2,  // only ? is a wildcard, as with Info-ZIP's -nw
     ZIP_DOS    = 1 << 3,  // a name without a period ends in one (Windows)
+    ZIP_UTF8   = 1 << 4,  // ? is a UTF-8 character, not a byte (Windows)
 };
 
 static u8 zip_fold(u8 c, i32 flags)
@@ -702,6 +703,24 @@ static b32 zip_has(s8 s, u8 c)
 static u8 zip_at(s8 s, iz i)
 {
     return i<s.len ? s.s[i] : '.';
+}
+
+// Length of the character at byte i of a name: of a UTF-8 sequence (or
+// WTF-8, whose lone surrogates are characters on Windows), else 1.
+static iz zip_charlen(s8 s, iz i)
+{
+    u8 c = zip_at(s, i);
+    iz n = c>=0xc2 && c<0xe0 ? 2 : c>=0xe0 && c<0xf0 ? 3 :
+           c>=0xf0 && c<0xf5 ? 4 : 1;
+    if (n > s.len-i) {
+        return 1;
+    }
+    for (iz k = 1; k < n; k++) {
+        if ((s.s[i+k] & 0xc0) != 0x80) {
+            return 1;
+        }
+    }
+    return n;
 }
 
 // Whether c is in the set between pat[beg] and pat[end], the bytes
@@ -759,6 +778,9 @@ static b32 zip_literal(s8 pat, iz p, i32 flags)
 // next byte; otherwise brackets and backslashes are literal. ZIP_NOWILD
 // keeps only ?, and ZIP_DOS matches a name without a period as if it
 // ended in one when the pattern has one, so that *.* matches every name.
+// With ZIP_UTF8, ? matches a UTF-8 character, and * a run of them, as
+// Info-ZIP's Windows port matches characters of its code page (or wide
+// ones), while on Unix it matches bytes. Sets, unused there, match bytes.
 //
 // Info-ZIP's quirks are kept: an unclosed set or a trailing backslash
 // matches nothing; a trailing ** needs at least one more byte; and once
@@ -768,6 +790,7 @@ static b32 zip_match(s8 pat, s8 s, i32 flags)
 {
     b32 wild = !(flags & ZIP_NOWILD);
     b32 sets = wild && (flags & ZIP_SETS);
+    b32 utf8 = flags & ZIP_UTF8;
     b32 dot  = (flags & ZIP_DOS) && zip_has(pat, '.') && !zip_has(s, '.');
     iz  n    = s.len + dot;
     iz p = 0, i = 0;
@@ -795,7 +818,7 @@ static b32 zip_match(s8 pat, s8 s, i32 flags)
                 continue;
             } else if (c == '?') {
                 p++;
-                i++;
+                i += utf8 ? zip_charlen(s, i) : 1;
                 continue;
             } else if (c=='[' && sets) {
                 iz  q   = p + 1;
@@ -830,8 +853,9 @@ static b32 zip_match(s8 pat, s8 s, i32 flags)
         if (star < 0) {
             return 0;
         }
-        p = star;
-        i = ++mark;
+        p    = star;
+        mark += utf8 ? zip_charlen(s, mark) : 1;
+        i    = mark;
     }
     iz stars = 0;
     for (; wild && p<pat.len && pat.s[p]=='*'; p++, stars++) {}

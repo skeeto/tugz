@@ -179,6 +179,15 @@ printf 'tree/a.txt\ntree/b.txt\n' >want.txt
 cmp -s got want.txt || fail "-nw ?: $(cat got)"
 expect_status 12 "$ZIP" -nw nw2.zip 'tree/*.txt'
 
+# ? matches a character, not a byte of its UTF-8, as Info-ZIP's port
+# matches characters, both on disk and in filters
+mkdir u8
+ps "Set-Content -LiteralPath ('u8\\' + [char]0x20ac + '.txt') -Value e"
+"$ZIP" u81.zip 'u8/?.txt' >out
+grep -q "^  adding: u8/$(printf '\342\202\254').txt" out ||
+    fail "? as a character: $(cat out)"
+expect_status 12 "$ZIP" u82.zip 'u8/*' -x 'u8/?.txt'
+
 # A hidden or system file is left out even when named, by a wildcard
 # or in a -@ list, unless -S
 expect_status 12 "$ZIP" h3.zip tree/hidden.txt

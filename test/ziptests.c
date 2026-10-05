@@ -198,6 +198,26 @@ static void test_match(void)
     TEST( zip_match(str("*.*"), str("v1.0/Makefile"), dos));
     TEST(!zip_match(str("*.*"), str("Makefile"), ZIP_FOLD));
 
+    // On Windows, ? is a UTF-8 character, as Info-ZIP's port matches
+    // characters, and * moves by them too; on Unix it matches bytes
+    i32 w = dos | ZIP_UTF8;
+    TEST( zip_match(str("?.txt"), str("\xc3\xa9.txt"), w));          // U+E9
+    TEST(!zip_match(str("??.txt"), str("\xc3\xa9.txt"), w));
+    TEST(!zip_match(str("?.txt"), str("\xc3\xa9.txt"), dos));
+    TEST( zip_match(str("??.txt"), str("\xc3\xa9.txt"), u));
+    TEST( zip_match(str("?.txt"), str("\xe2\x82\xac.txt"), w));      // U+20AC
+    TEST( zip_match(str("a?"), str("a\xf0\x9f\x98\x80"), w));        // U+1F600
+    TEST( zip_match(str("?"), str("\xed\xa0\x80"), w));              // WTF-8
+    TEST( zip_match(str("*?"), str("\xe2\x82\xac"), w));
+    TEST(!zip_match(str("*??"), str("\xe2\x82\xac"), w));
+    TEST( zip_match(str("*??"), str("\xe2\x82\xac"), u));
+    TEST( zip_match(str("??"), str("\xc3\x41"), w));       // not a sequence
+    TEST( zip_match(str("a??"), str("a\xe2\x82"), w));     // cut short
+    TEST(!zip_match(str("a?"), str("a\xe2\x82"), w));
+    TEST( zip_match(str("?"), str("\xc3\xa9"), ZIP_NOWILD|ZIP_UTF8));
+    TEST( zip_match(str("?."), str("\xc3\xa9"), w));       // implicit period
+    TEST(!zip_match(str("*.?"), str("\xc3\xa9"), w));
+
     TEST( zip_haswild(str("a*"), 0));
     TEST( zip_haswild(str("a?"), 0));
     TEST(!zip_haswild(str("a[b]"), 0));

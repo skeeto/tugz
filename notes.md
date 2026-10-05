@@ -396,8 +396,12 @@ neither inflate nor the gzip container.
   drive-relative ones (`C:*.txt`) included, are expanded per component
   (except when freshening, when, as in Info-ZIP's port, they only match
   entries) and matched as Info-ZIP's Windows port does: ignoring case,
-  without `[sets]`, and by its dosmatch, under which a name without a
-  period matches as if it ended in one (`*.*` matches every name).
+  without `[sets]`, by characters, and by its dosmatch, under which a
+  name without a period matches as if it ended in one (`*.*` matches
+  every name). By characters, `?` matches a UTF-8 character, not a
+  byte, as the port matches characters of its multibyte code page, or
+  wide ones (unverified against the port; there a character beyond the
+  BMP would be two wide ones); on Unix, Info-ZIP and tugz match bytes.
   Filters match the same way, except that case matters against entries
   (`-d`) and when freshening. Files replace existing entries whose
   names differ only in case, and those keep their names. A path given
