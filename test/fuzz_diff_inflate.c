@@ -6,8 +6,8 @@
 // sizes for the rest. Our streaming decoder must then agree with zlib on
 // success, on truncation versus error, on output, and on exactly where
 // the stream ends.
-// $ clang -g -O1 -fsanitize=fuzzer,address,undefined main_fuzz_diff_inflate.c -lz
-#include "test/fuzzos.c"
+// $ clang -g -O1 -fsanitize=fuzzer,address,undefined test/fuzz_diff_inflate.c -lz
+#include "fuzzos.c"
 #include <zlib.h>
 
 #define OUTCAP ((iz)1 << 24)

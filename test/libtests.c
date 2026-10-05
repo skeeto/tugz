@@ -1,8 +1,8 @@
 // Test suite for the tugz library interface (tugz.h)
 // Exercises streaming with every buffer split, exact stream ends, all
 // three formats, flushes, memory handling, and cross-checks with zlib.
-// $ cc -g3 -fsanitize=address,undefined -o tests-lib main_libtest.c -lz
-#include "libtugz.c"
+// $ cc -g3 -fsanitize=address,undefined -o tests-lib test/libtests.c -lz
+#include "../platform/libtugz.c"
 
 #include <stdio.h>
 #include <stdlib.h>

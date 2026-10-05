@@ -14,11 +14,11 @@ layer includes the core and supplies a handful of functions.
 
 POSIX (Linux, macOS, BSD):
 
-    $ cc -O2 -o gzip main_posix.c
+    $ cc -O2 -o gzip platform/gzip_posix.c
 
 Windows, CRT-free (w64devkit):
 
-    $ cc -O2 -fno-builtin -nostartfiles -o gzip.exe main_windows.c -lmemory -lshell32 -lkernel32
+    $ cc -O2 -fno-builtin -nostartfiles -o gzip.exe platform/gzip_windows.c -lmemory -lshell32 -lkernel32
 
 Hardware CRC-32 is used automatically: PCLMULQDQ on x86 (detected at run
 time), and the CRC instructions on ARMv8 targets that have them.
@@ -43,7 +43,7 @@ int status = tugz_inflate(z, &b);  // TUGZ_DONE, NEED_INPUT, NEED_OUTPUT, or err
 
 Deflate supports SYNC, FULL, and FINISH flushes, and a Lua-style
 allocator callback is available in place of caller memory. Build
-`libtugz.c` as an object (`make libtugz.o`), or use `make tugz.c` for a
+`platform/libtugz.c` as an object (`make libtugz.o`), or use `make tugz.c` for a
 single-file amalgamation with the header inlined.
 
 ## Usage

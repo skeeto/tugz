@@ -2,8 +2,8 @@
 // The first bytes select the level, push size, and stream offset. Output
 // must also be identical regardless of push size and offset, and must
 // decompress identically under zlib.
-// $ clang -g -O1 -fsanitize=fuzzer,address,undefined main_fuzz_roundtrip.c -lz
-#include "test/fuzzos.c"
+// $ clang -g -O1 -fsanitize=fuzzer,address,undefined test/fuzz_roundtrip.c -lz
+#include "fuzzos.c"
 #include <zlib.h>
 
 int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)

@@ -1,16 +1,17 @@
 // Benchmark platform layer: in-memory gzip compression and decompression
 // throughput versus zlib and libdeflate, all producing the gzip format.
-// $ cc -O2 -o bench main_bench.c -lz -ldeflate
+// $ cc -O2 -o bench test/bench.c -lz -ldeflate
 // $ ./bench [-l LEVELS] [-t SECONDS] FILE...
 // LEVELS is a comma-separated list (default 1,6,9). Decompression speed
 // is measured by each decoder on the same zlib level 6 stream.
-#include "src/base.c"
-#include "src/crc32.c"
-#include "src/adler32.c"
-#include "src/inflate.c"
-#include "src/deflate.c"
-#include "src/gzip.c"
-#include "src/io.c"
+#include "../src/base.c"
+#include "../src/crc32.c"
+#include "../src/adler32.c"
+#include "../src/inflate.c"
+#include "../src/deflate.c"
+#include "../src/gzip.c"
+#include "../src/io.c"
+#include "../src/gzipio.c"
 
 #include <libdeflate.h>
 #include <stdio.h>
@@ -86,9 +87,10 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
     return 1;
 }
 
-static void os_fail(os *ctx)
+static void os_exit(os *ctx, i32 status)
 {
     (void)ctx;
+    (void)status;
     abort();
 }
 

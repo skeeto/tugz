@@ -1,6 +1,6 @@
 // tugz core: base types and arena allocator
 //
-// Everything is a unity build. A platform layer (main_*.c, libtugz.c)
+// Everything is a unity build. A platform layer (platform/*.c, test/*.c)
 // includes the sources it needs, starting with this one, and defines
 // os_oom along with its entry points.
 

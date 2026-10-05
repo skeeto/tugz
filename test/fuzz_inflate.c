@@ -1,7 +1,7 @@
 // libFuzzer harness: arbitrary input to the gzip and raw DEFLATE decoders
-// $ clang -g -O1 -fsanitize=fuzzer,address,undefined main_fuzz_inflate.c
+// $ clang -g -O1 -fsanitize=fuzzer,address,undefined test/fuzz_inflate.c
 // $ ./a.out -max_len=65536 corpus/
-#include "test/fuzzos.c"
+#include "fuzzos.c"
 
 int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
 {

@@ -1,5 +1,6 @@
-# Development Makefile. Each main_*.c is a complete unity build, so any
-# program can also be built by invoking a compiler directly on it.
+# Development Makefile. Each platform/*_{posix,windows}.c, and each
+# test/*.c with an entry point, is a complete unity build, so any program
+# can also be built by invoking a compiler directly on it.
 
 CC       = cc
 CROSS    = x86_64-w64-mingw32-
@@ -18,22 +19,24 @@ WIN32_LIBS   = -nostartfiles -s -Wl,--gc-sections -lmemory -lshell32 -lkernel32
 
 CORE = src/base.c src/crc32.c src/adler32.c src/inflate.c src/deflate.c \
        src/gzip.c
-SRC  = $(CORE) src/io.c src/cli.c
-LIB  = libtugz.c tugz.h $(CORE)
+SRC  = $(CORE) src/io.c src/gzipio.c src/cli.c
+LIB  = platform/libtugz.c tugz.h $(CORE)
+POSIX   = platform/posix.c
+WINDOWS = platform/windows.c
 
-gzip: main_posix.c $(SRC)
-	$(CC) $(OPT) $(WARN) -o $@ main_posix.c
+gzip: platform/gzip_posix.c $(POSIX) $(SRC)
+	$(CC) $(OPT) $(WARN) -o $@ platform/gzip_posix.c
 
-gzip-debug: main_posix.c $(SRC)
-	$(CC) $(DEBUG) -o $@ main_posix.c
+gzip-debug: platform/gzip_posix.c $(POSIX) $(SRC)
+	$(CC) $(DEBUG) -o $@ platform/gzip_posix.c
 
-gzip.exe: main_windows.c $(SRC)
-	$(CROSS)gcc $(OPT) $(WARN) $(WIN32_CFLAGS) -o $@ main_windows.c $(WIN32_LIBS)
+gzip.exe: platform/gzip_windows.c $(WINDOWS) $(SRC)
+	$(CROSS)gcc $(OPT) $(WARN) $(WIN32_CFLAGS) -o $@ platform/gzip_windows.c $(WIN32_LIBS)
 
 # Single-file Windows source, e.g. for w64devkit. The header carries the
 # version and build command; local includes are dropped.
 amalgamation: gzip.c
-gzip.c: main_windows.c $(SRC)
+gzip.c: platform/gzip_windows.c $(WINDOWS) $(SRC)
 	v=$$(sed -n 's/.*gzip (tugz) \([0-9.]*\).*/\1/p' src/cli.c); \
 	{ echo "// tugz $$v: tiny unity gzip, a drop-in gzip for Windows"; \
 	  echo "// Single-file amalgamation of the tugz sources. Build:"; \
@@ -41,13 +44,13 @@ gzip.c: main_windows.c $(SRC)
 	  echo "// Copies named gunzip.exe or zcat.exe decompress by default."; \
 	  echo; \
 	  awk 'FNR==1 && NR>1 {print ""} !/^#include "/ && !/^\/\/ +\$$ cc/' \
-	      $(SRC) main_windows.c; } >$@
+	      $(SRC) $(WINDOWS) platform/gzip_windows.c; } >$@
 
-tests: main_test.c $(SRC)
-	$(CC) $(DEBUG) -o $@ main_test.c $(REFLIBS)
+tests: test/tests.c $(SRC)
+	$(CC) $(DEBUG) -o $@ test/tests.c $(REFLIBS)
 
-tests-lib: main_libtest.c $(LIB)
-	$(CC) $(DEBUG) -o $@ main_libtest.c $(REFLIBS)
+tests-lib: test/libtests.c $(LIB)
+	$(CC) $(DEBUG) -o $@ test/libtests.c $(REFLIBS)
 
 check: tests tests-lib gzip
 	./tests
@@ -56,7 +59,7 @@ check: tests tests-lib gzip
 
 # The library: an object exporting only the tugz.h interface
 libtugz.o: $(LIB)
-	$(CC) -c $(OPT) $(WARN) -o $@ libtugz.c
+	$(CC) -c $(OPT) $(WARN) -o $@ platform/libtugz.c
 
 # Single-file library source with its header inlined. Define TUGZ_API as
 # static before including it to embed the library in another program.
@@ -68,27 +71,27 @@ tugz.c: $(LIB)
 	  echo "// The interface documentation follows."; \
 	  echo; \
 	  awk 'FNR==1 && NR>1 {print ""} !/^#include "/ && !/^\/\/ +\$$ cc/' \
-	      tugz.h $(CORE) libtugz.c; } >$@
+	      tugz.h $(CORE) platform/libtugz.c; } >$@
 
-fuzz-inflate: main_fuzz_inflate.c test/fuzzos.c $(SRC)
-	$(FUZZCC) $(FUZZ) -o $@ main_fuzz_inflate.c
+fuzz-inflate: test/fuzz_inflate.c test/fuzzos.c $(SRC)
+	$(FUZZCC) $(FUZZ) -o $@ test/fuzz_inflate.c
 
-fuzz-roundtrip: main_fuzz_roundtrip.c test/fuzzos.c $(SRC)
-	$(FUZZCC) $(FUZZ) -o $@ main_fuzz_roundtrip.c $(REFLIBS)
+fuzz-roundtrip: test/fuzz_roundtrip.c test/fuzzos.c $(SRC)
+	$(FUZZCC) $(FUZZ) -o $@ test/fuzz_roundtrip.c $(REFLIBS)
 
-fuzz-diff-inflate: main_fuzz_diff_inflate.c test/fuzzos.c $(SRC)
-	$(FUZZCC) $(FUZZ) -o $@ main_fuzz_diff_inflate.c $(REFLIBS)
+fuzz-diff-inflate: test/fuzz_diff_inflate.c test/fuzzos.c $(SRC)
+	$(FUZZCC) $(FUZZ) -o $@ test/fuzz_diff_inflate.c $(REFLIBS)
 
-fuzz-diff-deflate: main_fuzz_diff_deflate.c test/fuzzos.c $(SRC)
-	$(FUZZCC) $(FUZZ) -o $@ main_fuzz_diff_deflate.c $(REFLIBS)
+fuzz-diff-deflate: test/fuzz_diff_deflate.c test/fuzzos.c $(SRC)
+	$(FUZZCC) $(FUZZ) -o $@ test/fuzz_diff_deflate.c $(REFLIBS)
 
 fuzz: fuzz-inflate fuzz-roundtrip fuzz-diff-inflate fuzz-diff-deflate
 
 fuzz-seeds:
 	uv run --no-project python test/seeds.py
 
-bench: main_bench.c $(SRC)
-	$(CC) -O2 $(WARN) -Wno-unused-function -o $@ main_bench.c $(REFLIBS)
+bench: test/bench.c $(SRC)
+	$(CC) -O2 $(WARN) -Wno-unused-function -o $@ test/bench.c $(REFLIBS)
 
 clean:
 	rm -rf gzip gzip-debug gzip.exe gzip.c tests tests-lib bench *.dSYM \

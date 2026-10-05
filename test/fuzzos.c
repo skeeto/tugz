@@ -1,6 +1,6 @@
 // In-memory platform layer shared by the libFuzzer harnesses
 // Standard input reads from a buffer, standard output appends to a
-// bounded buffer (writes past the bound fail), and os_fail longjmps.
+// bounded buffer (writes past the bound fail), and os_exit longjmps.
 #include "../src/base.c"
 #include "../src/crc32.c"
 #include "../src/adler32.c"
@@ -8,6 +8,7 @@
 #include "../src/deflate.c"
 #include "../src/gzip.c"
 #include "../src/io.c"
+#include "../src/gzipio.c"
 
 #include <setjmp.h>
 #include <stdint.h>
@@ -88,8 +89,9 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
     return 1;
 }
 
-static void os_fail(os *ctx)
+static void os_exit(os *ctx, i32 status)
 {
+    (void)status;
     longjmp(ctx->fail, 1);
 }
 

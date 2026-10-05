@@ -7,7 +7,8 @@ itself as `gzip (tugz) 1.0` and is installed under the name `gzip`.
 
 ## Layout
 
-Unity build: each `main_*.c` (and `libtugz.c`) is a platform layer that
+Unity build: each program's platform layer (`platform/*_posix.c`,
+`platform/*_windows.c`, `platform/libtugz.c`, and the test programs)
 includes the sources it needs and defines their hooks. Everything is
 `static` except the entry points. Nothing at file scope in the core is
 mutable; platform layers may use globals and `#ifdef`.
@@ -15,8 +16,10 @@ mutable; platform layers may use globals and `#ifdef`.
 The core (`base`, `crc32`, `adler32`, `inflate`, `deflate`, `gzip`) does
 no I/O: callers hand it input and output buffers of any size and it
 resumes where it stopped. Its only hook is `os_oom`. Programs add
-`src/io.c` (the `os_*` file interface, buffered reader and writer, and
-descriptor drivers) and `src/cli.c`. The library layer adds neither.
+`src/io.c` (the `os_*` file interface and a buffered reader and writer);
+gzip adds `src/gzipio.c` (descriptor drivers) and `src/cli.c`. The
+library layer adds none of them. The shared `os_*` implementations live
+in `platform/posix.c` and `platform/windows.c`.
 
 | File                     | Purpose                                         |
 |--------------------------|-------------------------------------------------|
@@ -26,15 +29,17 @@ descriptor drivers) and `src/cli.c`. The library layer adds neither.
 | `src/inflate.c`          | resumable raw DEFLATE decoder, zlib-exact       |
 | `src/deflate.c`          | resumable raw DEFLATE encoder, flushes          |
 | `src/gzip.c`             | zlib and gzip containers: decoder, encoder      |
-| `src/io.c`               | programs only: `os_*`, reader/writer, drivers   |
-| `src/cli.c`              | command line driver, `gzip_main`                |
-| `main_posix.c`           | POSIX platform layer                            |
-| `main_windows.c`         | CRT-free Win32 platform layer                   |
-| `libtugz.c`, `tugz.h`    | library layer and its public interface          |
-| `main_test.c`            | test suite (in-memory file system)              |
-| `main_libtest.c`         | library interface tests                         |
-| `main_fuzz_*.c`          | libFuzzer harnesses, sharing `test/fuzzos.c`    |
-| `main_bench.c`           | benchmark versus zlib and libdeflate            |
+| `src/io.c`               | programs only: `os_*` interface, reader/writer  |
+| `src/gzipio.c`           | gzip program: descriptor drivers for the codec  |
+| `src/cli.c`              | gzip command line driver, `gzip_main`           |
+| `platform/posix.c`       | shared POSIX `os_*` implementation              |
+| `platform/windows.c`     | shared CRT-free Win32 `os_*`, paths, arguments  |
+| `platform/gzip_*.c`      | gzip entry points (POSIX, Windows)              |
+| `platform/libtugz.c`     | library layer; `tugz.h` is its interface        |
+| `test/tests.c`           | test suite (in-memory file system)              |
+| `test/libtests.c`        | library interface tests                         |
+| `test/fuzz_*.c`          | libFuzzer harnesses, sharing `test/fuzzos.c`    |
+| `test/bench.c`           | benchmark versus zlib and libdeflate            |
 | `test/cli.sh`            | end-to-end tests of the binary                  |
 | `test/seeds.py`          | fuzzing seed corpus generator                   |
 
@@ -143,7 +148,7 @@ Fuzzers:
 - Library: big-endian ppc (also under UBSan), Windows x86-64 and i686,
   and 32-bit Linux under UBSan produce byte-identical compressed output
   to the Mac in all formats, with SYNC flushes and odd buffer pieces.
-  `main_libtest.c` passes under ASan/UBSan/LSan in WSL. `tugz.c` builds
+  `test/libtests.c` passes under ASan/UBSan/LSan in WSL. `tugz.c` builds
   warning-free with GCC and mingw, and `tugz.h` parses as C++.
 
 ## Behavior decisions

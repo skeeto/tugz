@@ -6,8 +6,8 @@
 // and buffer pieces, must produce piece-independent output that decodes
 // under both libraries and our own streaming decoder.
 // $ clang -g -O1 -fsanitize=fuzzer,address,undefined \
-//         main_fuzz_diff_deflate.c -lz -ldeflate
-#include "test/fuzzos.c"
+//         test/fuzz_diff_deflate.c -lz -ldeflate
+#include "fuzzos.c"
 #include <libdeflate.h>
 #include <zlib.h>
 

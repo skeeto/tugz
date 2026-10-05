@@ -1,13 +1,6 @@
-// CRT-free Win32 platform layer for tugz
-// $ cc -O2 -nostartfiles -o gzip.exe main_windows.c -lmemory
-#include "src/base.c"
-#include "src/crc32.c"
-#include "src/adler32.c"
-#include "src/inflate.c"
-#include "src/deflate.c"
-#include "src/gzip.c"
-#include "src/io.c"
-#include "src/cli.c"
+// Shared CRT-free Win32 platform code: the os_* file interface of
+// src/io.c, path conversion, and the command line. Included by each
+// Windows program after the sources it needs.
 
 typedef unsigned short c16;
 typedef uptr           iptr;
@@ -305,28 +298,6 @@ static void os_keep(os *ctx, i32 fd)
                                &keep, sizeof(keep));
 }
 
-static b32 os_isatty(os *ctx, i32 fd)
-{
-    u32 mode;
-    return GetConsoleMode(ctx->handles[fd], &mode);
-}
-
-// Windows has no meaningful equivalent of mode bits here: new files
-// inherit their directory's access control, as they would from GNU gzip.
-// Copy the timestamps.
-static void os_copymeta(os *ctx, i32 from, i32 to)
-{
-    basic_info info = {0};
-    if (GetFileInformationByHandleEx(ctx->handles[from], FileBasicInfo,
-                                     &info, sizeof(info))) {
-        basic_info set = {0};
-        set.accessed = info.accessed;
-        set.written  = info.written;
-        SetFileInformationByHandle(ctx->handles[to], FileBasicInfo,
-                                   &set, sizeof(set));
-    }
-}
-
 static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
 {
     u32 got = 0;
@@ -358,50 +329,40 @@ static b32 os_remove(os *ctx, s8 path, arena scratch)
     return wpath && DeleteFileW(wpath);
 }
 
-static void os_fail(os *ctx)
+static void os_exit(os *ctx, i32 status)
 {
-    (void)ctx;
-    ExitProcess(EXIT_ERR);
+    (void)ctx;  // created files not kept are delete-pending
+    ExitProcess((u32)status);
 }
 
-void mainCRTStartup(void)
+// Initialize standard handles and allocate a committed arena of cap
+// bytes. Exits on failure.
+static arena os_init(os *ctx, iz cap)
 {
-    os ctx = {0};
-    ctx.handles[0] = GetStdHandle((u32)-10);
-    ctx.handles[1] = GetStdHandle((u32)-11);
-    ctx.handles[2] = GetStdHandle((u32)-12);
+    ctx->handles[0] = GetStdHandle((u32)-10);
+    ctx->handles[1] = GetStdHandle((u32)-11);
+    ctx->handles[2] = GetStdHandle((u32)-12);
+    arena a = {0};
+    a.beg = VirtualAlloc(0, cap, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+    if (!a.beg) {
+        ExitProcess(1);
+    }
+    a.end = a.beg + cap;
+    a.ctx = ctx;
+    return a;
+}
 
-    iz cap = (iz)1 << 25;
-    config conf = {0};
-    conf.perm.beg = VirtualAlloc(0, cap, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
-    if (!conf.perm.beg) {
-        ExitProcess(EXIT_ERR);
+// Command line arguments as WTF-8, including the program name first.
+static s8 *os_args(arena *a, i32 *argc)
+{
+    *argc = 0;
+    c16 **argv = CommandLineToArgvW(GetCommandLineW(), argc);
+    if (!argv) {
+        *argc = 0;
     }
-    conf.perm.end = conf.perm.beg + cap;
-    conf.perm.ctx = &ctx;
-
-    i32 argc = 0;
-    c16 **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (argv && argc>0) {
-        // Drop the directory and an .exe extension
-        s8 name = towtf8(&conf.perm, argv[0]);
-        for (iz i = name.len; i > 0; i--) {
-            if (name.s[i-1]=='/' || name.s[i-1]=='\\' || name.s[i-1]==':') {
-                name.s += i;
-                name.len -= i;
-                break;
-            }
-        }
-        if (name.len > 4) {
-            s8 ext = {name.s + name.len - 4, 4};
-            name.len -= ascii_iequals(ext, S(".exe")) ? 4 : 0;
-        }
-        conf.name = name;
+    s8 *args = new(a, *argc, s8);
+    for (i32 i = 0; i < *argc; i++) {
+        args[i] = towtf8(a, argv[i]);
     }
-    conf.nargs = argv && argc>0 ? argc-1 : 0;
-    conf.args = new(&conf.perm, conf.nargs, s8);
-    for (i32 i = 0; i < conf.nargs; i++) {
-        conf.args[i] = towtf8(&conf.perm, argv[i+1]);
-    }
-    ExitProcess((u32)gzip_main(&conf));
+    return args;
 }

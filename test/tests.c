@@ -1,15 +1,16 @@
 // Test suite for tugz
 // On success prints "all tests pass" and exits with status zero. A
 // failure traps, so run under a debugger to examine it.
-// $ cc -g3 -fsanitize=address,undefined -o tests main_test.c -lz -ldeflate
-#include "src/base.c"
-#include "src/crc32.c"
-#include "src/adler32.c"
-#include "src/inflate.c"
-#include "src/deflate.c"
-#include "src/gzip.c"
-#include "src/io.c"
-#include "src/cli.c"
+// $ cc -g3 -fsanitize=address,undefined -o tests test/tests.c -lz -ldeflate
+#include "../src/base.c"
+#include "../src/crc32.c"
+#include "../src/adler32.c"
+#include "../src/inflate.c"
+#include "../src/deflate.c"
+#include "../src/gzip.c"
+#include "../src/io.c"
+#include "../src/gzipio.c"
+#include "../src/cli.c"
 
 #include <libdeflate.h>
 #include <setjmp.h>
@@ -273,8 +274,9 @@ static b32 os_remove(os *ctx, s8 path, arena scratch)
     return !!f;
 }
 
-static void os_fail(os *ctx)
+static void os_exit(os *ctx, i32 status)
 {
+    (void)status;
     longjmp(ctx->fail, 1);
 }
 
@@ -1900,7 +1902,7 @@ static void test_cli_safety(os *ctx, arena a)
 
 static void test_oom(os *ctx, arena a)
 {
-    // Every truncation of the arena must fail cleanly via os_fail
+    // Every truncation of the arena must fail cleanly via os_exit
     u8 *text = randbytes(1000, 2);
     s8 gz;
     TEST(do_gzip(ctx, a, text, 1000, 6, &gz) == GZ_OK);
@@ -1936,7 +1938,7 @@ int main(void)
     mfs_reset(&ctx);
 
     if (setjmp(ctx.fail)) {
-        fprintf(stderr, "unexpected os_fail\n");
+        fprintf(stderr, "unexpected os_exit\n");
         __builtin_trap();
     }
 

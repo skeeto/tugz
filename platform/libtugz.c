@@ -1,15 +1,15 @@
 // Library layer for tugz: the tugz.h interface over the core
-// $ cc -c -O2 libtugz.c
+// $ cc -c -O2 platform/libtugz.c
 //
 // Exports only the tugz_* functions. The core allocates only from the
 // caller's memory, after checking its size, so it never runs out.
-#include "src/base.c"
-#include "src/crc32.c"
-#include "src/adler32.c"
-#include "src/inflate.c"
-#include "src/deflate.c"
-#include "src/gzip.c"
-#include "tugz.h"
+#include "../src/base.c"
+#include "../src/crc32.c"
+#include "../src/adler32.c"
+#include "../src/inflate.c"
+#include "../src/deflate.c"
+#include "../src/gzip.c"
+#include "../tugz.h"
 
 // Definitions may be unused when embedded with TUGZ_API defined static.
 #define TUGZ_DEF [[maybe_unused]] TUGZ_API
