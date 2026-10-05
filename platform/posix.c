@@ -118,8 +118,9 @@ static i32 open_output(os *ctx, char *cpath, i32 mode)
     restore_signals(old);
 
     if (fd < 0) {
+        // Forced, a name not replaced (a directory) is an error
         free(copy);
-        return err==EEXIST ? OS_EEXIST : OS_ERR;
+        return err==EEXIST && !(mode & OS_FORCE) ? OS_EEXIST : OS_ERR;
     }
     return fd;
 }

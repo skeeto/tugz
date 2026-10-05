@@ -19,7 +19,7 @@ enum {
     // inherited ACL) given OS_DEFPERMS. It is discarded when closed, or
     // if the process is interrupted, unless os_keep was called first.
     OS_CREATE   = 1 << 3,  // fail if it exists
-    OS_FORCE    = 1 << 4,  // replace if it exists
+    OS_FORCE    = 1 << 4,  // replace if it exists, OS_ERR if it cannot
     OS_DEFPERMS = 1 << 5,
 };
 enum {

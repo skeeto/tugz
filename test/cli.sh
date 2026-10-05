@@ -73,6 +73,12 @@ expect_status 2 "$GZIP" u
 "$GZIP" -f u
 [ ! -e u ] || fail "-f did not compress"
 
+# ...and failing to replace one with -f is an error, as in GNU gzip
+printf d >dd
+mkdir dd.gz
+expect_status 2 "$GZIP" -k dd
+expect_status 1 "$GZIP" -kf dd
+
 # Multiple members
 "$GZIP" -c one >m1.gz
 "$GZIP" -c text >m2.gz
@@ -175,6 +181,54 @@ fi
 if [ -n "$windows" ]; then
     "$GZIP" -c NUL | "$GZIP" -dc | cmp -s - empty || fail "-c NUL"
     expect_status 2 "$GZIP" NUL
+fi
+
+# Windows: an output name that another process holds delete-pending, as
+# gzip holds its own until done, is refused, an error under -f
+if [ -n "$windows" ]; then
+    printf p >pend
+    cat >pend.cs <<'EOF'
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+public static class Pend {
+    [DllImport("kernel32.dll")]
+    static extern bool SetFileInformationByHandle(System.IntPtr h, int c,
+                                                  ref byte discard, int n);
+    public static FileStream Hold(string path) {
+        FileStream f = new FileStream(path, FileMode.CreateNew,
+            FileSystemRights.Write | FileSystemRights.Delete,
+            FileShare.None, 1, FileOptions.None);
+        byte discard = 1;
+        SetFileInformationByHandle(f.SafeFileHandle.DangerousGetHandle(),
+                                   4, ref discard, 1);  // FileDispositionInfo
+        return f;
+    }
+}
+EOF
+    powershell -NoProfile -NonInteractive -Command "
+        Add-Type -TypeDefinition (Get-Content -Raw pend.cs)
+        \$f = [Pend]::Hold((Join-Path (Get-Location) pend.gz))
+        Set-Content held ''
+        for (\$i = 0; \$i -lt 600 -and !(Test-Path done); \$i++) {
+            Start-Sleep -Milliseconds 50
+        }
+        \$f.Close()" &
+    pid=$!
+    for i in 1 2 3 4 5 6 7 8 9 10; do [ -e held ] && break; sleep 1; done
+    set +e
+    "$GZIP" -k pend 2>err1; st1=$?
+    "$GZIP" -kf pend 2>err2; st2=$?
+    "$GZIP" -kqf pend 2>err3; st3=$?
+    set -e
+    : >done
+    wait $pid || true
+    [ $st1 = 2 ] && grep -q 'already exists' err1 ||
+        fail "delete-pending output: $st1 $(cat err1)"
+    [ $st2 = 1 ] && grep -q 'cannot open for writing' err2 ||
+        fail "-f delete-pending output: $st2 $(cat err2)"
+    [ $st3 = 1 ] && [ -s err3 ] || fail "-qf delete-pending output: $st3"
+    "$GZIP" -kf pend || fail "-f once no longer delete-pending"
 fi
 
 # Write errors

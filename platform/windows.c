@@ -418,14 +418,17 @@ static i32 open_output(os *ctx, i32 fd, c16 *wpath, i32 mode)
     i32 unsure = ctx->unsure;
     ctx->unsure = 0;
     if (h == INVALID_HANDLE_VALUE) {
-        // A name that another process holds delete-pending (its output
+        // Forced, a name that could not be replaced is an error. Else a
+        // name that another process holds delete-pending (its output
         // not yet kept) refuses access rather than reporting that it
         // exists, and so does checking for it. But where the directory
         // refuses that check for any name (no traverse rights), every
         // name looks taken, so after a run of 64 such names give up
         // rather than let a caller seeking a free name try them all.
         u32 err = GetLastError();
-        if (err==ERROR_ACCESS_DENIED || err==ERROR_SHARING_VIOLATION) {
+        if (mode & OS_FORCE) {
+            return OS_ERR;
+        } else if (err==ERROR_ACCESS_DENIED || err==ERROR_SHARING_VIOLATION) {
             b32 found = GetFileAttributesW(wpath) != INVALID_FILE_ATTRIBUTES;
             if (found) {
                 err = ERROR_FILE_EXISTS;

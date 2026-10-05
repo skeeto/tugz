@@ -425,7 +425,10 @@ Fuzzers:
   keeping output files off it; the opposite access mode makes using it
   fail as before.
 - `-f` replaces an existing output by unlinking it first, never writing
-  through a link.
+  through a link. An output it cannot remove (a directory, and on
+  Windows a read-only file or a name another process holds
+  delete-pending) is an error (1), as in GNU gzip, while without `-f`
+  it is refused with a warning (2).
 - Windows paths get the `\\?\` prefix, lifting MAX_PATH. It turns off
   Win32 parsing, so paths are first resolved as Win32 would: against the
   current directory (UNC or not), a drive's, or the root, dropping `.`,
