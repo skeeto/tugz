@@ -443,15 +443,17 @@ neither inflate nor the gzip container.
   a megabyte at a time, so that neither side strands memory the other
   could use. Only scratch's high-water mark stays scratch's, since by
   value it cannot tell when that is free again; scratch below the frame
-  asking is always free. POSIX maps the reservation readable and
-  writable with `MAP_NORESERVE`, so pages get memory only when touched
-  and Linux does not count the rest against its overcommit heuristic;
-  Windows reserves it and commits each megabyte as it is claimed, so the
-  commit charge grows with use. The hook refuses arenas other than perm
-  and scratch, such as a codec's exactly sized one. Running out (of
-  address space, or of the system's commit limit on Windows) is still
-  "zip error: Out of memory" (4). gzip and the library keep their fixed
-  arenas: their hooks only report running out.
+  asking is always free. Both platforms reserve it inaccessible and
+  commit each megabyte as it is claimed (Windows `MEM_COMMIT`, POSIX
+  `mprotect` to read-write), so the commit charge grows with use. A
+  writable reservation would be charged in full under Linux's strict
+  overcommit (`vm.overcommit_memory=2`), which ignores `MAP_NORESERVE`;
+  that flag is not used, since in the other modes it would only leave
+  the committed chunks out of `Committed_AS`. The hook refuses arenas
+  other than perm and scratch, such as a codec's exactly sized one.
+  Running out (of address space, of the commit limit, or of `ulimit -d`)
+  is still "zip error: Out of memory" (4). gzip and the library keep
+  their fixed arenas: their hooks only report running out.
 - Memory per entry: perm keeps only what is recorded. A file's path and
   name are built in scratch and copied to perm once it is added, as one
   string when the name ends the path, as most do (`d/f`, `./d/f`, `-j`'s

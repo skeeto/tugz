@@ -20,32 +20,31 @@
 #ifndef MAP_ANONYMOUS
 #  define MAP_ANONYMOUS MAP_ANON  // its older name
 #endif
-#ifndef MAP_NORESERVE
-#  define MAP_NORESERVE 0
-#endif
 
-// zip's memory is one reservation of address space, of which only the
-// pages touched get memory: perm grows up from its bottom and scratch
-// down from its top, each claiming more of the middle as it needs it.
-// MAP_NORESERVE keeps Linux from counting the whole reservation against
-// its overcommit heuristic. As much as the system lends, up to 16 GiB
-// (1 GiB on 32-bit hosts), halving on refusal.
+// zip's memory is one reserved range of address space, committed a
+// chunk at a time as it is used, so that the commit charge grows with
+// use: perm from the bottom up, and scratch from the top down. Mapped
+// PROT_NONE, the reservation is charged nothing, where a writable one
+// would be charged in full under Linux's strict overcommit, which
+// ignores MAP_NORESERVE (in the other modes, that flag would only leave
+// the committed chunks uncounted). As much as the system will reserve,
+// up to 16 GiB (1 GiB in 32-bit processes), halving on refusal.
 static void reserve(os *ctx)
 {
     iz cap = (iz)1 << (sizeof(void *)==8 ? 34 : 30);
     for (; cap >= (iz)1<<24; cap /= 2) {
-        void *p = mmap(0, (uz)cap, PROT_READ|PROT_WRITE,
-                       MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
+        byte *p = mmap(0, (uz)cap, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS,
+                       -1, 0);
         if (p != MAP_FAILED) {
             ctx->lo = p;
-            ctx->hi = ctx->lo + cap;
+            ctx->hi = p + cap;
             return;
         }
     }
     os_oom(ctx);
 }
 
-// Claim more of the reservation for perm, from below the middle, or for
+// Commit more of the reservation to perm, from below the middle, or to
 // a scratch arena, from above it, a megabyte at a time. Scratch below
 // the arena asking is free, since the functions that allocated it have
 // returned. Any other arena, such as a codec's exact one, is fixed.
@@ -61,14 +60,18 @@ static void os_extend(os *ctx, arena *a, iz need)
     if (want > room) {
         os_oom(ctx);
     } else if (want > 0) {
-        iz chunk = (iz)1 << 20;
-        iz take  = MIN((want + chunk - 1) & -chunk, room);
+        iz    chunk = (iz)1 << 20;
+        iz    take  = MIN((want + chunk - 1) & -chunk, room);
+        byte *at    = a->down ? ctx->hi-take : ctx->lo;
+        if (mprotect(at, (uz)take, PROT_READ|PROT_WRITE)) {
+            os_oom(ctx);  // the commit limit, or a data limit (ulimit -d)
+        }
         if (a->down) {
-            ctx->hi -= take;
-            a->beg   = ctx->hi;
+            ctx->hi = at;
+            a->beg  = at;
         } else {
-            ctx->lo += take;
-            a->end   = ctx->lo;
+            ctx->lo = at + take;
+            a->end  = ctx->lo;
         }
     }
 }
