@@ -800,7 +800,8 @@ static b32 zip_sep(u8 c, b32 windows)
 
 // Length of a UNC prefix "//server/share/" to drop from a name, as
 // Info-ZIP does on Unix too, or zero. Without its final separator,
-// "//server/share" is kept. On Windows either separator counts, a
+// "//server/share" is kept, though a directory, such as a share root,
+// is named with one. On Windows either separator counts, a
 // device path "//?/X:/" counts as server "?" and share "X:", and
 // "//?/UNC/server/share/" as a whole.
 static iz zip_unc(s8 p, b32 windows)

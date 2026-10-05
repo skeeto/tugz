@@ -268,6 +268,17 @@ printf '%s/tree/sub/../one\n%s/tree/./b.txt\n%s/tree/a.txt\n%s/tree/empty\n' \
 cmp -s got want.txt || fail "device paths: $(cat got)"
 expect_status 12 "$ZIP" p10.zip "\\\\?\\$win\\tree\\sub\\..\\one"
 
+# A share root is named as with its separator, as Info-ZIP names any
+# directory: by nothing, so that its entries drop the whole prefix
+share="//localhost/${here%%:*}\$"  # an administrative share, if shared
+if "$ZIP" -q s1.zip "$share/${here#?:/}/tree/one" 2>/dev/null; then
+    [ "$(list s1.zip)" = "${here#?:/}/tree/one" ] ||
+        fail "share name: $(list s1.zip)"
+    "$ZIP" -q s2.zip "$share" "\\\\?\\UNC\\localhost\\${here%%:*}\$" \
+        tree/one || fail "share roots"
+    [ "$(list s2.zip)" = tree/one ] || fail "share root: $(list s2.zip)"
+fi
+
 # Only a letter is a drive: "1:s" is stream s of file 1, and named so
 ps "Set-Content -LiteralPath 1 -Value f;
     Set-Content -LiteralPath 1 -Stream s -Value s"

@@ -166,7 +166,10 @@ the file is flushed and closed without error), and
   `-d` warns, as Info-ZIP does, that `-r` and `-0` are ignored.
 - Names: as Info-ZIP's ex2in makes them, `/` and `./` prefixes are
   dropped and `../` kept, and on POSIX too a leading `//host/share/`
-  is dropped (`zip t.zip //h/s/f` stores `f`). The same path reached
+  is dropped (`zip t.zip //h/s/f` stores `f`). A directory is named
+  with its separator, as procname names it, so a share root `//h/s`
+  is named by nothing, like `//h/s/`, and so are its entries' prefixes
+  (`zip -r t.zip //h/s` stores `f`). The same path reached
   twice (`f f`, `d d/a`, `d d/`, `find d | zip -r@`) is added once,
   silently, as in Info-ZIP; different paths giving one name
   (`./d/a d/a`, or a `-j` collision) are an error (16).

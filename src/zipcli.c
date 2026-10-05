@@ -1022,9 +1022,14 @@ static void scan(zip *z, s8 path, s8 name, os_info *info, dirid *up,
     }
 }
 
-static s8 arg_name(zip *z, s8 path)
+// Archive name for a path named on the command line. A directory's is
+// that of its path with a separator, as Info-ZIP's procname names it, so
+// that a share root "//server/share" is named, as "//server/share/" is,
+// by nothing, and the names of its entries drop that prefix too.
+static s8 arg_name(zip *z, s8 path, os_info *info, arena *a)
 {
-    return zip_name(&z->perm, path, z->windows);
+    path = info->type==FT_DIR ? JOIN(a, path, S("/")) : path;
+    return zip_name(a, path, z->windows);
 }
 
 // Whether a file is hidden or system (Windows), which Info-ZIP leaves
@@ -1083,7 +1088,8 @@ static iz expand(zip *z, s8 path, arena scratch)
         os_info *info  = &kids[i].info;
         b32      known = beg && !rest.len && listed(z, info);
         if (known || os_stat(z->ctx, cand, !z->symlinks, info, scratch)) {
-            scan(z, cand, arg_name(z, cand), info, 0, scratch);
+            scan(z, cand, arg_name(z, cand, info, &z->perm), info, 0,
+                 scratch);
             count++;
         }
     }
@@ -1099,7 +1105,8 @@ static b32 scan_arg(zip *z, s8 arg, arena scratch)
     os_info info = {0};
     if (os_stat(z->ctx, arg, !z->symlinks, &info, scratch)) {
         if (!hidden_file(z, &info)) {
-            scan(z, arg, arg_name(z, arg), &info, 0, scratch);
+            scan(z, arg, arg_name(z, arg, &info, &z->perm), &info, 0,
+                 scratch);
         }
     } else if (!z->windows || z->mode==MODE_FRESHEN) {
         return 0;
@@ -1823,16 +1830,12 @@ static b32 mark_deletes(zip *z, zentry *entries, iz n, s8 pattern, b32 *hit)
 static void mark_named(zip *z, zmap *old, s8 path, os_info *info, b32 *hit,
                        arena scratch)
 {
-    s8 name = zip_name(&scratch, path, z->windows);
+    s8 name = arg_name(z, path, info, &scratch);
     if (info->type == FT_OTHER) {
         warn(z, S("skipping special file: "), path, scratch);
         return;
-    } else if (info->type == FT_DIR) {
-        if (z->nodirs || !name.len) {
-            return;
-        } else if (name.s[name.len-1] != '/') {
-            name = JOIN(&scratch, name, S("/"));
-        }
+    } else if (info->type==FT_DIR && (z->nodirs || !name.len)) {
+        return;
     } else if (hidden_file(z, info)) {
         return;
     }
