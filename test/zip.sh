@@ -6,6 +6,7 @@
 set -e
 
 unset ZIPOPT ZIP  # options for zip, and ZIP unexported for the binary
+unset SOURCE_DATE_EPOCH  # set where tested, as by a reproducible build
 ZIP=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 CHECK=$(cd "$(dirname "$0")" && pwd)/zipcheck.py
 if command -v uv >/dev/null 2>&1; then
@@ -142,9 +143,11 @@ grep -q 'tree/empty (stored 0%)' out || fail "stored message: $(cat out)"
 cmp -s c1.zip c2.zip || fail "long options differ from short"
 "$ZIP" --qui --strip --compress-9 --recurse-path c2.zip tree
 cmp -s c1.zip c2.zip || fail "abbreviated long options differ"
-"$ZIP" -qX -X- -9r c3.zip tree
+# (An epoch before the tree's times clamps the access times that extra
+# fields hold, which reading the files may change between runs.)
+SOURCE_DATE_EPOCH=1700000000 "$ZIP" -qX -X- -9r c3.zip tree
 [ "$(wc -c <c3.zip)" -gt "$(wc -c <c1.zip)" ] || fail "-X- kept -X"
-"$ZIP" -qX9 --strip-extra- -rp --paths c4.zip tree
+SOURCE_DATE_EPOCH=1700000000 "$ZIP" -qX9 --strip-extra- -rp --paths c4.zip tree
 cmp -s c3.zip c4.zip || fail "--strip-extra- or -p"
 "$ZIP" -q --store c5.zip tree/a.txt
 zipinfo c5.zip | grep -q stor || fail "--store compressed"
@@ -188,17 +191,19 @@ cmp -s c9.zip c9.orig || fail "a repeated action changed the archive"
 [ "$(names c9.zip)" = tree/a.txt ] || fail "-FS -FS: $(names c9.zip)"
 
 # Determinism: -X output depends only on the tree, and SOURCE_DATE_EPOCH
-# makes it independent of the time zone
+# makes it independent of the time zone, before the epoch too. Zones are
+# POSIX TZ strings, which need no time zone database, and earlier times
+# are made east of UTC, where local times would show.
 "$ZIP" -qX9r d1.zip tree
 "$ZIP" -qX9r d2.zip tree
 cmp -s d1.zip d2.zip || fail "-X output not deterministic"
-SOURCE_DATE_EPOCH=1700000000 TZ=UTC "$ZIP" -qX9r e1.zip tree
-SOURCE_DATE_EPOCH=1700000000 TZ=Asia/Tokyo "$ZIP" -qX9r e2.zip tree
+SOURCE_DATE_EPOCH=1700000000 TZ=UTC0 "$ZIP" -qX9r e1.zip tree
+SOURCE_DATE_EPOCH=1700000000 TZ=JST-9 "$ZIP" -qX9r e2.zip tree
 cmp -s e1.zip e2.zip || fail "SOURCE_DATE_EPOCH output depends on TZ"
-TZ=UTC touch -t 200001020304.05 tree/one
-SOURCE_DATE_EPOCH=1700000000 "$ZIP" -qX e3.zip tree/one tree/a.txt
+TZ=UTC0 touch -t 200001020304.05 tree/one
+SOURCE_DATE_EPOCH=1700000000 TZ=JST-9 "$ZIP" -qX e3.zip tree/one tree/a.txt
 zipinfo -T e3.zip | grep 'tree/one$' | grep -q 20000102.030406 ||
-    fail "older time not kept (rounded up): $(zipinfo -T e3.zip)"
+    fail "older time not kept (rounded up) in UTC: $(zipinfo -T e3.zip)"
 zipinfo -T e3.zip | grep 'tree/a.txt$' | grep -q 20231114.221320 ||
     fail "newer time not clamped: $(zipinfo -T e3.zip)"
 expect_status 16 env SOURCE_DATE_EPOCH=soon "$ZIP" -q e4.zip tree/one
@@ -207,7 +212,8 @@ expect_status 16 env SOURCE_DATE_EPOCH=soon "$ZIP" -q e4.zip tree/one
 # past it, as do times equal to it; earlier odd seconds round up
 printf odd >odd.txt
 TZ=UTC0 touch -t 202311142213.21 odd.txt  # 1700000001
-SOURCE_DATE_EPOCH=1700000001 "$ZIP" -qX e5.zip tree/a.txt odd.txt tree/one
+SOURCE_DATE_EPOCH=1700000001 TZ=JST-9 "$ZIP" -qX e5.zip tree/a.txt odd.txt \
+    tree/one
 zipinfo -T e5.zip >out
 grep 'tree/a.txt$' out | grep -q 20231114.221320 || fail "odd epoch: $(cat out)"
 grep 'odd.txt$' out | grep -q 20231114.221320 || fail "odd epoch: $(cat out)"
@@ -1067,10 +1073,15 @@ grep -q 'invalid option(s) used with -d; ignored' out ||
     fail "-d -r: $(cat out)"
 [ "$(names dw.zip)" = tree/b.txt ] || fail "-d -r: $(names dw.zip)"
 
-# A new archive gets the permissions of a new file, while a replaced
-# one keeps its own
-(umask 077 && "$ZIP" -q perm.zip tree/a.txt)
-[ "$(ls -l perm.zip | cut -c1-10)" = "-rw-------" ] || fail "new archive mode"
+# A new archive gets the permissions of a new file, here one the shell
+# creates (a default ACL may decide them, not the umask), while a
+# replaced one keeps its own
+for mask in 022 077; do
+    rm -f perm.zip perm.ref
+    (umask $mask && : >perm.ref && "$ZIP" -q perm.zip tree/a.txt)
+    [ "$(ls -l perm.zip | cut -c1-10)" = "$(ls -l perm.ref | cut -c1-10)" ] ||
+        fail "new archive mode, umask $mask: $(ls -l perm.zip perm.ref)"
+done
 chmod 640 perm.zip
 (umask 022 && "$ZIP" -q perm.zip tree/b.txt)
 [ "$(ls -l perm.zip | cut -c1-10)" = "-rw-r-----" ] || fail "replaced mode"
