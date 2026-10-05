@@ -1439,13 +1439,43 @@ static i32 zin_get(zin *r, i64 off, iz n, u8 **p)
     return got;
 }
 
+// Entries' Unicode names, where those differ, by index: few entries have
+// them, so these are listed in order rather than given every entry a slot.
+typedef struct {
+    iz index;
+    s8 name;
+} zuname;
+
+typedef struct {
+    zuname *data;
+    iz      len;
+    iz      cap;
+} zunames;
+
 typedef struct {
     zin     in;
     i64     beg;     // of the first entry, after any preamble
     zend    end;
     zentry *entries;
-    s8     *unames;  // their Unicode names, where those differ, else null
+    zunames unames;
 } zarchive;
+
+// An entry's Unicode name, if it differs from its stored name, else a
+// null string.
+static s8 entry_unicode(zarchive *ar, iz i)
+{
+    zunames *u  = &ar->unames;
+    iz       lo = 0;
+    for (iz hi = u->len; lo < hi;) {
+        iz mid = lo + (hi - lo)/2;
+        if (u->data[mid].index < i) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo<u->len && u->data[lo].index==i ? u->data[lo].name : (s8){0};
+}
 
 // An entry's name in Unicode, by which Info-ZIP also finds the entry for
 // a file, when it differs from the stored name: from a Unicode path field
@@ -1618,9 +1648,11 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
         ar->beg = MIN(ar->beg, ar->entries[i].offset);
     }
 
-    ar->unames = new(&z->perm, (iz)ar->end.count, s8);
-    for (i64 i = 0; i < ar->end.count; i++) {
-        ar->unames[i] = entry_uname(z, ar->entries+i, &z->perm, scratch);
+    for (i64 i = 0; i < count; i++) {
+        s8 u = entry_uname(z, ar->entries+i, &z->perm, scratch);
+        if (u.s) {
+            *push(&z->perm, &ar->unames) = (zuname){(iz)i, u};
+        }
     }
     return 0;
 }
@@ -1628,7 +1660,7 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
 // An entry's name for messages: in Unicode, if it has that too.
 static s8 shown_name(zarchive *ar, zentry *e)
 {
-    s8 u = ar->unames[e - ar->entries];
+    s8 u = entry_unicode(ar, e - ar->entries);
     return u.s ? u : e->name;
 }
 
@@ -2353,7 +2385,7 @@ static i32 parse_epoch(zip *z, s8 s, arena scratch)
 // its port decodes names, the Unicode name if there is one.
 static s8 port_name(zip *z, zarchive *ar, iz i)
 {
-    s8 u = ar->unames[i];
+    s8 u = entry_unicode(ar, i);
     return z->windows && u.s ? u : ar->entries[i].name;
 }
 
@@ -2601,15 +2633,15 @@ static i32 zip_main(zipconfig *conf)
     // that by Unicode name, as Info-ZIP looks them up. On Windows, a file
     // then replaces an entry whose name differs only in case, as in
     // Info-ZIP, and the entry keeps its name.
-    zmap *old = 0;
+    zmap   *old    = 0;
+    zunames unames = ar ? ar->unames : (zunames){0};
     for (i32 pass = 0; pass < 2; pass++) {
-        for (iz i = 0; i < nold; i++) {
-            s8 name = pass ? ar->unames[i] : entries[i].name;
-            if (name.s) {
-                iz *v = zmap_upsert(&old, entry_key(z, name, &scratch),
-                                    &scratch);
-                *v = *v<0 ? i : *v;
-            }
+        for (iz j = 0; j < (pass ? unames.len : nold); j++) {
+            iz  i    = pass ? unames.data[j].index : j;
+            s8  name = pass ? unames.data[j].name  : entries[i].name;
+            iz *v    = zmap_upsert(&old, entry_key(z, name, &scratch),
+                                   &scratch);
+            *v = *v<0 ? i : *v;
         }
     }
 
@@ -2729,7 +2761,7 @@ static i32 zip_main(zipconfig *conf)
                 b32 stored = zequals(entry_key(z, e->name, &tmp), key);
                 it->kind = z->mode==MODE_FRESHEN ? ITEM_FRESHEN : ITEM_UPDATE;
                 it->file = f;
-                f->name  = stored ? e->name : ar->unames[*v];
+                f->name  = stored ? e->name : entry_unicode(ar, *v);
                 changed  = 1;
             }
         }
