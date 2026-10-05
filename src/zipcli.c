@@ -46,6 +46,8 @@ typedef struct {
 // Returns false if the path does not exist or cannot be examined. With
 // follow, symbolic links are followed; otherwise a link is FT_LINK.
 static b32  os_stat(os *, s8 path, b32 follow, os_info *, arena scratch);
+// As os_stat, for the file that an open descriptor reads.
+static b32  os_fstat(os *, i32 fd, os_info *);
 // Entries within a directory, excluding . and .., in any order. Unless
 // all, hidden and system entries (Windows) are left out, judged by the
 // entry itself rather than a link's target. Returns null on error.
@@ -1249,13 +1251,21 @@ static void zout_patch(zout *w, i64 off, u8 *p, iz n)
 // Entry data source: a file, or memory (a symbolic link's target)
 
 typedef struct {
-    s8  path;
-    s8  mem;
-    iz  off;
-    i32 fd;
-    b32 err;
+    s8       path;
+    os_info *info;  // as scanned
+    s8       mem;
+    iz       off;
+    i32      fd;
+    b32      err;
 } zsrc;
 
+// Open a file to read as the scan found it: not a FIFO swapped in since,
+// which would block. Under -y, which stores links as links, not a link
+// swapped in either, nor any other file, as through a directory swapped
+// for a link, so that nothing is read through a link (Info-ZIP examines
+// each file again just before reading it). Without -y, links are
+// followed anyway, and a file saved since by renaming over it is read
+// as it now is.
 static b32 src_open(zip *z, zsrc *s, arena scratch)
 {
     s->off = 0;
@@ -1263,7 +1273,15 @@ static b32 src_open(zip *z, zsrc *s, arena scratch)
     if (s->mem.s) {
         return 1;
     }
-    s->fd = os_open(z->ctx, s->path, OS_READ, scratch);
+    i32 mode = OS_READ | OS_REGULAR | (z->symlinks ? OS_NOFOLLOW : 0);
+    s->fd = os_open(z->ctx, s->path, mode, scratch);
+    os_info now  = {0};
+    b32     seen = s->info->ino[0] || s->info->ino[1];
+    if (s->fd>=0 && z->symlinks && seen &&
+        (!os_fstat(z->ctx, s->fd, &now) || !same_file(&now, s->info))) {
+        os_close(z->ctx, s->fd);
+        s->fd = -1;
+    }
     return s->fd >= 0;
 }
 
@@ -1422,6 +1440,7 @@ static i32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
 
     zsrc src = {0};
     src.path = f->path;
+    src.info = &f->info;
     src.fd   = -1;
     if (f->info.type == FT_DIR) {
         u8 *h = newbytes(&scratch, zip_local_len(e));

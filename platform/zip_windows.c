@@ -81,28 +81,13 @@ static i64 unixtime(u32 const ft[2])
     return t>=0 ? t/10000000 : -((-t + 9999999)/10000000);
 }
 
-// Symbolic links and junctions are always followed, as Info-ZIP does on
-// Windows, so follow is ignored.
-static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
-                   arena scratch)
+static b32 handle_info(iptr h, os_info *info)
 {
-    (void)ctx;
-    (void)follow;
-    c16 *wpath = winpath(&scratch, path);
-    if (!wpath) {
-        return 0;
-    }
-    iptr h = CreateFileW(wpath, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, 0,
-                         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0);
-    if (h == INVALID_HANDLE_VALUE) {
-        return 0;
-    }
     by_handle_info bh = {0};
     file_id_info   id = {0};
     b32 ok   = GetFileInformationByHandle(h, &bh);
     b32 isid = GetFileInformationByHandleEx(h, FileIdInfo, &id, sizeof(id));
     u32 type = GetFileType(h);
-    CloseHandle(h);
     if (!ok && (type==FILE_TYPE_DISK || type==FILE_TYPE_UNKNOWN)) {
         return 0;
     }
@@ -134,6 +119,32 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
     info->ino[0] = id.id[0];
     info->ino[1] = id.id[1];
     return 1;
+}
+
+// Symbolic links and junctions are always followed, as Info-ZIP does on
+// Windows, so follow is ignored.
+static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
+                   arena scratch)
+{
+    (void)ctx;
+    (void)follow;
+    c16 *wpath = winpath(&scratch, path);
+    if (!wpath) {
+        return 0;
+    }
+    iptr h = CreateFileW(wpath, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, 0,
+                         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0);
+    if (h == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    b32 ok = handle_info(h, info);
+    CloseHandle(h);
+    return ok;
+}
+
+static b32 os_fstat(os *ctx, i32 fd, os_info *info)
+{
+    return handle_info(ctx->handles[fd], info);
 }
 
 // Hidden and system entries are judged by the attributes in the listing,

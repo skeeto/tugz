@@ -224,7 +224,13 @@ the file is flushed and closed without error), and
   are written. An entry that does not shrink is rewritten stored, from
   the input buffer if one read got it all, else by reopening the input;
   one that grows past 4 GiB while being read is redone with a Zip64
-  local header. Output is buffered 1 MiB at a time, and rewinding to an
+  local header. A file is opened only as a regular file, so a FIFO
+  swapped in since the scan fails as unreadable (18) rather than block
+  (Info-ZIP blocks), and under `-y` only if it is still the file the
+  scan found, by identity, so that nothing is read through a link
+  swapped in for it or for a directory above it (Info-ZIP examines each
+  file again just before reading it, but reads through such a
+  directory). Output is buffered 1 MiB at a time, and rewinding to an
   entry's start or patching its header stays in the buffer when it can,
   so small entries cost no writes of their own. The file is truncated to
   its final length and renamed over the target; on Windows by handle,
