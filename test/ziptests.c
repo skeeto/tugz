@@ -301,7 +301,7 @@ static void test_roundtrip_headers(arena a)
         u8 *q = zip_local(p, e+i);
         TEST(q-p == zip_local_len(e+i));
         p = q;
-        bytecopy(p, data, e[i].csize);
+        bytecopy(p, data, (iz)e[i].csize);
         p += e[i].csize;
     }
     i64 cdoff = p - buf;
