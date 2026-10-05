@@ -257,6 +257,17 @@ expect_status 12 "$ZIP" -r p5.zip ''
 [ "$(list p6.zip)" = "${here#?:/}/tree/one" ] ||
     fail "device path name: $(list p6.zip)"
 
+# A device path is resolved as Win32 resolves it, in any form except
+# exactly \\?\, which Win32 takes as it is
+win=$(printf %s "$here" | tr / '\\')
+"$ZIP" -q p9.zip "//?/$here/tree/sub/../one" "\\\\?/$here/tree/./b.txt" \
+    "//./$here/tree//a.txt" "\\\\?\\$win\\tree\\empty"
+list p9.zip >got
+printf '%s/tree/sub/../one\n%s/tree/./b.txt\n%s/tree/a.txt\n%s/tree/empty\n' \
+    "${here#?:/}" "${here#?:/}" "${here#?:/}" "${here#?:/}" >want.txt
+cmp -s got want.txt || fail "device paths: $(cat got)"
+expect_status 12 "$ZIP" p10.zip "\\\\?\\$win\\tree\\sub\\..\\one"
+
 # Only a letter is a drive: "1:s" is stream s of file 1, and named so
 ps "Set-Content -LiteralPath 1 -Value f;
     Set-Content -LiteralPath 1 -Stream s -Value s"

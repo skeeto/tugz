@@ -183,6 +183,18 @@ if [ -n "$windows" ]; then
     expect_status 2 "$GZIP" NUL
 fi
 
+# Windows: a device path is resolved as Win32 resolves it, except one
+# written exactly \\?\, which Win32 takes as it is
+if [ -n "$windows" ]; then
+    here=$(pwd)  # C:/...
+    for p in "//?/$here/names/../one" "\\\\?/$here/./one" "//./$here//one"; do
+        "$GZIP" -c "$p" | "$GZIP" -dc | cmp -s - one || fail "-c $p"
+    done
+    win=$(printf %s "$here" | tr / '\\')
+    expect_status 0 "$GZIP" -c "\\\\?\\$win\\one"
+    expect_status 1 "$GZIP" -c "\\\\?\\$win\\names\\..\\one"
+fi
+
 # Windows: an output name that another process holds delete-pending, as
 # gzip holds its own until done, is refused, an error under -f
 if [ -n "$windows" ]; then

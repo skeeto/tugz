@@ -433,7 +433,10 @@ Fuzzers:
   Win32 parsing, so paths are first resolved as Win32 would: against the
   current directory (UNC or not), a drive's, or the root, dropping `.`,
   `..`, and doubled separators. Trailing dots and spaces are kept, so
-  names from a listing round trip. The empty path names no file. A bare
+  names from a listing round trip. A path written exactly `\\?\`
+  passes through, as in Win32, but other device paths (`//?/`, `\\.\`)
+  are resolved too, as Win32 resolves them, except that `..` stops at
+  their volume or share. The empty path names no file. A bare
   DOS device name (`NUL`, `CON`, `COM1`, as `GetFullPathNameW` judges
   it) is the device, as in other Windows programs: zip skips it as a
   special file, `gzip -c NUL` reads nothing, and no output goes to one.

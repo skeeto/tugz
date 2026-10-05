@@ -193,11 +193,19 @@ static s16 s16lit(c16 *z)
     return r;
 }
 
-// A device path, \\?\ or \\.\, which Win32 does not resolve further.
+// A device path, \\?\ or \\.\, after slashes became backslashes.
 static b32 isdevice(s16 p)
 {
     return p.len>=4 && p.s[0]=='\\' && p.s[1]=='\\' &&
            (p.s[2]=='?' || p.s[2]=='.') && p.s[3]=='\\';
+}
+
+// A path written exactly \\?\..., which Win32 takes as it is. It
+// resolves any other device path (//?/..., \\.\...) like any path.
+static b32 isverbatim(s8 path)
+{
+    return path.len>=4 && path.s[0]=='\\' && path.s[1]=='\\' &&
+           path.s[2]=='?' && path.s[3]=='\\';
 }
 
 // Length of an absolute path's root: a drive "X:", a share
@@ -276,16 +284,18 @@ static c16 *dosdevice(arena *a, s16 p)
 // Win32 would: against the current directory (or a drive's, or its
 // root), dropping "." and ".." components and doubled separators. Unlike
 // Win32, keep trailing dots and spaces, so that names from a directory
-// listing round trip. Device paths pass through, and a bare DOS device
-// name (NUL) becomes its device as in any Windows program. Within a
-// directory such names stay files, as they are in a listing, since other
-// systems make them. Returns null for an empty path, which names no file.
+// listing round trip, and stop ".." at a device path's volume or share.
+// A path written exactly \\?\ passes through, as Win32 passes it, and a
+// bare DOS device name (NUL) becomes its device as in any Windows
+// program. Within a directory such names stay files, as they are in a
+// listing, since other systems make them. Returns null for an empty
+// path, which names no file.
 static c16 *winpath(arena *a, s8 path)
 {
     s16 p = fromwtf8(a, path);
     if (!p.len) {
         return 0;
-    } else if (isdevice(p)) {
+    } else if (isverbatim(path)) {
         return p.s;
     }
     c16 *dev = dosdevice(a, p);
@@ -293,9 +303,10 @@ static c16 *winpath(arena *a, s8 path)
         return dev;
     }
 
-    b32 dirsep = p.s[p.len-1] == '\\';
-    iz  root   = rootlen(p);
-    s16 base   = {0};
+    b32 dirsep  = p.s[p.len-1] == '\\';
+    b32 devpath = isdevice(p);
+    iz  root    = rootlen(p);
+    s16 base    = {0};
     if (!root) {
         base = curdir(a, 0);
         if (!base.s) {
@@ -353,8 +364,10 @@ static c16 *winpath(arena *a, s8 path)
         bytecopy(r+n, p.s+i, len*(iz)sizeof(c16));
         n += len;
     }
-    if (n==top || dirsep) {
-        r[n++] = '\\';  // a root is a directory only with its separator
+    // A root is a directory only with its separator, but as in Win32, a
+    // device path keeps one only if it ends in one: \\?\C: is the volume
+    if (dirsep || (n==top && !devpath)) {
+        r[n++] = '\\';
     }
     r[n] = 0;
     return r;
