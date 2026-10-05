@@ -68,8 +68,10 @@ progress() {
 
 # Run zip in the background, as process $pid in job $bg, and stop it
 # while its temporary file is in a directory, so before it replaces the
-# archive. Fails if zip finished first. Once $bg is waited for, zip's
-# status is in bg.status, and its output in bg.out and bg.err.
+# archive. Fails if zip finished first: rarely, unless it has little to
+# write, as the wait spins, starting no process between seeing the file
+# and stopping zip. Once $bg is waited for, zip's status is in
+# bg.status, and its output in bg.out and bg.err.
 bgzip() {  # directory zip-arguments...
     dir=$1
     shift
@@ -82,7 +84,7 @@ bgzip() {  # directory zip-arguments...
     while [ ! -e bg.status ]; do
         for f in "$dir"/zi[0-9]*; do
             if [ -e "$f" ]; then
-                pid=$(cat bg.pid)
+                read pid <bg.pid
                 kill -STOP $pid
                 [ -e "$f" ] && return 0
                 kill -CONT $pid
@@ -1451,9 +1453,10 @@ mkdir pipe
 case "$(ls pipe)" in zi*) fail "temporary file left on SIGPIPE";; esac
 
 # Nor does one terminated while writing, which leaves the archive as it
-# was. (When zip ends too soon to be stopped, there is nothing to check.)
+# was. (When zip ends too soon to be stopped, there is nothing to check:
+# with 2 MB to write, rarely, and then only under heavy load.)
 mkdir race rz
-head -c 8000000 /dev/urandom >race/a_big
+head -c 2000000 /dev/urandom >race/a_big
 "$ZIP" -q rz/race.zip tree/a.txt
 cp rz/race.zip race.orig
 if bgzip rz -q rz/race.zip race/a_big; then
