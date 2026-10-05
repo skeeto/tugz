@@ -14,8 +14,7 @@
 
 static b32 os_isatty(os *ctx, i32 fd)
 {
-    u32 mode;
-    return GetConsoleMode(ctx->handles[fd], &mode);
+    return (u32)fd<3 && ctx->consoles>>fd & 1;
 }
 
 // Windows has no meaningful equivalent of mode bits here: new files
@@ -60,5 +59,5 @@ void mainCRTStartup(void)
     }
     conf.nargs = argc>0 ? argc-1 : 0;
     conf.args  = argv + (argc>0);
-    ExitProcess((u32)gzip_main(&conf));
+    os_exit(&ctx, gzip_main(&conf));
 }

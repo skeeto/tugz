@@ -568,9 +568,19 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
     return wpath && DeleteFileW(wpath);
 }
 
+// Created files not kept are delete-pending, so they need no cleanup.
+// An incomplete UTF-8 sequence still held for a console ended the
+// output, which makes it invalid: write it out as U+FFFD.
 static void os_exit(os *ctx, i32 status)
 {
-    (void)ctx;  // created files not kept are delete-pending
+    for (i32 fd = 1; fd < 3; fd++) {
+        if (ctx->nheld[fd]) {
+            c16 bad = 0xfffd;
+            u32 wrote = 0;
+            WriteConsoleW(ctx->handles[fd], &bad, 1, &wrote, 0);
+            ctx->nheld[fd] = 0;
+        }
+    }
     ExitProcess((u32)status);
 }
 
@@ -581,7 +591,7 @@ static arena os_init(os *ctx, iz cap)
     ctx->handles[0] = GetStdHandle((u32)-10);
     ctx->handles[1] = GetStdHandle((u32)-11);
     ctx->handles[2] = GetStdHandle((u32)-12);
-    for (i32 fd = 1; fd < 3; fd++) {
+    for (i32 fd = 0; fd < 3; fd++) {
         u32 mode;
         b32 console = GetConsoleMode(ctx->handles[fd], &mode);
         ctx->consoles |= (console ? 1u : 0u) << fd;

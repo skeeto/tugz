@@ -344,5 +344,5 @@ void mainCRTStartup(void)
     } else if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
         conf.epoch = S("");  // set but empty: rejected, as on POSIX
     }
-    ExitProcess((u32)zip_main(&conf));
+    os_exit(&ctx, zip_main(&conf));
 }
