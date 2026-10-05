@@ -121,21 +121,27 @@ first entry, such as a self-extractor's stub or a Python zipapp's `#!`
 line, is kept when the archive's offsets account for it (as after
 `zip -A`), as in Info-ZIP, while an archive whose offsets do not is
 refused (3), as there. The new archive is written to a temporary file
-and renamed over the old one. Headers, attributes,
-extra fields, messages, and exit statuses match Info-ZIP's, but for
-three friendlier statuses: `-u` or `-f` with nothing newer exits 0
-(Info-ZIP: 12), an unreadable directory or a dangling link met while
-recursing exits 18 (Info-ZIP: 0), and `-i` that matches nothing exits
-12 (Info-ZIP writes an empty archive); and an archive that can be
-written but not read is an error (11), which Info-ZIP replaces as
-though missing, losing its entries. Zip64 is used as needed for
-large files, large archives, and more than 65,535 entries. Names are
-stored as UTF-8 with flag bit 11 when they are valid UTF-8 and not
-ASCII. On Windows, arguments with wildcards are expanded, as `cmd` does
-not, except when freshening, as in Info-ZIP. The archive is replaced
-where symbolic links at its path lead, so that they survive, and a
-dangling link gets its target created. Hard links do not survive:
-other names keep the old archive.
+and renamed over the old one, where symbolic links at its path lead, so
+that they survive (a dangling link gets its target created). Zip64 is
+used as needed for large files, large archives, and more than 65,535
+entries. Names are stored as UTF-8 with flag bit 11 when they are valid
+UTF-8 and not ASCII. On Windows, arguments with wildcards are expanded,
+as `cmd` does not, except when freshening, as in Info-ZIP.
+
+Headers, attributes, extra fields, messages, and exit statuses match
+Info-ZIP's, but for deliberate departures, all listed in
+[notes.md](notes.md#departures-from-info-zip). Three exit statuses are
+friendlier: `-u` or `-f` with nothing newer exits 0 (Info-ZIP: 12), an
+unreadable directory or a dangling link met while recursing exits 18
+(Info-ZIP: 0), and `-i` that matches nothing exits 12 (Info-ZIP writes
+an empty archive). An archive that can be written but not read is an
+error (11), which Info-ZIP replaces as though missing, losing its
+entries. Warnings and errors go to standard error, without the tab
+that starts Info-ZIP's warnings on standard output. Every entry that
+does not shrink is stored (Info-ZIP stores only small ones), and none
+is marked as text. A directory loop through links is not followed. A
+hard-linked archive is replaced by a new file, so its other names keep
+the old archive.
 
 Output is deterministic: entries within each directory are sorted by
 name, and with `-X` an archive depends only on file contents, names,
@@ -145,11 +151,11 @@ time zone either. `-u`, `-f`, and `-FS` still compare files' real
 times, so a file modified after the epoch always counts as changed (and
 if it is not, its entry is rewritten byte for byte).
 
-Interactive and legacy features are not supported and are rejected:
-encryption, comments, splits, adjusting self-extractors (`-A`, `-J`),
-`-F` fixes, line ending conversion, streaming (with `-`, or to standard
-output without an archive name), `-T`, `-m`, `-n`, `--out`, and logging.
-Warnings and errors go to standard error rather than standard output.
+Other options are rejected (16) rather than ignored, among them the
+interactive and legacy features: encryption, comments, splits,
+adjusting self-extractors (`-A`, `-J`), `-F` fixes, line ending
+conversion, streaming (with `-`, or to standard output without an
+archive name), `-T`, `-m`, `-n`, `--out`, and logging.
 
 ## Performance
 

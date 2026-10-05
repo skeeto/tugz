@@ -130,10 +130,12 @@ the file is closed, or on Windows flushed, without error),
 `os_localtime`, and `os_error` (the last failure's reason). It needs
 neither inflate nor the gzip container.
 
-- Scope: batch use by release scripts. Everything interactive or legacy
-  (encryption, comments, splits, SFX adjustment, fixes, CRLF conversion,
-  streaming, logging) is rejected with Info-ZIP's "not supported" usage
-  error rather than silently ignored.
+- Scope: batch use by release scripts. Other options, everything
+  interactive or legacy among them (encryption, comments, splits, SFX
+  adjustment, fixes, CRLF conversion, streaming, logging), are rejected
+  with Info-ZIP's "not supported" usage error rather than silently
+  ignored. Deliberate departures from Info-ZIP are listed at the end of
+  this section.
 - Compatibility: verified field by field against Info-ZIP 3.0 on Linux
   (`-r`, `-rX9`, `-r1`, `-r0`): made-by and needed versions, flags
   (including the level bits: 0x4 for -1/-2, 0x2 for -8/-9, set whenever
@@ -147,43 +149,40 @@ neither inflate nor the gzip container.
   Messages, warnings, and exit statuses (12 nothing to do, silently for
   `-u` and `-f`; 16 usage; 18 unreadable files; 3 bad archive; 10
   temporary file failure, including failing to replace the archive;
-  15 for an archive that cannot be created) follow Info-ZIP, except
-  warnings and errors go to standard error. As there, an I/O error
-  (10, 11, 14, 15, 18) first gives the system's reason, worded by
-  `strerror` ("zip I/O error: Permission denied"), when there is one;
-  on Windows, for the common errors, worded as its C runtime would
-  (unverified against Info-ZIP's port). The reason is the one found
-  when the error occurred, never a later call's (Info-ZIP's can be
-  stale), and an archive that ends early, having shrunk while zip
+  15 for an archive that cannot be created) follow Info-ZIP, but for
+  the departures below. As there, an I/O error (10, 11, 14, 15, 18)
+  first gives the system's reason, worded by `strerror` ("zip I/O
+  error: Permission denied"), when there is one; on Windows, for the
+  common errors, worded as its C runtime would (unverified against
+  Info-ZIP's port). An archive that ends early, having shrunk while zip
   works, is Info-ZIP's "Unexpected end of zip file" (2), naming the
-  entry being copied, not a read error (Info-ZIP notices this only at
-  an entry's header, and copies a cut-off entry's data without error). A read-only archive fails
-  with 15 once there is something to do, before doing it, as Info-ZIP
-  finds by opening it to update it (replacing it needs no permission to
-  write it): as `access` judges on POSIX, and on Windows by the
-  read-only attribute, which would otherwise refuse the rename only
-  after all the work. One that can be neither read nor written is, as
-  in Info-ZIP, taken for a missing archive, which then cannot be
-  written. So does, on Windows, an archive that another process holds
+  entry being copied, not a read error. A read-only archive fails with
+  15 once there is something to do, before doing it, as Info-ZIP finds
+  by opening it to update it (replacing it needs no permission to write
+  it): as `access` judges on POSIX, and on Windows by the read-only
+  attribute, which would otherwise refuse the rename only after all the
+  work. So does, on Windows, an archive that another process holds
   open without sharing delete access, which the rename needs (by its
   sources, Info-ZIP's port refuses it up front only if that process
   also refuses reading or writing, and otherwise at the end, 15 either
   way): zip finds this by opening the archive with that access, and
   holds it so until the rename, so that no process can open it that way
-  in the meantime. A missing or empty archive gets Info-ZIP's "not found
-  or empty" warning under `-u`, `-f`, and `-d`, which go on with their
-  arguments (warning of unmatched names, rejecting repeated ones). A
-  file that cannot be added still gets its progress line, then for a
-  failed open the reason as Info-ZIP's `perror` gives it (though not
-  under `-q`, as there), then a warning under its entry's name that
-  tells a failed open from a failed read. The closing "Not all files
-  were readable" counts the files and entries read and skipped as
-  Info-ZIP does, with its abbreviated byte counts ("292K"). Info-ZIP's
-  quirks kept: `../` stays in names, an emptied archive
-  remains as a 22-byte file, entries that do not shrink are stored, odd
-  seconds round up (but not past `SOURCE_DATE_EPOCH`). Times beyond the
-  DOS range clamp to its ends. A name over 65,535 bytes (possible in
-  deep Windows paths) is skipped with a warning, exiting 18.
+  in the meantime. One that can be neither read nor written is, as in
+  Info-ZIP, taken for a missing archive, which then cannot be written.
+  A missing or empty archive gets Info-ZIP's "not found or empty"
+  warning under `-u`, `-f`, and `-d`, which go on with their arguments
+  (warning of unmatched names, rejecting repeated ones). A file that
+  cannot be added still gets its progress line, then for a failed open
+  the reason as Info-ZIP's `perror` gives it (though not under `-q`, as
+  there), then a warning under its entry's name that tells a failed
+  open from a failed read. The closing "Not all files were readable"
+  counts the files and entries read and skipped as Info-ZIP does, with
+  its abbreviated byte counts ("292K"), in the same words. Info-ZIP's
+  quirks kept: `../` stays in names, an emptied archive remains as a
+  22-byte file, odd seconds round up (but not past `SOURCE_DATE_EPOCH`).
+  Times beyond the DOS range clamp to its ends. A name over 65,535
+  bytes (possible in deep Windows paths) is skipped with a warning,
+  exiting 18.
 - Options: Info-ZIP's grammar and names. Long names may be abbreviated
   to a prefix of exactly one of Info-ZIP's long names (supported or
   not, so `--rec` is ambiguous). Only `-X` is negatable; other negations
@@ -245,19 +244,17 @@ neither inflate nor the gzip container.
 - Selection: as Info-ZIP's procname does, a path not on disk is a
   pattern for the archive's entries (taken up after the paths on disk,
   which come first), and `-u` and `-f` without paths select every
-  entry. The file a selected entry names is examined without recursion,
-  `-D`, or `-j` (which does not cut the pattern either), if the name
-  passes `-i` and `-x`. A missing file leaves its entry (deleted by
-  `-FS`). One that has changed between file and directory keeps it,
-  with Info-ZIP's warning and status 18. Only names zip would make are
-  read, so an untrusted archive's absolute names select nothing
-  (Info-ZIP reads them). Info-ZIP's Windows port does this only when
+  entry. Info-ZIP's Windows port takes such patterns only when
   freshening; otherwise it expands wildcards on disk and stops there,
-  and so does tugz. Special files, named or met while recursing, are
-  left out with Info-ZIP's warnings ("ignoring special file: ", for a
-  FIFO "ignoring FIFO (Named Pipe)"), which leave the exit status alone
-  (12 if nothing else is left), and a `-d` name that is one on disk
-  marks nothing.
+  and so does tugz. The file a selected entry names is examined without
+  recursion, `-D`, or `-j` (which does not cut the pattern either), if
+  the name passes `-i` and `-x`. A missing file leaves its entry
+  (deleted by `-FS`). One that has changed between file and directory
+  keeps it, with Info-ZIP's warning and status 18. Special files, named
+  or met while recursing, are left out with Info-ZIP's warnings
+  ("ignoring special file: ", for a FIFO "ignoring FIFO (Named Pipe)"),
+  which leave the exit status alone (12 if nothing else is left), and a
+  `-d` name that is one on disk marks nothing.
 - Updates: as in Info-ZIP, `-u` and `-f` take a file that is newer
   than its entry by the Unix time of the entry's `UT` field, if it has
   one, so the time zone does not matter, else by DOS times; `-FS`
@@ -286,60 +283,26 @@ neither inflate nor the gzip container.
   gives, "Permission denied". As in Info-ZIP, patterns with nothing to
   select from, no paths (even from `-@`) unless `-u` or `-f` selects
   entries, are a usage error, found before the archive is read.
-- Departures in exit status, chosen as friendlier: `-u` and `-f` with
-  nothing newer exit 0 (Info-ZIP: 12); an unreadable directory, or a
-  dangling link (or one whose target vanished), met while recursing
-  warns and exits 18 (Info-ZIP adds the directory silently and warns
-  "name not matched" for the link, exiting 0); `-i` that matches
-  nothing has nothing to do, 12 (Info-ZIP writes an empty archive,
-  exiting 0, when the archive is new); and a list that cannot be read
-  (`@file` or `-@`, standard input closed included) fails, 18 or for
-  `-@` 11, where Info-ZIP's getc ends the list at any read error, which
-  silently selects, or excludes, less. `test/zip.sh` asserts each.
-  Also, an archive that can be written but not read fails (11, "Could
-  not open archive"), where Info-ZIP takes it for a missing one and
-  replaces it, losing its entries.
-- Departures: entries are sorted by name within each directory (Info-ZIP
-  uses readdir order), doubled slashes collapse (in patterns too, and
-  so `d/a d//a` is one path rather than two entries), different paths
-  giving one name are an error even when the archive has an entry of
-  that name (Info-ZIP lets the last path replace it, silently),
-  `SOURCE_DATE_EPOCH` clamps times and makes them UTC, names that are
-  valid non-ASCII UTF-8 always get flag bit 11, an entry whose
-  replacement cannot be read is kept under `-FS` as in other modes
-  (Info-ZIP warns that it will copy it over, then drops it), and
-  patterns given after `-j` stay whole (Info-ZIP's name conversion cuts
-  them to their last component, so that `-j -x 'dir/*'` excludes
-  everything). Special files: the FIFO warning omits Info-ZIP's advice,
-  " - use -FI to read", since tugz does not support `-FI`. Sockets and
-  block devices are special files too. Info-ZIP's Unix port (judging by
-  its behavior, a type test by masking mode bits) takes a socket for a
-  regular file, which it then cannot open (18; `-d` deletes the
-  socket's entry), and a block device for a directory, adding an entry
-  such as `dev/sda/`, with a "file and directory with the same name"
-  warning (18).
 - Writing: entries go to a temporary file beside the archive (created
   discard-on-close, like gzip's outputs), at explicit offsets so that a
-  local header can be patched once sizes are known. No data descriptors
-  are written. An entry that does not shrink is rewritten stored, from
-  the input buffer if one read got it all, else by reopening the input;
-  one that grows past 4 GiB while being read is redone with a Zip64
-  local header. A size of exactly 0xffffffff gets Zip64 too, as APPNOTE
-  reserves that value, and a central Zip64 extra, once there is one,
-  always holds both sizes (their 32-bit fields saturated), then the
-  offset if it overflows. APPNOTE allows the offset alone, as Info-ZIP
-  writes it, but having read a size of exactly 0xffffffff from one Zip64
-  extra, UnZip 6.0 takes every later one to start with a size, so that a
-  later entry's offset became its size. A file is opened only as a
-  regular file, so a FIFO
-  swapped in since the scan fails as unreadable (18) rather than block
-  (Info-ZIP blocks), and under `-y` only if it is still the file the
+  local header can be patched once sizes are known: new entries need no
+  data descriptors (some copied ones keep theirs: see Merging). An
+  entry that does not shrink is rewritten stored, from the input buffer
+  if one read got it all, else by reopening the input; one that grows
+  past 4 GiB while being read is redone with a Zip64 local header. A
+  size of exactly 0xffffffff gets Zip64 too, as APPNOTE reserves that
+  value, and a central Zip64 extra, once there is one, always holds both
+  sizes (their 32-bit fields saturated), then the offset if it
+  overflows. APPNOTE allows the offset alone, as Info-ZIP writes it, but
+  having read a size of exactly 0xffffffff from one Zip64 extra, UnZip
+  6.0 takes every later one to start with a size, so that a later
+  entry's offset became its size. A file is opened only as a regular
+  file, so a FIFO swapped in since the scan fails as unreadable (18)
+  rather than block, and under `-y` only if it is still the file the
   scan found, by identity, so that nothing is read through a link
-  swapped in for it or for a directory above it (Info-ZIP examines each
-  file again just before reading it, but reads through such a
-  directory). Likewise a link's target, read by path, is stored only if
-  the link is still the one scanned (Info-ZIP stores whichever link is
-  there). Output is buffered 1 MiB at a time, and rewinding to an
+  swapped in for it or for a directory above it. Likewise a link's
+  target, read by path, is stored only if the link is still the one
+  scanned. Output is buffered 1 MiB at a time, and rewinding to an
   entry's start or patching its header stays in the buffer when it can,
   so small entries cost no writes of their own. The file is truncated to
   its final length and renamed over the target. On POSIX that follows
@@ -351,15 +314,15 @@ neither inflate nor the gzip container.
   flushing and clearing delete-pending, so it never appears incomplete.
   Closing comes after it there, so the flush, which does wait for the
   device, is the only check for deferred errors before the archive is
-  replaced. `FileRenameInfoEx` with POSIX semantics replaces an
-  archive that a scanner or indexer holds open (with delete sharing);
+  replaced. `FileRenameInfoEx` with POSIX semantics replaces an archive
+  that a scanner or indexer holds open (with delete sharing);
   `FileRenameInfo` is the fallback (SMB shares refuse the former). The
   temporary file of a drive-relative archive, `D:x.zip`, is in `D:`,
   that drive's current directory. A concurrent run's temporary file,
   delete-pending, refuses access on Windows, so that counts as an
   existing name and the next is tried, up to 64 in a row: a directory
-  that refuses even the check (no traverse rights) makes every name
-  look taken.
+  that refuses even the check (no traverse rights) makes every name look
+  taken.
 - Replacing: the archive replaced is the file that any symbolic links
   at its path lead to, so that they survive an atomic update, as
   Info-ZIP updates archives through them (by copying into the file). On
@@ -380,37 +343,34 @@ neither inflate nor the gzip container.
   ACL), and on Windows its hidden, system, and not-indexed attributes,
   with the archive bit set, but not its access control: as for gzip's
   outputs, that is inherited from the directory (copying it would take
-  advapi32). Departures: a hard-linked archive is replaced by a new
-  file, which its other names do not share (Info-ZIP copies into it); a
-  dangling link gets its target created (Info-ZIP leaves an empty file
-  there and replaces the link with the archive).
+  advapi32).
 - Merging: the central directory is parsed with every field bounds
-  checked; copied entries get regenerated local headers (descriptor flag
-  cleared, except for traditionally encrypted entries, whose check byte
-  depends on it) and raw data copies. They keep their extra fields, even
+  checked; copied entries get regenerated local headers and raw data
+  copies. Their descriptor flag is cleared, except for traditionally
+  encrypted entries, whose check byte depends on it: those keep it, and
+  a data descriptor after their data. They keep their extra fields, even
   with `-X`, which as in Info-ZIP applies only to entries written (some
   fields are needed to extract, such as AES's), except Zip64 fields,
   made anew; one whose fields leave no room for a Zip64 field it now
   needs is an error (3), not a wrapped length. Saturated sizes without a
   Zip64 extra are literal, as Info-ZIP, which uses Zip64 only beyond
   them, writes a file of exactly 4 GiB - 1 bytes, and as it, UnZip, and
-  Python read it; such an entry is copied with Zip64. Departure: so are
-  they beside a Zip64 extra that holds only a saturated offset, as
-  Info-ZIP writes such a file past 4 GiB, though APPNOTE would have the
-  extra begin with the sizes. UnZip and Info-ZIP itself so take the
-  offset for the uncompressed size, and Info-ZIP then cannot copy the
-  entry (3, "Did not find entry"), while Python refuses the archive. The
-  other reading, from Info-ZIP an entry past 4 GiB that begins at
-  exactly 0xffffffff, is far less likely, and for it a local header
-  would not be found when copying (3). A replaced entry
-  keeps its comment, as in Info-ZIP. Data before the first entry (a
-  self-extractor's stub after `zip -A`, a Python zipapp's `#!` line) is
-  copied first, as Info-ZIP copies it, so that offsets accounting for it
-  stay absolute and the file still runs. Offsets that do not account for
-  a preamble are refused (3), as in Info-ZIP, which needs `-A` to fix
-  them. Departure: with no entries, the preamble is what precedes the
-  central directory, so a file added to an emptied self-extractor keeps
-  its stub (Info-ZIP drops it). Info-ZIP's own emptied self-extractor,
+  Python read it; such an entry is copied with Zip64. So are they beside
+  a Zip64 extra that holds only a saturated offset, as Info-ZIP writes
+  such a file past 4 GiB, though APPNOTE would have the extra begin with
+  the sizes. UnZip and Info-ZIP itself so take the offset for the
+  uncompressed size, and Info-ZIP then cannot copy the entry (3, "Did
+  not find entry"), while Python refuses the archive. The other reading,
+  from Info-ZIP an entry past 4 GiB that begins at exactly 0xffffffff,
+  is far less likely, and for it a local header would not be found when
+  copying (3). A replaced entry keeps its comment, as in Info-ZIP. Data
+  before the first entry (a self-extractor's stub after `zip -A`, a
+  Python zipapp's `#!` line) is copied first, as Info-ZIP copies it, so
+  that offsets accounting for it stay absolute and the file still runs.
+  Offsets that do not account for a preamble are refused (3), as in
+  Info-ZIP, which needs `-A` to fix them. With no entries, the preamble
+  is what precedes the central directory, so a file added to an emptied
+  self-extractor keeps its stub. Info-ZIP's own emptied self-extractor,
   whose end record gives offset 0, is refused as unadjusted. The Zip64
   end record gives the program's version made by, as Info-ZIP's does. A
   Zip64 end record is trusted only if it checks out or the plain end
@@ -545,6 +505,82 @@ neither inflate nor the gzip container.
   parses emitted headers to check this, and zip_windows.sh extracts a
   literal-only input (a de Bruijn sequence: no 3-byte repeats) through
   Explorer.
+
+### Departures from Info-ZIP
+
+Each is deliberate, for safety, determinism, or a friendlier result,
+and `test/zip.sh` asserts most of them (marked "Departure" there).
+
+- Exit statuses: `-u` and `-f` with nothing newer exit 0 (Info-ZIP: 12).
+  An unreadable directory, or a dangling link (or one whose target
+  vanished), met while recursing warns and exits 18 (Info-ZIP adds the
+  directory silently and warns "name not matched" for the link, exiting
+  0). `-i` that matches nothing has nothing to do, 12 (Info-ZIP writes
+  an empty archive, exiting 0, when the archive is new). A list that
+  cannot be read (`@file` or `-@`, standard input closed included)
+  fails, 18 or for `-@` 11, where Info-ZIP's getc ends the list at any
+  read error, which silently selects, or excludes, less. An archive that
+  can be written but not read fails (11, "Could not open archive"),
+  where Info-ZIP takes it for a missing one and replaces it, losing its
+  entries.
+- Messages: warnings and errors go to standard error, where Info-ZIP
+  writes all but `perror`'s to standard output, and without the tab that
+  starts most of its warnings. Advice on options that tugz rejects is
+  left out: Info-ZIP's lines on binary transfers and `-F` after "missing
+  end signature--probably not a zip file", and its " - use -FI to read"
+  after "ignoring FIFO (Named Pipe)". An I/O error's reason is the one
+  found when the error occurred, where Info-ZIP's can be a later call's.
+  A stale Unicode path field is warned of by its entry's name (see Entry
+  names in code pages).
+- Archive contents: entries are sorted by name within each directory
+  (Info-ZIP uses readdir order). Any entry that does not shrink is
+  stored, though that may take reading the file again, where Info-ZIP
+  stores only a file it deflated in a single block (about 32 KiB at
+  most), keeping larger ones deflated even when they grow. The text bit
+  of the internal attributes is left clear, where Info-ZIP sets it for
+  text that it deflates, judged by the literals of its first deflate
+  block, whose extent only a replay of its matcher reproduces.
+  `SOURCE_DATE_EPOCH` clamps times and makes them UTC. Names that are
+  valid non-ASCII UTF-8 always get flag bit 11 (Info-ZIP's builds
+  differ: Ubuntu's sets it, macOS's never). A directory reached again
+  through links within it, a loop, is added but not entered, with a
+  warning ("skipping directory loop"), where Info-ZIP follows the links
+  until the system refuses the path (`ELOOP`), adding the loop's
+  entries again at every level.
+- Names and selection: doubled slashes collapse, in patterns too, so
+  that `d/a d//a` is one path rather than two entries, and `.//a` names
+  `a`, where Info-ZIP stores `/a`. Different paths giving one name are
+  an error even when the archive has an entry of that name (Info-ZIP
+  lets the last path replace it, silently). Patterns given after `-j`
+  stay whole (Info-ZIP's name conversion cuts them to their last
+  component, so that `-j -x 'dir/*'` excludes everything). Only entry
+  names zip would make select their files, so an untrusted archive's
+  absolute names select nothing (Info-ZIP reads them).
+- Special files: sockets and block devices are left out too. Info-ZIP's
+  Unix port (judging by its behavior, a type test by masking mode bits)
+  takes a socket for a regular file, which it then cannot open (18; `-d`
+  deletes the socket's entry), and a block device for a directory,
+  adding an entry such as `dev/sda/`, with a "file and directory with
+  the same name" warning (18).
+- Files changed while zip works (see Writing): Info-ZIP blocks on a FIFO
+  swapped in for a file, and under `-y`, though it examines each file
+  again just before reading it, still reads through a directory swapped
+  for a link, and stores whichever link is there.
+- Existing archives: under `-FS`, an entry whose replacement cannot be
+  read is kept, as in other modes (Info-ZIP warns that it will copy it
+  over, then drops it). A file added to an emptied self-extractor keeps
+  its stub, which Info-ZIP drops. An archive that shrinks while zip
+  works fails at the entry being copied (2), where Info-ZIP notices only
+  at an entry's header, and copies a cut-off entry's data without error.
+  Saturated sizes beside a Zip64 extra that holds only the offset are
+  read as Info-ZIP means them, not as it and UnZip read them (see
+  Merging).
+- Replacing the archive: a hard-linked archive is replaced by a new
+  file, which its other names do not share (Info-ZIP copies into it). A
+  dangling link at its path gets its target created and survives
+  (Info-ZIP leaves an empty file there and replaces the link with the
+  archive). On Windows the new archive is flushed to the device before
+  the rename (see Writing), which Info-ZIP never does.
 
 ## Workflow
 
