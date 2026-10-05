@@ -162,6 +162,12 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
     return ok;
 }
 
+static b32 os_isatty(os *ctx, i32 fd)
+{
+    (void)ctx;
+    return isatty(fd);
+}
+
 static void os_localtime(os *ctx, i64 t, i32 tm[6])
 {
     (void)ctx;
@@ -201,8 +207,12 @@ int main(int argc, char **argv)
     for (i32 i = 0; i < conf.nargs; i++) {
         conf.args[i] = cstr(argv[i+1]);
     }
-    char *epoch = getenv("SOURCE_DATE_EPOCH");
-    conf.epoch = epoch ? cstr(epoch) : (s8){0};
+    char *epoch  = getenv("SOURCE_DATE_EPOCH");
+    char *zipopt = getenv("ZIPOPT");
+    char *zipenv = getenv("ZIP");
+    conf.epoch  = epoch  ? cstr(epoch)  : (s8){0};
+    conf.zipopt = zipopt ? cstr(zipopt) : (s8){0};
+    conf.zipenv = zipenv ? cstr(zipenv) : (s8){0};
     i32 status = zip_main(&conf);
     free(mem);  // for leak checkers
     return status;

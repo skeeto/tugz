@@ -294,6 +294,26 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
     return 1;
 }
 
+static b32 os_isatty(os *ctx, i32 fd)
+{
+    return (u32)fd<3 && ctx->consoles>>fd & 1;
+}
+
+// An environment variable as WTF-8, or a null string if it is unset.
+static s8 getenv8(arena *a, c16 *name)
+{
+    SetLastError(0);  // zero is also the length of an empty value
+    u32 cap = GetEnvironmentVariableW(name, 0, 0);  // including the null
+    if (!cap) {
+        b32 unset = GetLastError() == ERROR_ENVVAR_NOT_FOUND;
+        return unset ? (s8){0} : S("");
+    }
+    c16 *buf = new(a, cap, c16);
+    u32  len = GetEnvironmentVariableW(name, buf, cap);
+    buf[len<cap ? len : 0] = 0;
+    return towtf8(a, buf);
+}
+
 static void os_localtime(os *ctx, i64 t, i32 tm[6])
 {
     (void)ctx;
@@ -333,16 +353,8 @@ void mainCRTStartup(void)
     conf.nargs = argc>0 ? argc-1 : 0;
     conf.args  = argv + (argc>0);
 
-    c16 epoch[64];
-    SetLastError(0);  // zero is also the length of an empty value
-    u32 n = GetEnvironmentVariableW(L"SOURCE_DATE_EPOCH", epoch,
-                                    countof(epoch));
-    if (n >= countof(epoch)) {
-        conf.epoch = S("(too long)");  // rejected as invalid
-    } else if (n) {
-        conf.epoch = towtf8(&conf.perm, epoch);
-    } else if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
-        conf.epoch = S("");  // set but empty: rejected, as on POSIX
-    }
+    conf.epoch  = getenv8(&conf.perm, L"SOURCE_DATE_EPOCH");
+    conf.zipopt = getenv8(&conf.perm, L"ZIPOPT");
+    conf.zipenv = getenv8(&conf.perm, L"ZIP");
     os_exit(&ctx, zip_main(&conf));
 }

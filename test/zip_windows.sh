@@ -6,6 +6,7 @@
 # Usage: sh test/zip_windows.sh ./zip.exe
 set -e
 
+unset ZIPOPT ZIP  # options for zip, and ZIP unexported for the binary
 ZIP=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 TAR=C:/Windows/System32/tar.exe
 tmp=$(mktemp -d)
@@ -279,5 +280,15 @@ expect_status 16 env SOURCE_DATE_EPOCH= "$ZIP" -q ep.zip tree/a.txt
 
 expect_status 12 "$ZIP" none.zip missing
 expect_status 16 "$ZIP" -e bad.zip tree/a.txt
+
+# Info-ZIP's Windows port has no -y (links are followed)
+expect_status 16 "$ZIP" -y bad.zip tree/a.txt
+expect_status 16 "$ZIP" --symlinks bad.zip tree/a.txt
+expect_status 16 "$ZIP" -S- bad.zip tree/a.txt
+
+# Options from ZIPOPT, unquoted (quotes are POSIX only)
+env ZIPOPT='-q -x tree/b.txt' "$ZIP" -r env.zip tree >out
+[ ! -s out ] || fail "ZIPOPT=-q: $(cat out)"
+list env.zip | grep -q tree/b.txt && fail "ZIPOPT pattern"
 
 echo "windows zip tests pass"

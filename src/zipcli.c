@@ -63,6 +63,8 @@ static b32  os_truncate(os *, i32 fd, i64 len);
 static b32  os_commit(os *, i32 fd, s8 path, arena scratch);
 // Broken-down local time {year, month, day, hour, minute, second}.
 static void os_localtime(os *, i64 t, i32 tm[6]);
+// Whether a standard descriptor is a terminal (console).
+static b32  os_isatty(os *, i32 fd);
 
 static void os_oom(os *ctx)
 {
@@ -76,6 +78,8 @@ typedef struct {
     s8   *args;     // excluding the program name
     i32   nargs;
     s8    epoch;    // SOURCE_DATE_EPOCH, if set
+    s8    zipopt;   // ZIPOPT, if set: options before the arguments
+    s8    zipenv;   // ZIP, if set: options when ZIPOPT has none
     b32   windows;  // Windows conventions: names, attributes, wildcards
 } zipconfig;
 
@@ -88,13 +92,28 @@ static s8 const zip_usage = S8(
     "  -X      no extra attributes (times, uid/gid): deterministic output\n"
     "  -@      read paths from standard input, one per line\n"
     "  -j      junk directory names    -D  no directory entries\n"
-    "  -y      store symbolic links    -S  include hidden/system (Windows)\n"
+);
+static s8 const zip_usage_posix = S8(
+    "  -y      store symbolic links as links\n"
+);
+static s8 const zip_usage_windows = S8(
+    "  -S      include hidden and system files\n"
+);
+static s8 const zip_usage_tail = S8(
     "  -u      update if newer         -f  freshen: update existing only\n"
     "  -FS     filesync: update changed and delete missing entries\n"
     "  -d      delete entries matching patterns from the archive\n"
     "  -x pattern ...  exclude         -i pattern ...  include only\n"
     "  -nw     no wildcards            --  end of options\n"
+    "  -v      version (alone)         -L  license\n"
+    "ZIPOPT, or else ZIP, may hold options to apply first.\n"
     "SOURCE_DATE_EPOCH, if set, clamps times and makes them UTC.\n"
+);
+
+static s8 const zip_license = S8(
+    "This is free and unencumbered software released into the public domain.\n"
+    "It is provided \"as is\", without warranty of any kind. For more\n"
+    "information, see the UNLICENSE file or <http://unlicense.org/>.\n"
 );
 
 enum { MODE_ADD, MODE_UPDATE, MODE_FRESHEN, MODE_SYNC, MODE_DELETE };
@@ -218,6 +237,11 @@ static s8 znum(arena *a, i64 v)
 static b32 zequals(s8 a, s8 b)
 {
     return a.len==b.len && (!a.len || !__builtin_memcmp(a.s, b.s, (uz)a.len));
+}
+
+static b32 zisspace(u8 c)
+{
+    return c==' ' || (c>='\t' && c<='\r');
 }
 
 static i32 zcompare(s8 a, s8 b)
@@ -393,20 +417,20 @@ static i32 add_patterns(zip *z, s8s *list, s8 arg, arena scratch)
 
 // Collect a pattern list option's values: an attached value, else the
 // following arguments up to the next option or a lone @.
-static i32 take_list(zip *z, s8s *list, s8 value, zipconfig *conf,
+static i32 take_list(zip *z, s8s *list, s8 value, s8 *args, i32 nargs,
                      i32 *i, arena scratch)
 {
     if (value.len) {
         return add_patterns(z, list, value, scratch);
     }
     i32 n = 0;
-    for (; *i+1<conf->nargs && !is_list_end(conf->args[*i+1]); n++) {
-        i32 err = add_patterns(z, list, conf->args[++*i], scratch);
+    for (; *i+1<nargs && !is_list_end(args[*i+1]); n++) {
+        i32 err = add_patterns(z, list, args[++*i], scratch);
         if (err) {
             return err;
         }
     }
-    if (*i+1<conf->nargs && zequals(conf->args[*i+1], S("@"))) {
+    if (*i+1<nargs && zequals(args[*i+1], S("@"))) {
         ++*i;
     }
     if (!n) {
@@ -428,57 +452,96 @@ static i32 set_mode(zip *z, i32 mode, arena scratch)
 
 static i32 usage(zip *z, i32 status)
 {
-    say(z, status ? 2 : 1, zip_usage);
+    i32 fd = status ? 2 : 1;
+    say(z, fd, zip_usage);
+    say(z, fd, z->windows ? zip_usage_windows : zip_usage_posix);
+    say(z, fd, zip_usage_tail);
     return status;
 }
 
-// Apply a supported option by its short name. Returns -1 if unknown.
-static i32 apply_option(zip *z, s8 opt, b32 negate, arena scratch)
+static void version(zip *z)
 {
-    b32 on = !negate;
-    if (opt.len==1 && opt.s[0]>='0' && opt.s[0]<='9') {
-        z->level = opt.s[0] - '0';
-        return 0;
-    }
-    if (zequals(opt, S("q")))  { z->quiet       = on; return 0; }
-    if (zequals(opt, S("r")))  { z->recurse     = on; return 0; }
-    if (zequals(opt, S("X")))  { z->noextra     = on; return 0; }
-    if (zequals(opt, S("j")))  { z->junk        = on; return 0; }
-    if (zequals(opt, S("D")))  { z->nodirs      = on; return 0; }
-    if (zequals(opt, S("y")))  { z->symlinks    = on; return 0; }
-    if (zequals(opt, S("S")))  { z->hidden      = on; return 0; }
-    if (zequals(opt, S("nw"))) { z->nowild      = on; return 0; }
-    if (zequals(opt, S("@")))  { z->names_stdin = on; return 0; }
-    if (zequals(opt, S("v")))  { return 0; }  // verbose: no effect
-    if (zequals(opt, S("u")))  { return set_mode(z, MODE_UPDATE,  scratch); }
-    if (zequals(opt, S("f")))  { return set_mode(z, MODE_FRESHEN, scratch); }
-    if (zequals(opt, S("FS"))) { return set_mode(z, MODE_SYNC,    scratch); }
-    if (zequals(opt, S("d")))  { return set_mode(z, MODE_DELETE,  scratch); }
-    return -1;
+    s8 line = zip_usage;
+    for (line.len = 0; line.s[line.len++] != '\n';) {}
+    say(z, 1, line);
 }
 
-static s8 const long_options[][2] = {
-    {S8("recurse-paths"),   S8("r")},
-    {S8("quiet"),           S8("q")},
-    {S8("no-extra"),        S8("X")},
-    {S8("junk-paths"),      S8("j")},
-    {S8("no-dir-entries"),  S8("D")},
-    {S8("symlinks"),        S8("y")},
-    {S8("system-hidden"),   S8("S")},
-    {S8("no-wild"),         S8("nw")},
-    {S8("names-stdin"),     S8("@")},
-    {S8("verbose"),         S8("v")},
-    {S8("update"),          S8("u")},
-    {S8("freshen"),         S8("f")},
-    {S8("filesync"),        S8("FS")},
-    {S8("delete"),          S8("d")},
-    {S8("exclude"),         S8("x")},
-    {S8("include"),         S8("i")},
-    {S8("help"),            S8("h")},
-    {S8("store-only"),      S8("0")},
-    {S8("compress-1"),      S8("1")},
-    {S8("compress-9"),      S8("9")},
+enum {
+    OPT_NEGATE = 1 << 0,  // negatable: only -X, as in Info-ZIP
+    OPT_LIST   = 1 << 1,  // takes a pattern list
+    OPT_POSIX  = 1 << 2,  // not in Info-ZIP's Windows port
+    OPT_WIN    = 1 << 3,  // only in Info-ZIP's Windows port
 };
+
+typedef struct {
+    s8  name;   // short name, if any
+    s8  lname;  // long name, if any
+    s8  help;   // Info-ZIP's description, which its errors quote
+    i32 flags;
+} zoption;
+
+// The supported subset of Info-ZIP's options, under its names
+static zoption const zip_options[] = {
+    {S8("0"),  S8("store"),          S8("store"),                       0},
+    {S8("1"),  S8("compress-1"),     S8("compress 1"),                  0},
+    {S8("2"),  S8("compress-2"),     S8("compress 2"),                  0},
+    {S8("3"),  S8("compress-3"),     S8("compress 3"),                  0},
+    {S8("4"),  S8("compress-4"),     S8("compress 4"),                  0},
+    {S8("5"),  S8("compress-5"),     S8("compress 5"),                  0},
+    {S8("6"),  S8("compress-6"),     S8("compress 6"),                  0},
+    {S8("7"),  S8("compress-7"),     S8("compress 7"),                  0},
+    {S8("8"),  S8("compress-8"),     S8("compress 8"),                  0},
+    {S8("9"),  S8("compress-9"),     S8("compress 9"),                  0},
+    {S8("d"),  S8("delete"),         S8("delete entries from archive"), 0},
+    {S8("D"),  S8("no-dir-entries"),
+               S8("no entries for dirs themselves (-x */)"),            0},
+    {S8("FS"), S8("filesync"),
+               S8("add/delete entries to make archive match OS"),       0},
+    {S8("f"),  S8("freshen"),    S8("freshen existing archive entries"), 0},
+    {S8("h"),  S8("help"),           S8("help"),                        0},
+    {S8(""),   S8("more-help"),      S8("extended help"),               0},
+    {S8("i"),  S8("include"),
+               S8("include only files matching patterns"),       OPT_LIST},
+    {S8("j"),  S8("junk-paths"),
+               S8("strip paths and just store file names"),             0},
+    {S8("L"),  S8("license"),        S8("display license"),             0},
+    {S8("nw"), S8("no-wild"),  S8("no wildcards during add or update"), 0},
+    {S8("p"),  S8("paths"),          S8("store paths"),                 0},
+    {S8("q"),  S8("quiet"),          S8("quiet"),                       0},
+    {S8("r"),  S8("recurse-paths"),  S8("recurse down listed paths"),   0},
+    {S8("S"),  S8(""),         S8("include system and hidden"),   OPT_WIN},
+    {S8("u"),  S8("update"),
+               S8("update existing entries and add new"),               0},
+    {S8("v"),  S8("verbose"),  S8("display additional information"),    0},
+    {S8(""),   S8("version"),
+               S8("(if no other args) show version information"),       0},
+    {S8("x"),  S8("exclude"),
+               S8("exclude files matching patterns"),            OPT_LIST},
+    {S8("X"),  S8("strip-extra"),
+               S8("-X- keep all ef, -X strip but critical ef"), OPT_NEGATE},
+    {S8("y"),  S8("symlinks"),       S8("store symbolic links"), OPT_POSIX},
+    {S8("@"),  S8("names-stdin"),
+               S8("get file names from stdin, one per line"),           0},
+};
+
+// All of Info-ZIP's long option names, supported or not, for its
+// abbreviations: a prefix of exactly one name stands for that name.
+static char const zip_longnames[] =
+    " store compress-1 compress-2 compress-3 compress-4 compress-5"
+    " compress-6 compress-7 compress-8 compress-9 adjust-sfx temp-path"
+    " entry-comments delete display-bytes display-counts display-dots"
+    " display-globaldots dot-size display-usize display-volume"
+    " no-dir-entries difference-archive encrypt fix fixfix fifo filesync"
+    " freshen force-descriptors force-zip64 grow help more-help include"
+    " junk-paths junk-sfx DOS-names to-crlf from-crlf logfile-path"
+    " log-append log-info license move must-match suffixes no-wild"
+    " latest-time output-file paths password quiet recurse-paths"
+    " recurse-patterns regex split-size split-pause split-verbose"
+    " split-bell show-command show-debug show-files show-options"
+    " show-unicode show-just-unicode unicode from-date before-date test"
+    " unzip-command update copy-entries verbose version wild-stop-dirs"
+    " exclude strip-extra symlinks archive-comment compression-method"
+    " names-stdin ";
 
 // Two-letter short options, matched before single letters as Info-ZIP
 // does. Only FS and nw are supported.
@@ -486,11 +549,103 @@ static char const two_letter[] =
     "FSnwFFFIDFACASMMRETTUNdbdcdddfdgdsdudvicjjlalflillsbscsdsfsosp"
     "susUsvttws";
 
-static i32 parse_args(zip *z, zipconfig *conf, arena scratch)
+// A supported option by its short or long name, or null.
+static zoption const *find_option(zip *z, s8 name, b32 islong)
+{
+    for (iz i = 0; i < countof(zip_options); i++) {
+        zoption const *o = zip_options + i;
+        if (name.len && zequals(name, islong ? o->lname : o->name)) {
+            b32 absent = o->flags & (z->windows ? OPT_POSIX : OPT_WIN);
+            return absent ? 0 : o;
+        }
+    }
+    return 0;
+}
+
+// Expand an abbreviated long option name. Returns false, having
+// reported it, if it is ambiguous.
+static b32 expand_long(zip *z, s8 *name, arena scratch)
+{
+    s8  found = {0};
+    i32 count = 0;
+    for (char const *p = zip_longnames+1; *p && name->len; p++) {
+        s8 full = {(u8 *)p, 0};
+        for (; p[full.len] != ' '; full.len++) {}
+        p += full.len;
+        if (zequals(full, *name)) {
+            return 1;
+        } else if (full.len>name->len &&
+                   zequals((s8){full.s, name->len}, *name)) {
+            found = full;
+            count++;
+        }
+    }
+    if (count > 1) {
+        s8 msg = JOIN(&scratch, S("long option '"), *name, S("' ambiguous"));
+        fail(z, ZE_PARMS, S("Invalid command arguments"), msg, scratch);
+        return 0;
+    }
+    *name = count ? found : *name;
+    return 1;
+}
+
+static i32 misused(zip *z, s8 opt, zoption const *o, s8 how, arena scratch)
+{
+    s8 msg = JOIN(&scratch, S("option '"), opt, S("' ("), o->help, S(") "),
+                  how);
+    return fail(z, ZE_PARMS, S("Invalid command arguments"), msg, scratch);
+}
+
+// Apply an option, as given by opt, taking a pattern list's values from
+// value or the following arguments. Returns an exit status to stop with:
+// an error, or -1 for success after an informational option.
+static i32 apply_option(zip *z, zoption const *o, s8 opt, b32 negate,
+                        s8 value, s8 *args, i32 nargs, i32 *i,
+                        arena scratch)
+{
+    if (negate && !(o->flags & OPT_NEGATE)) {
+        return misused(z, opt, o, S("not negatable"), scratch);
+    }
+
+    s8 key = o->name.len ? o->name : o->lname;
+    if (key.len==1 && key.s[0]>='0' && key.s[0]<='9') {
+        z->level = key.s[0] - '0';
+        return 0;
+    } else if (zequals(key, S("h")) || zequals(key, S("more-help"))) {
+        return usage(z, 0) - 1;
+    } else if (zequals(key, S("version"))) {
+        version(z);
+        return -1;
+    } else if (zequals(key, S("L"))) {
+        say(z, 1, zip_license);
+        return -1;
+    } else if (o->flags & OPT_LIST) {
+        s8s *list = key.s[0]=='x' ? &z->exclude : &z->include;
+        return take_list(z, list, value, args, nargs, i, scratch);
+    }
+
+    b32 on = !negate;
+    if (zequals(key, S("q")))  { z->quiet       = on; return 0; }
+    if (zequals(key, S("r")))  { z->recurse     = on; return 0; }
+    if (zequals(key, S("X")))  { z->noextra     = on; return 0; }
+    if (zequals(key, S("j")))  { z->junk        = on; return 0; }
+    if (zequals(key, S("D")))  { z->nodirs      = on; return 0; }
+    if (zequals(key, S("y")))  { z->symlinks    = on; return 0; }
+    if (zequals(key, S("S")))  { z->hidden      = on; return 0; }
+    if (zequals(key, S("nw"))) { z->nowild      = on; return 0; }
+    if (zequals(key, S("@")))  { z->names_stdin = on; return 0; }
+    if (zequals(key, S("u")))  { return set_mode(z, MODE_UPDATE,  scratch); }
+    if (zequals(key, S("f")))  { return set_mode(z, MODE_FRESHEN, scratch); }
+    if (zequals(key, S("FS"))) { return set_mode(z, MODE_SYNC,    scratch); }
+    if (zequals(key, S("d")))  { return set_mode(z, MODE_DELETE,  scratch); }
+    return 0;  // -p (store paths, the default) and -v (verbose): no effect
+}
+
+static i32 parse_args(zip *z, s8 *args, i32 nargs, arena scratch)
 {
     b32 options = 1;
-    for (i32 i = 0; i < conf->nargs; i++) {
-        s8 arg = conf->args[i];
+    for (i32 i = 0; i < nargs; i++) {
+        s8 arg = args[i];
         if (!options || arg.len<2 || arg.s[0]!='-') {
             if (zequals(arg, S("-"))) {
                 return fail(z, ZE_PARMS, S("Invalid command arguments"),
@@ -504,6 +659,10 @@ static i32 parse_args(zip *z, zipconfig *conf, arena scratch)
         }
 
         if (zequals(arg, S("--"))) {
+            if (!z->archive.s) {
+                return fail(z, ZE_PARMS, S("Invalid command arguments"),
+                            S("can't use -- before archive name"), scratch);
+            }
             options = 0;
         } else if (arg.s[1] == '-') {
             s8 name  = {arg.s+2, arg.len-2};
@@ -517,27 +676,20 @@ static i32 parse_args(zip *z, zipconfig *conf, arena scratch)
             }
             b32 negate = name.len>1 && name.s[name.len-1]=='-';
             name.len -= negate;
-            s8 opt = {0};
-            for (iz k = 0; k < countof(long_options); k++) {
-                if (zequals(name, long_options[k][0])) {
-                    opt = long_options[k][1];
-                }
+            if (!expand_long(z, &name, scratch)) {
+                return ZE_PARMS;
             }
-            if (!opt.s) {
+            zoption const *o = find_option(z, name, 1);
+            if (!o) {
                 return badopt(z, S("long"), name, scratch);
-            } else if (zequals(opt, S("h"))) {
-                return usage(z, 0) - 1;
-            } else if (zequals(opt, S("x")) || zequals(opt, S("i"))) {
-                s8s *list = opt.s[0]=='x' ? &z->exclude : &z->include;
-                i32 err = take_list(z, list, value, conf, &i, scratch);
-                if (err) {
-                    return err;
-                }
-            } else {
-                i32 err = apply_option(z, opt, negate, scratch);
-                if (err) {
-                    return err;
-                }
+            } else if (value.s && !(o->flags & OPT_LIST)) {
+                return misused(z, name, o, S("does not allow a value"),
+                               scratch);
+            }
+            i32 err = apply_option(z, o, name, negate, value, args, nargs,
+                                   &i, scratch);
+            if (err) {
+                return err;
             }
         } else {
             for (iz k = 1; k < arg.len;) {
@@ -550,34 +702,62 @@ static i32 parse_args(zip *z, zipconfig *conf, arena scratch)
                     }
                 }
                 k += opt.len;
-                b32 negate = k<arg.len && arg.s[k]=='-';
-                k += negate;
+                zoption const *o = find_option(z, opt, 0);
+                if (!o) {
+                    return badopt(z, S("short"), opt, scratch);
+                }
 
-                if (zequals(opt, S("h"))) {
-                    return usage(z, 0) - 1;
-                } else if (zequals(opt, S("x")) || zequals(opt, S("i"))) {
-                    s8 value = {arg.s+k, arg.len-k};
+                // A list's value is the rest of the argument, even "-"
+                s8  value  = {0};
+                b32 negate = 0;
+                if (o->flags & OPT_LIST) {
+                    value = (s8){arg.s+k, arg.len-k};
                     if (value.len && value.s[0]=='=') {
                         value.s++;
                         value.len--;
                     }
-                    s8s *list = opt.s[0]=='x' ? &z->exclude : &z->include;
-                    i32 err = take_list(z, list, value, conf, &i, scratch);
-                    if (err) {
-                        return err;
-                    }
-                    break;
+                    k = arg.len;
+                } else {
+                    negate = k<arg.len && arg.s[k]=='-';
+                    k += negate;
                 }
-                i32 err = apply_option(z, opt, negate, scratch);
-                if (err < 0) {
-                    return badopt(z, S("short"), opt, scratch);
-                } else if (err) {
+                i32 err = apply_option(z, o, opt, negate, value, args, nargs,
+                                       &i, scratch);
+                if (err) {
                     return err;
                 }
             }
         }
     }
     return 0;
+}
+
+// Split a ZIPOPT or ZIP value into arguments as Info-ZIP's envargs does:
+// at whitespace, and on POSIX a word that starts with a double quote
+// runs to the next one, which is dropped, though one after a backslash
+// is not (the backslash stays).
+static s8s env_args(zip *z, s8 env)
+{
+    s8s r = {0};
+    for (iz i = 0;;) {
+        for (; i<env.len && zisspace(env.s[i]); i++) {}
+        if (i == env.len) {
+            return r;
+        }
+        s8 *arg = push(&z->perm, &r);
+        if (!z->windows && env.s[i]=='"') {
+            iz beg = ++i;
+            for (; i<env.len && env.s[i]!='"'; i++) {
+                i += env.s[i]=='\\' && i+1<env.len && env.s[i+1]=='"';
+            }
+            *arg = (s8){env.s+beg, i-beg};
+            i += i < env.len;
+        } else {
+            iz beg = i;
+            for (; i<env.len && !zisspace(env.s[i]); i++) {}
+            *arg = (s8){env.s+beg, i-beg};
+        }
+    }
 }
 
 static u32 file_dostime(zip *z, i64 t)
@@ -1508,13 +1688,10 @@ static i32 zip_main(zipconfig *conf)
     z->windows = conf->windows;
     arena scratch = conf->perm;  // reset below, once perm is carved out
 
-    if (!conf->nargs) {
+    // Without arguments, Info-ZIP streams standard input to standard
+    // output, unless that is a terminal, which gets the usage instead
+    if (!conf->nargs && os_isatty(z->ctx, 1)) {
         return usage(z, 0);
-    } else if (conf->nargs==1 && zequals(conf->args[0], S("-v"))) {
-        s8 version = zip_usage;
-        for (version.len = 0; version.s[version.len++] != '\n';) {}
-        say(z, 1, version);
-        return 0;
     }
 
     // Scratch takes half of the remaining memory
@@ -1524,7 +1701,21 @@ static i32 zip_main(zipconfig *conf)
     scratch.beg = z->perm.end;
     scratch.end = conf->perm.end;
 
-    i32 err = parse_args(z, conf, scratch);
+    // Options from the environment precede the arguments, as in Info-ZIP:
+    // those of ZIPOPT or, if it has none, of ZIP
+    s8s env = env_args(z, conf->zipopt);
+    env = env.len ? env : env_args(z, conf->zipenv);
+    for (i32 i = 0; i < conf->nargs; i++) {
+        *push(&z->perm, &env) = conf->args[i];
+    }
+    s8 *args  = env.data;
+    i32 nargs = (i32)env.len;
+
+    if (nargs==1 && zequals(args[0], S("-v"))) {
+        version(z);
+        return 0;
+    }
+    i32 err = parse_args(z, args, nargs, scratch);
     if (err) {
         return err<0 ? 0 : err;
     }
@@ -1533,7 +1724,13 @@ static i32 zip_main(zipconfig *conf)
         return err;
     }
     if (!z->archive.s) {
-        return usage(z, ZE_PARMS);
+        s8 why = os_isatty(z->ctx, 1) ? S("cannot write zip file to terminal")
+               : S("streaming to standard output not supported");
+        return fail(z, ZE_PARMS, S("Invalid command arguments"), why, scratch);
+    }
+    if (z->mode==MODE_DELETE && (z->recurse || !z->level)) {
+        warn(z, S("invalid option(s) used with -d; ignored."), S(""),
+             scratch);
     }
     if (!has_extension(z, z->archive)) {
         z->archive = JOIN(&z->perm, z->archive, S(".zip"));

@@ -135,6 +135,21 @@ the file is flushed and closed without error), and
   and errors go to standard error. Info-ZIP's quirks kept: `../` stays
   in names, an emptied archive remains as a 22-byte file, entries that
   do not shrink are stored, odd seconds round up.
+- Options: Info-ZIP's grammar and names. Long names may be abbreviated
+  to a prefix of exactly one of Info-ZIP's long names (supported or
+  not, so `--rec` is ambiguous). Only `-X` is negatable; other negations
+  and values on options without them are errors, quoting Info-ZIP's
+  descriptions. `-y` exists only on POSIX and `-S` only on Windows, as
+  in Info-ZIP's builds. `--` ends options only after the archive name.
+  `ZIPOPT`, or if it holds only whitespace `ZIP`, supplies options
+  before the arguments, split as Info-ZIP's envargs does (whitespace;
+  on POSIX, double quotes group, keeping a backslash before an inner
+  quote). A lone `-v` (after those) or `--version` prints the version,
+  `-L` the license (the Unlicense), `-h` the usage. With no arguments
+  and no terminal on standard output, or no archive name, Info-ZIP
+  streams to standard output; that is rejected as streaming. A terminal
+  gets the usage, or Info-ZIP's "cannot write zip file to terminal".
+  `-d` warns, as Info-ZIP does, that `-r` and `-0` are ignored.
 - Patterns: `-x`, `-i`, and `-d` patterns, `@file` lines included, are
   normalized as names are, so that `./` and `/` prefixes (and on
   Windows, backslashes and drives) match. Matching follows Info-ZIP's

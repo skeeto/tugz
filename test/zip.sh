@@ -5,6 +5,7 @@
 # Set SLOW=1 to include Zip64 tests: a 5 GiB file and 70,000 entries.
 set -e
 
+unset ZIPOPT ZIP  # options for zip, and ZIP unexported for the binary
 ZIP=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 CHECK=$(cd "$(dirname "$0")" && pwd)/zipcheck.py
 if command -v uv >/dev/null 2>&1; then
@@ -114,12 +115,27 @@ grep -q 'tree/empty (stored 0%)' out || fail "stored message: $(cat out)"
 "$ZIP" -q q.zip tree/a.txt missing >out 2>&1
 [ ! -s out ] || fail "-q not quiet: $(cat out)"
 
-# Combined, long, and negated options
+# Combined, long, and negated options, under Info-ZIP's names, which
+# may be abbreviated
 "$ZIP" -qX9r c1.zip tree
-"$ZIP" --quiet --no-extra -9 --recurse-paths c2.zip tree
+"$ZIP" --quiet --strip-extra --compress-9 --recurse-paths c2.zip tree
 cmp -s c1.zip c2.zip || fail "long options differ from short"
+"$ZIP" --qui --strip --compress-9 --recurse-path c2.zip tree
+cmp -s c1.zip c2.zip || fail "abbreviated long options differ"
 "$ZIP" -qX -X- -9r c3.zip tree
 [ "$(wc -c <c3.zip)" -gt "$(wc -c <c1.zip)" ] || fail "-X- kept -X"
+"$ZIP" -qX9 --strip-extra- -rp --paths c4.zip tree
+cmp -s c3.zip c4.zip || fail "--strip-extra- or -p"
+"$ZIP" -q --store c5.zip tree/a.txt
+zipinfo c5.zip | grep -q stor || fail "--store compressed"
+for opt in -q- -r- -d- -u- -f- -FS- -0- -9- -j- -nw- -@- -p- --quiet- \
+           --delete- --exclude- --rec --compress --no-extra --store-only \
+           --system-hidden --quiet=x -S -e --encr; do
+    expect_status 16 "$ZIP" $opt c6.zip tree/a.txt
+done
+[ ! -e c6.zip ] || fail "an invalid option made an archive"
+"$ZIP" -qr c7.zip tree -x-  # a list's value, not a negation
+names c7.zip | grep -q tree/a.txt || fail "-x- excluded a.txt"
 
 # Determinism: -X output depends only on the tree, and SOURCE_DATE_EPOCH
 # makes it independent of the time zone
@@ -414,8 +430,52 @@ if [ "$(id -u)" != 0 ]; then
     chmod 644 stale
 fi
 expect_status 0 "$ZIP" -h
-"$ZIP" >out
-grep -q usage out || fail "no usage without arguments"
+
+# Without arguments, or without an archive name, Info-ZIP streams to
+# standard output, which is rejected, unless it is a terminal: then
+# there is usage, or for an archive an error
+expect_status 16 "$ZIP"
+expect_status 16 "$ZIP" -qr
+if script -q /dev/null "$ZIP" </dev/null >out 2>&1 ||  # BSD
+   script -qec "$ZIP" /dev/null </dev/null >out 2>&1; then  # util-linux
+    grep -q usage out || fail "no usage on a terminal: $(cat out)"
+fi
+expect_status 16 "$ZIP" -- dash.zip tree/a.txt  # before the archive name
+"$ZIP" -q dash.zip -- -x tree/a.txt 2>/dev/null
+[ "$(names dash.zip)" = tree/a.txt ] || fail "-- then -x: $(names dash.zip)"
+
+# Version and license, even with other arguments; -v only alone
+"$ZIP" -v </dev/null >out
+grep -q '^tugz zip [0-9]' out || fail "-v: $(cat out)"
+"$ZIP" --version info.zip tree/a.txt >out
+grep -q '^tugz zip [0-9]' out || fail "--version: $(cat out)"
+"$ZIP" -L info.zip tree/a.txt >out
+grep -q 'public domain' out || fail "-L: $(cat out)"
+[ ! -e info.zip ] || fail "--version or -L made an archive"
+
+# Options from ZIPOPT or, if it has none, ZIP come first; ZIPOPT splits
+# at whitespace except within double quotes
+env ZIPOPT=-q "$ZIP" env1.zip tree/a.txt >out
+[ ! -s out ] || fail "ZIPOPT=-q: $(cat out)"
+env ZIPOPT=' ' ZIP='	-q ' "$ZIP" env2.zip tree/a.txt >out
+[ ! -s out ] || fail "ZIP=-q: $(cat out)"
+env ZIPOPT=-r ZIP=-q "$ZIP" env3.zip tree/sub >out
+grep -q 'adding: tree/sub/random' out || fail "ZIPOPT=-r ZIP=-q: $(cat out)"
+printf s >'tree/a b'
+env ZIPOPT='-q -x "tree/a b" tree/b.txt' "$ZIP" -r env4.zip tree
+names env4.zip | grep -q 'tree/a b' && fail "ZIPOPT quoted pattern"
+names env4.zip | grep -q tree/b.txt && fail "ZIPOPT pattern list"
+rm 'tree/a b'
+expect_status 16 env ZIPOPT=-e "$ZIP" env5.zip tree/a.txt
+env ZIPOPT=-v "$ZIP" </dev/null >out
+grep -q '^tugz zip [0-9]' out || fail "ZIPOPT=-v: $(cat out)"
+
+# Options -d ignores, as Info-ZIP warns
+"$ZIP" -q dw.zip tree/a.txt tree/b.txt
+"$ZIP" -d -r dw.zip tree/a.txt >out 2>&1
+grep -q 'invalid option(s) used with -d; ignored' out ||
+    fail "-d -r: $(cat out)"
+[ "$(names dw.zip)" = tree/b.txt ] || fail "-d -r: $(names dw.zip)"
 
 # A new archive gets the permissions of a new file, while a replaced
 # one keeps its own

@@ -91,12 +91,17 @@ releases, such as `zip -qX9r release-1.2.3.zip build/`:
 | `-@` | read paths from standard input, one per line (UTF-8) |
 | `-j`, `-D` | junk directory names; no directory entries |
 | `-x`, `-i` | exclude or include only paths matching patterns (before `-j`) |
-| `-y` | store symbolic links as links (POSIX) |
-| `-S` | include hidden and system files (Windows) |
+| `-y` | store symbolic links as links (POSIX only) |
+| `-S` | include hidden and system files (Windows only) |
 | `-u`, `-f` | update newer entries and add; freshen existing only |
 | `-FS` | filesync: update changed entries, delete missing ones |
 | `-d` | delete entries matching patterns |
 | `-nw` | no wildcards, except `?` (as in Info-ZIP) |
+| `-v`, `-L` | version (alone, or `--version`); license |
+
+Long options are Info-ZIP's (`--recurse-paths`, `--strip-extra`, ...)
+and, as there, may be abbreviated. Only `-X` may be negated (`-X-`).
+Options in `ZIPOPT`, or else `ZIP`, apply before the arguments.
 
 Existing archives are merged as Info-ZIP does: matching entries are
 replaced in place, new ones appended, and the rest copied without
@@ -115,7 +120,8 @@ time zone either.
 
 Interactive and legacy features are not supported and are rejected:
 encryption, comments, splits, self-extractors, `-F` fixes, line ending
-conversion, streaming with `-`, `-T`, `-m`, `-n`, `--out`, and logging.
+conversion, streaming (with `-`, or to standard output without an
+archive name), `-T`, `-m`, `-n`, `--out`, and logging.
 Warnings and errors go to standard error rather than standard output.
 
 ## Performance
