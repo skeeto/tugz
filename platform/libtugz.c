@@ -20,6 +20,13 @@ static void os_oom(os *ctx)
     __builtin_trap();  // unreachable: sizes are checked first
 }
 
+static void os_extend(os *ctx, arena *a, iz need)
+{
+    (void)a;
+    (void)need;
+    os_oom(ctx);
+}
+
 struct tugz_inflator {
     decoder  *z;
     void     *mem;

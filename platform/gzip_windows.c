@@ -36,8 +36,14 @@ static void os_copymeta(os *ctx, i32 from, i32 to)
 void mainCRTStartup(void)
 {
     os ctx = {0};
+    os_init(&ctx);
+    iz    cap = (iz)1 << 25;
+    byte *mem = VirtualAlloc(0, cap, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+    if (!mem) {
+        os_oom(&ctx);
+    }
     config conf = {0};
-    conf.perm = os_init(&ctx, (iz)1 << 25);
+    conf.perm = (arena){mem, mem+cap, &ctx, 0};
 
     i32 argc = 0;
     s8 *argv = os_args(&conf.perm, &argc);

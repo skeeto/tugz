@@ -83,12 +83,14 @@ typedef struct {
 enum { MAX_HANDLES = 8 };
 
 struct os {
-    iptr handles[MAX_HANDLES];
-    u32  consoles;    // bit for each standard handle that is a console
-    u8   held[3][4];  // for each, an incomplete UTF-8 sequence written
-    u8   nheld[3];
-    i32  unsure;      // creations refused in a row, each name maybe taken
-    iptr guard;       // zip's archive, held so that it can be replaced
+    iptr  handles[MAX_HANDLES];
+    u32   consoles;    // bit for each standard handle that is a console
+    u8    held[3][4];  // for each, an incomplete UTF-8 sequence written
+    u8    nheld[3];
+    i32   unsure;      // creations refused in a row, each name maybe taken
+    iptr  guard;       // zip's archive, held so that it can be replaced
+    byte *lo;          // zip: the uncommitted middle of its memory
+    byte *hi;
 };
 
 typedef struct {
@@ -644,9 +646,8 @@ static void os_exit(os *ctx, i32 status)
     ExitProcess((u32)status);
 }
 
-// Initialize standard handles and allocate a committed arena of cap
-// bytes. Exits through os_oom on failure.
-static arena os_init(os *ctx, iz cap)
+// Initialize standard handles.
+static void os_init(os *ctx)
 {
     ctx->handles[0] = GetStdHandle((u32)-10);
     ctx->handles[1] = GetStdHandle((u32)-11);
@@ -656,14 +657,6 @@ static arena os_init(os *ctx, iz cap)
         b32 console = GetConsoleMode(ctx->handles[fd], &mode);
         ctx->consoles |= (console ? 1u : 0u) << fd;
     }
-    arena a = {0};
-    a.beg = VirtualAlloc(0, cap, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
-    if (!a.beg) {
-        os_oom(ctx);
-    }
-    a.end = a.beg + cap;
-    a.ctx = ctx;
-    return a;
 }
 
 // Command line arguments as WTF-8, including the program name first.

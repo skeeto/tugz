@@ -21,8 +21,10 @@
 static char *volatile pending_output;
 
 struct os {
-    i32 outfd;     // descriptor of the created output file, or -1
-    b32 defperms;  // it was created with OS_DEFPERMS, not owner-only
+    i32   outfd;     // descriptor of the created output file, or -1
+    b32   defperms;  // it was created with OS_DEFPERMS, not owner-only
+    byte *lo;        // zip: the unclaimed middle of its memory
+    byte *hi;
 };
 
 static s8 cstr(char *z)

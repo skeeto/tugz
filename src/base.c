@@ -2,7 +2,7 @@
 //
 // Everything is a unity build. A platform layer (platform/*.c, test/*.c)
 // includes the sources it needs, starting with this one, and defines
-// os_oom along with its entry points.
+// os_oom and os_extend along with its entry points.
 
 typedef unsigned char       u8;
 typedef unsigned short      u16;
@@ -32,10 +32,13 @@ typedef struct {
     iz  len;
 } s8;
 
+// Allocates from beg up, or if down, from end down, so that a scratch
+// arena may grow toward a permanent one in the same memory.
 typedef struct {
     byte *beg;
     byte *end;
     os   *ctx;
+    b32   down;
 } arena;
 
 // Status codes for compression and decompression.
@@ -101,19 +104,40 @@ static void store64le(u8 *p, u64 v)
     }
 }
 
-// Called when an arena is exhausted. Defined by the platform layer.
+// Called when memory runs out. Defined by the platform layer.
 [[noreturn]] static void os_oom(os *);
+
+// Called when an arena lacks room for need bytes, padding included.
+// Makes room, as by committing more memory, while keeping the end from
+// which the arena allocates, or exits through os_oom. Defined by the
+// platform layer.
+static void os_extend(os *, arena *, iz need);
+
+// Padding to align an allocation of len bytes, which must fit unpadded.
+static iz alloc_pad(arena *a, iz len, iz align)
+{
+    uptr p = a->down ? (uptr)(a->end - len) : -(uptr)a->beg;
+    return (iz)(p & (uptr)(align - 1));
+}
 
 static void *alloc(arena *a, iz count, iz size, iz align, b32 zero)
 {
     assert(count >= 0);
     assert(size > 0);
-    iz pad = (iz)(-(uptr)a->beg & (uptr)(align - 1));
-    iz avail = a->end - a->beg - pad;
-    if (avail < 0 || count > avail/size) {
-        os_oom(a->ctx);
+    iz avail = a->end - a->beg;
+    if (count>avail/size || alloc_pad(a, count*size, align)>avail-count*size) {
+        if (count > ((iz)((uz)-1 >> 1) - align)/size) {
+            os_oom(a->ctx);
+        }
+        os_extend(a->ctx, a, count*size + align-1);  // room for any padding
     }
-    void *r = a->beg + pad;
-    a->beg += pad + count*size;
-    return zero ? bytefill(r, 0, count*size) : r;
+    iz    len = count * size;
+    iz    pad = alloc_pad(a, len, align);
+    byte *r   = a->down ? a->end - len - pad : a->beg + pad;
+    if (a->down) {
+        a->end = r;
+    } else {
+        a->beg = r + len;
+    }
+    return zero ? bytefill(r, 0, len) : r;
 }

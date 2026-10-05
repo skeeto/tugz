@@ -103,8 +103,12 @@ static void os_oom(os *ctx)
     os_exit(ctx, ZE_MEM);
 }
 
+// The two arenas share one region, perm growing up from its bottom and
+// scratch down from its top, so that neither strands what the other
+// could use. The platform's os_extend gives each more as it needs it.
 typedef struct {
     arena perm;
+    arena scratch;  // allocates downward
     s8   *args;     // excluding the program name
     i32   nargs;
     s8    epoch;    // SOURCE_DATE_EPOCH, if set
@@ -1289,8 +1293,8 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
     }
 
     i64 cdsize = ar->end.cdsize;
-    if (cdsize > (i64)(z->perm.end - z->perm.beg)) {
-        os_oom(z->ctx);
+    if ((u64)cdsize > (uz)-1>>1) {
+        os_oom(z->ctx);  // larger than the address space (32-bit hosts)
     }
     u8 *cd = newbytes(&z->perm, (iz)cdsize);
     if (!os_readat(z->ctx, ar->fd, cd, (iz)cdsize, ar->end.cdoff)) {
@@ -2129,22 +2133,16 @@ static i32 zip_main(zipconfig *conf)
 {
     zip *z = new(&conf->perm, 1, zip);
     z->ctx     = conf->perm.ctx;
+    z->perm    = conf->perm;
     z->level   = 6;
     z->windows = conf->windows;
-    arena scratch = conf->perm;  // reset below, once perm is carved out
+    arena scratch = conf->scratch;
 
     // Without arguments, Info-ZIP streams standard input to standard
     // output, unless that is a terminal, which gets the usage instead
     if (!conf->nargs && os_isatty(z->ctx, 1)) {
         return usage(z, 0);
     }
-
-    // Scratch takes half of the remaining memory
-    iz half = (conf->perm.end - conf->perm.beg) / 2;
-    z->perm = conf->perm;
-    z->perm.end -= half;
-    scratch.beg = z->perm.end;
-    scratch.end = conf->perm.end;
 
     // Options from the environment precede the arguments, as in Info-ZIP:
     // those of ZIPOPT or, if it has none, of ZIP

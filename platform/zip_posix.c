@@ -14,7 +14,64 @@
 
 #include <dirent.h>
 #include <stdio.h>  // rename
+#include <sys/mman.h>
 #include <time.h>
+
+#ifndef MAP_ANONYMOUS
+#  define MAP_ANONYMOUS MAP_ANON  // its older name
+#endif
+#ifndef MAP_NORESERVE
+#  define MAP_NORESERVE 0
+#endif
+
+// zip's memory is one reservation of address space, of which only the
+// pages touched get memory: perm grows up from its bottom and scratch
+// down from its top, each claiming more of the middle as it needs it.
+// MAP_NORESERVE keeps Linux from counting the whole reservation against
+// its overcommit heuristic. As much as the system lends, up to 16 GiB
+// (1 GiB on 32-bit hosts), halving on refusal.
+static void reserve(os *ctx)
+{
+    iz cap = (iz)1 << (sizeof(void *)==8 ? 34 : 30);
+    for (; cap >= (iz)1<<24; cap /= 2) {
+        void *p = mmap(0, (uz)cap, PROT_READ|PROT_WRITE,
+                       MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
+        if (p != MAP_FAILED) {
+            ctx->lo = p;
+            ctx->hi = ctx->lo + cap;
+            return;
+        }
+    }
+    os_oom(ctx);
+}
+
+// Claim more of the reservation for perm, from below the middle, or for
+// a scratch arena, from above it, a megabyte at a time. Scratch below
+// the arena asking is free, since the functions that allocated it have
+// returned. Any other arena, such as a codec's exact one, is fixed.
+static void os_extend(os *ctx, arena *a, iz need)
+{
+    if (a->down) {
+        a->beg = ctx->hi;
+    } else if (a->end != ctx->lo) {
+        os_oom(ctx);
+    }
+    iz want = need - (a->end - a->beg);
+    iz room = ctx->hi - ctx->lo;
+    if (want > room) {
+        os_oom(ctx);
+    } else if (want > 0) {
+        iz chunk = (iz)1 << 20;
+        iz take  = MIN((want + chunk - 1) & -chunk, room);
+        if (a->down) {
+            ctx->hi -= take;
+            a->beg   = ctx->hi;
+        } else {
+            ctx->lo += take;
+            a->end   = ctx->lo;
+        }
+    }
+}
 
 static void stat_info(struct stat *st, os_info *info)
 {
@@ -272,15 +329,10 @@ int main(int argc, char **argv)
                    ZE_TEMP);
     install_signals();
 
-    iz cap = (iz)1 << 28;
-    byte *mem = malloc((uz)cap);
-    if (!mem) {
-        os_oom(&ctx);
-    }
     zipconfig conf = {0};
-    conf.perm.beg = mem;
-    conf.perm.end = mem + cap;
-    conf.perm.ctx = &ctx;
+    reserve(&ctx);
+    conf.perm    = (arena){ctx.lo, ctx.lo, &ctx, 0};
+    conf.scratch = (arena){ctx.hi, ctx.hi, &ctx, 1};
 
     conf.nargs = argc>0 ? argc-1 : 0;
     conf.args  = new(&conf.perm, conf.nargs, s8);
@@ -293,7 +345,5 @@ int main(int argc, char **argv)
     conf.epoch  = epoch  ? cstr(epoch)  : (s8){0};
     conf.zipopt = zipopt ? cstr(zipopt) : (s8){0};
     conf.zipenv = zipenv ? cstr(zipenv) : (s8){0};
-    i32 status = zip_main(&conf);
-    free(mem);  // for leak checkers
-    return status;
+    return zip_main(&conf);
 }

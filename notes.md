@@ -15,11 +15,12 @@ mutable; platform layers may use globals and `#ifdef`.
 
 The core (`base`, `crc32`, `adler32`, `inflate`, `deflate`, `gzip`) does
 no I/O: callers hand it input and output buffers of any size and it
-resumes where it stopped. Its only hook is `os_oom`. Programs add
-`src/io.c` (the `os_*` file interface and a buffered reader and writer);
-gzip adds `src/gzipio.c` (descriptor drivers) and `src/cli.c`. The
-library layer adds none of them. The shared `os_*` implementations live
-in `platform/posix.c` and `platform/windows.c`.
+resumes where it stopped. Its only hooks are `os_oom` and `os_extend`
+(for an arena that runs out). Programs add `src/io.c` (the `os_*` file
+interface and a buffered reader and writer); gzip adds `src/gzipio.c`
+(descriptor drivers) and `src/cli.c`. The library layer adds none of
+them. The shared `os_*` implementations live in `platform/posix.c` and
+`platform/windows.c`.
 
 | File                     | Purpose                                         |
 |--------------------------|-------------------------------------------------|
@@ -402,6 +403,26 @@ neither inflate nor the gzip container.
   archive, whose identity it needs. (A directory entry can lag for a
   file changed through another of its hard links, as Microsoft notes.)
   Only a letter is a drive: `1:x` names stream `x` of file `1`.
+- Memory: zip has no fixed cap. Its memory is one reservation of
+  address space, as much as the system lends up to 16 GiB on 64-bit
+  POSIX hosts and 64 GiB on 64-bit Windows (1 GiB for 32-bit
+  processes), halving on refusal, holding a double-ended arena: perm,
+  for what lasts the run, grows up from the bottom, and scratch, passed
+  by value and so freed by returning, grows down from the top. When an
+  allocation does not fit, the allocator calls the platform's
+  `os_extend` hook, which gives the arena more of the unclaimed middle,
+  a megabyte at a time, so that neither side strands memory the other
+  could use. Only scratch's high-water mark stays scratch's, since by
+  value it cannot tell when that is free again; scratch below the frame
+  asking is always free. POSIX maps the reservation readable and
+  writable with `MAP_NORESERVE`, so pages get memory only when touched
+  and Linux does not count the rest against its overcommit heuristic;
+  Windows reserves it and commits each megabyte as it is claimed, so the
+  commit charge grows with use. The hook refuses arenas other than perm
+  and scratch, such as a codec's exactly sized one. Running out (of
+  address space, or of the system's commit limit on Windows) is still
+  "zip error: Out of memory" (4). gzip and the library keep their fixed
+  arenas: their hooks only report running out.
 - libdeflate issue #323: Windows' zip folder rejects incomplete Huffman
   codes (such as a lone distance code in a block with at most one
   distinct distance), which DEFLATE permits. `huff_build` always codes at

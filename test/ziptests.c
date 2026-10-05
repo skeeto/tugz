@@ -26,6 +26,13 @@ static void os_oom(os *ctx)
     __builtin_trap();
 }
 
+static void os_extend(os *ctx, arena *a, iz need)
+{
+    (void)a;
+    (void)need;
+    os_oom(ctx);
+}
+
 static s8 str(char const *z)
 {
     return (s8){(u8 *)z, (iz)strlen(z)};

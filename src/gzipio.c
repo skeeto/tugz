@@ -12,6 +12,14 @@ static void os_oom(os *ctx)
     os_exit(ctx, 1);
 }
 
+// The arena is fixed in size, ample for the codecs.
+static void os_extend(os *ctx, arena *a, iz need)
+{
+    (void)a;
+    (void)need;
+    os_oom(ctx);
+}
+
 // Decoded output not yet handed out, for copy-free delivery.
 static s8 decoder_pending(decoder *z)
 {

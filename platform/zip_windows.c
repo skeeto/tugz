@@ -78,6 +78,57 @@ enum {
     FileRenameInfoEx  = 22,
 };
 
+// zip's memory is one reserved range of address space, committed a
+// chunk at a time as it is used, so that the commit charge grows with
+// use: perm from the bottom up, and scratch from the top down. As much
+// as the system will reserve, up to 64 GiB (1 GiB in 32-bit processes),
+// halving on refusal.
+static void reserve(os *ctx)
+{
+    iz cap = (iz)1 << (sizeof(void *)==8 ? 36 : 30);
+    for (; cap >= (iz)1<<24; cap /= 2) {
+        byte *p = VirtualAlloc(0, cap, MEM_RESERVE, PAGE_READWRITE);
+        if (p) {
+            ctx->lo = p;
+            ctx->hi = p + cap;
+            return;
+        }
+    }
+    os_oom(ctx);
+}
+
+// Commit more of the reservation to perm, from below the middle, or to
+// a scratch arena, from above it, a megabyte at a time. Scratch below
+// the arena asking is free, since the functions that allocated it have
+// returned. Any other arena, such as a codec's exact one, is fixed.
+static void os_extend(os *ctx, arena *a, iz need)
+{
+    if (a->down) {
+        a->beg = ctx->hi;
+    } else if (a->end != ctx->lo) {
+        os_oom(ctx);
+    }
+    iz want = need - (a->end - a->beg);
+    iz room = ctx->hi - ctx->lo;
+    if (want > room) {
+        os_oom(ctx);
+    } else if (want > 0) {
+        iz    chunk = (iz)1 << 20;
+        iz    take  = MIN((want + chunk - 1) & -chunk, room);
+        byte *at    = a->down ? ctx->hi-take : ctx->lo;
+        if (!VirtualAlloc((uptr)at, take, MEM_COMMIT, PAGE_READWRITE)) {
+            os_oom(ctx);  // the system's commit limit
+        }
+        if (a->down) {
+            ctx->hi = at;
+            a->beg  = at;
+        } else {
+            ctx->lo = at + take;
+            a->end  = ctx->lo;
+        }
+    }
+}
+
 // Unix seconds from a FILETIME, rounding down.
 static i64 unixtime(u32 const ft[2])
 {
@@ -556,8 +607,11 @@ static void os_localtime(os *ctx, i64 t, i32 tm[6])
 void mainCRTStartup(void)
 {
     os ctx = {0};
+    os_init(&ctx);
+    reserve(&ctx);
     zipconfig conf = {0};
-    conf.perm    = os_init(&ctx, (iz)1 << 28);
+    conf.perm    = (arena){ctx.lo, ctx.lo, &ctx, 0};
+    conf.scratch = (arena){ctx.hi, ctx.hi, &ctx, 1};
     conf.windows = 1;
 
     i32 argc = 0;

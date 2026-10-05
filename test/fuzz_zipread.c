@@ -26,6 +26,13 @@ static void os_oom(os *ctx)
     __builtin_trap();  // should never happen, as above
 }
 
+static void os_extend(os *ctx, arena *a, iz need)
+{
+    (void)a;
+    (void)need;
+    os_oom(ctx);
+}
+
 static b32 same(s8 a, s8 b)
 {
     return a.len==b.len && (!a.len || !__builtin_memcmp(a.s, b.s, (uz)a.len));
@@ -42,7 +49,7 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
         mem = malloc((uz)cap);
     }
     (void)bytemove;
-    arena a = {mem, mem+cap, 0};
+    arena a = {mem, mem+cap, 0, 0};
 
     iz  len = (iz)size;
     u8 *in  = newbytes(&a, len);
