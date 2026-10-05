@@ -48,13 +48,22 @@ static void encoder_consume(encoder *e, iz n)
 
 #define IO_RDBUF  (1 << 18)
 
-// Compress a descriptor into a descriptor in a FMT_* container.
-static i32 stream_compress(i32 in, i32 out, i32 format, i32 level,
-                           arena scratch)
+// An encoder for gzip_compress, which can reuse it for any number of
+// streams in turn.
+static encoder *gzip_encoder(arena *perm, i32 level)
 {
-    reader  *r = newreader(&scratch, in, IO_RDBUF);
-    arena    a = subarena(&scratch, encoder_memsize());
-    encoder *e = encoder_new(&a, format, level);
+    arena a = subarena(perm, encoder_memsize());
+    return encoder_new(&a, FMT_GZIP, level);
+}
+
+// Compress a descriptor into a descriptor as a new stream at a level,
+// first resetting the encoder: for small inputs this costs a fraction
+// of a new encoder, so one serves every file.
+static i32 gzip_compress(encoder *e, i32 in, i32 out, i32 level,
+                         arena scratch)
+{
+    encoder_reset(e, level);
+    reader *r = newreader(&scratch, in, IO_RDBUF);
     b32 werr = 0;
     for (;;) {
         b32  more = reader_fill(r);
@@ -127,11 +136,6 @@ static i32 stream_decompress(i32 in, i32 out, i32 format, arena scratch)
         status = GZ_EWRITE;
     }
     return status;
-}
-
-static i32 gzip_compress(i32 in, i32 out, i32 level, arena scratch)
-{
-    return stream_compress(in, out, FMT_GZIP, level, scratch);
 }
 
 static i32 gzip_decompress(i32 in, i32 out, arena scratch)

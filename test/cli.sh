@@ -85,6 +85,11 @@ expect_status 1 "$GZIP" -kf dd
 cat m1.gz m2.gz | "$GZIP" -dc >m.out
 cat one text | cmp -s - m.out || fail "multi-member"
 
+# Files in one run share an encoder yet compress as each does alone
+"$GZIP" -c text one empty binary one >m3.gz
+for f in text one empty binary one; do "$GZIP" -c $f; done |
+    cmp -s - m3.gz || fail "several files in one run"
+
 # Trailing garbage is a warning; corruption is an error
 { cat m1.gz; printf junk; } >tg.gz
 expect_status 2 "$GZIP" -dc tg.gz

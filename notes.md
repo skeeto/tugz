@@ -106,13 +106,13 @@ CPU models with and without PCLMUL.
   the heads by rehashing the inserted positions when there are at most
   8192, else by zeroing them, so a reused deflator costs time in
   proportion to the stream, not the table sizes. zip resets one deflator
-  per entry, and the library exposes this as `tugz_deflate_reset`; a
-  fresh deflator still zeroes 512 KiB. The reset also sets the level,
-  which only selects parameters and the zlib header, so
-  `tugz_deflate_size` takes only the format. `tugz_inflate_reset` skips
-  init's 14 KiB clear and fixed-table build. Per 100-byte gzip stream
-  (M4 Max / Pi 4): deflate 11.4 / 78 us after init, 2.5 / 21 us after
-  reset; inflate 3.3 / 19 us, 1.1 / 6.9 us.
+  per entry, gzip one encoder per file, and the library exposes this as
+  `tugz_deflate_reset`; a fresh deflator still zeroes 512 KiB. The reset
+  also sets the level, which only selects parameters and the zlib
+  header, so `tugz_deflate_size` takes only the format.
+  `tugz_inflate_reset` skips init's 14 KiB clear and fixed-table build.
+  Per 100-byte gzip stream (M4 Max / Pi 4): deflate 11.4 / 78 us after
+  init, 2.5 / 21 us after reset; inflate 3.3 / 19 us, 1.1 / 6.9 us.
 - Programs reach the buffers without copying (`*_pending`/`*_consume`),
   so the program's throughput is unchanged by the restructure.
 - `make libtugz.o` builds an object exporting only `tugz_*` (no writable

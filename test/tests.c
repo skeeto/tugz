@@ -357,7 +357,8 @@ static s8 get_stdout(os *ctx)
 static i32 do_gzip(os *ctx, arena a, u8 const *p, iz len, i32 level, s8 *out)
 {
     set_stdin(ctx, p, len);
-    i32 status = gzip_compress(0, 1, level, a);
+    encoder *e = gzip_encoder(&a, level);
+    i32 status = gzip_compress(e, 0, 1, level, a);
     *out = get_stdout(ctx);
     return status;
 }
@@ -1762,6 +1763,39 @@ static void test_cli(os *ctx, arena a)
     // Keep, level, combined flags
     TEST(run(ctx, a, "-k9 f") == EXIT_OK);
     TEST(has(ctx, "f") && has(ctx, "f.gz"));
+
+    // Files in one run share an encoder, reset for each, yet compress
+    // exactly as each does alone, in place and to standard output
+    u8 *noise = randbytes(20000, 1);
+    s8 const files[] = {
+        {text, 40000}, {text, 0}, {noise, 20000}, S8("abc1abc2abc3abc4"),
+        {text+3000, 9000}, {text+4000, 300}, {text+5000, 1}, {text, 40000},
+    };
+    for (i32 level = 1; level <= 9; level += 4) {
+        s8 all = {0};
+        for (i32 i = 0; i < countof(files); i++) {
+            char name[] = {'m', (char)('0'+i), 0};
+            mfs_put(ctx, name, files[i].s, files[i].len);
+        }
+        char inplace[] = "-kf? m0 m1 m2 m3 m4 m5 m6 m7";
+        inplace[3] = (char)('0' + level);
+        TEST(run(ctx, a, inplace) == EXIT_OK);
+        for (i32 i = 0; i < countof(files); i++) {
+            char name[] = {'m', (char)('0'+i), '.', 'g', 'z', 0};
+            s8 ref;
+            TEST(do_gzip(ctx, a, files[i].s, files[i].len, level, &ref)
+                 == GZ_OK);
+            TEST(equals(mfs_get(ctx, name), ref.s, ref.len));
+            all = cat(all, ref.s, ref.len);
+            free(ref.s);
+        }
+        char tostdout[] = "-c? m0 m1 m2 m3 m4 m5 m6 m7";
+        tostdout[2] = (char)('0' + level);
+        TEST(run(ctx, a, tostdout) == EXIT_OK);
+        TEST(equals(mfs_get(ctx, "<stdout>"), all.s, all.len));
+        free(all.s);
+    }
+    free(noise);
 
     // Refuse to overwrite, then force
     TEST(run(ctx, a, "f") == EXIT_WARN);

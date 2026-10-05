@@ -124,7 +124,8 @@ static iz compress_with(bench *b, i32 codec, i32 level)
         b->ctx.out = b->out;
         b->ctx.outlen = 0;
         b->ctx.outcap = b->cap;
-        if (gzip_compress(0, 1, level, b->perm)) {
+        arena a = b->perm;
+        if (gzip_compress(gzip_encoder(&a, level), 0, 1, level, a)) {
             abort();
         }
         return b->ctx.outlen;

@@ -24,6 +24,7 @@ typedef struct {
     b32 force;
     b32 keep;
     b32 quiet;
+    encoder *enc;  // when compressing, shared by every file
 } options;
 
 static s8 const usage_text = S8(
@@ -155,7 +156,7 @@ static i32 transform(options *o, i32 in, i32 out, arena scratch)
     } else if (o->decompress) {
         return gzip_decompress(in, out, scratch);
     }
-    return gzip_compress(in, out, o->level, scratch);
+    return gzip_compress(o->enc, in, out, o->level, scratch);
 }
 
 // Like GNU gzip, when using standard input, refuse to write compressed
@@ -389,6 +390,9 @@ static i32 gzip_main(config *conf)
 
     if (!nfiles) {
         files[nfiles++] = S("-");
+    }
+    if (!o.decompress && !o.test) {
+        o.enc = gzip_encoder(perm, o.level);
     }
 
     i32 code = EXIT_OK;
