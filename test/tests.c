@@ -366,7 +366,7 @@ static i32 do_gzip(os *ctx, arena a, u8 const *p, iz len, i32 level, s8 *out)
 static i32 do_gunzip(os *ctx, arena a, u8 const *p, iz len, s8 *out)
 {
     set_stdin(ctx, p, len);
-    i32 status = gzip_decompress(0, 1, a);
+    i32 status = stream_decompress(stream_decoder(&a, FMT_GZIP), 0, 1, a);
     *out = get_stdout(ctx);
     return status;
 }
@@ -374,7 +374,7 @@ static i32 do_gunzip(os *ctx, arena a, u8 const *p, iz len, s8 *out)
 static i32 do_inflate(os *ctx, arena a, u8 const *p, iz len, s8 *out)
 {
     set_stdin(ctx, p, len);
-    i32 status = stream_decompress(0, 1, FMT_RAW, a);
+    i32 status = stream_decompress(stream_decoder(&a, FMT_RAW), 0, 1, a);
     *out = get_stdout(ctx);
     return status;
 }
@@ -1532,6 +1532,9 @@ static s8 gzbytes(u8 const *p, iz len)
 
 static s8 cat(s8 a, u8 const *p, iz len)
 {
+    if (!len) {
+        return a;  // realloc to zero may free, or be undefined
+    }
     a.s = realloc(a.s, (uz)(a.len + len));
     memcpy(a.s+a.len, p, (uz)len);
     a.len += len;
@@ -1814,6 +1817,80 @@ static void test_cli(os *ctx, arena a)
         free(all.s);
     }
     free(noise);
+
+    // Files in one run share a decoder, reset for each, yet decompress
+    // or test exactly as each does alone, whatever the previous file left
+    // in it: a stream ended, cut off in its header, body (with a unit
+    // pending), or trailer, or corrupt, more members, trailing garbage,
+    // or bytes that are not gzip at all
+    {
+        u8 *rnd = randbytes(20000, 1);
+        s8 hello, empty, stored;
+        TEST(do_gzip(ctx, a, (u8 *)"hello, hello", 12, 6, &hello) == GZ_OK);
+        TEST(do_gzip(ctx, a, text, 0, 6, &empty) == GZ_OK);
+        TEST(do_gzip(ctx, a, rnd, 20000, 6, &stored) == GZ_OK);
+        s8 corrupt = gzbytes(gz.s, gz.len);
+        corrupt.s[corrupt.len/2] ^= 0x55;
+        s8 members = cat(gzbytes(hello.s, hello.len), gz.s, gz.len);
+        s8 trailing = cat(gzbytes(gz.s, gz.len), (u8 *)"junk", 4);
+        s8 const zs[] = {
+            gz, {gz.s, gz.len/2}, hello, corrupt, empty, {gz.s, 3}, members,
+            trailing, S8("not gzip"), stored, {gz.s, gz.len-3}, hello, gz,
+        };
+        i32 const nz = countof(zs);
+        char names[countof(zs)][8];
+        for (i32 i = 0; i < nz; i++) {
+            snprintf(names[i], sizeof(names[i]), "z%c.gz", 'a'+i);
+            mfs_put(ctx, names[i], zs[i].s, zs[i].len);
+        }
+        static char const *const modes[] = {"-dc", "-t", "-dkf"};
+        for (i32 m = 0; m < countof(modes); m++) {
+            char cmd[256];
+            iz len = snprintf(cmd, sizeof(cmd), "%s", modes[m]);
+            s8 out = {0}, err = {0}, plain[countof(zs)];
+            i32 code = EXIT_OK;
+            for (i32 i = 0; i < nz; i++) {
+                char alone[32];
+                snprintf(alone, sizeof(alone), "%s %s", modes[m], names[i]);
+                code = exit_combine(code, run(ctx, a, alone));
+                s8 o = mfs_get(ctx, "<stdout>");
+                s8 e = mfs_get(ctx, "<stderr>");
+                out = cat(out, o.s, o.len);
+                err = cat(err, e.s, e.len);
+                names[i][2] = 0;  // in place: the output, gone if failed
+                plain[i] = mfs_get(ctx, names[i]);
+                plain[i] = plain[i].s ? dup8(plain[i]) : plain[i];
+                os_remove(ctx, cstrs8(names[i]), a);
+                names[i][2] = '.';
+                len += snprintf(cmd+len, sizeof(cmd)-(uz)len, " %s", names[i]);
+            }
+            TEST(len < countof(cmd));
+            TEST(run(ctx, a, cmd) == code);
+            TEST(equals(mfs_get(ctx, "<stdout>"), out.s, out.len));
+            TEST(equals(mfs_get(ctx, "<stderr>"), err.s, err.len));
+            for (i32 i = 0; i < nz; i++) {
+                names[i][2] = 0;
+                s8 p = mfs_get(ctx, names[i]);
+                TEST(!p.s == !plain[i].s);
+                TEST(!p.s || equals(p, plain[i].s, plain[i].len));
+                os_remove(ctx, cstrs8(names[i]), a);
+                names[i][2] = '.';
+                free(plain[i].s);
+            }
+            free(err.s);
+            free(out.s);
+        }
+        for (i32 i = 0; i < nz; i++) {
+            os_remove(ctx, cstrs8(names[i]), a);
+        }
+        free(trailing.s);
+        free(members.s);
+        free(corrupt.s);
+        free(stored.s);
+        free(empty.s);
+        free(hello.s);
+        free(rnd);
+    }
 
     // Refuse to overwrite, then force
     TEST(run(ctx, a, "f") == EXIT_WARN);

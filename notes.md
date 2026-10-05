@@ -122,7 +122,11 @@ CPU models with and without PCLMUL.
   2.0 / 12.6 us, clearing 14 KiB and building the fixed tables, and now
   takes 3 / 39 ns. A 100-byte gzip stream decodes in 1.2 / 7.3 us after
   init or reset, where it took 3.2 / 19.9 us after init. The library
-  object grew by 2 KiB (+5%) of constant tables.
+  object grew by 2 KiB (+5%) of constant tables. gzip -d and -t reset
+  one decoder per file, as compression does its encoder, though with
+  init this cheap that saves nothing measurable: over 20,000 gzipped
+  200-360 B slices of dickens, `-dc` took 0.38 / 0.80 s of CPU with the
+  old init and 0.31 / 0.54 s with the new, with or without the reuse.
 - Programs reach the buffers without copying (`*_pending`/`*_consume`),
   so the program's throughput is unchanged by the restructure.
 - `make libtugz.o` builds an object exporting only `tugz_*` (no writable

@@ -25,6 +25,7 @@ typedef struct {
     b32 keep;
     b32 quiet;
     encoder *enc;  // when compressing, shared by every file
+    decoder *dec;  // when decompressing or testing, likewise
 } options;
 
 static s8 const usage_text = S8(
@@ -152,9 +153,9 @@ static i32 warn(options *o, s8 name, s8 msg, arena scratch)
 static i32 transform(options *o, i32 in, i32 out, arena scratch)
 {
     if (o->test) {
-        return gzip_decompress(in, -1, scratch);
+        return stream_decompress(o->dec, in, -1, scratch);
     } else if (o->decompress) {
-        return gzip_decompress(in, out, scratch);
+        return stream_decompress(o->dec, in, out, scratch);
     }
     return gzip_compress(o->enc, in, out, o->level, scratch);
 }
@@ -391,7 +392,9 @@ static i32 gzip_main(config *conf)
     if (!nfiles) {
         files[nfiles++] = S("-");
     }
-    if (!o.decompress && !o.test) {
+    if (o.decompress || o.test) {
+        o.dec = stream_decoder(perm, FMT_GZIP);
+    } else {
         o.enc = gzip_encoder(perm, o.level);
     }
 

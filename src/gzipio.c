@@ -82,17 +82,26 @@ static i32 gzip_compress(encoder *e, i32 in, i32 out, i32 level,
     return r->err ? GZ_EREAD : werr ? GZ_EWRITE : GZ_OK;
 }
 
-// Decompress a FMT_* stream, or for gzip all members, from a descriptor
-// into a descriptor. A negative output descriptor only verifies.
+// A decoder in a FMT_* format for stream_decompress, which can reuse it
+// for any number of streams in turn.
+static decoder *stream_decoder(arena *perm, i32 format)
+{
+    arena a = subarena(perm, decoder_memsize());
+    return decoder_new(&a, format);
+}
+
+// Decompress a stream in the decoder's format, or for gzip all members,
+// from a descriptor into a descriptor, first resetting the decoder, so
+// that one serves every file. A negative output descriptor only verifies.
 //
 // Following GNU gzip, data after the last gzip member is ignored with a
 // warning (GZ_TRAILING) unless it starts with the gzip magic, in which
 // case it must be a valid member.
-static i32 stream_decompress(i32 in, i32 out, i32 format, arena scratch)
+static i32 stream_decompress(decoder *z, i32 in, i32 out, arena scratch)
 {
-    reader  *r = newreader(&scratch, in, IO_RDBUF);
-    arena    a = subarena(&scratch, decoder_memsize());
-    decoder *z = decoder_new(&a, format);
+    decoder_reset(z);
+    i32 format = z->format;
+    reader *r = newreader(&scratch, in, IO_RDBUF);
     b32 werr = 0;
     i32 status;
     for (b32 first = 1;; first = 0) {
@@ -136,9 +145,4 @@ static i32 stream_decompress(i32 in, i32 out, i32 format, arena scratch)
         status = GZ_EWRITE;
     }
     return status;
-}
-
-static i32 gzip_decompress(i32 in, i32 out, arena scratch)
-{
-    return stream_decompress(in, out, FMT_GZIP, scratch);
 }

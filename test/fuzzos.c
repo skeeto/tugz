@@ -127,13 +127,15 @@ static void fuzz_io(fuzzenv *env, u8 const *in, iz len)
 static i32 fuzz_inflate(fuzzenv *env, u8 const *in, iz len)
 {
     fuzz_io(env, in, len);
-    return stream_decompress(0, 1, FMT_RAW, env->perm);
+    arena a = env->perm;
+    return stream_decompress(stream_decoder(&a, FMT_RAW), 0, 1, a);
 }
 
 static i32 fuzz_gunzip(fuzzenv *env, u8 const *in, iz len)
 {
     fuzz_io(env, in, len);
-    return gzip_decompress(0, 1, env->perm);
+    arena a = env->perm;
+    return stream_decompress(stream_decoder(&a, FMT_GZIP), 0, 1, a);
 }
 
 // Raw deflate in pieces of the given size (0 for whole) at a stream base.
