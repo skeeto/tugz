@@ -924,6 +924,14 @@ static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
         return;
     }
     name = z->junk ? basename(z, name) : name;
+    if (name.len > ZIP_MAX16) {
+        // Possible in deep Windows paths, but not in zip headers
+        warn(z, S("name too long for a zip entry: "), path, scratch);
+        z->status = ZE_OPEN;
+        z->nskipped++;
+        z->bskipped += info->type==FT_FILE ? info->size : 0;
+        return;
+    }
 
     // The same path reached twice (f f, d d/a, d d/) is skipped, as
     // Info-ZIP does. It compares paths whole, but gives directories
@@ -1410,6 +1418,12 @@ static u32 file_extattr(zip *z, os_info *info)
     return info->mode<<16 | (dir ? 0x10 : 0) | (ro ? 0x01 : 0);
 }
 
+// Version made by: FAT or Unix, Zip 3.0
+static u16 made_by(zip *z)
+{
+    return z->windows ? 0x001e : 0x031e;
+}
+
 static u16 level_flags(i32 level)
 {
     return level>=8 ? 2 : level<=2 ? 4 : 0;
@@ -1430,7 +1444,7 @@ static i32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
     }
     *e = (zentry){0};  // the slot may hold a failed attempt's fields
     e->name    = f->name;
-    e->made    = z->windows ? 0x001e : 0x031e;  // FAT or Unix, Zip 3.0
+    e->made    = made_by(z);
     e->flags   = utf8>0 ? ZIP_FLAG_UTF8 : 0;
     e->dostime = f->dostime;
     e->extattr = file_extattr(z, &f->info);
@@ -1526,13 +1540,18 @@ static i32 copy_entry(zip *z, zarchive *ar, zwork *k, zentry *old,
     }
 
     // Its extra fields are kept, as Info-ZIP keeps them even with -X,
-    // except that Zip64 fields are made anew
+    // except that Zip64 fields are made anew. Those must leave room.
     *e = *old;
     iz nlen = get16(fixed+26);
     s8 lextra = {var+nlen, varlen-nlen};
     e->lextra = zip_filter_extra(&scratch, lextra);
     e->offset = zout_tell(w);
     e->zip64  = e->usize>=ZIP_MAX32 || e->csize>=ZIP_MAX32;
+    if (!zip_fits(e)) {
+        s8 why = JOIN(&scratch, old->name, S(": no room for Zip64 fields"));
+        return fail(z, ZE_FORM, S("Zip file structure invalid"), why,
+                    scratch);
+    }
 
     // Sizes are now known, so a descriptor is unnecessary, except that
     // traditional encryption checks against the time when it is present.
@@ -1715,7 +1734,8 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     i64 cdsize  = zout_tell(&w) - cdoff;
     s8  comment = ar ? ar->end.comment : (s8){0};
     u8 *end = newbytes(&scratch, zip_end_len(count, cdsize, cdoff, comment));
-    zout_write(&w, end, zip_end(end, count, cdsize, cdoff, comment)-end);
+    u8 *fin = zip_end(end, count, cdsize, cdoff, comment, made_by(z));
+    zout_write(&w, end, fin-end);
     zout_flush(&w);
 
     if (ar) {

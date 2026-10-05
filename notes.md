@@ -144,7 +144,8 @@ the file is flushed and closed without error), and
   warning under its entry's name that tells a failed open from a failed
   read. Info-ZIP's quirks kept: `../` stays in names, an emptied archive
   remains as a 22-byte file, entries that do not shrink are stored, odd
-  seconds round up.
+  seconds round up. A name over 65,535 bytes (possible in deep Windows
+  paths) is skipped with a warning, exiting 18.
 - Options: Info-ZIP's grammar and names. Long names may be abbreviated
   to a prefix of exactly one of Info-ZIP's long names (supported or
   not, so `--rec` is ambiguous). Only `-X` is negatable; other negations
@@ -268,7 +269,10 @@ the file is flushed and closed without error), and
   depends on it) and raw data copies. They keep their extra fields, even
   with `-X`, which as in Info-ZIP applies only to entries written (some
   fields are needed to extract, such as AES's), except Zip64 fields,
-  made anew. A replaced entry keeps its comment, as in Info-ZIP. A Zip64 end record is trusted only
+  made anew; one whose fields leave no room for a Zip64 field it now
+  needs is an error (3), not a wrapped length. A replaced entry keeps
+  its comment, as in Info-ZIP. The Zip64 end record gives the program's
+  version made by, as Info-ZIP's does. A Zip64 end record is trusted only
   if it checks out or the plain end record calls for it, since bytes
   resembling a Zip64 locator may precede the end record by chance (found
   by fuzzing). Only a missing archive is new: anything else at its path

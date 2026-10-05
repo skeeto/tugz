@@ -547,6 +547,25 @@ for n, c in ("tree/a.txt", b"note a"), ("tree/b.txt", b"note b"):
         grep -q '^tree/b.txt 0 0x0 0x[0-9a-f]* 3 0 6 6 note b$' check.out &&
         grep -q '^tree/one 0 0x0 0x[0-9a-f]* 3 0 0 0 $' check.out ||
         fail "kept fields and comments: $(cat check.out)"
+
+    # A copied entry whose extra fields leave no room for the Zip64 field
+    # it needs is refused, rather than written with a wrapped length
+    $PY -c 'import struct, sys
+n = b"big"
+x = b"\xfe\xca" + struct.pack("<H", 65516) + bytes(65516)
+z = struct.pack("<HHQ", 1, 8, 5 << 30)  # its size: 5 GiB
+loc = struct.pack("<IHHHHHIIIHH", 0x04034b50, 45, 0, 0, 0, 33, 0, 1,
+                  0xffffffff, len(n), len(x)) + n + x + b"x"
+cen = struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 0x31e, 45, 0, 0, 0,
+                  33, 0, 1, 0xffffffff, len(n), len(z), 0, 0, 0, 0, 0)
+cen += n + z
+end = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 1, 1, len(cen), len(loc),
+                  0)
+open(sys.argv[1], "wb").write(loc + cen + end)' nofit.zip
+    cp nofit.zip nofit0.zip
+    "$ZIP" nofit.zip tree/a.txt >out 2>&1 && fail "no room for Zip64"
+    grep -q 'structure invalid (big: no room' out || fail "no room: $(cat out)"
+    cmp -s nofit.zip nofit0.zip || fail "a refused copy changed the archive"
 fi
 
 # Errors and warnings
@@ -817,6 +836,13 @@ if [ -n "$SLOW" ]; then
     "$ZIP" -q many.zip tree/a.txt
     verify many.zip
     [ "$(names many.zip | wc -l | tr -d ' ')" = 70002 ] || fail "merge many"
+    if [ -n "$PY" ]; then  # versions made by and needed, as in Info-ZIP
+        $PY -c 'import sys
+d = open(sys.argv[1], "rb").read()
+p = d.rfind(b"PK\x06\x06")
+sys.exit(d[p+12:p+16] != b"\x1e\x03\x2d\x00")' many.zip ||
+            fail "Zip64 end record versions"
+    fi
 fi
 
 echo "zip tests pass"

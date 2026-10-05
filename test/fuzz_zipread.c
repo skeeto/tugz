@@ -99,6 +99,9 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     for (iz i = 0; i < m; i++) {
         out[i].lextra = zip_filter_extra(&a, out[i].lextra);
         out[i].offset = cdoff;
+        if (!zip_fits(out+i)) {
+            return 0;  // zip refuses to copy it
+        }
         cdoff += zip_local_len(out+i) + out[i].csize;
     }
     i64 cdsize = 0;
@@ -119,7 +122,7 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
         p = zip_central(p, out+i);
     }
     CHECK(p-buf == cdoff+cdsize);
-    p = zip_end(p, m, cdsize, cdoff, end.comment);
+    p = zip_end(p, m, cdsize, cdoff, end.comment, 0x031e);
     CHECK(p-buf == total);
 
     zend end2 = {0};
@@ -139,7 +142,8 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
         CHECK(back[i].offset==out[i].offset && back[i].crc==out[i].crc);
         CHECK(back[i].flags==out[i].flags && back[i].method==out[i].method);
         CHECK(back[i].dostime==out[i].dostime);
-        CHECK(zip_local_varlen(buf+back[i].offset) >= 0);
+        iz v = zip_local_varlen(buf+back[i].offset);
+        CHECK(v == zip_local_len(out+i)-ZIP_LOCAL_LEN);
     }
     return 0;
 }

@@ -293,7 +293,7 @@ static void test_roundtrip_headers(arena a)
     }
     i64 cdsize = p - buf - cdoff;
     s8 comment = str("archive comment");
-    u8 *q = zip_end(p, 3, cdsize, cdoff, comment);
+    u8 *q = zip_end(p, 3, cdsize, cdoff, comment, 0x031e);
     TEST(q-p == zip_end_len(3, cdsize, cdoff, comment));
     TEST(q-p == ZIP_END_LEN + comment.len);
     p = q;
@@ -379,7 +379,7 @@ static void test_zip64(arena a)
     i64 cdsize = p - buf;
     i64 cdoff  = ((i64)11 << 30);  // past the entry's data
     i64 count  = 1;
-    u8 *q = zip_end(p, count, cdsize, cdoff, (s8){0});
+    u8 *q = zip_end(p, count, cdsize, cdoff, (s8){0}, 0x031e);
     TEST(q-p == ZIP_END64_LEN + ZIP_LOC64_LEN + ZIP_END_LEN);
     TEST(zip_end_len(count, cdsize, cdoff, (s8){0}) == q-p);
 
@@ -426,8 +426,9 @@ static void test_zip64(arena a)
 
     // Many entries alone call for Zip64 records
     u8 many[128];
-    u8 *m = zip_end(many, 70000, 70000*46, 1000, (s8){0});
+    u8 *m = zip_end(many, 70000, 70000*46, 1000, (s8){0}, 0x001e);
     TEST(m-many == ZIP_END64_LEN + ZIP_LOC64_LEN + ZIP_END_LEN);
+    TEST(get16(many+12)==0x001e && get16(many+14)==45);  // made by, needed
     TEST(get64(many+24) == 70000);
     TEST(get16(m-ZIP_END_LEN+10) == 0xffff);
     TEST(get32(m-ZIP_END_LEN+16) == 1000);
@@ -472,6 +473,14 @@ static void test_extras(arena a)
 // the end record defers to them; otherwise the end record stands alone.
 static void test_end_records(arena a)
 {
+    // An empty archive, its end record at the very start of the tail,
+    // where no locator could precede it
+    u8 *empty = new(&a, ZIP_END_LEN, u8);
+    TEST(zip_end(empty, 0, 0, 0, (s8){0}, 0x031e) == empty+ZIP_END_LEN);
+    zend z = {0};
+    TEST(zip_find_end(empty, ZIP_END_LEN, ZIP_END_LEN, &z) == ZIP_OK);
+    TEST(z.count==0 && z.endpos==0 && z.end64==-1);
+
     // One entry whose comment, just before the end record, ends with
     // bytes resembling a Zip64 locator that points at offset 0
     u8 fake[4+ZIP_LOC64_LEN] = "note";
@@ -492,12 +501,12 @@ static void test_end_records(arena a)
     i64 cdsize = p - buf - cdoff;
     u8 *end = p;
     u8 *loc = end - ZIP_LOC64_LEN;
-    p = zip_end(p, 1, cdsize, cdoff, (s8){0});
+    p = zip_end(p, 1, cdsize, cdoff, (s8){0}, 0x031e);
     iz total = p - buf;
 
     // The locator checks out, so its record is read, but no Zip64 record
     // is there: the end record suffices, and is used alone
-    zend z = {0};
+    z = (zend){0};
     TEST(zip_find_end(buf, total, total, &z) == ZIP_OK);
     TEST(z.end64 == 0);
     TEST(zip_parse_end64(buf+z.end64, &z) == ZIP_OK);
@@ -532,7 +541,7 @@ static void test_end_records(arena a)
     i64 n     = 70000;
     i64 big   = n * ZIP_CENTRAL_LEN;
     i64 size  = 1000 + big + countof(tail);
-    TEST(zip_end(tail, n, big, 1000, (s8){0}) == tail+countof(tail));
+    TEST(zip_end(tail, n, big, 1000, (s8){0}, 0x031e) == tail+countof(tail));
     TEST(zip_find_end(tail, countof(tail), size, &z) == ZIP_OK);
     TEST(z.end64 == 1000+big);
     TEST(zip_parse_end64(rec, &z) == ZIP_OK);
@@ -637,6 +646,55 @@ static void test_central64(arena a)
     TEST(got && got->usize==0x7fffffffffffffff && got->offset==100);
 }
 
+// Name, extra, and comment lengths are 16 bits in both headers, where
+// Zip64 extra fields add 20 bytes (local) or up to 28 (central).
+static void test_fits(void)
+{
+    static u8 big[0x10000];
+    zentry e = {0};
+    e.name   = (s8){big, 0xffff};
+    e.lextra = (s8){big, 0xffff};
+    e.cextra = (s8){big, 0xffff};
+    e.comment = (s8){big, 0xffff};
+    TEST(zip_fits(&e));
+    e.name.len++;
+    TEST(!zip_fits(&e));
+    e.name.len = 1;
+    e.comment.len++;
+    TEST(!zip_fits(&e));
+    e.comment.len = 0;
+
+    // A copied entry that needs Zip64 fields must have room for them
+    e.zip64  = 1;
+    e.usize  = (i64)5 << 30;
+    TEST(!zip_fits(&e));
+    e.lextra.len = 0xffff - 20;
+    TEST(!zip_fits(&e));  // central: 12 more bytes
+    e.cextra.len = 0xffff - 12;
+    TEST(zip_fits(&e));
+    e.offset = (i64)6 << 30;
+    TEST(!zip_fits(&e));  // and 8 more for the offset
+    e.cextra.len = 0xffff - 20;
+    TEST(zip_fits(&e));
+}
+
+// The version needed is in the low byte, which a copied entry may need
+// raised; some writers put a host system in the high byte, kept as is.
+static void test_needed(void)
+{
+    zentry e = {0};
+    e.method = ZIP_DEFLATE;
+    e.needed = 0x0214;
+    TEST(zip_needed(&e) == 0x0214);
+    e.offset = (i64)5 << 30;
+    TEST(zip_needed(&e) == 0x022d);
+    e.needed = 0x0b3f;
+    TEST(zip_needed(&e) == 0x0b3f);
+    e.needed = 0;
+    e.offset = 0;
+    TEST(zip_needed(&e) == 20);
+}
+
 int main(void)
 {
     (void)bytemove;
@@ -655,6 +713,8 @@ int main(void)
     test_extras(a);
     test_end_records(a);
     test_central64(a);
+    test_fits();
+    test_needed();
 
     free(a.beg);
     puts("all zip tests pass");

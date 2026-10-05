@@ -126,13 +126,15 @@ static u32 min32(i64 v)
 }
 
 // Version needed to extract: 4.5 for Zip64, 2.0 for deflate, otherwise
-// 1.0, or more if a copied entry already required it.
+// 1.0, or more if a copied entry already required it. The version is
+// the low byte; a copied entry keeps whatever its writer put above it.
 static u16 zip_needed(zentry const *e)
 {
     b32 big = e->zip64 || e->offset>=ZIP_MAX32 || e->usize>=ZIP_MAX32 ||
               e->csize>=ZIP_MAX32;
-    u16 v = big ? 45 : e->method==ZIP_DEFLATE ? 20 : 10;
-    return MAX(v, e->needed);
+    u16 v   = big ? 45 : e->method==ZIP_DEFLATE ? 20 : 10;
+    u16 old = e->needed & 0xff;
+    return (u16)(MAX(v, old) | (e->needed & 0xff00));
 }
 
 static iz zip_local_len(zentry const *e)
@@ -232,6 +234,15 @@ static u8 *zip_central(u8 *p, zentry const *e)
     return putbytes(p, e->comment);
 }
 
+// Whether an entry's name, extra fields (with Zip64 fields as they would
+// be written), and comment fit their 16-bit lengths in both headers.
+static b32 zip_fits(zentry const *e)
+{
+    return e->name.len<=ZIP_MAX16 && e->comment.len<=ZIP_MAX16 &&
+           e->lextra.len+(e->zip64 ? 20 : 0)<=ZIP_MAX16 &&
+           e->cextra.len+zip_central64_len(e)<=ZIP_MAX16;
+}
+
 static b32 zip_end_needs64(i64 count, i64 cdsize, i64 cdoff)
 {
     return count>=ZIP_MAX16 || cdsize>=ZIP_MAX32 || cdoff>=ZIP_MAX32;
@@ -245,13 +256,15 @@ static iz zip_end_len(i64 count, i64 cdsize, i64 cdoff, s8 comment)
 
 // Encode the end records for a central directory of count entries and
 // cdsize bytes at cdoff: Zip64 records when anything overflows, then the
-// end of central directory record.
-static u8 *zip_end(u8 *p, i64 count, i64 cdsize, i64 cdoff, s8 comment)
+// end of central directory record. The Zip64 record gives the program's
+// version made by, as its entries do.
+static u8 *zip_end(u8 *p, i64 count, i64 cdsize, i64 cdoff, s8 comment,
+                   u16 made)
 {
     if (zip_end_needs64(count, cdsize, cdoff)) {
         p = put32(p, ZIP_END64_SIG);
         p = put64(p, ZIP_END64_LEN - 12);
-        p = put16(p, 45);  // version made by
+        p = put16(p, made);
         p = put16(p, 45);  // version needed
         p = put32(p, 0);   // this disk
         p = put32(p, 0);   // disk with the central directory
@@ -327,8 +340,8 @@ static i32 zip_find_end(u8 *tail, iz n, i64 size, zend *e)
         e->cdoff   = get32(p+16);
         e->end64   = -1;
 
-        u8 *loc = p - ZIP_LOC64_LEN;
-        if (i>=ZIP_LOC64_LEN && get32(loc)==ZIP_LOC64_SIG) {
+        if (i>=ZIP_LOC64_LEN && get32(p-ZIP_LOC64_LEN)==ZIP_LOC64_SIG) {
+            u8 *loc = p - ZIP_LOC64_LEN;
             u64 off = get64(loc+8);
             b32 ok  = !get32(loc+4) && get32(loc+16)==1 &&
                       e->endpos>=ZIP_LOC64_LEN+ZIP_END64_LEN &&
