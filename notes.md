@@ -449,11 +449,13 @@ neither inflate nor the gzip container.
   writable reservation would be charged in full under Linux's strict
   overcommit (`vm.overcommit_memory=2`), which ignores `MAP_NORESERVE`;
   that flag is not used, since in the other modes it would only leave
-  the committed chunks out of `Committed_AS`. The hook refuses arenas
-  other than perm and scratch, such as a codec's exactly sized one.
-  Running out (of address space, of the commit limit, or of `ulimit -d`)
-  is still "zip error: Out of memory" (4). gzip and the library keep
-  their fixed arenas: their hooks only report running out.
+  the committed chunks out of `Committed_AS`. Where `_POSIX_C_SOURCE`
+  hides `MAP_ANON` (FreeBSD, NetBSD, OpenBSD), the reservation maps
+  `/dev/zero` privately instead. The hook refuses arenas other than
+  perm and scratch, such as a codec's exactly sized one. Running out
+  (of address space, of the commit limit, or of `ulimit -d`) is still
+  "zip error: Out of memory" (4). gzip and the library keep their fixed
+  arenas: their hooks only report running out.
 - Memory per entry: perm keeps only what is recorded. A file's path and
   name are built in scratch and copied to perm once it is added, as one
   string when the name ends the path, as most do (`d/f`, `./d/f`, `-j`'s

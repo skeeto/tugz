@@ -17,7 +17,10 @@
 #include <sys/mman.h>
 #include <time.h>
 
-#ifndef MAP_ANONYMOUS
+// POSIX names anonymous memory only since 2024, so under _POSIX_C_SOURCE
+// the BSDs hide it, and a private mapping of /dev/zero stands in. (macOS
+// cannot map /dev/zero, but _DARWIN_C_SOURCE shows MAP_ANON.)
+#if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)
 #  define MAP_ANONYMOUS MAP_ANON  // its older name
 #endif
 
@@ -31,17 +34,28 @@
 // up to 16 GiB (1 GiB in 32-bit processes), halving on refusal.
 static void reserve(os *ctx)
 {
+    int flags = MAP_PRIVATE;
+    int fd    = -1;
+#ifdef MAP_ANONYMOUS
+    flags |= MAP_ANONYMOUS;
+#else
+    fd = open("/dev/zero", O_RDONLY);
+#endif
     iz cap = (iz)1 << (sizeof(void *)==8 ? 34 : 30);
     for (; cap >= (iz)1<<24; cap /= 2) {
-        byte *p = mmap(0, (uz)cap, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS,
-                       -1, 0);
+        byte *p = mmap(0, (uz)cap, PROT_NONE, flags, fd, 0);
         if (p != MAP_FAILED) {
             ctx->lo = p;
             ctx->hi = p + cap;
-            return;
+            break;
         }
     }
-    os_oom(ctx);
+    if (fd >= 0) {
+        close(fd);
+    }
+    if (!ctx->lo) {
+        os_oom(ctx);
+    }
 }
 
 // Commit more of the reservation to perm, from below the middle, or to
