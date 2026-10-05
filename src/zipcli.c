@@ -2184,15 +2184,18 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
 {
     // Whatever grows with the number of entries is allocated before any
     // output, so that running out of memory cannot waste the work: the
-    // central directory, as pointers to entries, kept ones updated in
-    // place, new ones' entries and extra fields, and the buffers.
+    // central directory, as pointers to entries, kept and replaced ones
+    // updated in place, added ones' entries, new ones' extra fields, and
+    // the buffers.
+    iz nadd = 0;
     iz nnew = 0;
     for (iz i = 0; i < items->len; i++) {
         i32 kind = items->data[i].kind;
+        nadd += kind == ITEM_ADD;
         nnew += kind!=ITEM_KEEP && kind!=ITEM_DELETE;
     }
     zentry **cd    = new(&scratch, items->len, zentry *);
-    zentry  *fresh = new(&scratch, nnew, zentry);
+    zentry  *fresh = new(&scratch, nadd, zentry);
 
     zout w = {0};
     w.ctx = z->ctx;
@@ -2245,7 +2248,11 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
             copy = it->old;
             break;
         default: {
-            zentry *e    = fresh + n++;
+            // A replacement is written over its entry, restored if the
+            // file cannot be read, so that only added files take more
+            zentry *old  = it->old;
+            zentry  was  = old ? *old : (zentry){0};
+            zentry *e    = old ? old : fresh + n++;
             zfile  *f    = it->file;
             s8      verb = it->kind==ITEM_ADD    ? S("  adding: ") :
                            it->kind==ITEM_UPDATE ? S("updating: ") :
@@ -2258,7 +2265,7 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
             }
             if (r == WRITE_OK) {
                 // A replaced entry keeps its comment, as in Info-ZIP
-                e->comment = it->old ? it->old->comment : (s8){0};
+                e->comment = was.comment;
                 report(z, verb, e->name, e, scratch);
                 z->nread++;
                 z->bread += e->usize;
@@ -2270,11 +2277,14 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
             // As Info-ZIP does, give the progress line, then for a failed
             // open the system's reason, as its perror words it, and warn
             // under the entry's name
+            if (old) {
+                *old = was;
+            }
             s8 reason = r==WRITE_EOPEN ? os_error(z->ctx) : S("");
             report(z, verb, f->name, 0, scratch);
             if (reason.len && !z->quiet) {
                 arena tmp = scratch;
-                s8    who = it->old ? f->name : S("zip warning");
+                s8    who = old ? f->name : S("zip warning");
                 say(z, 2, JOIN(&tmp, who, S(": "), reason, S("\n")));
             }
             s8 why = S("could not open for reading: ");
@@ -2284,12 +2294,12 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
             warn(z, why, f->name, scratch);
             z->status = ZE_OPEN;
             i64 size = f->info.type==FT_DIR ? 0 : f->info.size;
-            if (it->old) {
+            if (old) {
                 // Keep the entry it was to replace, which Info-ZIP counts
                 // as read
                 warn(z, S("will just copy entry over: "),
-                     shown_name(ar, it->old), scratch);
-                copy = it->old;
+                     shown_name(ar, old), scratch);
+                copy = old;
                 z->nread++;
                 z->bread += size;
             } else {
@@ -2682,12 +2692,15 @@ static i32 zip_main(zipconfig *conf)
         // Then paths not on disk select entries, as do -u and -f without
         // paths, except entries that paths on disk already selected
         b32 *taken = new(&scratch, nold, b32);
+        iz   nadd  = 0;  // files with no entry, as entries select none
         for (iz i = 0; i < z->files.len; i++) {
             arena tmp = scratch;
             s8    key = entry_key(z, z->files.data[i]->name, &tmp);
             iz   *v   = zmap_upsert(&old, key, 0);
             if (v) {
                 taken[*v] = 1;
+            } else {
+                nadd++;
             }
         }
         for (iz p = 0; p < missing.len; p++) {
@@ -2708,8 +2721,8 @@ static i32 zip_main(zipconfig *conf)
             return fail(z, ZE_NONE, S("Nothing to do!"), z->archive, scratch);
         }
 
-        // An item for each entry, and at most one for each file
-        items.cap  = nold + z->files.len;
+        // An item for each entry, and one for each file to add
+        items.cap  = nold + (z->mode==MODE_FRESHEN ? 0 : nadd);
         items.data = new(&z->perm, items.cap, zitem);
         for (iz i = 0; i < nold; i++) {
             zitem *it = push(&z->perm, &items);
