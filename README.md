@@ -114,7 +114,9 @@ extra fields, messages, and exit statuses match Info-ZIP's, but for
 three friendlier statuses: `-u` or `-f` with nothing newer exits 0
 (Info-ZIP: 12), an unreadable directory or a dangling link met while
 recursing exits 18 (Info-ZIP: 0), and `-i` that matches nothing exits
-12 (Info-ZIP writes an empty archive). Zip64 is used as needed for
+12 (Info-ZIP writes an empty archive); and an archive that can be
+written but not read is an error (11), which Info-ZIP replaces as
+though missing, losing its entries. Zip64 is used as needed for
 large files, large archives, and more than 65,535 entries. Names are
 stored as UTF-8 with flag bit 11 when they are valid UTF-8 and not
 ASCII. On Windows, arguments with wildcards are expanded, as `cmd` does
