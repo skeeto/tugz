@@ -164,6 +164,16 @@ ps "Set-Content -LiteralPath 1 -Value f;
 "$ZIP" -q p7.zip 1:s
 [ "$(list p7.zip)" = 1:s ] || fail "stream name: $(list p7.zip)"
 
+# A bare DOS device name is the device, a special file, but in a
+# directory a file named like one (made elsewhere) is just a file
+"$ZIP" dv.zip NUL 2>&1 | grep -q 'special file: NUL' || fail "NUL"
+mkdir dv
+ps "[IO.File]::WriteAllText('\\\\?\\' + (Resolve-Path dv).Path + '\\aux.c', 'a')"
+"$ZIP" -qr dv.zip dv
+[ "$(list dv.zip)" = "$(printf 'dv/\ndv/aux.c')" ] ||
+    fail "file named like a device: $(list dv.zip)"
+ps "Remove-Item -LiteralPath ('\\\\?\\' + (Resolve-Path dv).Path) -Recurse -Force"
+
 # Unicode names: from stdin as UTF-8, and from recursion (bit 11 set,
 # checked by .NET decoding the name)
 printf 'tree/caf\303\251.txt\r\n' | "$ZIP" -q at.zip -@

@@ -247,13 +247,39 @@ static s16 curdir(arena *a, c16 drive)
     return r;
 }
 
+// The device path of a bare name that Win32 takes for a DOS device (NUL,
+// CON, COM1, ..., perhaps with an extension, as GetFullPathNameW decides
+// for this version of Windows), or null.
+static c16 *dosdevice(arena *a, s16 p)
+{
+    for (iz i = 0; i < p.len; i++) {
+        if (p.s[i] == '\\') {
+            return 0;
+        }
+    }
+    if (rootlen(p)) {
+        return 0;  // drive-relative
+    }
+    c16 dev[16];
+    u32 len = GetFullPathNameW(p.s, countof(dev), dev, 0);
+    if (!len || len>=countof(dev) || !isdevice((s16){dev, len}) ||
+        dev[2]!='.') {
+        return 0;
+    }
+    c16 *r = new(a, len+1, c16);
+    bytecopy(r, dev, (len+1)*(iz)sizeof(c16));
+    return r;
+}
+
 // Convert a path to an absolute \\?\ path, lifting the MAX_PATH limit.
 // That prefix turns off Win32 path parsing, so first resolve the path as
 // Win32 would: against the current directory (or a drive's, or its
 // root), dropping "." and ".." components and doubled separators. Unlike
 // Win32, keep trailing dots and spaces, so that names from a directory
-// listing round trip. Device paths pass through. Returns null for an
-// empty path, which names no file.
+// listing round trip. Device paths pass through, and a bare DOS device
+// name (NUL) becomes its device as in any Windows program. Within a
+// directory such names stay files, as they are in a listing, since other
+// systems make them. Returns null for an empty path, which names no file.
 static c16 *winpath(arena *a, s8 path)
 {
     s16 p = fromwtf8(a, path);
@@ -261,6 +287,10 @@ static c16 *winpath(arena *a, s8 path)
         return 0;
     } else if (isdevice(p)) {
         return p.s;
+    }
+    c16 *dev = dosdevice(a, p);
+    if (dev) {
+        return dev;
     }
 
     b32 dirsep = p.s[p.len-1] == '\\';
@@ -405,6 +435,9 @@ static i32 open_output(os *ctx, i32 fd, c16 *wpath, i32 mode)
             }
         }
         return err==ERROR_FILE_EXISTS ? OS_EEXIST : OS_ERR;
+    } else if (GetFileType(h) != FILE_TYPE_DISK) {
+        CloseHandle(h);  // a device name (NUL): output is only ever a file
+        return OS_ERR;
     }
     u8 discard = 1;
     if (!SetFileInformationByHandle(h, FileDispositionInfo,

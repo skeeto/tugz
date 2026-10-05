@@ -171,6 +171,12 @@ if command -v mkfifo >/dev/null && mkfifo fifo 2>/dev/null; then
     wait
 fi
 
+# Windows: a bare DOS device name is the device, as in other programs
+if [ -n "$windows" ]; then
+    "$GZIP" -c NUL | "$GZIP" -dc | cmp -s - empty || fail "-c NUL"
+    expect_status 2 "$GZIP" NUL
+fi
+
 # Write errors
 if [ -w /dev/full ]; then
     set +e

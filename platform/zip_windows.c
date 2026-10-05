@@ -52,6 +52,7 @@ W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 #define FILE_ATTRIBUTE_SYSTEM      0x04u
 #define FILE_READ_ATTRIBUTES       0x80u
 #define FILE_FLAG_BACKUP_SEMANTICS 0x02000000u
+#define FILE_TYPE_UNKNOWN          0u
 #define FIND_FIRST_EX_LARGE_FETCH  2u
 #define FILE_RENAME_REPLACE        1u
 #define FILE_RENAME_POSIX          2u
@@ -97,7 +98,7 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
     b32 isid = GetFileInformationByHandleEx(h, FileIdInfo, &id, sizeof(id));
     u32 type = GetFileType(h);
     CloseHandle(h);
-    if (!ok) {
+    if (!ok && (type==FILE_TYPE_DISK || type==FILE_TYPE_UNKNOWN)) {
         return 0;
     }
 
@@ -113,8 +114,10 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
         id.id[0] = id.id[1] = 0;
     }
 
+    // Only files and directories on disk are archived. A device (NUL),
+    // even one that answers no queries, or the pipe namespace, is special.
     b32 dir = bh.attributes & FILE_ATTRIBUTE_DIRECTORY;
-    info->type   = dir ? FT_DIR : type==FILE_TYPE_DISK ? FT_FILE : FT_OTHER;
+    info->type   = type!=FILE_TYPE_DISK ? FT_OTHER : dir ? FT_DIR : FT_FILE;
     info->size   = (i64)((u64)bh.size_hi<<32 | bh.size_lo);
     info->mtime  = unixtime(bh.written);
     info->atime  = unixtime(bh.accessed);

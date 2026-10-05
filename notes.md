@@ -298,7 +298,12 @@ Fuzzers:
   Win32 parsing, so paths are first resolved as Win32 would: against the
   current directory (UNC or not), a drive's, or the root, dropping `.`,
   `..`, and doubled separators. Trailing dots and spaces are kept, so
-  names from a listing round trip. The empty path names no file.
+  names from a listing round trip. The empty path names no file. A bare
+  DOS device name (`NUL`, `CON`, `COM1`, as `GetFullPathNameW` judges
+  it) is the device, as in other Windows programs: zip skips it as a
+  special file, `gzip -c NUL` reads nothing, and no output goes to one.
+  With a directory, such a name is a file, so that names from a
+  listing, made on other systems, still round trip.
 - Output to a Windows console is converted from UTF-8 (WTF-8, for file
   names) to UTF-16 for `WriteConsoleW`, since `WriteFile` would take the
   bytes in the console code page. A sequence split between writes is
