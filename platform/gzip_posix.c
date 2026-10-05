@@ -55,7 +55,7 @@ int main(int argc, char **argv)
     iz cap = (iz)1 << 25;
     byte *mem = malloc((uz)cap);
     if (!mem) {
-        return EXIT_ERR;
+        os_oom(&ctx);
     }
     config conf = {0};
     conf.perm.beg = mem;

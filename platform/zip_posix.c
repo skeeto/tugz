@@ -25,17 +25,17 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
     if (follow ? stat(cpath, &st) : lstat(cpath, &st)) {
         return 0;
     }
-    info->type  = S_ISREG(st.st_mode) ? FT_FILE :
-                  S_ISDIR(st.st_mode) ? FT_DIR  :
-                  S_ISLNK(st.st_mode) ? FT_LINK : FT_OTHER;
-    info->size  = st.st_size;
-    info->mtime = st.st_mtime;
-    info->atime = st.st_atime;
-    info->mode  = (u32)st.st_mode;
-    info->attr  = 0;
-    info->uid   = (u32)st.st_uid;
-    info->gid   = (u32)st.st_gid;
-    info->dev   = (u64)st.st_dev;
+    info->type   = S_ISREG(st.st_mode) ? FT_FILE :
+                   S_ISDIR(st.st_mode) ? FT_DIR  :
+                   S_ISLNK(st.st_mode) ? FT_LINK : FT_OTHER;
+    info->size   = st.st_size;
+    info->mtime  = st.st_mtime;
+    info->atime  = st.st_atime;
+    info->mode   = (u32)st.st_mode;
+    info->attr   = 0;
+    info->uid    = (u32)st.st_uid;
+    info->gid    = (u32)st.st_gid;
+    info->dev    = (u64)st.st_dev;
     info->ino[0] = (u64)st.st_ino;
     info->ino[1] = 0;
     return 1;
