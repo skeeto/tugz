@@ -687,6 +687,42 @@ open(sys.argv[1], "wb").write(loc + cen + end)' nofit.zip
     cmp -s nofit.zip nofit0.zip || fail "a refused copy changed the archive"
 fi
 
+# Data before the first entry that offsets account for, such as a
+# self-extractor's stub after zip -A, is kept, as in Info-ZIP, and the
+# offsets stay absolute; offsets that do not account for it are refused.
+# Here the stub precedes an empty archive's central directory (offset 28).
+printf '#!/bin/sh\necho stub; exit 0\n' >stub
+printf one >sx1.txt
+printf two >sx2.txt
+"$ZIP" -q plain.zip sx1.txt
+cat stub plain.zip >sfx0.zip
+expect_status 3 "$ZIP" sfx0.zip sx2.txt
+{ cat stub; printf 'PK\005\006\0\0\0\0\0\0\0\0\0\0\0\0\034\0\0\0\0\0'; } >sfx.zip
+"$ZIP" -q sfx.zip sx1.txt
+for mode in -q -qX -qFS; do
+    "$ZIP" $mode sfx.zip sx2.txt sx1.txt
+done
+"$ZIP" -qd sfx.zip sx2.txt
+touch -t 203001010000 sx1.txt
+"$ZIP" -qf sfx.zip
+verify sfx.zip
+[ "$(names sfx.zip)" = sx1.txt ] || fail "self-extractor: $(names sfx.zip)"
+head -c 28 sfx.zip | cmp -s - stub || fail "self-extractor stub lost"
+[ "$(sh sfx.zip)" = stub ] || fail "self-extractor stub does not run"
+"$ZIP" -qd sfx.zip '*'
+[ "$(wc -c <sfx.zip | tr -d ' ')" = 50 ] || fail "emptied self-extractor"
+
+# Likewise a Python zipapp's #! line
+if [ -n "$PY" ]; then
+    mkdir app
+    printf 'print("hello from app")\n' >app/__main__.py
+    $PY -m zipapp app -p '/usr/bin/env python3' -o app.pyz
+    "$ZIP" -q app.pyz tree/b.txt
+    verify app.pyz
+    [ "$(head -c 2 app.pyz)" = '#!' ] || fail "zipapp's #! line lost"
+    [ "$($PY app.pyz)" = 'hello from app' ] || fail "zipapp does not run"
+fi
+
 # Errors and warnings
 expect_status 12 "$ZIP" nothing.zip missing
 [ ! -e nothing.zip ] || fail "created an archive with nothing to do"

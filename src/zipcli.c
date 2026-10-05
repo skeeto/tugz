@@ -1165,6 +1165,7 @@ static b32 scan_arg(zip *z, s8 arg, arena scratch)
 typedef struct {
     i32     fd;
     i64     size;
+    i64     beg;  // of the first entry, after any preamble
     zend    end;
     zentry *entries;
 } zarchive;
@@ -1245,6 +1246,14 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
     if (!ar->entries) {
         return fail(z, ZE_FORM, S("Zip file structure invalid"), z->archive,
                     scratch);
+    }
+
+    // Offsets may account for data before the first entry, such as a
+    // self-extractor's stub after zip -A, or a zipapp's #! line, which
+    // Info-ZIP keeps. Without entries, it precedes the central directory.
+    ar->beg = ar->end.cdoff;
+    for (i64 i = 0; i < ar->end.count; i++) {
+        ar->beg = MIN(ar->beg, ar->entries[i].offset);
     }
     return 0;
 }
@@ -1760,6 +1769,18 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     if (z->level) {
         arena a = subarena(&scratch, deflate_memsize());
         k.def = deflate_new(&a, z->level);
+    }
+
+    // The preamble comes first, so that offsets stay absolute
+    for (i64 off = 0; ar && off<ar->beg;) {
+        iz n = (iz)MIN(k.cap, ar->beg-off);
+        if (!os_readat(z->ctx, ar->fd, k.buf, n, off)) {
+            os_close(z->ctx, fd);
+            return fail(z, ZE_READ, S("Could not read archive"), z->archive,
+                        scratch);
+        }
+        zout_write(&w, k.buf, n);
+        off += n;
     }
 
     zentry *entries = new(&scratch, items->len, zentry);

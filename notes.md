@@ -123,9 +123,9 @@ the file is closed, or on Windows flushed, without error),
 neither inflate nor the gzip container.
 
 - Scope: batch use by release scripts. Everything interactive or legacy
-  (encryption, comments, splits, SFX, fixes, CRLF conversion, streaming,
-  logging) is rejected with Info-ZIP's "not supported" usage error
-  rather than silently ignored.
+  (encryption, comments, splits, SFX adjustment, fixes, CRLF conversion,
+  streaming, logging) is rejected with Info-ZIP's "not supported" usage
+  error rather than silently ignored.
 - Compatibility: verified field by field against Info-ZIP 3.0 on Linux
   (`-r`, `-rX9`, `-r1`, `-r0`): made-by and needed versions, flags
   (including the level bits: 0x4 for -1/-2, 0x2 for -8/-9, set whenever
@@ -328,15 +328,23 @@ neither inflate nor the gzip container.
   fields are needed to extract, such as AES's), except Zip64 fields,
   made anew; one whose fields leave no room for a Zip64 field it now
   needs is an error (3), not a wrapped length. A replaced entry keeps
-  its comment, as in Info-ZIP. The Zip64 end record gives the program's
-  version made by, as Info-ZIP's does. A Zip64 end record is trusted only
-  if it checks out or the plain end record calls for it, since bytes
-  resembling a Zip64 locator may precede the end record by chance (found
-  by fuzzing). Only a missing archive is new: anything else at its path
-  must be a zip file, so an empty file, a directory, a FIFO, or a device
-  fails with 3 before any work, as Info-ZIP fails (it waits on a FIFO,
-  and cannot open a socket, 15). An empty file therefore never adds
-  itself.
+  its comment, as in Info-ZIP. Data before the first entry (a
+  self-extractor's stub after `zip -A`, a Python zipapp's `#!` line) is
+  copied first, as Info-ZIP copies it, so that offsets accounting for it
+  stay absolute and the file still runs. Offsets that do not account for
+  a preamble are refused (3), as in Info-ZIP, which needs `-A` to fix
+  them. Departure: with no entries, the preamble is what precedes the
+  central directory, so a file added to an emptied self-extractor keeps
+  its stub (Info-ZIP drops it). Info-ZIP's own emptied self-extractor,
+  whose end record gives offset 0, is refused as unadjusted. The Zip64
+  end record gives the program's version made by, as Info-ZIP's does. A
+  Zip64 end record is trusted only if it checks out or the plain end
+  record calls for it, since bytes resembling a Zip64 locator may
+  precede the end record by chance (found by fuzzing). Only a missing
+  archive is new: anything else at its path must be a zip file, so an
+  empty file, a directory, a FIFO, or a device fails with 3 before any
+  work, as Info-ZIP fails (it waits on a FIFO, and cannot open a socket,
+  15). An empty file therefore never adds itself.
 - Windows: made-by host 0 (FAT, the most widely understood), DOS
   attributes, `UT` extra field. Names drop a drive or a UNC
   `//server/share/` prefix, as Info-ZIP's do, and likewise a device
