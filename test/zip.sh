@@ -342,10 +342,19 @@ expect_status 16 "$ZIP" dup4.zip tree/a.txt ./tree/a.txt
 grep -q 'result of using -j' out || fail "-j collision: $(cat out)"
 [ ! -e dup4.zip ] && [ ! -e dup5.zip ] || fail "made an archive with dups"
 
-# The archive never includes itself
-(cd tree && "$ZIP" -qr self.zip . && names self.zip >../got && rm self.zip)
-grep -q self got && fail "archive includes itself"
-grep -qx a.txt got || fail "recursing . names: $(cat got)"
+# The archive never includes itself, which it knows by identity, though
+# named otherwise than given (s.zip, ./s.zip) or through a hard link,
+# while a copy of it is just a file
+mkdir self
+printf x >self/x
+(cd self && "$ZIP" -qr s.zip . && cp s.zip copy.zip && "$ZIP" -qr ./s.zip .)
+names self/s.zip >got
+printf 'x\ncopy.zip\n' >want
+cmp -s got want || fail "archive includes itself, or . names: $(cat got)"
+if ln self/s.zip self/link.zip 2>/dev/null; then
+    "$ZIP" -qr self/s.zip self
+    names self/s.zip | grep -q link.zip && fail "archive added through a link"
+fi
 
 # Nor, as in Info-ZIP, another file named as the archive's path is
 # given, as -j may name one, which leaves nothing to do if it is alone
@@ -599,6 +608,16 @@ extract_same fs.zip fs
 [ "$(cat out)" = "Archive is current" ] || fail "-FS current: $(cat out)"
 "$ZIP" -qFS -r fs.zip fs >out
 [ ! -s out ] || fail "-qFS current: $(cat out)"
+
+# A file whose size alone changed, its time kept, is updated too
+touch -r fs/a.txt fs.time
+printf more >>fs/a.txt
+touch -r fs.time fs/a.txt
+"$ZIP" -FS -r fs.zip fs >out
+progress out >got
+printf 'updating: fs/a.txt\n' >want
+cmp -s got want || fail "-FS of a changed size: $(cat out)"
+extract_same fs.zip fs
 
 # Filesync that finds nothing has nothing to do, rather than deleting
 # every entry
