@@ -2,7 +2,9 @@
 // Parses end records and the central directory as the zip program does
 // before merging. Whatever parses is then rewritten as zip does, copying
 // each entry's data, and the result must parse back to the same entries.
+// Entries may share data, so a rewrite can far exceed its input.
 // $ clang -g -O1 -fsanitize=fuzzer,address,undefined test/fuzz_zipread.c
+// $ ./a.out -max_len=8192 corpus/
 #include "../src/base.c"
 #include "../src/zip.c"
 
@@ -11,12 +13,17 @@
 
 #define CHECK(c)  do { if (!(c)) __builtin_trap(); } while (0)
 
+// Inputs and rewrites beyond these are skipped. Within them the arena
+// needs under 3*MAXOUT + 16*MAXIN bytes, so it is never exhausted.
+#define MAXIN   ((iz)1 << 20)
+#define MAXOUT  ((iz)1 << 23)
+
 struct os { int unused; };
 
 static void os_oom(os *ctx)
 {
     (void)ctx;
-    __builtin_trap();  // bounded inputs never exhaust the arena
+    __builtin_trap();  // should never happen, as above
 }
 
 static b32 same(s8 a, s8 b)
@@ -26,6 +33,9 @@ static b32 same(s8 a, s8 b)
 
 int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
 {
+    if (size > MAXIN) {
+        return 0;
+    }
     static byte *mem;
     iz cap = (iz)1 << 26;
     if (!mem) {
@@ -54,12 +64,14 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
         return 0;
     }
 
-    // Rewrite, as zip copies entries, skipping bad local headers
+    // Rewrite, as zip copies entries, skipping bad local headers. Many
+    // entries may share the same data, so first bound the output size,
+    // counting extra fields before filtering, and skip huge rewrites.
     iz      n   = (iz)end.count;
     zentry *out = new(&a, n, zentry);
-    u8     *buf = newbytes(&a, 2*len + 1024 + n*64);
-    u8     *p   = buf;
+    u8    **src = new(&a, n, u8 *);
     iz      m   = 0;
+    i64     max = 0;
     for (iz i = 0; i < n; i++) {
         CHECK(e[i].offset>=0 && e[i].offset+ZIP_LOCAL_LEN<=end.cdoff);
         CHECK(e[i].csize>=0 && e[i].offset+e[i].csize<=end.cdoff);
@@ -69,25 +81,46 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
         if (v<0 || dataoff>end.cdoff || e[i].csize>end.cdoff-dataoff) {
             continue;
         }
-        zentry *o = out + m++;
+        zentry *o = out + m;
+        src[m++]  = in + dataoff;
         *o = e[i];
         iz nlen = get16(h+26);
-        s8 lx = {h+ZIP_LOCAL_LEN+nlen, v-nlen};
-        o->lextra = zip_filter_extra(&a, lx, 0);
-        o->offset = p - buf;
+        o->lextra = (s8){h+ZIP_LOCAL_LEN+nlen, v-nlen};  // filtered below
         o->zip64  = o->usize>=ZIP_MAX32 || o->csize>=ZIP_MAX32;
         o->flags &= ~ZIP_FLAG_DESCRIPTOR;
-        p = zip_local(p, o);
-        bytecopy(p, in+dataoff, (iz)o->csize);
-        p += o->csize;
+        max += zip_local_len(o) + o->csize + zip_central_len(o);
     }
-    i64 cdoff = p - buf;
+    if (max > MAXOUT) {
+        return 0;
+    }
+
+    // Lay out the archive exactly, then write it to that layout
+    i64 cdoff = 0;
+    for (iz i = 0; i < m; i++) {
+        out[i].lextra = zip_filter_extra(&a, out[i].lextra, 0);
+        out[i].offset = cdoff;
+        cdoff += zip_local_len(out+i) + out[i].csize;
+    }
+    i64 cdsize = 0;
+    for (iz i = 0; i < m; i++) {
+        cdsize += zip_central_len(out+i);
+    }
+    iz  total = (iz)(cdoff+cdsize) +
+                zip_end_len(m, cdsize, cdoff, end.comment);
+    u8 *buf   = newbytes(&a, total);
+    u8 *p     = buf;
+    for (iz i = 0; i < m; i++) {
+        CHECK(p-buf == out[i].offset);
+        p = zip_local(p, out+i);
+        bytecopy(p, src[i], (iz)out[i].csize);
+        p += out[i].csize;
+    }
     for (iz i = 0; i < m; i++) {
         p = zip_central(p, out+i);
     }
-    i64 cdsize = p - buf - cdoff;
+    CHECK(p-buf == cdoff+cdsize);
     p = zip_end(p, m, cdsize, cdoff, end.comment);
-    iz total = p - buf;
+    CHECK(p-buf == total);
 
     zend end2 = {0};
     r = zip_find_end(buf, total, total, &end2);
