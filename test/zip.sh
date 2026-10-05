@@ -812,9 +812,33 @@ printf x >ffd/fifo
 (cd ffd && "$ZIP" -q ../ff.zip fifo)
 if mkfifo fifo 2>/dev/null; then
     "$ZIP" -d ff.zip fifo >out 2>&1 && fail "-d of a FIFO name succeeded"
-    grep -q 'special file: fifo' out || fail "-d of a FIFO: $(cat out)"
+    grep -q 'ignoring FIFO (Named Pipe): fifo' out ||
+        fail "-d of a FIFO: $(cat out)"
     [ "$(names ff.zip)" = fifo ] || fail "-d of a FIFO deleted the entry"
     rm fifo
+fi
+
+# Special files are left out with Info-ZIP's warnings, but for its advice
+# to read a FIFO with -FI, which tugz does not support. Departure: so is
+# a socket, which Info-ZIP takes for a file it cannot open (18).
+mkdir spf
+printf x >spf/f
+if mkfifo spf/fifo 2>/dev/null; then
+    "$ZIP" spf1.zip spf/fifo /dev/null spf/f >out 2>err || fail "special"
+    printf '%s\n' 'zip warning: ignoring FIFO (Named Pipe): spf/fifo' \
+        'zip warning: ignoring special file: /dev/null' >want
+    cmp -s err want || fail "special files: $(cat err)"
+    [ "$(names spf1.zip)" = spf/f ] || fail "special: $(names spf1.zip)"
+    "$ZIP" -r spf2.zip spf >out 2>err || fail "special file in -r"
+    [ "$(cat err)" = 'zip warning: ignoring FIFO (Named Pipe): spf/fifo' ] ||
+        fail "special file in -r: $(cat err)"
+    expect_status 12 "$ZIP" spf3.zip spf/fifo
+fi
+if [ -n "$PY" ] && $PY -c 'import socket, sys
+socket.socket(socket.AF_UNIX).bind(sys.argv[1])' spf/sock 2>/dev/null; then
+    "$ZIP" spf4.zip spf/sock spf/f >out 2>err || fail "socket"
+    [ "$(cat err)" = 'zip warning: ignoring special file: spf/sock' ] ||
+        fail "socket: $(cat err)"
 fi
 
 # Copied entries keep their bytes and, as in Info-ZIP, their extra

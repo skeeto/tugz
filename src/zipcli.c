@@ -1238,6 +1238,16 @@ static zdir *enter(zip *z, zdir *up, s8 path, s8 name, os_info *info,
     return d;
 }
 
+// Warn that a special file is left out, as Info-ZIP words it, but for its
+// advice to read a FIFO with -FI, which tugz does not support
+static void ignore_special(zip *z, s8 path, os_info *info, arena scratch)
+{
+    b32 fifo = (info->mode & 0170000) == 0010000;  // S_IFIFO (POSIX)
+    s8  msg  = fifo ? S("ignoring FIFO (Named Pipe): ")
+             : S("ignoring special file: ");
+    warn(z, msg, path, scratch);
+}
+
 // Scan a path and, with -r, everything under it, in sorted order. The
 // directories being listed form a stack in scratch rather than on the
 // call stack, which a deep enough tree would overflow: Windows paths
@@ -1255,7 +1265,7 @@ static void scan(zip *z, s8 path, s8 name, os_info *info, arena scratch)
             dir = enter(z, dir, path, name, info, &scratch);
             break;
         default:
-            warn(z, S("skipping special file: "), path, scratch);
+            ignore_special(z, path, info, scratch);
         }
 
         // Then the next entry of the innermost directory with any left,
@@ -2284,7 +2294,7 @@ static void mark_named(zip *z, zmap *old, s8 path, os_info *info, b32 *hit,
 {
     s8 name = arg_name(z, path, info, &scratch);
     if (info->type == FT_OTHER) {
-        warn(z, S("skipping special file: "), path, scratch);
+        ignore_special(z, path, info, scratch);
         return;
     } else if (info->type==FT_DIR && (z->nodirs || !name.len)) {
         return;

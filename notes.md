@@ -253,8 +253,11 @@ neither inflate nor the gzip container.
   read, so an untrusted archive's absolute names select nothing
   (Info-ZIP reads them). Info-ZIP's Windows port does this only when
   freshening; otherwise it expands wildcards on disk and stops there,
-  and so does tugz. A `-d` name that is a special file on disk, such as
-  a FIFO, marks nothing (with a warning), as in Info-ZIP.
+  and so does tugz. Special files, named or met while recursing, are
+  left out with Info-ZIP's warnings ("ignoring special file: ", for a
+  FIFO "ignoring FIFO (Named Pipe)"), which leave the exit status alone
+  (12 if nothing else is left), and a `-d` name that is one on disk
+  marks nothing.
 - Updates: as in Info-ZIP, `-u` and `-f` take a file that is newer
   than its entry by the Unix time of the entry's `UT` field, if it has
   one, so the time zone does not matter, else by DOS times; `-FS`
@@ -307,7 +310,14 @@ neither inflate nor the gzip container.
   (Info-ZIP warns that it will copy it over, then drops it), and
   patterns given after `-j` stay whole (Info-ZIP's name conversion cuts
   them to their last component, so that `-j -x 'dir/*'` excludes
-  everything).
+  everything). Special files: the FIFO warning omits Info-ZIP's advice,
+  " - use -FI to read", since tugz does not support `-FI`. Sockets and
+  block devices are special files too. Info-ZIP's Unix port (judging by
+  its behavior, a type test by masking mode bits) takes a socket for a
+  regular file, which it then cannot open (18; `-d` deletes the
+  socket's entry), and a block device for a directory, adding an entry
+  such as `dev/sda/`, with a "file and directory with the same name"
+  warning (18).
 - Writing: entries go to a temporary file beside the archive (created
   discard-on-close, like gzip's outputs), at explicit offsets so that a
   local header can be patched once sizes are known. No data descriptors
