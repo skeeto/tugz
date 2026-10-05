@@ -458,6 +458,8 @@ neither inflate nor the gzip container.
 ## Workflow
 
     make check                 # unit and library tests (ASan/UBSan), CLI tests
+                               # (needs zlib, libdeflate, /usr/bin/gzip, and
+                               # Info-ZIP unzip and zipinfo; optional Python)
     SLOW=1 sh test/cli.sh ./gzip   # adds a 5 GiB stream (>4 GiB offsets)
     make gzip.exe              # Win32 build (w64devkit or CROSS=...)
     make fuzz                  # build the five fuzzers

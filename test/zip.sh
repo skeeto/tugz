@@ -16,6 +16,13 @@ elif command -v python3 >/dev/null 2>&1; then
 else
     PY=
 fi
+for tool in unzip zipinfo; do
+    if ! command -v $tool >/dev/null 2>&1; then
+        echo "zip.sh: Info-ZIP's unzip and zipinfo are required" \
+             "to verify archives, but $tool was not found" >&2
+        exit 1
+    fi
+done
 tmp=$(mktemp -d)
 trap 'cd / && chmod -R u+rwx "$tmp" && rm -rf "$tmp"' EXIT
 cd "$tmp"

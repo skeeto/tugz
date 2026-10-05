@@ -164,10 +164,12 @@ Silesia corpus on Apple M-series, compression ratio @ MB/s:
 
 Tests and benchmarks use zlib and libdeflate as references, and zip
 archives are verified with unzip, Python's zipfile, and on Windows with
-Explorer, .NET, and tar. Tested on
-macOS, Linux (x86-64, i386, big-endian PowerPC), and Windows (x86-64,
-i686). See [notes.md](notes.md) for design decisions, test coverage, and
-the optimization log.
+Explorer, .NET, and tar. So `make check` needs zlib, libdeflate, a
+reference gzip (`/usr/bin/gzip`), and Info-ZIP's `unzip` and `zipinfo`,
+while Python (through `uv` if installed) adds checks. Tested on macOS,
+Linux (x86-64, i386, big-endian PowerPC), and Windows (x86-64, i686).
+See [notes.md](notes.md) for design decisions, test coverage, and the
+optimization log.
 
 [RFC 1950]: https://www.rfc-editor.org/rfc/rfc1950
 [RFC 1951]: https://www.rfc-editor.org/rfc/rfc1951
