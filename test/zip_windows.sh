@@ -115,6 +115,24 @@ printf 'TREE/a.txt\ntree/sub/random\ntree/sub/text\n' >want.txt
 cmp -s got want.txt || fail "wildcard case and separators: $(cat got)"
 expect_status 12 "$ZIP" w3.zip 'tree/*.none'
 
+# Paths are resolved before the \\?\ prefix, which turns off Win32
+# parsing: "." and "..", doubled separators, root- and drive-relative
+# paths, and a wildcard in the first component. An empty path is no file.
+here=$(pwd)  # C:/...
+(cd tree && "$ZIP" -qr ../p1.zip .) || fail "zip -r ../p1.zip ."
+list p1.zip | grep -qx sub/random || fail "zip -r ../p1.zip . contents"
+(cd tree/sub && "$ZIP" -q ../../p2.zip ../one) || fail "zip ../../p2.zip"
+[ "$(list p2.zip)" = ../one ] || fail "..: $(list p2.zip)"
+"$ZIP" -q p3.zip tree//one tree/sub/../b.txt "${here#?:}/tree/a.txt" \
+    "${here%%:*}:tree/empty"
+list p3.zip >got
+printf 'tree/one\ntree/sub/../b.txt\n%s/tree/a.txt\ntree/empty\n' \
+    "${here#?:/}" >want.txt
+cmp -s got want.txt || fail "paths: $(cat got)"
+(cd tree && "$ZIP" -q ../p4.zip '*.txt') || fail "zip ../p4.zip '*.txt'"
+[ "$(list p4.zip | wc -l)" = 4 ] || fail "wildcard in the first component"
+expect_status 12 "$ZIP" -r p5.zip ''
+
 # Unicode names: from stdin as UTF-8, and from recursion (bit 11 set,
 # checked by .NET decoding the name)
 printf 'tree/caf\303\251.txt\r\n' | "$ZIP" -q at.zip -@

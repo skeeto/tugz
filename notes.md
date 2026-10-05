@@ -259,6 +259,11 @@ Fuzzers:
   creation, so even `TerminateProcess` cleans up.
 - `-f` replaces an existing output by unlinking it first, never writing
   through a link.
+- Windows paths get the `\\?\` prefix, lifting MAX_PATH. It turns off
+  Win32 parsing, so paths are first resolved as Win32 would: against the
+  current directory (UNC or not), a drive's, or the root, dropping `.`,
+  `..`, and doubled separators. Trailing dots and spaces are kept, so
+  names from a listing round trip. The empty path names no file.
 - As in GNU gzip, when using standard input, compressed data is not
   written to, or read from, a terminal without `-f`. Named files with
   `-c` are not checked.
