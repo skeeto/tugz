@@ -387,7 +387,15 @@ neither inflate nor the gzip container.
 - Merging: the central directory is parsed with every field bounds
   checked; copied entries get regenerated local headers (descriptor flag
   cleared, except for traditionally encrypted entries, whose check byte
-  depends on it) and raw data copies. They keep their extra fields, even
+  depends on it) and raw data copies. The old archive is read through a
+  1 MiB window, so one read serves the headers and data of many small
+  entries (a pread for each header, name, and data made adding a file to
+  200K entries syscall-bound). Entries are copied in central directory
+  order, usually but not necessarily file order, so the read-ahead
+  doubles from a page to the window with each fill that carries on from
+  the last, and drops back to a page at a jump elsewhere: an entry out of
+  order costs one small read, and data larger than the window is read a
+  window at a time. They keep their extra fields, even
   with `-X`, which as in Info-ZIP applies only to entries written (some
   fields are needed to extract, such as AES's), except Zip64 fields,
   made anew; one whose fields leave no room for a Zip64 field it now
