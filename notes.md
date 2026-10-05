@@ -527,6 +527,22 @@ Fuzzers:
   vs 12.6 s (smaller). 10,000 small files (64 B to 8 KiB, -6): 0.32 s
   vs 0.47 s; on a Raspberry Pi 4, 1.7 s vs 2.0 s, and 20,000 files of
   about 280 bytes at -9 1.2 s vs 2.0 s.
+- zip memory, `-qr` over empty files unless noted, versus Info-ZIP 3.0.
+  Before the reserved arena, 250K files ran out of the fixed 256 MiB.
+  Apple M-series: 1M files 27 s and 371 MB peak RSS (36 s, 370 MB);
+  refreshing that archive 27 s and 690 MB (37 s, 393 MB), and adding one
+  file to it 0.8 s and 330 MB (0.9 s, 301 MB); 100K files of 100 bytes
+  5 s and 41 MB (11 s, 40 MB), with a 1M-file subtree excluded by `-x`
+  too, scanned at no cost in memory; one directory of 500K files 214 MB.
+  Windows 11: a one-file run commits 7 MB (257 MB committed up front
+  before), 100K files 46 MB, 1M files 398 MB (i686 298 MB); a tree
+  15,000 levels deep (30K-character paths) archives on x86-64 and on
+  i686 runs out of its 1 GiB reservation with "zip error: Out of memory"
+  (4), where the recursive build overflowed its stack by 8,000 levels.
+  WSL: the `-m32` build zips 1M files in 4 s and 265 MB, and under
+  `ulimit -v 200000` both builds exit 4 with that message and leave no
+  temporary file. Raspberry Pi 4: 100K files of 100 bytes 3.6 s and
+  41 MB (8.9 s, 44 MB), 250K files 5.3 s (14.3 s).
 
 ## Behavior decisions
 
