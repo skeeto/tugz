@@ -1,4 +1,4 @@
-// In-memory platform layer shared by the libFuzzer harnesses
+// In-memory platform layer shared by the codec's libFuzzer harnesses
 // Standard input reads from a buffer, standard output appends to a
 // bounded buffer (writes past the bound fail), and os_exit longjmps.
 #include "../src/base.c"

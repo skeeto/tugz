@@ -14,10 +14,13 @@ enum {
     OS_NOFOLLOW = 1 << 1,  // refuse symbolic links (and reparse points)
     OS_ONELINK  = 1 << 2,  // refuse files with multiple hard links
 
-    // Create a file for writing. It is created inaccessible to others
-    // until os_copymeta, or with the defaults for a new file (umask,
-    // inherited ACL) given OS_DEFPERMS. It is discarded when closed, or
-    // if the process is interrupted, unless os_keep was called first.
+    // Create a file for writing. On POSIX it is created owner-only, for
+    // the program to give it permissions later (gzip's os_copymeta, zip's
+    // os_commit), or with the defaults for a new file (umask, inherited
+    // ACL) given OS_DEFPERMS; on Windows it is opened exclusively and
+    // inherits access control either way. It is discarded when closed,
+    // or if the process is interrupted, unless first kept (os_keep) or
+    // committed (zip's os_commit).
     OS_CREATE   = 1 << 3,  // fail if it exists
     OS_FORCE    = 1 << 4,  // replace if it exists, OS_ERR if it cannot
     OS_DEFPERMS = 1 << 5,
@@ -87,7 +90,6 @@ typedef struct {
     return 1;
 }
 
-// Returns the next byte, or -1 at end of input.
 // A writer with a negative descriptor discards output.
 typedef struct {
     os *ctx;

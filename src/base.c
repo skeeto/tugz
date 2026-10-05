@@ -1,8 +1,10 @@
 // tugz core: base types and arena allocator
 //
-// Everything is a unity build. A platform layer (platform/*.c, test/*.c)
-// includes the sources it needs, starting with this one, and defines
-// os_oom and os_extend along with its entry points.
+// Everything is a unity build. Each program's entry file
+// (platform/*_posix.c, platform/*_windows.c, platform/libtugz.c, and the
+// test programs) includes the sources it needs, this one first. The
+// hooks os_oom and os_extend come from the program's own layer
+// (src/gzipio.c, src/zipcli.c) or from its entry file.
 
 typedef unsigned char       u8;
 typedef unsigned short      u16;
@@ -105,13 +107,12 @@ static void store64le(u8 *p, u64 v)
     }
 }
 
-// Called when memory runs out. Defined by the platform layer.
+// Called when memory runs out.
 [[noreturn]] static void os_oom(os *);
 
 // Called when an arena lacks room for need bytes, padding included.
 // Makes room, as by committing more memory, while keeping the end from
-// which the arena allocates, or exits through os_oom. Defined by the
-// platform layer.
+// which the arena allocates, or exits through os_oom.
 static void os_extend(os *, arena *, iz need);
 
 // Padding to align an allocation of len bytes, which must fit unpadded.

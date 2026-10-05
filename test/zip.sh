@@ -3,6 +3,8 @@
 # Python's zipfile (via uv when available).
 # Usage: sh test/zip.sh ./zip
 # Set SLOW=1 to include Zip64 tests: 4 and 5 GiB files, 70,000 entries.
+# These need about 10 GiB free in TMPDIR (a stored 5 GiB archive and the
+# temporary file that merging into it writes).
 set -e
 
 unset ZIPOPT ZIP  # options for zip, and ZIP unexported for the binary

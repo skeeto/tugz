@@ -288,13 +288,9 @@ static void test_percent(void)
     TEST(zip_percent((i64)1<<40, (i64)1<<39) == 50);
 }
 
-// Build an archive in memory from entries whose data is all zero bytes
-// (csize bytes each, never actually stored beyond the headers when big).
-typedef struct {
-    u8 *buf;
-    iz  len;
-} membuf;
-
+// An archive of three small entries and a comment, written by the header
+// encoders and read back by the end record and central directory
+// parsers, which must also reject truncations, a prefix, and splits.
 static void test_roundtrip_headers(arena a)
 {
     // Small archive: three entries, an archive comment

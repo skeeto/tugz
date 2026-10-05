@@ -1,7 +1,9 @@
 // libFuzzer harness: arbitrary bytes as an existing archive
 // Parses end records and the central directory as the zip program does
-// before merging. Whatever parses is then rewritten as zip does, copying
-// each entry's data, and the result must parse back to the same entries.
+// before merging. Whatever parses is then rewritten much as zip merges,
+// copying each entry's data, but skipping entries with bad local headers
+// (zip fails on them) and clearing every descriptor flag (zip keeps an
+// encrypted entry's), and the result must parse back to the same entries.
 // Entries may share data, so a rewrite can far exceed its input.
 // $ clang -g -O1 -fsanitize=fuzzer,address,undefined test/fuzz_zipread.c
 // $ ./a.out -max_len=8192 corpus/
