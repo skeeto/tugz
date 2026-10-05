@@ -773,8 +773,8 @@ static u32 kraft(u8 const *lens, i32 n)
 // complete. Some decoders, notably Windows' zip folder, reject the
 // incomplete codes that DEFLATE permits (libdeflate issue #323), such as
 // a lone distance code when a block has at most one distinct distance.
-// Returns the highest distance symbol with a code.
-static i32 check_complete_codes(s8 z)
+// Returns whether distance symbol dsym has a code, or true if dsym < 0.
+static b32 check_complete_codes(s8 z, i32 dsym)
 {
     static u8 const order[19] = {
         16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
@@ -833,10 +833,7 @@ static i32 check_complete_codes(s8 z)
     }
     TEST(kraft(lens, hlit) == 1u<<15);
     TEST(kraft(lens+hlit, hdist) == 1u<<15);
-
-    i32 last = hdist - 1;
-    for (; last>=0 && !lens[hlit+last]; last--) {}
-    return last;
+    return dsym<0 || (dsym<hdist && lens[hlit+dsym]);
 }
 
 // de Bruijn sequence over 26 letters of order 3: no three-byte string
@@ -867,13 +864,15 @@ static void test_complete_codes(os *ctx, arena a)
 
     for (i32 level = 1; level <= 9; level++) {
         // Literals only: no distance codes used at all
-        check_complete_codes(do_deflate(ctx, a, p, len, level, 0, 0));
+        TEST(check_complete_codes(do_deflate(ctx, a, p, len, level, 0, 0),
+                                  -1));
 
         // One match, at distance 17576 (symbol 28): a single distance
-        // code used, which must appear in the checked block
+        // code used, which must appear in the checked block. Where the
+        // code's other symbol goes is up to the encoder.
         bytecopy(p+len, p, 40);
         s8 z = do_deflate(ctx, a, p, len+40, level, 0, 0);
-        TEST(check_complete_codes(z) == 28);
+        TEST(check_complete_codes(z, 28));
     }
 }
 
