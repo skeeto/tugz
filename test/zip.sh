@@ -222,10 +222,13 @@ names c7.zip | grep -q tree/a.txt || fail "-x- excluded a.txt"
 # Info-ZIP's two-letter options are matched before single letters, so
 # that unsupported ones are rejected under their own names, while -h2 is
 # help; -jj is not one of them, but -j twice
-for opt in fd fz mm dd; do
+for opt in fd fz dd; do
     "$ZIP" -$opt c8.zip tree/a.txt 2>err && fail "-$opt succeeded"
     grep -q "short option '$opt' not supported" err || fail "-$opt: $(cat err)"
 done
+expect_status 16 "$ZIP" -qmm c8.zip tree/a.txt
+"$ZIP" -mm c8.zip tree/a.txt 2>err && fail "-mm succeeded"
+grep -q '(-mm not supported, Must_Match is -MM)$' err || fail "-mm: $(cat err)"
 "$ZIP" -h2 >out
 grep -q usage out || fail "-h2: $(cat out)"
 "$ZIP" -qjj c8.zip tree/a.txt

@@ -179,7 +179,8 @@ neither inflate nor the gzip container.
   descriptions. `-y` exists only on POSIX and `-S` only on Windows, as
   in Info-ZIP's builds. Its two-letter short options (those of its
   Windows port there) are matched before single letters, so that
-  unsupported ones are rejected by name (`-fd`), and `-h2` is `-h`. An
+  unsupported ones are rejected by name (`-fd`), `-mm` with Info-ZIP's
+  own message ("Must_Match is -MM"), and `-h2` is `-h`. An
   action, `-u`, `-f`, or `-d`, may be given once ("specify just one
   action"), and `-FS`, a flag in Info-ZIP, may be repeated but not
   combined with one (its message, but for a stray line break before the

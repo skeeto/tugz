@@ -576,7 +576,8 @@ typedef struct {
     i32 flags;
 } zoption;
 
-// The supported subset of Info-ZIP's options, under its names
+// The supported subset of Info-ZIP's options, under its names, and its
+// -mm, which it has only to reject with its own message
 static zoption const zip_options[] = {
     {S8("0"),  S8("store"),          S8("store"),                       0},
     {S8("1"),  S8("compress-1"),     S8("compress 1"),                  0},
@@ -601,6 +602,7 @@ static zoption const zip_options[] = {
     {S8("j"),  S8("junk-paths"),
                S8("strip paths and just store file names"),             0},
     {S8("L"),  S8("license"),        S8("display license"),             0},
+    {S8("mm"), S8(""),               S8("not used"),                    0},
     {S8("nw"), S8("no-wild"),  S8("no wildcards during add or update"), 0},
     {S8("p"),  S8("paths"),          S8("store paths"),                 0},
     {S8("q"),  S8("quiet"),          S8("quiet"),                       0},
@@ -726,6 +728,9 @@ static i32 apply_option(zip *z, zoption const *o, s8 opt, b32 negate,
     } else if (zequals(key, S("L"))) {
         say(z, 1, zip_license);
         return -1;
+    } else if (zequals(key, S("mm"))) {
+        return fail(z, ZE_PARMS, S("Invalid command arguments"),
+                    S("-mm not supported, Must_Match is -MM"), scratch);
     } else if (o->flags & OPT_LIST) {
         s8s *list = key.s[0]=='x' ? &z->exclude : &z->include;
         return take_list(z, list, value, args, nargs, i, scratch);
