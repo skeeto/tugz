@@ -66,6 +66,33 @@ progress() {
     sed 's/ (deflated [0-9]*%)//; s/ (stored [0-9]*%)//' "$1"
 }
 
+# Run zip in the background, as process $pid in job $bg, and stop it
+# while its temporary file is in a directory, so before it replaces the
+# archive. Fails if zip finished first. Once $bg is waited for, zip's
+# status is in bg.status, and its output in bg.out and bg.err.
+bgzip() {  # directory zip-arguments...
+    dir=$1
+    shift
+    rm -f bg.pid bg.status
+    { st=0
+      sh -c 'echo $$ >bg.pid && exec "$@"' sh "$ZIP" "$@" \
+          >bg.out 2>bg.err || st=$?
+      echo $st >bg.status; } 2>/dev/null &  # (bash reports signals)
+    bg=$!
+    while [ ! -e bg.status ]; do
+        for f in "$dir"/zi[0-9]*; do
+            if [ -e "$f" ]; then
+                pid=$(cat bg.pid)
+                kill -STOP $pid
+                [ -e "$f" ] && return 0
+                kill -CONT $pid
+                return 1
+            fi
+        done
+    done
+    return 1
+}
+
 # Inputs
 mkdir -p tree/sub/deeper tree/.hidden
 printf 'hello hello hello hello\n' >tree/a.txt
@@ -914,7 +941,9 @@ printf one >sx1.txt
 printf two >sx2.txt
 "$ZIP" -q plain.zip sx1.txt
 cat stub plain.zip >sfx0.zip
+cp sfx0.zip sfx0.orig
 expect_status 3 "$ZIP" sfx0.zip sx2.txt
+cmp -s sfx0.zip sfx0.orig || fail "a refused stub changed the archive"
 { cat stub; printf 'PK\005\006\0\0\0\0\0\0\0\0\0\0\0\0\034\0\0\0\0\0'; } >sfx.zip
 "$ZIP" -q sfx.zip sx1.txt
 for mode in -q -qX -qFS; do
@@ -966,9 +995,14 @@ expect_status 16 "$ZIP" -d ns-gone.zip -x '*.tmp'
 cmp -s ns.zip ns.orig || fail "nothing to select from changed the archive"
 expect_status 0 "$ZIP" -qu ns.zip -x '*.tmp'
 echo junk >junk.zip
-expect_status 3 "$ZIP" junk.zip tree/a.txt
 head -c 100 t.zip >trunc.zip
-expect_status 3 "$ZIP" trunc.zip tree/a.txt
+for arc in junk.zip trunc.zip; do  # left as they were
+    cp $arc bad.orig
+    for mode in -q -qu -qd -qFS; do
+        expect_status 3 "$ZIP" $mode $arc tree/a.txt
+    done
+    cmp -s $arc bad.orig || fail "a failed merge changed $arc"
+done
 
 # Whatever is at the archive path must be a zip file, as Info-ZIP finds
 # before any work: not an empty file (not even to add to itself), a
@@ -1274,6 +1308,70 @@ mkdir pipe
 (cd pipe && "$ZIP" -r out.zip ../tree | true)
 case "$(ls pipe)" in zi*) fail "temporary file left on SIGPIPE";; esac
 
+# Nor does one terminated while writing, which leaves the archive as it
+# was. (When zip ends too soon to be stopped, there is nothing to check.)
+mkdir race rz
+head -c 8000000 /dev/urandom >race/a_big
+"$ZIP" -q rz/race.zip tree/a.txt
+cp rz/race.zip race.orig
+if bgzip rz -q rz/race.zip race/a_big; then
+    kill -TERM $pid
+    kill -CONT $pid
+    wait $bg
+    [ "$(cat bg.status)" = 143 ] || fail "not terminated: $(cat bg.status)"
+    cmp -s rz/race.zip race.orig || fail "a terminated run changed the archive"
+    [ "$(ls rz)" = race.zip ] || fail "terminated run left: $(ls rz)"
+else
+    wait $bg
+    echo "zip.sh: zip finished before it could be terminated" >&2
+fi
+
+# A file swapped since the scan is not read: under -y, for a link, and
+# in any case for a FIFO (which a zip opening it would wait on, but here
+# has a writer, so that it goes on to read). Zip is stopped while it
+# writes a large file, to swap the next one. If zip read it too soon,
+# nothing is checked.
+swapped() {  # name link|fifo zip-option...
+    name=$1
+    kind=$2
+    shift 2
+    rm -f rz/race.zip
+    printf small >race/$name
+    if ! bgzip rz "$@" rz/race.zip race/a_big race/$name; then
+        wait $bg
+        echo "zip.sh: zip finished before race/$name could be swapped" >&2
+        return
+    fi
+    rm race/$name
+    if [ $kind = link ]; then
+        ln -s ../secret race/$name
+    else
+        mkfifo race/$name
+        printf leaked >race/$name &
+        writer=$!
+    fi
+    kill -CONT $pid
+    wait $bg
+    if [ $kind = fifo ]; then
+        exec 3<>race/$name 3<&-  # end the writer if zip never opened it
+        wait $writer 2>/dev/null || :  # (SIGPIPE if zip closed it first)
+    fi
+    if [ "$(unzip -p rz/race.zip race/$name 2>/dev/null)" = small ]; then
+        echo "zip.sh: zip read race/$name before it could be swapped" >&2
+        return
+    fi
+    [ "$(cat bg.status)" = 18 ] && [ "$(names rz/race.zip)" = race/a_big ] &&
+        grep -q "could not open for reading: race/$name" bg.err ||
+        fail "$kind swapped in: $(cat bg.status) $(names rz/race.zip)" \
+             "$(cat bg.err)"
+}
+if ln -s x race/link 2>/dev/null && mkfifo race/fifo 2>/dev/null; then
+    rm race/link race/fifo
+    printf 'TOP SECRET' >secret
+    swapped b_link link -y
+    swapped c_fifo fifo
+fi
+
 if [ -n "$SLOW" ]; then
     # Zip64: a 5 GiB file, compressed and stored (pushing a following
     # entry's offset past 4 GiB), then merged into
@@ -1357,5 +1455,9 @@ sys.exit(d[p+12:p+16] != b"\x1e\x03\x2d\x00")' many.zip ||
             fail "Zip64 end record versions"
     fi
 fi
+
+# No run left a temporary file
+find . -name 'zi[0-9][0-9][0-9][0-9][0-9][0-9]' >out
+[ ! -s out ] || fail "temporary files left: $(cat out)"
 
 echo "zip tests pass"
