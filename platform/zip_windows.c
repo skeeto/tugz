@@ -306,6 +306,26 @@ static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
     return towtf8(perm, t.s);
 }
 
+// The file's final path, by which file systems that report no file IDs
+// still tell files apart, following links as os_stat does.
+static s8 os_fullpath(os *ctx, s8 path, arena *perm, arena scratch)
+{
+    (void)ctx;
+    c16 *wpath = winpath(&scratch, path);
+    iptr h     = !wpath ? INVALID_HANDLE_VALUE :
+                 CreateFileW(wpath, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, 0,
+                             OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0);
+    if (h == INVALID_HANDLE_VALUE) {
+        return (s8){0};
+    }
+    c16 *full = 0;
+    for (u32 how = VOLUME_NAME_DOS; !full && how<=VOLUME_NAME_NT; how++) {
+        full = final_path(h, how, &scratch);
+    }
+    CloseHandle(h);
+    return full ? towtf8(perm, full) : (s8){0};
+}
+
 static void release_guard(os *ctx)
 {
     if (ctx->guard) {

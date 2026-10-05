@@ -92,6 +92,9 @@ static b32  os_isatty(os *, i32 fd);
 static s8   os_error(os *);
 // A name in the OEM code page, as UTF-8 (Windows), or a null string.
 static s8   os_fromoem(os *, s8 name, arena *perm, arena scratch);
+// A file's full path, past links, which tells files apart where their
+// file IDs are unknown (Windows), or a null string.
+static s8   os_fullpath(os *, s8 path, arena *perm, arena scratch);
 
 static void os_oom(os *ctx)
 {
@@ -211,6 +214,7 @@ typedef struct {
     b32     duplicate;
     os_info arcinfo;
     b32     arcexists;
+    s8      arcpath;  // full path, if the archive's file ID is unknown
     i32     status;
     iz      nread;     // files and entries read, as Info-ZIP counts them
     i64     bread;
@@ -937,10 +941,19 @@ static s8 trim_path(zip *z, s8 path, arena *a)
     return r;
 }
 
-static b32 is_archive(zip *z, os_info *info)
+// Whether a file is the archive, by identity, or where the file system
+// reports no file IDs, as some network and virtual drives do, by full
+// path, so that the archive is still left out (Info-ZIP compares times
+// and sizes). Otherwise an unknown ID matches nothing.
+static b32 is_archive(zip *z, s8 path, os_info *info, arena scratch)
 {
-    return z->arcexists && info->type==FT_FILE &&
-           same_file(info, &z->arcinfo);
+    if (!z->arcexists || info->type!=FT_FILE) {
+        return 0;
+    } else if (!z->arcpath.s || info->size!=z->arcinfo.size) {
+        return same_file(info, &z->arcinfo);
+    }
+    s8 full = os_fullpath(z->ctx, path, &z->perm, scratch);  // rare, small
+    return zequals(full, z->arcpath);
 }
 
 static void push_file(zip *z, s8 path, s8 name, os_info *info)
@@ -970,7 +983,7 @@ static s8 entry_key(zip *z, s8 name, arena *a)
 // -j junks its directories, as in Info-ZIP.
 static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
 {
-    if (is_archive(z, info)) {
+    if (is_archive(z, path, info, scratch)) {
         return;  // the archive itself
     } else if (!name.len || !selected(z, name)) {
         return;
@@ -2083,7 +2096,7 @@ static b32 scan_entries(zip *z, zarchive *ar, iz n, zmap *old, s8 pattern,
         s8 path = {name.s, name.len-is_dirname(name)};
         os_info info = {0};
         if (path.len && os_stat(z->ctx, path, !z->symlinks, &info, scratch) &&
-            !is_archive(z, &info)) {
+            !is_archive(z, path, &info, scratch)) {
             s8 key = entry_key(z, name, &z->perm);
             *zmap_upsert(&z->names, key, &z->perm) = z->files.len;
             push_file(z, path, name, &info);
@@ -2190,6 +2203,9 @@ static i32 zip_main(zipconfig *conf)
     zarchive *ar  = 0;
     z->arcexists = z->target.s &&
                    os_stat(z->ctx, z->target, 1, &z->arcinfo, scratch);
+    if (z->arcexists && !z->arcinfo.ino[0] && !z->arcinfo.ino[1]) {
+        z->arcpath = os_fullpath(z->ctx, z->target, &z->perm, scratch);
+    }
     if (z->arcexists) {
         ar = &arc;
         err = read_archive(z, ar, scratch);

@@ -389,7 +389,11 @@ neither inflate nor the gzip container.
   opened. `-@` and `@file` lines lose trailing spaces and periods, as
   in Info-ZIP. Links and junctions are followed; cycles are detected by
   file identity, the 128-bit `FileIdInfo` where available (64-bit
-  indexes are not unique on ReFS). An unknown (zero) ID matches nothing.
+  indexes are not unique on ReFS). An unknown (zero) ID matches nothing,
+  but where the archive's is unknown, as on file systems that report
+  none, a file the archive's size is compared by its final path
+  (`GetFinalPathNameByHandleW`), so that the archive is still left out
+  (Info-ZIP compares sizes and times, never IDs, on Windows).
   Recursion takes plain files' attributes, size, and times from the
   listing, opening only directories, links, and files the size of the
   archive, whose identity it needs. (A directory entry can lag for a
