@@ -294,7 +294,7 @@ pid=$!
 sleep 1
 kill -TERM $pid 2>/dev/null || true
 set +e
-wait $pid
+wait $pid 2>/dev/null  # without the shell's notice of the signal
 st=$?
 set -e
 if [ $st -ne 0 ]; then  # otherwise it finished first; nothing to check
