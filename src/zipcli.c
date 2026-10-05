@@ -1553,12 +1553,17 @@ static void report(zip *z, s8 verb, s8 name, zentry *e, arena scratch)
 }
 
 // Temporary file beside the archive, created discarded-on-close. For a
-// new archive it has the permissions of a new file from the start.
+// new archive it has the permissions of a new file from the start. On
+// Windows, beside a drive-relative "X:name" is in "X:", that drive's
+// current directory, which need not be the current directory.
 static i32 create_temp(zip *z, s8 *path, arena scratch)
 {
-    iz cut = z->archive.len;
-    for (; cut>0 && !is_sep(z, z->archive.s[cut-1]); cut--) {}
-    s8 dir = {z->archive.s, cut};
+    s8 a     = z->archive;
+    u8 drive = a.len>=2 && a.s[1]==':' ? (u8)(a.s[0] | 0x20) : 0;
+    iz root  = z->windows && drive>='a' && drive<='z' ? 2 : 0;
+    iz cut   = a.len;
+    for (; cut>root && !is_sep(z, a.s[cut-1]); cut--) {}
+    s8 dir = {a.s, cut};
     i32 mode = OS_CREATE | (z->arcinfo.type==FT_NONE ? OS_DEFPERMS : 0);
     for (i32 i = 0; i < 1000000; i++) {
         s8 num = znum(&scratch, 1000000 + i);

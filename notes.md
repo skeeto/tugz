@@ -225,7 +225,9 @@ the file is flushed and closed without error), and
   after flushing and clearing delete-pending, so it never appears
   incomplete. `FileRenameInfoEx` with POSIX semantics replaces an
   archive that a scanner or indexer holds open (with delete sharing);
-  `FileRenameInfo` is the fallback. A concurrent run's temporary file,
+  `FileRenameInfo` is the fallback (SMB shares refuse the former). The
+  temporary file of a drive-relative archive, `D:x.zip`, is in `D:`,
+  that drive's current directory. A concurrent run's temporary file,
   delete-pending, refuses access on Windows, so that counts as an
   existing name and the next is tried, up to 64 in a row: a directory
   that refuses even the check (no traverse rights) makes every name
