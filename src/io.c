@@ -55,7 +55,7 @@ typedef struct {
     b32 err;
 } reader;
 
-static reader *newreader(arena *a, i32 fd, iz cap)
+[[maybe_unused]] static reader *newreader(arena *a, i32 fd, iz cap)
 {
     reader *r = new(a, 1, reader);
     r->ctx = a->ctx;
@@ -66,7 +66,7 @@ static reader *newreader(arena *a, i32 fd, iz cap)
 }
 
 // Ensure at least one byte is buffered. Returns false at end of input.
-static b32 reader_fill(reader *r)
+[[maybe_unused]] static b32 reader_fill(reader *r)
 {
     if (r->off < r->len) {
         return 1;
@@ -96,7 +96,7 @@ typedef struct {
     b32 err;
 } writer;
 
-static writer *newwriter(arena *a, i32 fd, iz cap)
+[[maybe_unused]] static writer *newwriter(arena *a, i32 fd, iz cap)
 {
     writer *w = new(a, 1, writer);
     w->ctx = a->ctx;
@@ -106,7 +106,7 @@ static writer *newwriter(arena *a, i32 fd, iz cap)
     return w;
 }
 
-static b32 writer_flush(writer *w)
+[[maybe_unused]] static b32 writer_flush(writer *w)
 {
     if (!w->err && w->len && w->fd>=0) {
         w->err = !os_write(w->ctx, w->fd, w->buf, w->len);
@@ -115,7 +115,7 @@ static b32 writer_flush(writer *w)
     return !w->err;
 }
 
-static void writer_write(writer *w, u8 const *p, iz len)
+[[maybe_unused]] static void writer_write(writer *w, u8 const *p, iz len)
 {
     if (w->fd < 0) {
         return;
@@ -141,12 +141,12 @@ static void writer_write(writer *w, u8 const *p, iz len)
     }
 }
 
-static void writer_s8(writer *w, s8 s)
+[[maybe_unused]] static void writer_s8(writer *w, s8 s)
 {
     writer_write(w, s.s, s.len);
 }
 
-static void writer_byte(writer *w, u8 b)
+[[maybe_unused]] static void writer_byte(writer *w, u8 b)
 {
     if (w->len == w->cap) {
         writer_flush(w);
@@ -154,14 +154,14 @@ static void writer_byte(writer *w, u8 b)
     w->buf[w->len++] = b;
 }
 
-static b32 s8equals(s8 a, s8 b)
+[[maybe_unused]] static b32 s8equals(s8 a, s8 b)
 {
     return a.len==b.len && (!a.len || !__builtin_memcmp(a.s, b.s, (uz)a.len));
 }
 
 // Carve out exactly the memory a codec claims to need, as the library
 // does, so that every run checks the claim.
-static arena subarena(arena *a, iz size)
+[[maybe_unused]] static arena subarena(arena *a, iz size)
 {
     arena r = {0};
     r.beg = (byte *)newbytes(a, size);
@@ -171,7 +171,7 @@ static arena subarena(arena *a, iz size)
 }
 
 // Hand pending output to a descriptor, if any, noting the first failure.
-static void put_pending(os *ctx, i32 fd, s8 p, b32 *err)
+[[maybe_unused]] static void put_pending(os *ctx, i32 fd, s8 p, b32 *err)
 {
     if (p.len && fd>=0 && !*err) {
         *err = !os_write(ctx, fd, p.s, p.len);

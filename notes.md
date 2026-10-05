@@ -32,15 +32,21 @@ in `platform/posix.c` and `platform/windows.c`.
 | `src/io.c`               | programs only: `os_*` interface, reader/writer  |
 | `src/gzipio.c`           | gzip program: descriptor drivers for the codec  |
 | `src/cli.c`              | gzip command line driver, `gzip_main`           |
+| `src/zip.c`              | ZIP format: headers, Zip64, parsing, wildcards  |
+| `src/zipcli.c`           | zip command line and archive driver, `zip_main` |
 | `platform/posix.c`       | shared POSIX `os_*` implementation              |
 | `platform/windows.c`     | shared CRT-free Win32 `os_*`, paths, arguments  |
 | `platform/gzip_*.c`      | gzip entry points (POSIX, Windows)              |
+| `platform/zip_*.c`       | zip file system functions and entry points      |
 | `platform/libtugz.c`     | library layer; `tugz.h` is its interface        |
 | `test/tests.c`           | test suite (in-memory file system)              |
 | `test/libtests.c`        | library interface tests                         |
 | `test/fuzz_*.c`          | libFuzzer harnesses, sharing `test/fuzzos.c`    |
 | `test/bench.c`           | benchmark versus zlib and libdeflate            |
+| `test/ziptests.c`        | ZIP format unit tests                           |
 | `test/cli.sh`            | end-to-end tests of the binary                  |
+| `test/zip.sh`            | end-to-end zip tests (unzip, zipinfo, Python)   |
+| `test/zip_windows.sh`    | zip.exe under Windows' own extractors           |
 | `test/seeds.py`          | fuzzing seed corpus generator                   |
 
 The only conditional compilation in the core is CPU architecture and
@@ -98,16 +104,73 @@ CPU models with and without PCLMUL.
   data). `make tugz.c` produces a single-file amalgamation with the header
   inlined; define `TUGZ_API` as `static` to embed it.
 
+## zip
+
+The zip program shares the deflate core and `src/io.c`, adding a
+portable format layer (`src/zip.c`, no I/O, fuzzed) and a driver
+(`src/zipcli.c`) over a few more platform functions: `os_stat`,
+`os_listdir`, `os_readlink`, positioned `os_readat`/`os_writeat`,
+`os_truncate`, `os_commit` (atomic rename over the target), and
+`os_localtime`. It needs neither inflate nor the gzip container.
+
+- Scope: batch use by release scripts. Everything interactive or legacy
+  (encryption, comments, splits, SFX, fixes, CRLF conversion, streaming,
+  logging) is rejected with Info-ZIP's "not supported" usage error
+  rather than silently ignored.
+- Compatibility: verified field by field against Info-ZIP 3.0 on Linux
+  (`-r`, `-rX9`, `-r1`, `-r0`): made-by and needed versions, flags
+  (including the level bits: 0x4 for -1/-2, 0x2 for -8/-9, set whenever
+  compression was attempted), method, external attributes, local and
+  central `UT`/`ux` extra fields, times, and CRCs are byte-identical.
+  Messages, warnings, and exit statuses (12 nothing to do, 16 usage,
+  18 unreadable files, 3 bad archive) follow Info-ZIP, except warnings
+  and errors go to standard error. Info-ZIP's quirks kept: `../` stays
+  in names, an emptied archive remains as a 22-byte file, entries that
+  do not shrink are stored, odd seconds round up.
+- Departures: entries are sorted by name within each directory (Info-ZIP
+  uses readdir order), doubled slashes collapse, `SOURCE_DATE_EPOCH`
+  clamps times and makes them UTC, and names that are valid non-ASCII
+  UTF-8 always get flag bit 11.
+- Writing: entries go to a temporary file beside the archive (created
+  discard-on-close, like gzip's outputs), at explicit offsets so that a
+  local header can be patched once sizes are known. No data descriptors
+  are written. An entry that does not shrink is rewritten stored (input
+  reopened); one that grows past 4 GiB while being read is redone with a
+  Zip64 local header. The file is truncated to its final length and
+  renamed over the target; on Windows by handle (`FileRenameInfo`),
+  after clearing delete-pending, so it never appears incomplete.
+- Merging: the central directory is parsed with every field bounds
+  checked; copied entries get regenerated local headers (descriptor flag
+  cleared, except for traditionally encrypted entries, whose check byte
+  depends on it) and raw data copies. A Zip64 end record is trusted only
+  if it checks out or the plain end record calls for it, since bytes
+  resembling a Zip64 locator may precede the end record by chance (found
+  by fuzzing).
+- Windows: made-by host 0 (FAT, the most widely understood), DOS
+  attributes, `UT` extra field. Wildcard arguments are expanded per
+  component, case-insensitively, without `[sets]` (as Info-ZIP on
+  Windows). Recursion skips hidden and system files unless `-S`. Links
+  and junctions are followed; cycles are detected by file identity.
+- libdeflate issue #323: Windows' zip folder rejects incomplete Huffman
+  codes (such as a lone distance code in a block with at most one
+  distinct distance), which DEFLATE permits. `huff_build` always codes at
+  least two symbols, so every code is complete; `test_complete_codes`
+  parses emitted headers to check this, and zip_windows.sh extracts a
+  literal-only input (a de Bruijn sequence: no 3-byte repeats) through
+  Explorer.
+
 ## Workflow
 
     make check                 # unit and library tests (ASan/UBSan), CLI tests
     SLOW=1 sh test/cli.sh ./gzip   # adds a 5 GiB stream (>4 GiB offsets)
     make gzip.exe              # Win32 build (w64devkit or CROSS=...)
-    make fuzz                  # build the four fuzzers
+    make fuzz                  # build the five fuzzers
     make fuzz-seeds            # seed corpora in fuzz/corpus/
     ./fuzz-diff-inflate -fork=3 -max_len=65536 fuzz/corpus/diff-inflate
     make bench && ./bench -l 1,6,9 bench_corpus/silesia/*
-    make amalgamation          # single-file Windows source, gzip.c
+    make amalgamation          # single-file Windows sources, gzip.c and zip.c
+    SLOW=1 sh test/zip.sh ./zip    # adds Zip64: 5 GiB file, 70,000 entries
+    sh test/zip_windows.sh ./zip.exe   # on Windows, under w64devkit
     make tugz.c libtugz.o      # single-file library source, library object
 
 Fuzzers:
@@ -125,6 +188,8 @@ Fuzzers:
   streaming encoder, in every format with fuzzer-placed NONE/SYNC/FULL
   flushes and piece sizes, must produce piece-independent output that
   decodes under zlib, libdeflate, and our streaming decoder
+- `fuzz-zipread`: arbitrary bytes as an existing archive; whatever
+  parses is rewritten as a merge would, and must parse back identically
 
 ## Cross-platform verification
 
@@ -150,6 +215,19 @@ Fuzzers:
   to the Mac in all formats, with SYNC flushes and odd buffer pieces.
   `test/libtests.c` passes under ASan/UBSan/LSan in WSL. `tugz.c` builds
   warning-free with GCC and mingw, and `tugz.h` parses as C++.
+
+- zip: `test/zip.sh` passes on macOS (also `SLOW=1`: 5 GiB entries
+  compressed and stored, an entry offset past 4 GiB, merging into a Zip64
+  archive, 70,000 entries), on aarch64 Linux, and with the big-endian
+  ppc build under QEMU. Header fields match Info-ZIP 3.0 exactly (see
+  above). `test/zip_windows.sh` passes for the x86-64 build, the
+  amalgamation, and the i686 build on Windows 11: Explorer's zip folder,
+  `Expand-Archive`, and `tar` extract every level identically, including
+  the literal-only input. zip.exe is 68 KiB, imports only KERNEL32 and
+  SHELL32, and has no stack frame over 4000 bytes (no `__chkstk`).
+- zip speed versus Info-ZIP 3.0 on the 267 MB benchmark corpus (Apple
+  M-series): -1 2.2 s vs 1.9 s (4% smaller), -6 3.1 s vs 4.9 s, -9 6.8 s
+  vs 12.6 s (smaller). 10,000 small files: 0.26 s vs 0.25 s.
 
 ## Behavior decisions
 
@@ -202,6 +280,8 @@ Fuzzers:
   method, flags, and trailer CRC are checked as soon as each is complete
 - `memcpy` with a null pointer and zero length, from callers passing
   empty null buffers (UBSan under GCC)
+- zip: bytes resembling a Zip64 locator before a plain end record made
+  the reader insist on Zip64 (fuzzing)
 
 ## Performance log
 

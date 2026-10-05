@@ -184,13 +184,13 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
     return 1;
 }
 
-static b32 os_remove(os *ctx, s8 path, arena scratch)
+[[maybe_unused]] static b32 os_remove(os *ctx, s8 path, arena scratch)
 {
     (void)ctx;
     return !unlink(tocstr(&scratch, path));
 }
 
-static void os_keep(os *ctx, i32 fd)
+[[maybe_unused]] static void os_keep(os *ctx, i32 fd)
 {
     if (fd == ctx->outfd) {
         ctx->keep = 1;

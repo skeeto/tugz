@@ -2,9 +2,9 @@
 
 A from-specification implementation of gzip ([RFC 1952][]), zlib
 ([RFC 1950][]), and DEFLATE ([RFC 1951][]) in portable C11, as a drop-in
-`gzip` command and a streaming library. It compresses faster than zlib
-at every level with equal or better ratios, and validates input exactly
-as strictly as zlib.
+`gzip` command, a streaming library, and an Info-ZIP compatible `zip`.
+It compresses faster than zlib at every level with equal or better
+ratios, and validates input exactly as strictly as zlib.
 
 The core has no dependencies, no global state, no platform
 conditionals, and does no I/O. Each program is a unity build: a platform
@@ -23,10 +23,14 @@ Windows, CRT-free (w64devkit):
 Hardware CRC-32 is used automatically: PCLMULQDQ on x86 (detected at run
 time), and the CRC instructions on ARMv8 targets that have them.
 
-`make amalgamation` produces `gzip.c`, the Windows build as a single
-source file with its build command in the header:
+The zip program builds the same way from `platform/zip_posix.c` and
+`platform/zip_windows.c`.
+
+`make amalgamation` produces `gzip.c` and `zip.c`, the Windows builds as
+single source files with their build commands in the header:
 
     $ cc -O2 -nostartfiles -o gzip.exe gzip.c -lmemory
+    $ cc -O2 -nostartfiles -o zip.exe zip.c -lmemory
 
 ## Library
 
@@ -71,6 +75,49 @@ outputs, no partial outputs on failure or interruption, and refusal to
 replace links or special files without `-f`. Not yet supported: `-r`,
 `-l`, `-v`, `-S`, `-n`/`-N`, and the `GZIP` environment variable.
 
+## zip
+
+A batch-oriented subset of Info-ZIP Zip 3.0 for scripts that package
+releases, such as `zip -qX9r release-1.2.3.zip build/`:
+
+    zip [-options] archive[.zip] [path ...] [-x pattern ...]
+
+| Option | Meaning |
+|---|---|
+| `-0`..`-9` | store only, or compression level (default 6) |
+| `-r` | recurse into directories |
+| `-q` | quiet: no progress or warnings |
+| `-X` | no extra attributes (Unix times, uid/gid) |
+| `-@` | read paths from standard input, one per line (UTF-8) |
+| `-j`, `-D` | junk directory names; no directory entries |
+| `-x`, `-i` | exclude or include only archive names matching patterns |
+| `-y` | store symbolic links as links (POSIX) |
+| `-S` | include hidden and system files (Windows) |
+| `-u`, `-f` | update newer entries and add; freshen existing only |
+| `-FS` | filesync: update changed entries, delete missing ones |
+| `-d` | delete entries matching patterns |
+| `-nw` | no wildcards |
+
+Existing archives are merged as Info-ZIP does: matching entries are
+replaced in place, new ones appended, and the rest copied without
+recompression. The new archive is written to a temporary file and
+renamed over the old one. Headers, attributes, extra fields, messages,
+and exit statuses match Info-ZIP's. Zip64 is used as needed for large
+files, large archives, and more than 65,535 entries. Names are stored as
+UTF-8 with flag bit 11 when they are valid UTF-8 and not ASCII. On
+Windows, arguments with wildcards are expanded, as `cmd` does not.
+
+Output is deterministic: entries within each directory are sorted by
+name, and with `-X` an archive depends only on file contents, names,
+attributes, and times. When `SOURCE_DATE_EPOCH` is set, times are
+clamped to it and stored in UTC, so the archive does not depend on the
+time zone either.
+
+Interactive and legacy features are not supported and are rejected:
+encryption, comments, splits, self-extractors, `-F` fixes, line ending
+conversion, streaming with `-`, `-T`, `-m`, `-n`, `--out`, and logging.
+Warnings and errors go to standard error rather than standard output.
+
 ## Performance
 
 Silesia corpus on Apple M-series, compression ratio @ MB/s:
@@ -87,7 +134,9 @@ Silesia corpus on Apple M-series, compression ratio @ MB/s:
     $ make fuzz      # libFuzzer harnesses, including differential
     $ make bench     # benchmark against zlib and libdeflate
 
-Tests and benchmarks use zlib and libdeflate as references. Tested on
+Tests and benchmarks use zlib and libdeflate as references, and zip
+archives are verified with unzip, Python's zipfile, and on Windows with
+Explorer, .NET, and tar. Tested on
 macOS, Linux (x86-64, i386, big-endian PowerPC), and Windows (x86-64,
 i686). See [notes.md](notes.md) for design decisions, test coverage, and
 the optimization log.

@@ -1,0 +1,257 @@
+// CRT-free Win32 platform layer for tugz zip
+// $ cc -O2 -nostartfiles -o zip.exe platform/zip_windows.c -lmemory
+#include "../src/base.c"
+#include "../src/crc32.c"
+#include "../src/deflate.c"
+#include "../src/io.c"
+#include "../src/zip.c"
+#include "../src/zipcli.c"
+
+#include "windows.c"
+
+typedef struct {
+    u32 attributes;
+    u32 created[2], accessed[2], written[2];
+    u32 size_hi, size_lo;
+    u32 reserved[2];
+    c16 name[260];
+    c16 altname[14];
+} find_data;
+
+typedef struct {
+    uptr internal, internal_high;
+    u32  offset, offset_high;
+    uptr event;
+} overlapped;
+
+typedef struct {
+    u16 year, month, weekday, day, hour, minute, second, ms;
+} systemtime;
+
+typedef struct {
+    u32  replace;  // a BOOLEAN, padded
+    iptr root;
+    u32  len;      // bytes
+    c16  name[];
+} rename_info;
+
+W32(b32)  FindClose(iptr);
+W32(iptr) FindFirstFileExW(c16 *, i32, find_data *, i32, uptr, u32);
+W32(b32)  FindNextFileW(iptr, find_data *);
+W32(u32)  GetEnvironmentVariableW(c16 *, c16 *, u32);
+W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
+
+#define FILE_READ_ATTRIBUTES       0x80u
+#define FILE_FLAG_BACKUP_SEMANTICS 0x02000000u
+#define FIND_FIRST_EX_LARGE_FETCH  2u
+
+enum {
+    FileRenameInfo    = 3,
+    FileEndOfFileInfo = 6,
+};
+
+// Unix seconds from a FILETIME, rounding down.
+static i64 unixtime(u32 const ft[2])
+{
+    i64 t = (i64)((u64)ft[1]<<32 | ft[0]) - 116444736000000000;
+    return t>=0 ? t/10000000 : -((-t + 9999999)/10000000);
+}
+
+// Symbolic links and junctions are always followed, as Info-ZIP does on
+// Windows, so follow is ignored.
+static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
+                   arena scratch)
+{
+    (void)ctx;
+    (void)follow;
+    c16 *wpath = winpath(&scratch, path);
+    if (!wpath) {
+        return 0;
+    }
+    iptr h = CreateFileW(wpath, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, 0,
+                         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0);
+    if (h == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    by_handle_info bh = {0};
+    b32 ok   = GetFileInformationByHandle(h, &bh);
+    u32 type = GetFileType(h);
+    CloseHandle(h);
+    if (!ok) {
+        return 0;
+    }
+
+    b32 dir = bh.attributes & FILE_ATTRIBUTE_DIRECTORY;
+    info->type  = dir ? FT_DIR : type==FILE_TYPE_DISK ? FT_FILE : FT_OTHER;
+    info->size  = (i64)((u64)bh.size_hi<<32 | bh.size_lo);
+    info->mtime = unixtime(bh.written);
+    info->atime = unixtime(bh.accessed);
+    info->mode  = 0;
+    info->attr  = bh.attributes;
+    info->uid   = 0;
+    info->gid   = 0;
+    info->dev   = bh.volume;
+    info->ino   = (u64)bh.index_hi<<32 | bh.index_lo;
+    return 1;
+}
+
+static s8 *os_listdir(os *ctx, s8 path, iz *count, arena *perm,
+                      arena scratch)
+{
+    (void)ctx;
+    c16 *wpath = winpath(&scratch, path);
+    if (!wpath) {
+        return 0;
+    }
+    s16 dir = s16lit(wpath);
+    b32 sep = dir.len && dir.s[dir.len-1]=='\\';
+    c16 *pattern = s16cat(&scratch, dir, s16lit(sep ? L"*" : L"\\*"));
+
+    find_data fd = {0};
+    iptr h = FindFirstFileExW(pattern, 1, &fd, 0, 0,
+                              FIND_FIRST_EX_LARGE_FETCH);
+    if (h == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    s8s names = {0};
+    do {
+        s8 name = towtf8(perm, fd.name);
+        if (!zequals(name, S(".")) && !zequals(name, S(".."))) {
+            *push(perm, &names) = name;
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    *count = names.len;
+    return names.data ? names.data : new(perm, 1, s8);
+}
+
+static s8 os_readlink(os *ctx, s8 path, arena *perm, arena scratch)
+{
+    (void)ctx;
+    (void)path;
+    (void)perm;
+    (void)scratch;
+    return (s8){0};  // never asked: links are followed
+}
+
+static b32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
+{
+    while (len) {
+        overlapped ov = {0};
+        ov.offset      = (u32)off;
+        ov.offset_high = (u32)((u64)off >> 32);
+        u32 got = 0;
+        u32 n   = (u32)MIN(len, 1<<30);
+        if (!ReadFile(ctx->handles[fd], buf, n, &got, (uptr)&ov) || !got) {
+            return 0;
+        }
+        buf += got;
+        len -= got;
+        off += got;
+    }
+    return 1;
+}
+
+static b32 os_writeat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
+{
+    while (len) {
+        overlapped ov = {0};
+        ov.offset      = (u32)off;
+        ov.offset_high = (u32)((u64)off >> 32);
+        u32 wrote = 0;
+        u32 n     = (u32)MIN(len, 1<<30);
+        if (!WriteFile(ctx->handles[fd], buf, n, &wrote, (uptr)&ov) ||
+            !wrote) {
+            return 0;
+        }
+        buf += wrote;
+        len -= wrote;
+        off += wrote;
+    }
+    return 1;
+}
+
+static b32 os_truncate(os *ctx, i32 fd, i64 len)
+{
+    return SetFileInformationByHandle(ctx->handles[fd], FileEndOfFileInfo,
+                                      &len, sizeof(len));
+}
+
+// Rename by handle while the file is still open, replacing the target,
+// so that it is never visible incomplete under its final name.
+static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
+{
+    c16 *wpath = winpath(&scratch, path);
+    if (!wpath) {
+        return 0;
+    }
+    s16 name = s16lit(wpath);
+    iz  size = (iz)sizeof(rename_info) + (name.len+1)*(iz)sizeof(c16);
+    rename_info *ri = (rename_info *)newbytes(&scratch, size);
+    bytefill(ri, 0, size);
+    ri->replace = 1;
+    ri->len     = (u32)(name.len * (iz)sizeof(c16));
+    bytecopy(ri->name, name.s, name.len*(iz)sizeof(c16));
+
+    iptr h = ctx->handles[fd];
+    u8 keep = 0;
+    if (!SetFileInformationByHandle(h, FileDispositionInfo, &keep, 1)) {
+        return 0;
+    }
+    if (!SetFileInformationByHandle(h, FileRenameInfo, ri, (u32)size)) {
+        u8 discard = 1;
+        SetFileInformationByHandle(h, FileDispositionInfo, &discard, 1);
+        return 0;
+    }
+    return os_close(ctx, fd);
+}
+
+static void os_localtime(os *ctx, i64 t, i32 tm[6])
+{
+    (void)ctx;
+    zip_gmtime(t, tm);
+    if (tm[0]<1601 || tm[0]>30827) {
+        return;
+    }
+    i64 days = t/86400 - (t%86400 < 0);
+    systemtime utc = {0};
+    utc.year    = (u16)tm[0];
+    utc.month   = (u16)tm[1];
+    utc.weekday = (u16)(((days + 4)%7 + 7) % 7);  // 1970-01-01: Thursday
+    utc.day     = (u16)tm[2];
+    utc.hour    = (u16)tm[3];
+    utc.minute  = (u16)tm[4];
+    utc.second  = (u16)tm[5];
+    systemtime loc = {0};
+    if (SystemTimeToTzSpecificLocalTime(0, &utc, &loc)) {
+        tm[0] = loc.year;
+        tm[1] = loc.month;
+        tm[2] = loc.day;
+        tm[3] = loc.hour;
+        tm[4] = loc.minute;
+        tm[5] = loc.second;
+    }
+}
+
+void mainCRTStartup(void)
+{
+    os ctx = {0};
+    zipconfig conf = {0};
+    conf.perm    = os_init(&ctx, (iz)1 << 28);
+    conf.windows = 1;
+
+    i32 argc = 0;
+    s8 *argv = os_args(&conf.perm, &argc);
+    conf.nargs = argc>0 ? argc-1 : 0;
+    conf.args  = argv + (argc>0);
+
+    c16 epoch[64];
+    u32 n = GetEnvironmentVariableW(L"SOURCE_DATE_EPOCH", epoch,
+                                    countof(epoch));
+    if (n >= countof(epoch)) {
+        conf.epoch = S("(too long)");  // rejected as invalid
+    } else if (n) {
+        conf.epoch = towtf8(&conf.perm, epoch);
+    }
+    ExitProcess((u32)zip_main(&conf));
+}

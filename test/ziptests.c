@@ -1,0 +1,388 @@
+// Unit tests for the portable ZIP format layer (src/zip.c)
+// On success prints "all zip tests pass". A failure traps.
+// $ cc -g3 -fsanitize=address,undefined -o tests-zip test/ziptests.c
+#include "../src/base.c"
+#include "../src/zip.c"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define TEST(c) \
+    do { \
+        if (!(c)) { \
+            fprintf(stderr, "%s:%d: FAIL: %s\n", __FILE__, __LINE__, #c); \
+            fflush(stderr); \
+            __builtin_trap(); \
+        } \
+    } while (0)
+
+struct os { int unused; };
+
+static void os_oom(os *ctx)
+{
+    (void)ctx;
+    fprintf(stderr, "out of memory\n");
+    __builtin_trap();
+}
+
+static s8 str(char const *z)
+{
+    return (s8){(u8 *)z, (iz)strlen(z)};
+}
+
+static b32 equals(s8 a, char const *z)
+{
+    s8 b = str(z);
+    return a.len==b.len && !memcmp(a.s, b.s, (uz)a.len);
+}
+
+static void test_dostime(void)
+{
+    i32 tm[6];
+    zip_gmtime(0, tm);
+    TEST(tm[0]==1970 && tm[1]==1 && tm[2]==1 && !tm[3] && !tm[4] && !tm[5]);
+    zip_gmtime(1700000000, tm);  // 2023-11-14 22:13:20
+    TEST(tm[0]==2023 && tm[1]==11 && tm[2]==14);
+    TEST(tm[3]==22 && tm[4]==13 && tm[5]==20);
+    zip_gmtime(951782400, tm);   // 2000-02-29, a leap day
+    TEST(tm[0]==2000 && tm[1]==2 && tm[2]==29);
+    zip_gmtime(-1, tm);          // 1969-12-31 23:59:59
+    TEST(tm[0]==1969 && tm[1]==12 && tm[2]==31 && tm[5]==59);
+
+    // Every day from 1970 through 2200 matches a straightforward count
+    i32 y = 1970, m = 1, d = 1;
+    for (i64 day = 0; day < 84000; day++) {
+        zip_gmtime(day*86400 + 3661, tm);
+        TEST(tm[0]==y && tm[1]==m && tm[2]==d);
+        TEST(tm[3]==1 && tm[4]==1 && tm[5]==1);
+        b32 leap = (y%4==0 && y%100!=0) || y%400==0;
+        i32 mdays[] = {31, 28+leap, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+        if (++d > mdays[m-1]) {
+            d = 1;
+            if (++m > 12) {
+                m = 1;
+                y++;
+            }
+        }
+    }
+
+    i32 t[6] = {2023, 11, 14, 22, 13, 20};
+    u32 dt = zip_dostime(t);
+    TEST(dt>>16 == (43u<<9 | 11<<5 | 14));
+    TEST((dt & 0xffff) == (22u<<11 | 13<<5 | 10));
+    i32 old[6] = {1975, 6, 1, 12, 0, 0};
+    TEST(zip_dostime(old) == (1u<<5 | 1) << 16);       // 1980-01-01
+    i32 far[6] = {2200, 1, 1, 0, 0, 0};
+    TEST(zip_dostime(far)>>16 == (127u<<9 | 12<<5 | 31));
+}
+
+static void test_utf8(void)
+{
+    TEST(zip_utf8(str("plain/ascii.txt")) == 0);
+    TEST(zip_utf8(str("")) == 0);
+    TEST(zip_utf8(str("caf\xc3\xa9")) == 1);
+    TEST(zip_utf8(str("\xe2\x82\xac")) == 1);          // U+20AC
+    TEST(zip_utf8(str("\xf0\x9f\x98\x80")) == 1);      // U+1F600
+    TEST(zip_utf8(str("\xf4\x8f\xbf\xbf")) == 1);      // U+10FFFF
+    TEST(zip_utf8(str("\xff")) == -1);
+    TEST(zip_utf8(str("\xc3")) == -1);                 // truncated
+    TEST(zip_utf8(str("\xc0\xaf")) == -1);             // overlong
+    TEST(zip_utf8(str("\xe0\x80\xaf")) == -1);         // overlong
+    TEST(zip_utf8(str("\xed\xa0\x80")) == -1);         // surrogate (WTF-8)
+    TEST(zip_utf8(str("\xf4\x90\x80\x80")) == -1);     // beyond U+10FFFF
+    TEST(zip_utf8(str("a\x80")) == -1);                // stray continuation
+}
+
+static void test_match(void)
+{
+    i32 u = ZIP_SETS;
+    TEST( zip_match(str("*.c"), str("a/b/x.c"), u));   // * crosses /
+    TEST(!zip_match(str("*.c"), str("x.h"), u));
+    TEST( zip_match(str("*"), str(""), u));
+    TEST( zip_match(str("a?c"), str("abc"), u));
+    TEST(!zip_match(str("a?c"), str("ac"), u));
+    TEST( zip_match(str("d/sub/*"), str("d/sub/"), u));
+    TEST( zip_match(str("*a*b*c*"), str("xxaxxbxxcxx"), u));
+    TEST(!zip_match(str("*a*b*c*"), str("xxaxxcxxbxx"), u));
+    TEST( zip_match(str("[ab].txt"), str("a.txt"), u));
+    TEST(!zip_match(str("[ab].txt"), str("c.txt"), u));
+    TEST( zip_match(str("[!ab].txt"), str("c.txt"), u));
+    TEST( zip_match(str("[^ab].txt"), str("c.txt"), u));
+    TEST( zip_match(str("[a-c]x"), str("bx"), u));
+    TEST(!zip_match(str("[a-c]x"), str("dx"), u));
+    TEST( zip_match(str("[]]"), str("]"), u));
+    TEST( zip_match(str("[a-]"), str("-"), u));
+    TEST( zip_match(str("a["), str("a["), u));         // unclosed: literal
+    TEST( zip_match(str("\\*"), str("*"), u));
+    TEST(!zip_match(str("\\*"), str("x"), u));
+    TEST(!zip_match(str("A.TXT"), str("a.txt"), u));
+
+    // Windows: brackets and backslashes literal; folding when asked
+    TEST( zip_match(str("[ab].txt"), str("[ab].txt"), 0));
+    TEST(!zip_match(str("[ab].txt"), str("a.txt"), 0));
+    TEST( zip_match(str("A.*"), str("a.txt"), ZIP_FOLD));
+    TEST(!zip_match(str("A.*"), str("a.txt"), 0));
+
+    TEST( zip_haswild(str("a*"), 0));
+    TEST( zip_haswild(str("a?"), 0));
+    TEST(!zip_haswild(str("a[b]"), 0));
+    TEST( zip_haswild(str("a[b]"), ZIP_SETS));
+}
+
+static void test_names(arena a)
+{
+    TEST(equals(zip_name(&a, str("./a/b"), 0), "a/b"));
+    TEST(equals(zip_name(&a, str("././a"), 0), "a"));
+    TEST(equals(zip_name(&a, str("/abs/x"), 0), "abs/x"));
+    TEST(equals(zip_name(&a, str("//x//y"), 0), "x/y"));
+    TEST(equals(zip_name(&a, str("../x"), 0), "../x"));
+    TEST(equals(zip_name(&a, str("a/./b"), 0), "a/./b"));
+    TEST(equals(zip_name(&a, str("."), 0), ""));
+    TEST(equals(zip_name(&a, str("dir/"), 0), "dir/"));
+    TEST(equals(zip_name(&a, str(".hidden"), 0), ".hidden"));
+    TEST(equals(zip_name(&a, str("a\\b"), 0), "a\\b"));
+    TEST(equals(zip_name(&a, str("a\\b"), 1), "a/b"));
+    TEST(equals(zip_name(&a, str("C:\\x\\y"), 1), "x/y"));
+    TEST(equals(zip_name(&a, str("C:x"), 1), "x"));
+    TEST(equals(zip_name(&a, str(".\\x"), 1), "x"));
+    TEST(equals(zip_name(&a, str("\\\\server\\share\\f"), 1), "server/share/f"));
+}
+
+static void test_percent(void)
+{
+    TEST(zip_percent(24, 11) == 54);
+    TEST(zip_percent(100000, 114) == 100);
+    TEST(zip_percent(1, 1) == 0);
+    TEST(zip_percent(0, 0) == 0);
+    TEST(zip_percent(10, 20) == 0);
+    TEST(zip_percent((i64)1<<40, (i64)1<<39) == 50);
+}
+
+// Build an archive in memory from entries whose data is all zero bytes
+// (csize bytes each, never actually stored beyond the headers when big).
+typedef struct {
+    u8 *buf;
+    iz  len;
+} membuf;
+
+static void test_roundtrip_headers(arena a)
+{
+    // Small archive: three entries, an archive comment
+    zentry e[3] = {0};
+    char const *names[] = {"dir/", "dir/file.txt", "caf\xc3\xa9"};
+    u8 data[] = "hello";
+    u8 *buf = new(&a, 4096, u8);
+    u8 *p = buf;
+    for (i32 i = 0; i < 3; i++) {
+        e[i].name    = str(names[i]);
+        e[i].made    = 0x031e;
+        e[i].method  = i==1 ? ZIP_DEFLATE : ZIP_STORE;
+        e[i].flags   = i==2 ? ZIP_FLAG_UTF8 : 0;
+        e[i].dostime = 0x57654321u + (u32)i;
+        e[i].crc     = 0x12345678u * (u32)i;
+        e[i].csize   = i ? 5 : 0;
+        e[i].usize   = i==1 ? 9 : e[i].csize;
+        e[i].extattr = 0x81a40000u;
+        e[i].offset  = p - buf;
+        if (i == 1) {
+            e[i].lextra = S("UT\x05\x00\x03\x01\x02\x03\x04");
+            e[i].cextra = e[i].lextra;
+        }
+        u8 *q = zip_local(p, e+i);
+        TEST(q-p == zip_local_len(e+i));
+        p = q;
+        bytecopy(p, data, e[i].csize);
+        p += e[i].csize;
+    }
+    i64 cdoff = p - buf;
+    for (i32 i = 0; i < 3; i++) {
+        u8 *q = zip_central(p, e+i);
+        TEST(q-p == zip_central_len(e+i));
+        p = q;
+    }
+    i64 cdsize = p - buf - cdoff;
+    s8 comment = str("archive comment");
+    u8 *q = zip_end(p, 3, cdsize, cdoff, comment);
+    TEST(q-p == zip_end_len(3, cdsize, cdoff, comment));
+    TEST(q-p == ZIP_END_LEN + comment.len);
+    p = q;
+    iz total = p - buf;
+
+    zend end = {0};
+    TEST(zip_find_end(buf, total, total, &end) == ZIP_OK);
+    TEST(end.count==3 && end.cdoff==cdoff && end.cdsize==cdsize);
+    TEST(end.end64 == -1);
+    TEST(end.comment.len==comment.len);
+    TEST(!memcmp(end.comment.s, comment.s, (uz)comment.len));
+
+    // Only the tail need be supplied
+    iz tail = ZIP_END_LEN + comment.len + 3;
+    TEST(zip_find_end(buf+total-tail, tail, total, &end) == ZIP_OK);
+    TEST(end.endpos == cdoff+cdsize);
+
+    zentry *got = zip_parse_central(buf+cdoff, (iz)cdsize, 3, cdoff, &a);
+    TEST(got);
+    for (i32 i = 0; i < 3; i++) {
+        TEST(got[i].name.len == e[i].name.len);
+        TEST(!memcmp(got[i].name.s, e[i].name.s, (uz)e[i].name.len));
+        TEST(got[i].method==e[i].method && got[i].flags==e[i].flags);
+        TEST(got[i].dostime==e[i].dostime && got[i].crc==e[i].crc);
+        TEST(got[i].csize==e[i].csize && got[i].usize==e[i].usize);
+        TEST(got[i].offset==e[i].offset && got[i].extattr==e[i].extattr);
+        TEST(got[i].made==0x031e);
+        TEST(got[i].needed == (i==1 ? 20 : 10));
+        TEST(got[i].cextra.len == e[i].cextra.len);
+
+        iz v = zip_local_varlen(buf + got[i].offset);
+        TEST(v == e[i].name.len + e[i].lextra.len);
+    }
+
+    // Corruptions are rejected, never read out of bounds
+    for (iz n = 0; n < (iz)cdsize; n++) {
+        zentry *r = zip_parse_central(buf+cdoff, n, 3, cdoff, &a);
+        TEST(!r);
+    }
+    TEST(!zip_parse_central(buf+cdoff, (iz)cdsize, 4, cdoff, &a));
+    TEST(!zip_parse_central(buf+cdoff, (iz)cdsize, 2, cdoff, &a));
+    TEST(!zip_parse_central(buf+cdoff, (iz)cdsize, 3, 20, &a));
+    TEST(zip_find_end(buf, total-1, total-1, &end) == ZIP_ENOEND);
+    TEST(zip_find_end(buf, 10, 10, &end) == ZIP_ENOEND);
+    TEST(zip_local_varlen(buf+1) == -1);
+
+    // Data prepended to the archive (as by a self-extractor) is detected
+    u8 *pre = new(&a, total+100, u8);
+    bytefill(pre, 'x', 100);
+    bytecopy(pre+100, buf, total);
+    TEST(zip_find_end(pre, total+100, total+100, &end) == ZIP_EPREFIX);
+
+    // Split archives are refused
+    u8 *split = new(&a, total, u8);
+    bytecopy(split, buf, total);
+    put16(split + cdoff + cdsize + 4, 1);
+    TEST(zip_find_end(split, total, total, &end) == ZIP_EMULTI);
+}
+
+static void test_zip64(arena a)
+{
+    // A central header with every field overflowing
+    zentry e = {0};
+    e.name   = str("big");
+    e.made   = 0x031e;
+    e.method = ZIP_DEFLATE;
+    e.usize  = (i64)5 << 30;
+    e.csize  = ((i64)4 << 30) + 7;
+    e.offset = ((i64)6 << 30) + 3;
+    e.zip64  = 1;
+    TEST(zip_needed(&e) == 45);
+    TEST(zip_central64_len(&e) == 28);
+
+    u8 local[256];
+    TEST(zip_local(local, &e) - local == zip_local_len(&e));
+    TEST(get32(local+18)==0xffffffff && get32(local+22)==0xffffffff);
+    TEST(get16(local+28) == 20);
+    TEST(get64(local+30+3+4) == (u64)e.usize);
+    TEST(get64(local+30+3+12) == (u64)e.csize);
+
+    u8 *buf = new(&a, 1024, u8);
+    u8 *p   = zip_central(buf, &e);
+    i64 cdsize = p - buf;
+    i64 cdoff  = ((i64)11 << 30);  // past the entry's data
+    i64 count  = 1;
+    u8 *q = zip_end(p, count, cdsize, cdoff, (s8){0});
+    TEST(q-p == ZIP_END64_LEN + ZIP_LOC64_LEN + ZIP_END_LEN);
+    TEST(zip_end_len(count, cdsize, cdoff, (s8){0}) == q-p);
+
+    // As if the central directory sat at cdoff in a huge file
+    i64 size = cdoff + (q - buf);
+    zend end = {0};
+    iz tail = q - p;
+    TEST(zip_find_end(p, tail, size, &end) == ZIP_OK);
+    TEST(end.end64 == cdoff + cdsize);
+    TEST(get32(q-ZIP_END_LEN+16) == 0xffffffff);  // offset overflowed
+    TEST(get16(q-ZIP_END_LEN+10) == 1);           // count did not
+    TEST(zip_parse_end64(p, &end) == ZIP_OK);
+    TEST(end.count==count && end.cdsize==cdsize && end.cdoff==cdoff);
+
+    zentry *got = zip_parse_central(buf, (iz)cdsize, 1, cdoff, &a);
+    TEST(got);
+    TEST(got->usize==e.usize && got->csize==e.csize && got->offset==e.offset);
+    TEST(!got->cextra.len);  // the Zip64 extra is consumed
+
+    // Only overflowing fields appear: a big offset alone
+    zentry f = {0};
+    f.name   = str("f");
+    f.usize  = 10;
+    f.csize  = 10;
+    f.offset = (i64)5 << 30;
+    TEST(zip_central64_len(&f) == 12);
+    TEST(zip_needed(&f) == 45);
+    p = zip_central(buf, &f);
+    got = zip_parse_central(buf, p-buf, 1, (i64)6 << 30, &a);
+    TEST(got && got->offset==f.offset && got->usize==10);
+
+    // A missing Zip64 extra is malformed
+    f.offset = 100;
+    p = zip_central(buf, &f);
+    put32(buf+42, 0xffffffff);
+    TEST(!zip_parse_central(buf, p-buf, 1, 1000, &a));
+
+    // Data descriptors: 32-bit sizes, or 64-bit for Zip64 entries
+    u8 desc[24];
+    TEST(zip_desc(desc, &f) - desc == 16);
+    TEST(get32(desc)==ZIP_DESC_SIG && get32(desc+8)==10);
+    TEST(zip_desc(desc, &e) - desc == 24);
+    TEST(get64(desc+8)==(u64)e.csize && get64(desc+16)==(u64)e.usize);
+
+    // Many entries alone call for Zip64 records
+    u8 many[128];
+    u8 *m = zip_end(many, 70000, 70000*46, 1000, (s8){0});
+    TEST(m-many == ZIP_END64_LEN + ZIP_LOC64_LEN + ZIP_END_LEN);
+    TEST(get64(many+24) == 70000);
+    TEST(get16(m-ZIP_END_LEN+10) == 0xffff);
+    TEST(get32(m-ZIP_END_LEN+16) == 1000);
+
+    // Below the thresholds, no Zip64 records
+    TEST(!zip_end_needs64(65534, 100, 100));
+    TEST( zip_end_needs64(65535, 100, 100));
+    TEST( zip_end_needs64(1, 100, 0xffffffff));
+}
+
+static void test_extras(arena a)
+{
+    s8 x = S("UT\x05\x00\x03\x01\x02\x03\x04"
+               "\x01\x00\x08\x00\x01\x02\x03\x04\x05\x06\x07\x08"
+               "up\x01\x00\x01"
+               "ux\x00\x00");
+    s8 r = zip_filter_extra(&a, x, 0);
+    TEST(r.len == 9 + 5 + 4);
+    TEST(r.s[0]=='U' && r.s[9]=='u' && r.s[14]=='u');
+    r = zip_filter_extra(&a, x, 1);
+    TEST(r.len==5 && r.s[0]=='u' && r.s[1]=='p');
+
+    s8 bad = S("UT\x05\x00\x03\x01\x02\x03\x04" "ux\x09\x00\x01");
+    r = zip_filter_extra(&a, bad, 0);
+    TEST(r.len == 9);
+}
+
+int main(void)
+{
+    (void)bytemove;
+    iz cap = (iz)1 << 24;
+    arena a = {0};
+    a.beg = malloc((uz)cap);
+    a.end = a.beg + cap;
+
+    test_dostime();
+    test_utf8();
+    test_match();
+    test_names(a);
+    test_percent();
+    test_roundtrip_headers(a);
+    test_zip64(a);
+    test_extras(a);
+
+    free(a.beg);
+    puts("all zip tests pass");
+    return 0;
+}
