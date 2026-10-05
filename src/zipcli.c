@@ -1473,8 +1473,9 @@ static i32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
         }
     }
 
-    b32 empty = f->info.type==FT_FILE && !f->info.size;
-    b32 tryz  = z->level>0 && !empty;
+    // As in Info-ZIP, only regular files with data may be compressed:
+    // links are always stored
+    b32 tryz = z->level>0 && f->info.type==FT_FILE && f->info.size;
     if (tryz) {
         e->flags |= level_flags(z->level);
     }

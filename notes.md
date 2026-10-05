@@ -130,6 +130,8 @@ the file is flushed and closed without error), and
   (including the level bits: 0x4 for -1/-2, 0x2 for -8/-9, set whenever
   compression was attempted), method, external attributes, local and
   central `UT`/`ux` extra fields, times, and CRCs are byte-identical.
+  Symbolic links (`-y`) are always stored, never compressed, as in
+  Info-ZIP.
   Messages, warnings, and exit statuses (12 nothing to do, silently for
   `-u` and `-f`; 16 usage; 18 unreadable files; 3 bad archive; 10
   temporary file failure, including failing to replace the archive;

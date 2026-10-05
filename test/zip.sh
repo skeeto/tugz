@@ -294,6 +294,24 @@ if ln -s a.txt tree/link 2>/dev/null; then
     zipinfo l2.zip | grep -q '^l' || fail "-y did not store a link"
     [ "$(unzip -p l2.zip tree/link)" = a.txt ] || fail "-y link target"
     verify l2.zip
+
+    # As in Info-ZIP, links are always stored: no level bits, version 1.0,
+    # and binary, even when the target would compress
+    deep=../../../../../../../../../../../../../../../../etc/passwd
+    ln -s $deep deep
+    for level in -1 -6 -9; do
+        "$ZIP" -qy $level l3.zip tree/link deep
+        if [ -n "$PY" ]; then
+            verify l3.zip
+            grep -q '^deep 0 0x0 0x[0-9a-f]* 3 0 ' check.out &&
+                grep -q '^tree/link 0 0x0 0x[0-9a-f]* 3 0 ' check.out ||
+                fail "-y $level links: $(cat check.out)"
+        fi
+        zipinfo -v l3.zip | grep -q 'required to extract: *2' &&
+            fail "-y $level link needs 2.0"
+        [ "$(unzip -p l3.zip deep)" = $deep ] || fail "-y deep target"
+    done
+    rm deep
     ln -s . tree/sub/loop
     "$ZIP" -qr loop.zip tree/sub
     verify loop.zip
