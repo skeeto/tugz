@@ -505,6 +505,22 @@ printf 'tree/a.txt\0tree/one\0' | "$ZIP" -qX at2.zip -@
 printf 'tree/a.txt\n' | "$ZIP" -qX at3.zip -@
 cmp -s at2.zip at3.zip || fail "-@ name not cut at NUL: $(names at2.zip)"
 
+# A directory as standard input holds no names, as in Info-ZIP
+mkdir -p stdir/d
+printf x >stdir/f
+(cd stdir && "$ZIP" -q ../stdir1.zip -@ f <d) || fail "-@ from a directory"
+[ "$(names stdir1.zip)" = f ] || fail "-@ from a dir: $(names stdir1.zip)"
+"$ZIP" stdir2.zip -@ <stdir/d >out 2>&1 && fail "-@ from a directory alone"
+[ "$(cat out)" = "
+zip error: Nothing to do! (stdir2.zip)" ] || fail "-@ from a dir: $(cat out)"
+expect_status 12 "$ZIP" stdir2.zip -@ <stdir/d
+expect_status 16 "$ZIP" stdir2.zip -x f -@ <stdir/d  # nothing to select from
+# Departure: other read errors fail, where Info-ZIP ends the list there
+expect_status 11 "$ZIP" stdir2.zip -@ stdir/f 0>>stdir/w
+if [ -r /proc/self/mem ]; then  # Linux: EIO at offset 0
+    expect_status 18 "$ZIP" stdir2.zip stdir/f -x@/proc/self/mem
+fi
+
 # Symbolic links: followed by default, stored as links with -y
 if ln -s a.txt tree/link 2>/dev/null; then
     "$ZIP" -q l1.zip tree/link

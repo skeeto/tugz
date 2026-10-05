@@ -276,20 +276,23 @@ neither inflate nor the gzip container.
   leaves `?` a wildcard. Filters see paths as before `-j`, and a `-d`
   name on disk is taken literally. `-@` and `@file` lines are read as
   Info-ZIP's getnam does (any CR or LF ends a line, a NUL ends a name),
-  and `-@` names come before the arguments. A directory as an `@file` is
-  an empty list, as Info-ZIP's getc fails at once to read it on POSIX;
-  Windows' C runtime refuses to open one, so there it fails (18) with
-  the reason Info-ZIP's port gives, "Permission denied". As in
-  Info-ZIP, patterns with nothing to select from, no paths (even from
-  `-@`) unless `-u` or `-f` selects entries, are a usage error, found
-  before the archive is read.
+  and `-@` names come before the arguments. A directory, as an `@file`
+  or as standard input, is an empty list, as Info-ZIP's getc fails at
+  once to read it on POSIX; Windows' C runtime refuses to open one as an
+  `@file`, so there that fails (18) with the reason Info-ZIP's port
+  gives, "Permission denied". As in Info-ZIP, patterns with nothing to
+  select from, no paths (even from `-@`) unless `-u` or `-f` selects
+  entries, are a usage error, found before the archive is read.
 - Departures in exit status, chosen as friendlier: `-u` and `-f` with
   nothing newer exit 0 (Info-ZIP: 12); an unreadable directory, or a
   dangling link (or one whose target vanished), met while recursing
   warns and exits 18 (Info-ZIP adds the directory silently and warns
-  "name not matched" for the link, exiting 0); and `-i` that matches
+  "name not matched" for the link, exiting 0); `-i` that matches
   nothing has nothing to do, 12 (Info-ZIP writes an empty archive,
-  exiting 0, when the archive is new). `test/zip.sh` asserts each.
+  exiting 0, when the archive is new); and a list that cannot be read
+  (`@file` or `-@`, standard input closed included) fails, 18 or for
+  `-@` 11, where Info-ZIP's getc ends the list at any read error, which
+  silently selects, or excludes, less. `test/zip.sh` asserts each.
   Also, an archive that can be written but not read fails (11, "Could
   not open archive"), where Info-ZIP takes it for a missing one and
   replaces it, losing its entries.

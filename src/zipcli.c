@@ -2423,10 +2423,16 @@ static i32 zip_main(zipconfig *conf)
         z->archive = JOIN(&z->perm, z->archive, S(".zip"));
     }
     if (z->names_stdin) {
-        s8 text = read_all(z, 0, &z->perm);
-        if (!text.s) {
-            return fail(z, ZE_READ, S("Could not read names"),
-                        S("standard input"), scratch);
+        // A directory there holds no names, as Info-ZIP's getc fails at
+        // once to read one
+        os_info in   = {0};
+        s8      text = read_all(z, 0, &z->perm);
+        s8      why  = text.s ? S("") : os_error(z->ctx);
+        if (!text.s && os_fstat(z->ctx, 0, &in) && in.type==FT_DIR) {
+            text = S("");
+        } else if (!text.s) {
+            return fail_why(z, ZE_READ, why, S("Could not read names"),
+                            S("standard input"), scratch);
         }
         // These names come before the arguments, as in Info-ZIP
         s8s names = {0};
