@@ -365,6 +365,184 @@ static void test_extras(arena a)
     TEST(r.len == 9);
 }
 
+// Zip64 end records are relied upon only when they check out, or when
+// the end record defers to them; otherwise the end record stands alone.
+static void test_end_records(arena a)
+{
+    // One entry whose comment, just before the end record, ends with
+    // bytes resembling a Zip64 locator that points at offset 0
+    u8 fake[4+ZIP_LOC64_LEN] = "note";
+    put32(fake+4, ZIP_LOC64_SIG);
+    put32(fake+8, 0);
+    put64(fake+12, 0);
+    put32(fake+20, 1);
+    zentry e = {0};
+    e.name    = str("a.txt");
+    e.csize   = 5;
+    e.usize   = 5;
+    e.comment = (s8){fake, countof(fake)};
+    u8 *buf = new(&a, 256, u8);
+    u8 *p   = zip_local(buf, &e);
+    p = putbytes(p, str("hello"));
+    i64 cdoff = p - buf;
+    p = zip_central(p, &e);
+    i64 cdsize = p - buf - cdoff;
+    u8 *end = p;
+    u8 *loc = end - ZIP_LOC64_LEN;
+    p = zip_end(p, 1, cdsize, cdoff, (s8){0});
+    iz total = p - buf;
+
+    // The locator checks out, so its record is read, but no Zip64 record
+    // is there: the end record suffices, and is used alone
+    zend z = {0};
+    TEST(zip_find_end(buf, total, total, &z) == ZIP_OK);
+    TEST(z.end64 == 0);
+    TEST(zip_parse_end64(buf+z.end64, &z) == ZIP_OK);
+    TEST(z.end64 == -1);
+    TEST(z.count==1 && z.cdoff==cdoff && z.cdsize==cdsize);
+
+    // Locators that cannot be right are ignored outright
+    put64(loc+8, (u64)1 << 40);
+    TEST(zip_find_end(buf, total, total, &z) == ZIP_OK);
+    TEST(z.end64==-1 && z.count==1 && z.cdoff==cdoff);
+    put64(loc+8, 0);
+    put32(loc+16, 2);  // total disks
+    TEST(zip_find_end(buf, total, total, &z) == ZIP_OK);
+    TEST(z.end64==-1 && z.count==1 && z.cdoff==cdoff);
+
+    // Unless the end record defers to Zip64 records
+    put16(end+8,  ZIP_MAX16);  // entries on this disk
+    put16(end+10, ZIP_MAX16);  // entries
+    TEST(zip_find_end(buf, total, total, &z) == ZIP_EMULTI);
+    put32(loc+16, 1);
+    put64(loc+8, (u64)1 << 40);
+    TEST(zip_find_end(buf, total, total, &z) == ZIP_EFORMAT);
+    put64(loc+8, 0);
+    TEST(zip_find_end(buf, total, total, &z) == ZIP_OK);
+    TEST(zip_parse_end64(buf+z.end64, &z) == ZIP_EFORMAT);  // no record
+
+    // Zip64 records after a central directory of 70,000 entries at offset
+    // 1000, as at the end of a large file
+    u8  tail[ZIP_END64_LEN + ZIP_LOC64_LEN + ZIP_END_LEN];
+    u8 *rec   = tail;
+    u8 *loc64 = tail + ZIP_END64_LEN;
+    i64 n     = 70000;
+    i64 big   = n * ZIP_CENTRAL_LEN;
+    i64 size  = 1000 + big + countof(tail);
+    TEST(zip_end(tail, n, big, 1000, (s8){0}) == tail+countof(tail));
+    TEST(zip_find_end(tail, countof(tail), size, &z) == ZIP_OK);
+    TEST(z.end64 == 1000+big);
+    TEST(zip_parse_end64(rec, &z) == ZIP_OK);
+    TEST(z.count==n && z.cdsize==big && z.cdoff==1000);
+
+    // A bad Zip64 record is an error when the end record defers to it
+    rec[0] ^= 1;
+    TEST(zip_find_end(tail, countof(tail), size, &z) == ZIP_OK);
+    TEST(zip_parse_end64(rec, &z) == ZIP_EFORMAT);
+    rec[0] ^= 1;
+    put32(rec+20, 1);  // disk with the central directory
+    TEST(zip_find_end(tail, countof(tail), size, &z) == ZIP_OK);
+    TEST(zip_parse_end64(rec, &z) == ZIP_EMULTI);
+    put32(rec+20, 0);
+
+    // More entries than the central directory could hold
+    put64(rec+24, (u64)n+1);
+    put64(rec+32, (u64)n+1);
+    TEST(zip_find_end(tail, countof(tail), size, &z) == ZIP_OK);
+    TEST(zip_parse_end64(rec, &z) == ZIP_EFORMAT);
+    put64(rec+24, (u64)n);
+    put64(rec+32, (u64)n);
+
+    // Data prepended without adjusting offsets: the record must abut the
+    // locator, so by its size it lies past the locator's offset
+    TEST(zip_find_end(tail, countof(tail), size+100, &z) == ZIP_OK);
+    TEST(z.end64 == 1000+big);
+    TEST(zip_parse_end64(rec, &z) == ZIP_EPREFIX);
+
+    // Only the locator adjusted: the central directory ends short of the
+    // record
+    put64(loc64+8, (u64)(1000 + big + 100));
+    TEST(zip_find_end(tail, countof(tail), size+100, &z) == ZIP_OK);
+    TEST(z.end64 == 1000+big+100);
+    TEST(zip_parse_end64(rec, &z) == ZIP_EPREFIX);
+}
+
+// Zip64 extra fields in central headers: one 8-byte value for each
+// saturated field, in order, then a 4-byte disk number if the disk is
+// saturated, which must be zero.
+static void test_central64(arena a)
+{
+    u8 *buf = new(&a, 256, u8);
+    u8 *ext = buf + ZIP_CENTRAL_LEN + 1;  // after the one-byte name
+    zentry e = {0};
+    e.name   = str("x");
+    e.csize  = 10;
+    e.usize  = 10;
+    e.offset = 100;
+
+    // A Zip64 extra holding only a disk number, needed only when the
+    // disk is saturated
+    e.cextra = S("\x01\x00\x04\x00" "\x00\x00\x00\x00");
+    iz len = zip_central(buf, &e) - buf;
+    zentry *got = zip_parse_central(buf, len, 1, 1000, &a);
+    TEST(got && got->offset==100 && !got->cextra.len);
+    put16(buf+34, ZIP_MAX16);
+    got = zip_parse_central(buf, len, 1, 1000, &a);
+    TEST(got && got->offset==100 && !got->cextra.len);
+    put32(ext+4, 1);
+    TEST(!zip_parse_central(buf, len, 1, 1000, &a));
+    put32(ext+4, 0);
+    put16(buf+34, 1);  // a real disk number: a split archive
+    TEST(!zip_parse_central(buf, len, 1, 1000, &a));
+
+    // Without the disk number, a saturated disk is malformed
+    e.cextra = S("\x01\x00\x00\x00");
+    len = zip_central(buf, &e) - buf;
+    TEST(zip_parse_central(buf, len, 1, 1000, &a));
+    put16(buf+34, ZIP_MAX16);
+    TEST(!zip_parse_central(buf, len, 1, 1000, &a));
+    e.cextra = (s8){0};
+    len = zip_central(buf, &e) - buf;
+    put16(buf+34, ZIP_MAX16);
+    TEST(!zip_parse_central(buf, len, 1, 1000, &a));
+
+    // The disk number follows a saturated offset
+    e.cextra = S("\x01\x00\x0c\x00" "\x64\x00\x00\x00\x00\x00\x00\x00"
+                 "\x00\x00\x00\x00");
+    len = zip_central(buf, &e) - buf;
+    put32(buf+42, 0xffffffff);
+    put16(buf+34, ZIP_MAX16);
+    got = zip_parse_central(buf, len, 1, 1000, &a);
+    TEST(got && got->offset==100 && !got->cextra.len);
+    e.cextra = S("\x01\x00\x08\x00" "\x64\x00\x00\x00\x00\x00\x00\x00");
+    len = zip_central(buf, &e) - buf;
+    put32(buf+42, 0xffffffff);
+    got = zip_parse_central(buf, len, 1, 1000, &a);
+    TEST(got && got->offset==100);
+    put16(buf+34, ZIP_MAX16);
+    TEST(!zip_parse_central(buf, len, 1, 1000, &a));
+
+    // Values must fit in i64
+    put16(buf+34, 0);
+    put64(ext+4, (u64)1 << 63);
+    TEST(!zip_parse_central(buf, len, 1, 1000, &a));
+    put32(buf+42, 100);
+    put32(buf+24, 0xffffffff);  // uncompressed size
+    TEST(!zip_parse_central(buf, len, 1, 1000, &a));
+    put64(ext+4, 0x7fffffffffffffff);
+    got = zip_parse_central(buf, len, 1, 1000, &a);
+    TEST(got && got->usize==0x7fffffffffffffff && got->offset==100);
+}
+
+static void test_unicode_extras(arena a)
+{
+    // Like Info-ZIP's -X, keep the Unicode comment as well as the path
+    s8 x = S("uc\x02\x00\x01\x02" "UT\x01\x00\x03" "up\x01\x00\x01");
+    s8 r = zip_filter_extra(&a, x, 1);
+    TEST(r.len == 11);
+    TEST(!memcmp(r.s, "uc\x02\x00\x01\x02" "up\x01\x00\x01", 11));
+}
+
 int main(void)
 {
     (void)bytemove;
@@ -381,6 +559,9 @@ int main(void)
     test_roundtrip_headers(a);
     test_zip64(a);
     test_extras(a);
+    test_end_records(a);
+    test_central64(a);
+    test_unicode_extras(a);
 
     free(a.beg);
     puts("all zip tests pass");
