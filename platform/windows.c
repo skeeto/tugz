@@ -23,6 +23,7 @@ W32(u32)    GetLastError(void);
 W32(iptr)   GetStdHandle(u32);
 W32(b32)    ReadFile(iptr, void *, u32, u32 *, uptr);
 W32(b32)    SetFileInformationByHandle(iptr, i32, void *, u32);
+W32(void)   SetLastError(u32);
 W32(void *) VirtualAlloc(uptr, iz, u32, u32);
 W32(b32)    WriteConsoleW(iptr, c16 const *, u32, u32 *, uptr);
 W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
@@ -491,6 +492,7 @@ static i32 open_output(os *ctx, i32 fd, c16 *wpath, i32 mode)
                 ctx->unsure = unsure + 1;
                 err = ERROR_FILE_EXISTS;
             }
+            SetLastError(err);  // why it failed, rather than the check
         }
         return err==ERROR_FILE_EXISTS ? OS_EEXIST : OS_ERR;
     } else if (GetFileType(h) != FILE_TYPE_DISK) {

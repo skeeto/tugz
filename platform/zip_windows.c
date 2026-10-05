@@ -46,7 +46,6 @@ W32(b32)  FindNextFileW(iptr, find_data *);
 W32(b32)  FlushFileBuffers(iptr);
 W32(u32)  GetEnvironmentVariableW(c16 *, c16 *, u32);
 W32(u32)  GetFinalPathNameByHandleW(iptr, c16 *, u32, u32);
-W32(void) SetLastError(u32);
 W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 
 #define FILE_ATTRIBUTE_HIDDEN      0x02u
@@ -62,8 +61,12 @@ W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 #define FILE_RENAME_POSIX          2u
 #define ERROR_INVALID_FUNCTION     1u
 #define ERROR_FILE_NOT_FOUND       2u
+#define ERROR_PATH_NOT_FOUND       3u
 #define ERROR_NO_MORE_FILES        18u
+#define ERROR_LOCK_VIOLATION       33u
 #define ERROR_NOT_SUPPORTED        50u
+#define ERROR_DISK_FULL            112u
+#define ERROR_ALREADY_EXISTS       183u
 #define ERROR_ENVVAR_NOT_FOUND     203u
 
 enum {
@@ -315,7 +318,7 @@ static void release_guard(os *ctx)
 // if another process holds it open without sharing delete access, as
 // the rename needs, which Info-ZIP's port finds only at the end. Hold it
 // with that access, sharing all, until os_commit, so that no process can
-// open it so in the meantime.
+// open it so in the meantime. Each fails as that open would.
 static b32 os_writable(os *ctx, s8 path, arena scratch)
 {
     c16 *wpath = winpath(&scratch, path);
@@ -323,6 +326,7 @@ static b32 os_writable(os *ctx, s8 path, arena scratch)
     if (attr == INVALID_FILE_ATTRIBUTES) {
         return 1;
     } else if (attr & FILE_ATTRIBUTE_READONLY) {
+        SetLastError(ERROR_ACCESS_DENIED);
         return 0;
     }
     iptr h = CreateFileW(wpath, DELETE, FILE_SHARE_ALL, 0, OPEN_EXISTING, 0, 0);
@@ -449,6 +453,28 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
 static b32 os_isatty(os *ctx, i32 fd)
 {
     return (u32)fd<3 && ctx->consoles>>fd & 1;
+}
+
+// The common errors, worded as the C runtime that Info-ZIP's port uses
+// words the errno values it maps them to.
+static s8 os_error(os *ctx)
+{
+    (void)ctx;
+    switch (GetLastError()) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+        return S("No such file or directory");
+    case ERROR_ACCESS_DENIED:
+    case ERROR_SHARING_VIOLATION:
+    case ERROR_LOCK_VIOLATION:
+        return S("Permission denied");
+    case ERROR_DISK_FULL:
+        return S("No space left on device");
+    case ERROR_FILE_EXISTS:
+    case ERROR_ALREADY_EXISTS:
+        return S("File exists");
+    }
+    return S("");
 }
 
 // An environment variable as WTF-8, or a null string if it is unset.

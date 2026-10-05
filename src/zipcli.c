@@ -86,6 +86,10 @@ static b32  os_commit(os *, i32 fd, s8 path, arena scratch);
 static void os_localtime(os *, i64 t, i32 tm[6]);
 // Whether a standard descriptor is a terminal (console).
 static b32  os_isatty(os *, i32 fd);
+// Why the last failed system call failed, in the words of the C
+// library's strerror, as Info-ZIP reports I/O errors, or an empty string
+// if unknown.
+static s8   os_error(os *);
 
 static void os_oom(os *ctx)
 {
@@ -206,6 +210,8 @@ typedef struct {
     os_info arcinfo;
     b32     arcexists;
     i32     status;
+    iz      nread;     // files and entries read, as Info-ZIP counts them
+    i64     bread;
     iz      nskipped;
     i64     bskipped;
 } zip;
@@ -255,6 +261,27 @@ static s8 znum(arena *a, i64 v)
     s8 r = {newbytes(a, e-p), e-p};
     bytecopy(r.s, p, r.len);
     return r;
+}
+
+// A byte count as Info-ZIP's WriteNumString abbreviates it: in full
+// below 1000, else in units of 1024 (K, M, G, T) to three digits
+// ("292K"), or one and tenths ("9.8K").
+static s8 zbytes(arena *a, i64 v)
+{
+    i64 n    = v;
+    iz  unit = 0;
+    for (; n >= 10240; unit++) {
+        n >>= 10;
+    }
+    s8 r = znum(a, n);
+    if (n >= 1000) {
+        n = n*10 >> 10;
+        unit++;
+        r = JOIN(a, znum(a, n/10), S("."), znum(a, n%10));
+    }
+    s8 units = S(" KMGT?");
+    s8 u = {units.s + MIN(unit, 5), 1};
+    return unit ? JOIN(a, r, u) : r;
 }
 
 static b32 zequals(s8 a, s8 b)
@@ -338,11 +365,16 @@ static void warn(zip *z, s8 msg, s8 arg, arena scratch)
     }
 }
 
-// Report a fatal error and return its exit status.
+// Report a fatal error and return its exit status. Info-ZIP gives an I/O
+// error's system reason first, in place of the blank line.
 static i32 fail(zip *z, i32 status, s8 msg, s8 arg, arena scratch)
 {
+    b32 io = status==ZE_TEMP  || status==ZE_READ || status==ZE_WRITE ||
+             status==ZE_CREAT || status==ZE_OPEN;
+    s8 why  = io ? os_error(z->ctx) : S("");
+    s8 head = why.len ? JOIN(&scratch, S("zip I/O error: "), why) : S("");
     s8 tail = arg.s ? JOIN(&scratch, S(" ("), arg, S(")")) : S("");
-    say(z, 2, JOIN(&scratch, S("\nzip error: "), msg, tail, S("\n")));
+    say(z, 2, JOIN(&scratch, head, S("\nzip error: "), msg, tail, S("\n")));
     return status;
 }
 
@@ -1291,6 +1323,7 @@ typedef struct {
     iz       off;
     i32      fd;
     b32      err;
+    b32      changed;  // not opened, being no longer the file scanned
 } zsrc;
 
 // Open a file to read as the scan found it: not a FIFO swapped in since,
@@ -1309,12 +1342,14 @@ static b32 src_open(zip *z, zsrc *s, arena scratch)
     }
     i32 mode = OS_READ | OS_REGULAR | (z->symlinks ? OS_NOFOLLOW : 0);
     s->fd = os_open(z->ctx, s->path, mode, scratch);
+    s->changed = s->fd<0 && s->fd!=OS_ERR;  // a different type
     os_info now  = {0};
     b32     seen = s->info->ino[0] || s->info->ino[1];
     if (s->fd>=0 && z->symlinks && seen &&
         (!os_fstat(z->ctx, s->fd, &now) || !same_file(&now, s->info))) {
         os_close(z->ctx, s->fd);
         s->fd = -1;
+        s->changed = 1;
     }
     return s->fd >= 0;
 }
@@ -1477,7 +1512,13 @@ static b32 store_suffix(zip *z, s8 path)
     return 0;
 }
 
-enum { WRITE_OK, WRITE_EOPEN, WRITE_EREAD, WRITE_EDIRFILE };
+enum {
+    WRITE_OK,
+    WRITE_EOPEN,     // the system refused (os_error tells why)
+    WRITE_ECHANGED,  // no longer the file scanned, so not opened
+    WRITE_EREAD,
+    WRITE_EDIRFILE,
+};
 
 // Compress a new entry. Returns WRITE_OK, or, having left the output
 // where it began, why its input could not be read.
@@ -1530,7 +1571,7 @@ static i32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
         e->usize  = 0;
         zout_seek(w, start);  // drop an abandoned attempt, even on failure
         if (!src_open(z, &src, scratch)) {
-            return WRITE_EOPEN;
+            return src.changed ? WRITE_ECHANGED : WRITE_EOPEN;
         }
 
         iz  hlen = zip_local_len(e);
@@ -1741,26 +1782,39 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
                 // A replaced entry keeps its comment, as in Info-ZIP
                 e->comment = it->old ? it->old->comment : (s8){0};
                 report(z, verb, e->name, e, scratch);
+                z->nread++;
+                z->bread += e->usize;
                 count++;
                 break;
             }
 
-            // As Info-ZIP does, give the progress line, then warn under
-            // the entry's name
+            // As Info-ZIP does, give the progress line, then for a failed
+            // open the system's reason, as its perror words it, and warn
+            // under the entry's name
+            s8 reason = r==WRITE_EOPEN ? os_error(z->ctx) : S("");
             report(z, verb, f->name, 0, scratch);
-            s8 why = S("file and directory with the same name: ");
-            why = r==WRITE_EOPEN ? S("could not open for reading: ") :
-                  r==WRITE_EREAD ? S("could not read input file: ")  : why;
+            if (reason.len && !z->quiet) {
+                s8 who = it->old ? f->name : S("zip warning");
+                say(z, 2, JOIN(&scratch, who, S(": "), reason, S("\n")));
+            }
+            s8 why = S("could not open for reading: ");
+            why = r==WRITE_EREAD    ? S("could not read input file: ") :
+                  r==WRITE_EDIRFILE ?
+                      S("file and directory with the same name: ")  : why;
             warn(z, why, f->name, scratch);
             z->status = ZE_OPEN;
+            i64 size = f->info.type==FT_DIR ? 0 : f->info.size;
             if (it->old) {
-                // Keep the entry it was to replace, as Info-ZIP does
+                // Keep the entry it was to replace, which Info-ZIP counts
+                // as read
                 warn(z, S("will just copy entry over: "), it->old->name,
                      scratch);
                 copy = it->old;
+                z->nread++;
+                z->bread += size;
             } else {
                 z->nskipped++;
-                z->bskipped += f->info.size;
+                z->bskipped += size;
             }
         }
         }
@@ -2176,6 +2230,11 @@ static i32 zip_main(zipconfig *conf)
             case MODE_SYNC:
                 replace  = differs(z, f, e);
                 it->kind = ITEM_KEEP;
+                if (!replace) {
+                    // Current, which Info-ZIP counts as read
+                    z->nread++;
+                    z->bread += f->info.type==FT_DIR ? 0 : f->info.size;
+                }
                 break;
             }
             if (replace) {
@@ -2216,14 +2275,14 @@ static i32 zip_main(zipconfig *conf)
     if (err) {
         return err;
     }
-    if (z->nskipped) {
-        warn(z, S("Not all files were readable"), S(""), scratch);
-        s8 msg = JOIN(&scratch, S("  files/entries skipped: "),
-                      znum(&scratch, z->nskipped), S(" ("),
-                      znum(&scratch, z->bskipped), S(" bytes)\n"));
-        if (!z->quiet) {
-            say(z, 2, msg);
-        }
+    if (z->nskipped && !z->quiet) {
+        s8 msg = JOIN(&scratch,
+            S("\nzip warning: Not all files were readable\n"),
+            S("  files/entries read:  "), znum(&scratch, z->nread),
+            S(" ("), zbytes(&scratch, z->bread), S(" bytes)"),
+            S("  skipped:  "), znum(&scratch, z->nskipped),
+            S(" ("), zbytes(&scratch, z->bskipped), S(" bytes)\n"));
+        say(z, 2, msg);
     }
     return z->status;
 }

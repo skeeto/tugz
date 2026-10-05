@@ -331,6 +331,10 @@ printf '*.txt\rtree/s*\r' >patterns.cr
 names x6.zip >got
 printf 'tree/\ntree/.hidden/\ntree/empty\ntree/one\n' >want
 cmp -s got want || fail "-x @file: $(cat got)"
+"$ZIP" -qr x7.zip tree -x @missing.lst 2>err && fail "missing pattern file"
+printf '%s\n' 'zip I/O error: No such file or directory' \
+    "zip error: File not found or no read permission (x pattern file '@missing.lst')" >want
+cmp -s err want || fail "missing pattern file: $(cat err)"
 expect_status 18 "$ZIP" -qr x7.zip tree -x @missing.lst
 expect_status 16 "$ZIP" -qr x7.zip tree -x@
 
@@ -815,13 +819,25 @@ if [ "$(id -u)" != 0 ]; then
     printf 'tree/b.txt\n' >want
     cmp -s got want || fail "unreadable file: $(cat got)"
 
-    # As in Info-ZIP, the progress line comes first, and the warning
-    # gives the entry's name
+    # As in Info-ZIP, the progress line comes first, then the system's
+    # reason, and the warning gives the entry's name. Its summary counts
+    # what was read, and abbreviates large byte counts.
     "$ZIP" -j r2.zip ./unreadable tree/b.txt >out 2>err &&
         fail "unreadable file succeeded"
     grep -qx '  adding: unreadable' out || fail "unreadable: $(cat out)"
-    grep -qx 'zip warning: could not open for reading: unreadable' err ||
-        fail "unreadable: $(cat err)"
+    cat >want <<EOF
+zip warning: Permission denied
+zip warning: could not open for reading: unreadable
+
+zip warning: Not all files were readable
+  files/entries read:  1 (1 bytes)  skipped:  1 (24 bytes)
+EOF
+    cmp -s err want || fail "unreadable: $(cat err)"
+    "$ZIP" -j r3.zip unreadable tree/sub/random >out 2>err || true
+    grep -qx '  files/entries read:  1 (292K bytes)  skipped:  1 (24 bytes)' \
+        err || fail "unreadable, large: $(cat err)"
+    "$ZIP" -q r4.zip unreadable 2>err && fail "unreadable file, -q"
+    [ ! -s err ] || fail "-q, unreadable: $(cat err)"
     chmod 644 unreadable
 
     # Failing to create the temporary file is Info-ZIP's temporary file
@@ -831,8 +847,9 @@ if [ "$(id -u)" != 0 ]; then
     chmod 555 ro
     expect_status 10 "$ZIP" ro/x.zip tree/b.txt
     "$ZIP" ro/new.zip tree/b.txt 2>err && fail "archive in read-only directory"
-    grep -q 'Could not create output file (ro/new.zip)' err ||
-        fail "read-only directory: $(cat err)"
+    printf '%s\n' 'zip I/O error: Permission denied' \
+        'zip error: Could not create output file (ro/new.zip)' >want
+    cmp -s err want || fail "read-only directory: $(cat err)"
     chmod 755 ro
 
     # A read-only archive is refused (15) and left alone, as Info-ZIP
@@ -843,8 +860,9 @@ if [ "$(id -u)" != 0 ]; then
     cp rox.zip rox.orig
     chmod 444 rox.zip
     "$ZIP" rox.zip tree/b.txt >out 2>err && fail "read-only archive updated"
-    grep -q 'Could not create output file (rox.zip)' err ||
-        fail "read-only archive: $(cat err)"
+    printf '%s\n' 'zip I/O error: Permission denied' \
+        'zip error: Could not create output file (rox.zip)' >want
+    cmp -s err want || fail "read-only archive: $(cat err)"
     grep -q adding out && fail "read-only archive: work done first"
     expect_status 15 "$ZIP" -d rox.zip tree/a.txt
     expect_status 15 "$ZIP" -FS rox.zip tree/b.txt
@@ -902,9 +920,13 @@ if [ "$(id -u)" != 0 ]; then
         chmod 644 stale
     done
     chmod 000 stale
-    "$ZIP" s.zip stale >out 2>&1 && fail "unreadable replacement succeeded"
-    grep -qx 'zip warning: will just copy entry over: stale' out ||
-        fail "copy over warning: $(cat out)"
+    "$ZIP" s.zip stale >out 2>err && fail "unreadable replacement succeeded"
+    cat >want <<EOF
+stale: Permission denied
+zip warning: could not open for reading: stale
+zip warning: will just copy entry over: stale
+EOF
+    cmp -s err want || fail "copy over warning: $(cat err)"
     chmod 644 stale
 fi
 expect_status 0 "$ZIP" -h

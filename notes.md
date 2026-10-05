@@ -118,8 +118,9 @@ portable format layer (`src/zip.c`, no I/O, fuzzed) and a driver
 (`src/zipcli.c`) over a few more platform functions: `os_stat`,
 `os_listdir`, `os_readlink`, positioned `os_readat`/`os_writeat`,
 `os_truncate`, `os_commit` (atomic rename over the target, only once
-the file is closed, or on Windows flushed, without error), and
-`os_localtime`. It needs neither inflate nor the gzip container.
+the file is closed, or on Windows flushed, without error),
+`os_localtime`, and `os_error` (the last failure's reason). It needs
+neither inflate nor the gzip container.
 
 - Scope: batch use by release scripts. Everything interactive or legacy
   (encryption, comments, splits, SFX, fixes, CRLF conversion, streaming,
@@ -139,7 +140,11 @@ the file is closed, or on Windows flushed, without error), and
   `-u` and `-f`; 16 usage; 18 unreadable files; 3 bad archive; 10
   temporary file failure, including failing to replace the archive;
   15 for an archive that cannot be created) follow Info-ZIP, except
-  warnings and errors go to standard error. A read-only archive fails
+  warnings and errors go to standard error. As there, an I/O error
+  (10, 11, 14, 15, 18) first gives the system's reason, worded by
+  `strerror` ("zip I/O error: Permission denied"), when there is one;
+  on Windows, for the common errors, worded as its C runtime would
+  (unverified against Info-ZIP's port). A read-only archive fails
   with 15 once there is something to do, before doing it, as Info-ZIP
   finds by opening it to update it (replacing it needs no permission to
   write it): as `access` judges on POSIX, and on Windows by the
@@ -155,9 +160,13 @@ the file is closed, or on Windows flushed, without error), and
   in the meantime. A missing or empty archive gets Info-ZIP's "not found
   or empty" warning under `-u`, `-f`, and `-d`, which go on with their
   arguments (warning of unmatched names, rejecting repeated ones). A
-  file that cannot be added still gets its progress line, then a
-  warning under its entry's name that tells a failed open from a failed
-  read. Info-ZIP's quirks kept: `../` stays in names, an emptied archive
+  file that cannot be added still gets its progress line, then for a
+  failed open the reason as Info-ZIP's `perror` gives it (though not
+  under `-q`, as there), then a warning under its entry's name that
+  tells a failed open from a failed read. The closing "Not all files
+  were readable" counts the files and entries read and skipped as
+  Info-ZIP does, with its abbreviated byte counts ("292K"). Info-ZIP's
+  quirks kept: `../` stays in names, an emptied archive
   remains as a 22-byte file, entries that do not shrink are stored, odd
   seconds round up (but not past `SOURCE_DATE_EPOCH`). Times beyond the
   DOS range clamp to its ends. A name over 65,535 bytes (possible in

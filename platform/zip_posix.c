@@ -223,6 +223,12 @@ static b32 os_isatty(os *ctx, i32 fd)
     return isatty(fd);
 }
 
+static s8 os_error(os *ctx)
+{
+    (void)ctx;
+    return errno ? cstr(strerror(errno)) : S("");
+}
+
 static void os_localtime(os *ctx, i64 t, i32 tm[6])
 {
     (void)ctx;
