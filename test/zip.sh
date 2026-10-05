@@ -1517,6 +1517,62 @@ if ln -s x race/link 2>/dev/null && mkfifo race/fifo 2>/dev/null; then
     swapped c_fifo fifo
 fi
 
+# Running out of memory exits 4, as in Info-ZIP, before any output, as
+# zip allocates what grows with its work first: no archive is created
+# (here under one limit) or changed (under the other), and no temporary
+# file is left. Linux limits address space (ulimit -v), into which zip's
+# reservation then shrinks, and private writable memory (ulimit -d),
+# against which each commit counts. A small run fits under each, while
+# the 65,535 paths through a chain of directories, each linking twice to
+# the next, need some 250 MB. macOS ignores these limits, and sanitizers
+# and emulators cannot run under them.
+oomskip=
+if [ "$(uname -s)" != Linux ]; then
+    oomskip="not Linux"
+elif LC_ALL=C grep -aq -e __asan_ -e __hwasan_ -e __lsan_ -e __msan_ \
+                       -e __tsan_ -e __ubsan_ -e liblsan "$ZIP"; then
+    oomskip="sanitized"
+else
+    mkdir oom oomdag
+    long=$(awk 'BEGIN{while(length(s)<250)s=s "x";print s}')
+    for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+        mkdir oomdag/$i
+        ln -s ../$((i+1)) oomdag/$i/a$long
+        ln -s ../$((i+1)) oomdag/$i/b$long
+    done
+    mkdir oomdag/15
+    printf '\nzip error: Out of memory\n' >want
+fi
+for run in "-v 60000 new.zip" "-d 30000 small.zip"; do  # limit, archive
+    limit=${run% *}
+    arc=${run##* }
+    [ -z "$oomskip" ] || break
+    set +e
+    (ulimit $limit && exec "$ZIP" -v) >out 2>err
+    st=$?
+    set -e
+    if [ $st != 0 ] && [ $st != 4 ] && [ $st -lt 128 ]; then
+        oomskip="no start under ulimit $limit: $(head -n 1 err)"
+        break
+    fi
+    grep -q '^tugz zip' out || fail "zip -v under ulimit $limit: $st $(cat err)"
+    rm -f oom/*
+    (ulimit $limit && exec "$ZIP" -qr oom/small.zip tree) ||
+        fail "a small run under ulimit $limit"
+    extract_same oom/small.zip tree
+    cp oom/small.zip oom.orig
+    set +e
+    (ulimit $limit && exec "$ZIP" -qr oom/$arc oomdag/0) 2>err
+    st=$?
+    set -e
+    [ $st = 4 ] && cmp -s err want ||
+        fail "ulimit $limit, $arc: status $st $(cat err)"
+    cmp -s oom/small.zip oom.orig || fail "ulimit $limit changed an archive"
+    [ "$(ls oom)" = small.zip ] || fail "ulimit $limit left: $(ls oom)"
+done
+[ -z "$oomskip" ] || echo "zip.sh: out-of-memory tests skipped: $oomskip" >&2
+rm -rf oomdag
+
 if [ -n "$SLOW" ]; then
     # Zip64: a 5 GiB file, compressed and stored (pushing a following
     # entry's offset past 4 GiB), then merged into

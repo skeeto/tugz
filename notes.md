@@ -477,8 +477,10 @@ neither inflate nor the gzip container.
   `/dev/zero` privately instead. The hook refuses arenas other than
   perm and scratch, such as a codec's exactly sized one. Running out
   (of address space, of the commit limit, or of `ulimit -d`) is still
-  "zip error: Out of memory" (4). gzip and the library keep their fixed
-  arenas: their hooks only report running out.
+  "zip error: Out of memory" (4), as `test/zip.sh` checks on Linux under
+  `ulimit -v` and `ulimit -d` (for builds that are not sanitized). gzip
+  and the library keep their fixed arenas: their hooks only report
+  running out.
 - Memory per entry: perm keeps only what is recorded. A file's path and
   name are built in scratch and copied to perm once it is added, as one
   string when the name ends the path, as most do (`d/f`, `./d/f`, `-j`'s
