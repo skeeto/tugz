@@ -265,7 +265,10 @@ the file is flushed and closed without error), and
 - Merging: the central directory is parsed with every field bounds
   checked; copied entries get regenerated local headers (descriptor flag
   cleared, except for traditionally encrypted entries, whose check byte
-  depends on it) and raw data copies. A Zip64 end record is trusted only
+  depends on it) and raw data copies. They keep their extra fields, even
+  with `-X`, which as in Info-ZIP applies only to entries written (some
+  fields are needed to extract, such as AES's), except Zip64 fields,
+  made anew. A replaced entry keeps its comment, as in Info-ZIP. A Zip64 end record is trusted only
   if it checks out or the plain end record calls for it, since bytes
   resembling a Zip64 locator may precede the end record by chance (found
   by fuzzing). Only a missing archive is new: anything else at its path

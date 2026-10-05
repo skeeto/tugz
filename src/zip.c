@@ -35,8 +35,6 @@ enum {
     ZIP_EXTRA_ZIP64     = 0x0001,
     ZIP_EXTRA_TIME      = 0x5455,  // "UT": Unix times
     ZIP_EXTRA_UNIX      = 0x7875,  // "ux": Unix UID and GID
-    ZIP_EXTRA_UPATH     = 0x7075,  // Info-ZIP Unicode path
-    ZIP_EXTRA_UCOMMENT  = 0x6375,  // Info-ZIP Unicode comment
 };
 
 // Results of parsing an archive's end records.
@@ -392,10 +390,11 @@ static i32 zip_parse_end64(u8 const *p, zend *e)
     return r==ZIP_OK || zip_end_saturated(e) ? r : zip_check_end32(e);
 }
 
-// Copy extra fields, dropping Zip64 (regenerated as needed), and with
-// noextra all but the Unicode path and comment fields, as Info-ZIP's -X
-// does. Malformed trailing data is dropped.
-static s8 zip_filter_extra(arena *a, s8 x, b32 noextra)
+// Copy a kept entry's extra fields, dropping only Zip64, which is
+// regenerated as needed. Like Info-ZIP, -X does not apply to kept
+// entries, some of which need their fields, such as AES encryption's
+// (0x9901). Malformed trailing data is dropped.
+static s8 zip_filter_extra(arena *a, s8 x)
 {
     s8 r = {newbytes(a, x.len), 0};
     for (iz i = 0; x.len-i >= 4;) {
@@ -404,9 +403,7 @@ static s8 zip_filter_extra(arena *a, s8 x, b32 noextra)
         if (len > x.len-i-4) {
             break;
         }
-        b32 keep = id!=ZIP_EXTRA_ZIP64 &&
-                   (!noextra || id==ZIP_EXTRA_UPATH || id==ZIP_EXTRA_UCOMMENT);
-        if (keep) {
+        if (id != ZIP_EXTRA_ZIP64) {
             bytecopy(r.s+r.len, x.s+i, 4+len);
             r.len += 4 + len;
         }
@@ -522,7 +519,7 @@ static zentry *zip_parse_central(u8 *p, iz n, i64 count, i64 cdoff,
         if (e->offset>cdoff-ZIP_LOCAL_LEN || e->csize>cdoff-e->offset) {
             return 0;
         }
-        e->cextra = zip_filter_extra(a, e->cextra, 0);
+        e->cextra = zip_filter_extra(a, e->cextra);
         off += ZIP_CENTRAL_LEN + nlen + xlen + clen;
     }
     return off==n ? entries : 0;

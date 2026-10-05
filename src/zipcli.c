@@ -1525,13 +1525,12 @@ static i32 copy_entry(zip *z, zarchive *ar, zwork *k, zentry *old,
                     scratch);
     }
 
+    // Its extra fields are kept, as Info-ZIP keeps them even with -X,
+    // except that Zip64 fields are made anew
     *e = *old;
     iz nlen = get16(fixed+26);
     s8 lextra = {var+nlen, varlen-nlen};
-    e->lextra = zip_filter_extra(&scratch, lextra, z->noextra);
-    if (z->noextra) {
-        e->cextra = zip_filter_extra(&z->perm, e->cextra, 1);
-    }
+    e->lextra = zip_filter_extra(&scratch, lextra);
     e->offset = zout_tell(w);
     e->zip64  = e->usize>=ZIP_MAX32 || e->csize>=ZIP_MAX32;
 
@@ -1669,6 +1668,8 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
                 r = write_file(z, &k, f, e, scratch);
             }
             if (r == WRITE_OK) {
+                // A replaced entry keeps its comment, as in Info-ZIP
+                e->comment = it->old ? it->old->comment : (s8){0};
                 report(z, verb, e->name, e, scratch);
                 count++;
                 break;

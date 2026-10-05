@@ -97,7 +97,7 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     // Lay out the archive exactly, then write it to that layout
     i64 cdoff = 0;
     for (iz i = 0; i < m; i++) {
-        out[i].lextra = zip_filter_extra(&a, out[i].lextra, 0);
+        out[i].lextra = zip_filter_extra(&a, out[i].lextra);
         out[i].offset = cdoff;
         cdoff += zip_local_len(out+i) + out[i].csize;
     }

@@ -440,18 +440,20 @@ static void test_zip64(arena a)
 
 static void test_extras(arena a)
 {
+    // Only Zip64 is dropped from a kept entry: AES (0x9901), whose
+    // method depends on it, and unknown fields stay, as in Info-ZIP
     s8 x = S("UT\x05\x00\x03\x01\x02\x03\x04"
-               "\x01\x00\x08\x00\x01\x02\x03\x04\x05\x06\x07\x08"
-               "up\x01\x00\x01"
-               "ux\x00\x00");
-    s8 r = zip_filter_extra(&a, x, 0);
-    TEST(r.len == 9 + 5 + 4);
-    TEST(r.s[0]=='U' && r.s[9]=='u' && r.s[14]=='u');
-    r = zip_filter_extra(&a, x, 1);
-    TEST(r.len==5 && r.s[0]=='u' && r.s[1]=='p');
+             "\x01\x00\x08\x00\x01\x02\x03\x04\x05\x06\x07\x08"
+             "\x01\x99\x07\x00\x02\x00" "AE\x03\x08\x00"
+             "\xfe\xca\x00\x00"
+             "up\x01\x00\x01");
+    s8 r = zip_filter_extra(&a, x);
+    TEST(r.len == 9 + 11 + 4 + 5);
+    TEST(!memcmp(r.s, x.s, 9));
+    TEST(!memcmp(r.s+9, x.s+21, 20));
 
     s8 bad = S("UT\x05\x00\x03\x01\x02\x03\x04" "ux\x09\x00\x01");
-    r = zip_filter_extra(&a, bad, 0);
+    r = zip_filter_extra(&a, bad);
     TEST(r.len == 9);
 
     // The UT modification time, after other fields, unsigned
@@ -635,15 +637,6 @@ static void test_central64(arena a)
     TEST(got && got->usize==0x7fffffffffffffff && got->offset==100);
 }
 
-static void test_unicode_extras(arena a)
-{
-    // Like Info-ZIP's -X, keep the Unicode comment as well as the path
-    s8 x = S("uc\x02\x00\x01\x02" "UT\x01\x00\x03" "up\x01\x00\x01");
-    s8 r = zip_filter_extra(&a, x, 1);
-    TEST(r.len == 11);
-    TEST(!memcmp(r.s, "uc\x02\x00\x01\x02" "up\x01\x00\x01", 11));
-}
-
 int main(void)
 {
     (void)bytemove;
@@ -662,7 +655,6 @@ int main(void)
     test_extras(a);
     test_end_records(a);
     test_central64(a);
-    test_unicode_extras(a);
 
     free(a.beg);
     puts("all zip tests pass");

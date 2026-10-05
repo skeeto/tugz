@@ -519,13 +519,35 @@ if mkfifo fifo 2>/dev/null; then
     rm fifo
 fi
 
-# Copied entries keep their bytes; -X strips their extra fields
+# Copied entries keep their bytes and, as in Info-ZIP, their extra
+# fields, as -X applies only to entries written
 "$ZIP" -qr k1.zip tree
 "$ZIP" -q k1.zip tree/a.txt
 verify k1.zip
 extract_same k1.zip tree
 "$ZIP" -qX k1.zip tree/b.txt
+"$ZIP" -qX -d k1.zip tree/one
 verify k1.zip
+if [ -n "$PY" ]; then
+    grep -q '^tree/a.txt [08] 0x0 0x[0-9a-f]* 3 0 24 28 ' check.out &&
+        grep -q '^tree/b.txt 0 0x0 0x[0-9a-f]* 3 0 0 0 ' check.out ||
+        fail "-X merge extras: $(cat check.out)"
+
+    # Also fields zip does not know, and replaced entries keep comments
+    $PY -c 'import sys, zipfile as z
+a = z.ZipFile(sys.argv[1], "w")
+for n, c in ("tree/a.txt", b"note a"), ("tree/b.txt", b"note b"):
+    i = z.ZipInfo(n)
+    i.extra = b"\xfe\xca\x02\x00hi"
+    i.comment = c
+    a.writestr(i, "old")' cm.zip
+    "$ZIP" -qX cm.zip tree/a.txt tree/one
+    verify cm.zip
+    grep -q '^tree/a.txt [08] 0x0 0x[0-9a-f]* 3 0 0 0 note a$' check.out &&
+        grep -q '^tree/b.txt 0 0x0 0x[0-9a-f]* 3 0 6 6 note b$' check.out &&
+        grep -q '^tree/one 0 0x0 0x[0-9a-f]* 3 0 0 0 $' check.out ||
+        fail "kept fields and comments: $(cat check.out)"
+fi
 
 # Errors and warnings
 expect_status 12 "$ZIP" nothing.zip missing
