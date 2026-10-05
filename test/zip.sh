@@ -960,6 +960,81 @@ open(sys.argv[1], "wb").write(loc + cen + end)' enc.zip
         fail "copied encrypted entry contents"
 fi
 
+# Copied entries' Zip64 fields are made anew, as their sizes need, from
+# whatever their writer gave them, even for small sizes: in the local
+# header, Info-ZIP's for a stream (sizes to follow in a descriptor), or
+# both sizes; in the central one, both sizes, all three fields, just the
+# offset, or fields that need none. Their other fields are kept in
+# order, and the two headers agree.
+if [ -n "$PY" ]; then
+    $PY -c 'import struct, sys, zlib
+M = 0xffffffff
+def ext(i, d):
+    return struct.pack("<HH", i, len(d)) + d
+def z64(*v):
+    return ext(1, struct.pack("<%dQ" % len(v), *v))
+x = ext(0x5455, struct.pack("<BI", 1, 1577836800)) + ext(0xcafe, b"hi")
+loc = cen = b""
+for kind in "stream", "sizes", "all", "offset", "literal":
+    n = b"z/%s.txt" % kind.encode()
+    d = n * 40
+    m = 0 if kind in ("sizes", "offset") else 8
+    c = zlib.compressobj(9, zlib.DEFLATED, -15)
+    r = c.compress(d) + c.flush() if m else d
+    crc, s, u, o = zlib.crc32(d), len(r), len(d), len(loc)
+    f = 8 if kind == "stream" else 0
+    lh = {"stream":  (0, M, M, z64(0, 0) + x),
+          "literal": (crc, s, u, x + z64(u, s))}.get(kind,
+                     (crc, M, M, z64(u, s) + x))
+    ch = {"stream":  (s, u, o, x),
+          "sizes":   (M, M, o, z64(u, s) + x),
+          "all":     (M, M, M, z64(u, s, o) + x),
+          "offset":  (s, u, M, z64(o) + x),
+          "literal": (s, u, o, x + z64(u, s, o))}[kind]
+    loc += struct.pack("<IHHHHHIIIHH", 0x04034b50, 45, f, m, 0, 0x5021,
+                       *lh[:3], len(n), len(lh[3])) + n + lh[3] + r
+    if f:
+        loc += struct.pack("<IIQQ", 0x08074b50, crc, s, u)
+    cen += struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 0x31e, 45, f, m,
+                       0, 0x5021, crc, ch[0], ch[1], len(n), len(ch[3]), 0,
+                       0, 0, 0x81a40000, ch[2]) + n + ch[3]
+end = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 5, 5, len(cen), len(loc), 0)
+open(sys.argv[1], "wb").write(loc + cen + end)' z64.zip
+    verify z64.zip
+    "$ZIP" -qX z64.zip tree/b.txt
+    verify z64.zip
+    $PY -c 'import struct, sys
+d = open(sys.argv[1], "rb").read()
+def ids(x):
+    r = []
+    while len(x) >= 4:
+        i, n = struct.unpack("<HH", x[:4])
+        r.append("%x:%d" % (i, n))
+        x = x[4+n:]
+    return ",".join(r) or "-"
+e = d.rfind(b"PK\5\6")
+n, _, p = struct.unpack("<HII", d[e+10:e+20])
+for _ in range(n):
+    c = struct.unpack("<IHHHHHHIIIHHHHHII", d[p:p+46])
+    name = d[p+46:p+46+c[10]]
+    cx = d[p+46+c[10]:p+46+c[10]+c[11]]
+    o = c[16]
+    h = struct.unpack("<IHHHHHIIIHH", d[o:o+30])
+    lx = d[o+30+h[9]:o+30+h[9]+h[10]]
+    if h[0] != 0x04034b50 or h[1:9] != c[2:10] or d[o+30:o+30+h[9]] != name:
+        sys.exit("%s: local header differs" % name)
+    if 0xffffffff in (c[8], c[9], c[16], h[7], h[8]):
+        sys.exit("%s: saturated field" % name)
+    print(name.decode(), c[2], hex(c[3]), ids(lx), ids(cx))
+    p += 46 + c[10] + c[11] + c[12]' z64.zip >out 2>&1 ||
+        fail "copied Zip64 entries: $(cat out)"
+    for kind in stream sizes all offset literal; do
+        echo "z/$kind.txt 45 0x0 5455:5,cafe:2 5455:5,cafe:2"
+    done >want
+    echo 'tree/b.txt 10 0x0 - -' >>want
+    cmp -s out want || fail "copied Zip64 entries: $(cat out)"
+fi
+
 # As in Info-ZIP, a file replaces an entry whose stored name, in a code
 # page (here CP437, as Windows tools write it), it matches only by the
 # entry's Info-ZIP Unicode path field, if that is for the stored name;
