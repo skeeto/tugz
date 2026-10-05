@@ -169,6 +169,15 @@ the file is flushed and closed without error), and
   freshening; otherwise it expands wildcards on disk and stops there,
   and so does tugz. A `-d` name that is a special file on disk, such as
   a FIFO, marks nothing (with a warning), as in Info-ZIP.
+- Updates: as in Info-ZIP, `-u` and `-f` take a file that is newer
+  than its entry by the Unix time of the entry's `UT` field, if it has
+  one, so the time zone does not matter, else by DOS times; `-FS`
+  replaces one whose DOS time or size differs (time zone and all), and
+  reports "Archive is current" when nothing changed. Under
+  `SOURCE_DATE_EPOCH`, files' times are compared unclamped, so a file
+  modified after the epoch is always newer than its entry, which the
+  clamped archive could not record; an unchanged one is rewritten with
+  identical bytes.
 - Patterns: `-x`, `-i`, and `-d` patterns, `@file` lines included, are
   normalized as names are, so that `./` and `/` prefixes (and on
   Windows, backslashes and drives) match. Matching follows Info-ZIP's

@@ -760,9 +760,11 @@ static s8s env_args(zip *z, s8 env)
     }
 }
 
-static u32 file_dostime(zip *z, i64 t)
+// A file's DOS time, in UTC with SOURCE_DATE_EPOCH, and clamped to it
+// if clamp, as it is for writing.
+static u32 file_dostime(zip *z, i64 t, b32 clamp)
 {
-    if (z->haveepoch) {
+    if (clamp && z->haveepoch) {
         t = MIN(t, z->epoch);
     }
     t = (t + 1) & ~(i64)1;  // round odd seconds up, as Info-ZIP does
@@ -876,7 +878,7 @@ static void push_file(zip *z, s8 path, s8 name, os_info *info)
     f->path    = path;
     f->name    = name;
     f->info    = *info;
-    f->dostime = file_dostime(z, info->mtime);
+    f->dostime = file_dostime(z, info->mtime, 1);
 }
 
 // Add a file under its archive name, which -i and -x see whole, before
@@ -1735,6 +1737,28 @@ static void mark_named(zip *z, zmap *old, s8 path, os_info *info, b32 *hit,
     }
 }
 
+// Whether a file is newer than its entry, for -u and -f, as Info-ZIP
+// decides: by the Unix time in the entry's UT field if it has one, so
+// that the time zone does not matter, else by DOS times. The file's
+// time is not clamped to SOURCE_DATE_EPOCH, which would hide changes:
+// past the epoch, a file is newer than any entry made with it.
+static b32 is_newer(zip *z, zfile *f, zentry *e)
+{
+    i64 t = 0;
+    if (zip_extra_mtime(e->cextra, &t)) {
+        return f->info.mtime > t;
+    }
+    return file_dostime(z, f->info.mtime, 0) > e->dostime;
+}
+
+// Whether a file differs from its entry, for -FS, as Info-ZIP decides:
+// by DOS time, unclamped as above (so the time zone matters), or size.
+static b32 differs(zip *z, zfile *f, zentry *e)
+{
+    return file_dostime(z, f->info.mtime, 0) != e->dostime ||
+           (f->info.type==FT_FILE && f->info.size!=e->usize);
+}
+
 // Whether a name is one zip would make, and so safe to read as a path:
 // in an untrusted archive, absolute names (and on Windows, drives and
 // backslashes) could otherwise reach any file.
@@ -1976,11 +2000,10 @@ static i32 zip_main(zipconfig *conf)
                 break;
             case MODE_UPDATE:
             case MODE_FRESHEN:
-                replace = f->dostime > e->dostime;
+                replace = is_newer(z, f, e);
                 break;
             case MODE_SYNC:
-                replace = f->dostime!=e->dostime ||
-                          (f->info.type==FT_FILE && f->info.size!=e->usize);
+                replace  = differs(z, f, e);
                 it->kind = ITEM_KEEP;
                 break;
             }
@@ -1998,7 +2021,11 @@ static i32 zip_main(zipconfig *conf)
 
     if (!changed) {
         if (z->files.len) {
-            return z->status;  // already up to date
+            // Already up to date, which only -FS reports, as in Info-ZIP
+            if (z->mode==MODE_SYNC && !z->quiet) {
+                say(z, 1, S("Archive is current\n"));
+            }
+            return z->status;
         }
         return fail(z, ZE_NONE, S("Nothing to do!"), z->archive, scratch);
     }

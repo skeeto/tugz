@@ -453,6 +453,17 @@ static void test_extras(arena a)
     s8 bad = S("UT\x05\x00\x03\x01\x02\x03\x04" "ux\x09\x00\x01");
     r = zip_filter_extra(&a, bad, 0);
     TEST(r.len == 9);
+
+    // The UT modification time, after other fields, unsigned
+    i64 t = 0;
+    s8 ut = S("ux\x00\x00" "UT\x05\x00\x03\x80\x5d\x8b\xfe");
+    TEST(zip_extra_mtime(ut, &t) && t==0xfe8b5d80);
+    s8 noflag = S("UT\x05\x00\x02\x80\x5d\x8b\x65");
+    TEST(!zip_extra_mtime(noflag, &t));
+    s8 shortut = S("UT\x04\x00\x01\x80\x5d\x8b");
+    TEST(!zip_extra_mtime(shortut, &t));
+    s8 cut = S("UT\x09\x00\x03\x80\x5d\x8b\x65");
+    TEST(!zip_extra_mtime(cut, &t));
 }
 
 // Zip64 end records are relied upon only when they check out, or when

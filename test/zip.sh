@@ -321,6 +321,42 @@ names u.zip | grep -q empty && fail "-f added a file"
 verify u.zip
 expect_status 12 "$ZIP" -f missing.zip tree/a.txt
 
+# As in Info-ZIP, -u and -f compare the Unix time of an entry's UT field
+# when it has one, so that the time zone does not matter, else DOS times
+printf one >tz.txt
+TZ=UTC0 touch -t 202001011000.00 tz.txt
+TZ=JST-9 "$ZIP" -q tz.zip tz.txt
+TZ=UTC0 touch -t 202001011100.00 tz.txt
+TZ=UTC0 "$ZIP" -u tz.zip tz.txt >out
+grep -q '^updating: tz.txt' out || fail "-u east to west: $(cat out)"
+cp tz.zip tz0.zip
+TZ=JST-9 "$ZIP" -u tz.zip tz.txt >out
+[ ! -s out ] && cmp -s tz.zip tz0.zip || fail "-u west to east: $(cat out)"
+TZ=UTC0 touch -t 202001011000.01 tz.txt
+"$ZIP" -q tz1.zip tz.txt
+"$ZIP" -qX tz2.zip tz.txt
+TZ=UTC0 touch -t 202001011000.02 tz.txt  # the same DOS time, rounded up
+"$ZIP" -u tz1.zip tz.txt | grep -q updating || fail "-u by UT time"
+"$ZIP" -u tz2.zip tz.txt | grep -q updating && fail "-u -X by DOS time"
+
+# Under SOURCE_DATE_EPOCH, files changed since the epoch are found newer
+# than entries clamped to it (and unchanged ones rewritten identically)
+printf 'version 1.0.0' >ver.txt
+SOURCE_DATE_EPOCH=1700000000 "$ZIP" -q ver1.zip ver.txt
+SOURCE_DATE_EPOCH=1700000000 "$ZIP" -qX ver2.zip ver.txt
+cp ver1.zip ver0.zip
+SOURCE_DATE_EPOCH=1700000000 "$ZIP" -qu ver1.zip ver.txt
+cmp -s ver1.zip ver0.zip || fail "-u under SOURCE_DATE_EPOCH changed bytes"
+printf 'version 1.0.1' >ver.txt
+for v in ver1.zip ver2.zip; do
+    for mode in -u -f -FS; do
+        cp $v ver.zip
+        SOURCE_DATE_EPOCH=1700000000 "$ZIP" -q $mode ver.zip ver.txt
+        [ "$(unzip -p ver.zip ver.txt)" = 'version 1.0.1' ] ||
+            fail "$mode $v under SOURCE_DATE_EPOCH"
+    done
+done
+
 # Filesync: changed entries updated, missing ones deleted
 cp -R tree fs
 "$ZIP" -qr fs.zip fs
@@ -334,6 +370,10 @@ grep -q '^  adding: fs/new.txt ' out || fail "-FS add: $(cat out)"
 grep -q 'fs/a.txt' out && fail "-FS updated an unchanged file: $(cat out)"
 verify fs.zip
 extract_same fs.zip fs
+"$ZIP" -FS -r fs.zip fs >out
+[ "$(cat out)" = "Archive is current" ] || fail "-FS current: $(cat out)"
+"$ZIP" -qFS -r fs.zip fs >out
+[ ! -s out ] || fail "-qFS current: $(cat out)"
 
 # Filesync that finds nothing has nothing to do, rather than deleting
 # every entry

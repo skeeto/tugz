@@ -415,6 +415,26 @@ static s8 zip_filter_extra(arena *a, s8 x, b32 noextra)
     return r;
 }
 
+// The modification time in an extended timestamp ("UT") field among
+// extra fields, as Info-ZIP's -u and -f compare it, unsigned as it reads
+// it. Returns false if there is none.
+static b32 zip_extra_mtime(s8 x, i64 *t)
+{
+    for (iz i = 0; x.len-i >= 4;) {
+        u32 id  = get16(x.s+i);
+        iz  len = get16(x.s+i+2);
+        if (len > x.len-i-4) {
+            break;
+        }
+        if (id==ZIP_EXTRA_TIME && len>=5 && (x.s[i+4] & 1)) {
+            *t = get32(x.s+i+5);
+            return 1;
+        }
+        i += 4 + len;
+    }
+    return 0;
+}
+
 // Apply a central header's Zip64 extra field to the entry. Returns false
 // if a needed field is missing.
 static b32 zip_apply64(zentry *e, s8 x, b32 diskmax)

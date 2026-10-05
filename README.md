@@ -119,7 +119,9 @@ Output is deterministic: entries within each directory are sorted by
 name, and with `-X` an archive depends only on file contents, names,
 attributes, and times. When `SOURCE_DATE_EPOCH` is set, times are
 clamped to it and stored in UTC, so the archive does not depend on the
-time zone either.
+time zone either. `-u`, `-f`, and `-FS` still compare files' real
+times, so a file modified after the epoch always counts as changed (and
+if it is not, its entry is rewritten byte for byte).
 
 Interactive and legacy features are not supported and are rejected:
 encryption, comments, splits, self-extractors, `-F` fixes, line ending
