@@ -135,6 +135,23 @@ printf 'TREE/a.txt\ntree/sub/random\ntree/sub/text\n' >want.txt
 cmp -s got want.txt || fail "wildcard case and separators: $(cat got)"
 expect_status 12 "$ZIP" w3.zip 'tree/*.none'
 
+# ...as Info-ZIP's dosmatch does: a name without a period matches as if
+# it ended in one, so *.* matches every (unhidden) name
+"$ZIP" -q w4.zip 'tree/*.*'
+list w4.zip | grep -v caf | sort >got
+printf '%s\n' tree/a.txt tree/b.txt tree/empty tree/literals.txt tree/one \
+    tree/sub/ >want.txt
+cmp -s got want.txt || fail "*.*: $(cat got)"
+"$ZIP" -q w5.zip 'tree/one.*'
+[ "$(list w5.zip)" = tree/one ] || fail "name.*: $(list w5.zip)"
+
+# -nw leaves ? a wildcard, as in Info-ZIP
+"$ZIP" -q -nw nw.zip 'tree/?.txt'
+list nw.zip | sort >got
+printf 'tree/a.txt\ntree/b.txt\n' >want.txt
+cmp -s got want.txt || fail "-nw ?: $(cat got)"
+expect_status 12 "$ZIP" -nw nw2.zip 'tree/*.txt'
+
 # Paths are resolved before the \\?\ prefix, which turns off Win32
 # parsing: "." and "..", doubled separators, root- and drive-relative
 # paths, and a wildcard in the first component. An empty path is no file.

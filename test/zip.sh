@@ -179,6 +179,11 @@ names x3.zip | grep -q 'tree/a.txt' && fail "-x [set]"
 names x3.zip | grep -q 'tree/Z.txt' || fail "-x [set] too broad"
 "$ZIP" -qr -nw x4.zip tree -x 'tree/*.txt'
 names x4.zip | grep -q 'tree/a.txt' || fail "-nw still matched wildcards"
+"$ZIP" -qr -nw x5.zip tree -x 'tree/?.txt'  # as in Info-ZIP, ? still is
+names x5.zip | grep -q 'tree/a.txt' && fail "-nw did not match ?"
+names x5.zip | grep -q 'tree/one' || fail "-nw ? too broad"
+"$ZIP" -qr x8.zip tree/sub -x 'tree/sub/**'  # needs a byte, as in Info-ZIP
+[ "$(names x8.zip)" = tree/sub/ ] || fail "trailing **: $(names x8.zip)"
 
 # Names from standard input
 printf 'tree/a.txt\r\ntree/one\n\ntree/sub\n' | "$ZIP" -q at.zip -@

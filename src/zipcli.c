@@ -571,14 +571,14 @@ static u32 file_dostime(zip *z, i64 t)
 
 static i32 match_flags(zip *z)
 {
-    return z->windows ? 0 : ZIP_SETS;
+    i32 flags = z->nowild ? ZIP_NOWILD : 0;
+    return z->windows ? flags : flags|ZIP_SETS;
 }
 
 static b32 any_match(zip *z, s8s *patterns, s8 name)
 {
     for (iz i = 0; i < patterns->len; i++) {
-        s8 p = patterns->data[i];
-        if (z->nowild ? zequals(p, name) : zip_match(p, name, match_flags(z))) {
+        if (zip_match(patterns->data[i], name, match_flags(z))) {
             return 1;
         }
     }
@@ -724,7 +724,8 @@ static s8 arg_name(zip *z, s8 path)
 }
 
 // Expand wildcards in a path's components against the file system, as
-// Windows shells do not. Returns the number of matches.
+// Windows shells do not, matching as Info-ZIP does there: ignoring case,
+// with DOS rules, and with -nw only ?. Returns the number of matches.
 static iz expand(zip *z, s8 path, arena scratch)
 {
     // Find the first component with a wildcard
@@ -752,9 +753,10 @@ static iz expand(zip *z, s8 path, arena scratch)
     }
     zsort(kids, n, scratch);
 
-    iz count = 0;
+    i32 flags = ZIP_FOLD | ZIP_DOS | (z->nowild ? ZIP_NOWILD : 0);
+    iz  count = 0;
     for (iz i = 0; i < n; i++) {
-        if (!zip_match(pat, kids[i].name, ZIP_FOLD)) {
+        if (!zip_match(pat, kids[i].name, flags)) {
             continue;
         }
         s8 cand = JOIN(&z->perm, (s8){path.s, beg}, kids[i].name, rest);
@@ -779,7 +781,7 @@ static void scan_arg(zip *z, s8 arg, arena scratch)
     os_info info = {0};
     if (os_stat(z->ctx, arg, !z->symlinks, &info, scratch)) {
         scan(z, arg, arg_name(z, arg), &info, 0, scratch);
-    } else if (!z->windows || z->nowild || !zip_haswild(arg, 0) ||
+    } else if (!z->windows || !zip_haswild(arg, 0) ||
                !expand(z, arg, scratch)) {
         warn(z, S("name not matched: "), arg, scratch);
     }

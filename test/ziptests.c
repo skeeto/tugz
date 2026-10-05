@@ -111,18 +111,73 @@ static void test_match(void)
     TEST( zip_match(str("[^ab].txt"), str("c.txt"), u));
     TEST( zip_match(str("[a-c]x"), str("bx"), u));
     TEST(!zip_match(str("[a-c]x"), str("dx"), u));
-    TEST( zip_match(str("[]]"), str("]"), u));
-    TEST( zip_match(str("[a-]"), str("-"), u));
-    TEST( zip_match(str("a["), str("a["), u));         // unclosed: literal
     TEST( zip_match(str("\\*"), str("*"), u));
     TEST(!zip_match(str("\\*"), str("x"), u));
     TEST(!zip_match(str("A.TXT"), str("a.txt"), u));
+
+    // Sets as Info-ZIP's recmatch reads them: the first unescaped ]
+    // closes, backslashes escape, and a byte before a - only starts a
+    // range, so dangling and chained range starts match nothing
+    TEST(!zip_match(str("[]]"), str("]"), u));         // empty set, then ]
+    TEST( zip_match(str("[\\]]"), str("]"), u));
+    TEST( zip_match(str("[!]"), str("x"), u));         // negated empty set
+    TEST(!zip_match(str("[!]"), str(""), u));
+    TEST(!zip_match(str("[a-]"), str("a"), u));
+    TEST(!zip_match(str("[a-]"), str("-"), u));
+    TEST( zip_match(str("[ab-]"), str("a"), u));
+    TEST(!zip_match(str("[ab-]"), str("b"), u));
+    TEST(!zip_match(str("[a-b-c]"), str("a"), u));
+    TEST( zip_match(str("[a-b-c]"), str("b"), u));
+    TEST( zip_match(str("[--0]"), str("."), u));       // leading - literal
+    TEST( zip_match(str("[\\-x]"), str("-"), u));
+    TEST(!zip_match(str("[\\-x]"), str("a"), u));
+    TEST(!zip_match(str("[a\\]"), str("a"), u));       // unclosed
+    TEST( zip_match(str("[\xff]"), str("q"), u));      // 0xff wraps around
+    TEST(!zip_match(str("[!\xff]"), str("q"), u));
+
+    // Malformed patterns match nothing
+    TEST(!zip_match(str("a["), str("a["), u));
+    TEST(!zip_match(str("*["), str("a["), u));
+    TEST(!zip_match(str("x\\"), str("x\\"), u));
+    TEST(!zip_match(str("\\"), str("\\"), u));
+
+    // A trailing run of *s needs a byte, unlike a single *
+    TEST( zip_match(str("d/*"), str("d/"), u));
+    TEST(!zip_match(str("d/**"), str("d/"), u));
+    TEST( zip_match(str("d/**"), str("d/x"), u));
+    TEST(!zip_match(str("**"), str(""), u));
+    TEST( zip_match(str("a**b"), str("ab"), u));
+
+    // After a * with no wildcards following, the rest is compared
+    // literally, escapes included
+    TEST(!zip_match(str("*\\*"), str("a*"), u));
+    TEST( zip_match(str("*\\*"), str("a\\*"), u));
+    TEST( zip_match(str("*\\"), str("x\\"), u));
+    TEST( zip_match(str("*[a]\\*"), str("a*"), u));    // not after a set
+
+    // -nw: only ? is a wildcard
+    i32 nw = ZIP_SETS | ZIP_NOWILD;
+    TEST( zip_match(str("a?"), str("ab"), nw));
+    TEST(!zip_match(str("a*"), str("ab"), nw));
+    TEST( zip_match(str("a*"), str("a*"), nw));
+    TEST( zip_match(str("[a]\\"), str("[a]\\"), nw));
 
     // Windows: brackets and backslashes literal; folding when asked
     TEST( zip_match(str("[ab].txt"), str("[ab].txt"), 0));
     TEST(!zip_match(str("[ab].txt"), str("a.txt"), 0));
     TEST( zip_match(str("A.*"), str("a.txt"), ZIP_FOLD));
     TEST(!zip_match(str("A.*"), str("a.txt"), 0));
+    TEST( zip_match(str("*.TXT"), str("d/a.txt"), ZIP_FOLD));
+    TEST( zip_match(str("a["), str("a["), 0));
+
+    // DOS rules: a name without a period has one at its end
+    i32 dos = ZIP_FOLD | ZIP_DOS;
+    TEST( zip_match(str("*.*"), str("Makefile"), dos));
+    TEST( zip_match(str("README.*"), str("readme"), dos));
+    TEST( zip_match(str("*."), str("LICENSE"), dos));
+    TEST(!zip_match(str("*."), str("a.txt"), dos));
+    TEST( zip_match(str("*.*"), str("v1.0/Makefile"), dos));
+    TEST(!zip_match(str("*.*"), str("Makefile"), ZIP_FOLD));
 
     TEST( zip_haswild(str("a*"), 0));
     TEST( zip_haswild(str("a?"), 0));

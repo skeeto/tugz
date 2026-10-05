@@ -96,7 +96,7 @@ releases, such as `zip -qX9r release-1.2.3.zip build/`:
 | `-u`, `-f` | update newer entries and add; freshen existing only |
 | `-FS` | filesync: update changed entries, delete missing ones |
 | `-d` | delete entries matching patterns |
-| `-nw` | no wildcards |
+| `-nw` | no wildcards, except `?` (as in Info-ZIP) |
 
 Existing archives are merged as Info-ZIP does: matching entries are
 replaced in place, new ones appended, and the rest copied without

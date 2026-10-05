@@ -135,6 +135,12 @@ the file is flushed and closed without error), and
   and errors go to standard error. Info-ZIP's quirks kept: `../` stays
   in names, an emptied archive remains as a 22-byte file, entries that
   do not shrink are stored, odd seconds round up.
+- Patterns: `-x`, `-i`, and `-d` patterns match whole paths as
+  Info-ZIP's recmatch does, quirks included: the first unescaped `]`
+  closes a set, a byte before `-` only starts a range, an unclosed set
+  or a trailing backslash matches nothing, a trailing `**` needs a
+  byte, and after a `*` followed by no wildcards the rest is compared
+  literally. `-nw` leaves `?` a wildcard.
 - Departures: entries are sorted by name within each directory (Info-ZIP
   uses readdir order), doubled slashes collapse, `SOURCE_DATE_EPOCH`
   clamps times and makes them UTC, names that are valid non-ASCII
@@ -170,8 +176,10 @@ the file is flushed and closed without error), and
   attributes, `UT` extra field. Names drop a drive or a UNC
   `//server/share/` prefix, as Info-ZIP's do, and likewise a device
   path's `//?/X:/` or `//?/UNC/server/share/`. Wildcard arguments are
-  expanded per component, case-insensitively, without `[sets]` (as
-  Info-ZIP on Windows). Recursion and wildcards skip hidden and system
+  expanded per component and matched as Info-ZIP's Windows port does:
+  ignoring case, without `[sets]`, and by its dosmatch, under which a
+  name without a period matches as if it ended in one (`*.*` matches
+  every name). Recursion and wildcards skip hidden and system
   entries unless `-S`, judged as Info-ZIP does by the listing (a link's
   own attributes), so that unopenable ones like `pagefile.sys` are never
   opened. Links and junctions are followed; cycles are detected by file
