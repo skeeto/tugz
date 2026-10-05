@@ -47,6 +47,8 @@ enum {
     ZIP_EFORMAT,  // inconsistent structure
 };
 
+// An entry, one for each of an existing archive's, and so kept small: a
+// byte for the flag leaves no padding (112 bytes on 64-bit hosts).
 typedef struct {
     s8  name;
     s8  lextra;   // local extra fields, without Zip64
@@ -63,7 +65,7 @@ typedef struct {
     u16 flags;
     u16 method;
     u16 intattr;
-    b32 zip64;    // the local header carries a Zip64 extra
+    u8  zip64;    // the local header carries a Zip64 extra
 } zentry;
 
 typedef struct {
@@ -547,9 +549,61 @@ static b32 zip_apply64(zentry *e, s8 x, b32 diskmax)
     return !diskmax;
 }
 
+// Length of a central header's name, extra fields, and comment, or -1 if
+// the fixed part, ZIP_CENTRAL_LEN bytes, is not a central header.
+static iz zip_central_varlen(u8 const *h)
+{
+    if (get32(h) != ZIP_CENTRAL_SIG) {
+        return -1;
+    }
+    return (iz)get16(h+28) + (iz)get16(h+30) + (iz)get16(h+32);
+}
+
+// Parse the central header beginning the n bytes at h, for an entry whose
+// data lies before cdoff. Its name, extra fields (with Zip64, unfiltered),
+// and comment point into h. Returns its length, or 0 if malformed.
+static iz zip_parse_header(u8 *h, iz n, i64 cdoff, zentry *e)
+{
+    iz var = n<ZIP_CENTRAL_LEN ? -1 : zip_central_varlen(h);
+    if (var<0 || var>n-ZIP_CENTRAL_LEN) {
+        return 0;
+    }
+    iz nlen = get16(h+28);
+    iz xlen = get16(h+30);
+    iz clen = get16(h+32);
+
+    *e = (zentry){0};
+    e->made    = (u16)get16(h+4);
+    e->needed  = (u16)get16(h+6);
+    e->flags   = (u16)get16(h+8);
+    e->method  = (u16)get16(h+10);
+    e->dostime = get16(h+14)<<16 | get16(h+12);
+    e->crc     = get32(h+16);
+    e->csize   = get32(h+20);
+    e->usize   = get32(h+24);
+    e->intattr = (u16)get16(h+36);
+    e->extattr = get32(h+38);
+    e->offset  = get32(h+42);
+    e->name    = (s8){h+ZIP_CENTRAL_LEN, nlen};
+    e->cextra  = (s8){h+ZIP_CENTRAL_LEN+nlen, xlen};
+    e->comment = (s8){h+ZIP_CENTRAL_LEN+nlen+xlen, clen};
+
+    u32 disk = get16(h+34);
+    if ((disk && disk!=ZIP_MAX16) ||
+        !zip_apply64(e, e->cextra, disk==ZIP_MAX16)) {
+        return 0;
+    }
+    if (e->offset>cdoff-ZIP_LOCAL_LEN || e->csize>cdoff-e->offset) {
+        return 0;
+    }
+    return ZIP_CENTRAL_LEN + var;
+}
+
 // Parse a central directory of n bytes, expected to hold count entries
-// whose data lies before cdoff. Names, extras, and comments point into p.
-// Returns null if malformed.
+// whose data lies before cdoff. Names and comments point into p, and
+// extra fields, without Zip64, are copied into a. Returns null if
+// malformed. (The zip program reads a header at a time instead.)
+[[maybe_unused]]
 static zentry *zip_parse_central(u8 *p, iz n, i64 count, i64 cdoff,
                                  arena *a)
 {
@@ -559,43 +613,13 @@ static zentry *zip_parse_central(u8 *p, iz n, i64 count, i64 cdoff,
     zentry *entries = new(a, (iz)count, zentry);
     iz off = 0;
     for (i64 i = 0; i < count; i++) {
-        if (n-off<ZIP_CENTRAL_LEN || get32(p+off)!=ZIP_CENTRAL_SIG) {
-            return 0;
-        }
-        u8 *h    = p + off;
-        iz  nlen = get16(h+28);
-        iz  xlen = get16(h+30);
-        iz  clen = get16(h+32);
-        if (nlen+xlen+clen > n-off-ZIP_CENTRAL_LEN) {
-            return 0;
-        }
-
-        zentry *e  = entries + i;
-        e->made    = (u16)get16(h+4);
-        e->needed  = (u16)get16(h+6);
-        e->flags   = (u16)get16(h+8);
-        e->method  = (u16)get16(h+10);
-        e->dostime = get16(h+14)<<16 | get16(h+12);
-        e->crc     = get32(h+16);
-        e->csize   = get32(h+20);
-        e->usize   = get32(h+24);
-        e->intattr = (u16)get16(h+36);
-        e->extattr = get32(h+38);
-        e->offset  = get32(h+42);
-        e->name    = (s8){h+ZIP_CENTRAL_LEN, nlen};
-        e->cextra  = (s8){h+ZIP_CENTRAL_LEN+nlen, xlen};
-        e->comment = (s8){h+ZIP_CENTRAL_LEN+nlen+xlen, clen};
-
-        u32 disk = get16(h+34);
-        if ((disk && disk!=ZIP_MAX16) ||
-            !zip_apply64(e, e->cextra, disk==ZIP_MAX16)) {
-            return 0;
-        }
-        if (e->offset>cdoff-ZIP_LOCAL_LEN || e->csize>cdoff-e->offset) {
+        zentry *e   = entries + i;
+        iz      len = zip_parse_header(p+off, n-off, cdoff, e);
+        if (!len) {
             return 0;
         }
         e->cextra = zip_filter_extra(a, e->cextra);
-        off += ZIP_CENTRAL_LEN + nlen + xlen + clen;
+        off += len;
     }
     return off==n ? entries : 0;
 }

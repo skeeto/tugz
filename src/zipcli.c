@@ -1567,18 +1567,45 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
                     " not supported"), z->archive, scratch);
     }
 
-    i64 cdsize = ar->end.cdsize;
-    if ((u64)cdsize > (uz)-1>>1) {
+    // The central directory is read through the window, a header at a
+    // time, keeping only the names, extra fields (without Zip64), and
+    // comments, packed, rather than the whole directory.
+    i64 count = ar->end.count;
+    i64 off   = ar->end.cdoff;
+    i64 cdend = off + ar->end.cdsize;
+    if (count > ar->end.cdsize/ZIP_CENTRAL_LEN) {
+        return fail(z, ZE_FORM, S("Zip file structure invalid"), z->archive,
+                    scratch);
+    } else if ((u64)count > (uz)-1>>1) {
         os_oom(z->ctx);  // larger than the address space (32-bit hosts)
     }
-    u8 *cd = newbytes(&z->perm, (iz)cdsize);
-    err = read_at(z, ar, cd, (iz)cdsize, ar->end.cdoff, (s8){0}, scratch);
-    if (err) {
-        return err;
+    ar->entries = new(&z->perm, (iz)count, zentry);
+    for (i64 i = 0; i < count; i++) {
+        // Its fixed part tells its length, at most 192 KiB
+        iz  len = (iz)MIN(cdend-off, ZIP_CENTRAL_LEN);
+        u8 *h   = 0;
+        i32 got = zin_get(in, off, len, &h);
+        if (got>0 && len==ZIP_CENTRAL_LEN) {
+            iz var = zip_central_varlen(h);
+            len += (iz)MIN(MAX(var, 0), cdend-off-len);
+            got = zin_get(in, off, len, &h);
+        }
+        if (got <= 0) {
+            return read_failed(z, got, (s8){0}, scratch);
+        }
+        zentry *e = ar->entries + i;
+        len = zip_parse_header(h, len, ar->end.cdoff, e);
+        if (!len) {
+            return fail(z, ZE_FORM, S("Zip file structure invalid"),
+                        z->archive, scratch);
+        }
+        arena tmp = scratch;
+        e->name    = JOIN(&z->perm, e->name);
+        e->cextra  = JOIN(&z->perm, zip_filter_extra(&tmp, e->cextra));
+        e->comment = JOIN(&z->perm, e->comment);
+        off += len;
     }
-    ar->entries = zip_parse_central(cd, (iz)cdsize, ar->end.count,
-                                    ar->end.cdoff, &z->perm);
-    if (!ar->entries) {
+    if (off != cdend) {
         return fail(z, ZE_FORM, S("Zip file structure invalid"), z->archive,
                     scratch);
     }
