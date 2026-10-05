@@ -113,6 +113,16 @@ ps "\$d = Get-Item hid;
 "$ZIP" -qr jt.zip jt
 list jt.zip | grep -qx jt/link/j.txt || fail "junction to a hidden directory"
 
+# Recursion describes files from the listing, but still examines those
+# the archive's size: the archive is left out, a copy of it is not
+mkdir self
+printf x >self/x
+"$ZIP" -qr self/s.zip self
+cp self/s.zip self/copy.zip
+"$ZIP" -qr self/s.zip self
+list self/s.zip | grep -qx self/s.zip && fail "archive added to itself"
+list self/s.zip | grep -qx self/copy.zip || fail "same-size file left out"
+
 # Wildcards are expanded by zip, case-insensitively, either separator
 "$ZIP" -q w1.zip 'tree/*.txt'
 list w1.zip | grep -v caf | sort >got  # tar prints names in the ANSI code page

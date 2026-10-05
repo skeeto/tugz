@@ -33,14 +33,23 @@ typedef struct {
     u64 ino[2];  // is zero (unknown); 128 bits on Windows
 } os_info;
 
+// A directory entry, with what the listing itself tells of the file:
+// info as os_stat would report it following links, but with an unknown
+// identity, or type FT_NONE where the listing does not tell (always for
+// links), in which case os_stat must examine it.
+typedef struct {
+    s8      name;
+    os_info info;
+} os_dirent;
+
 // Returns false if the path does not exist or cannot be examined. With
 // follow, symbolic links are followed; otherwise a link is FT_LINK.
 static b32  os_stat(os *, s8 path, b32 follow, os_info *, arena scratch);
-// Names within a directory, excluding . and .., in any order. Unless
+// Entries within a directory, excluding . and .., in any order. Unless
 // all, hidden and system entries (Windows) are left out, judged by the
 // entry itself rather than a link's target. Returns null on error.
-static s8  *os_listdir(os *, s8 path, b32 all, iz *count, arena *perm,
-                       arena scratch);
+static os_dirent *os_listdir(os *, s8 path, b32 all, iz *count,
+                             arena *perm, arena scratch);
 // Target of a symbolic link, or a null string on error.
 static s8   os_readlink(os *, s8 path, arena *perm, arena scratch);
 // Positioned reads and writes of exactly len bytes, which may not be
@@ -95,6 +104,12 @@ typedef struct {
     iz  len;
     iz  cap;
 } s8s;
+
+typedef struct {
+    os_dirent *data;
+    iz         len;
+    iz         cap;
+} os_dirents;
 
 typedef struct {
     s8      path;  // on the file system
@@ -212,17 +227,18 @@ static i32 zcompare(s8 a, s8 b)
     return r ? r : a.len<b.len ? -1 : a.len>b.len;
 }
 
-// Stable bottom-up merge sort of strings by bytes.
-static void zsort(s8 *v, iz n, arena scratch)
+// Stable bottom-up merge sort of directory entries by name bytes.
+static void zsort(os_dirent *v, iz n, arena scratch)
 {
-    s8 *tmp = new(&scratch, n, s8);
+    os_dirent *tmp = new(&scratch, n, os_dirent);
     for (iz w = 1; w < n; w *= 2) {
         for (iz lo = 0; lo < n; lo += 2*w) {
             iz mid = MIN(lo+w, n);
             iz hi  = MIN(lo+2*w, n);
             iz i = lo, j = mid, k = lo;
             while (i<mid && j<hi) {
-                tmp[k++] = zcompare(v[j], v[i])<0 ? v[j++] : v[i++];
+                b32 lt = zcompare(v[j].name, v[i].name) < 0;
+                tmp[k++] = lt ? v[j++] : v[i++];
             }
             while (i < mid) {
                 tmp[k++] = v[i++];
@@ -587,6 +603,15 @@ static b32 same_file(os_info *a, os_info *b)
            a->ino[0]==b->ino[0] && a->ino[1]==b->ino[1];
 }
 
+// Whether a listing tells enough to skip os_stat, saving a handle per
+// file on Windows. It lacks identity, which a directory needs to detect
+// loops, and a file only if, being the archive's size, it may be that.
+static b32 listed(zip *z, os_info *info)
+{
+    return info->type==FT_FILE &&
+           (!z->arcexists || info->size!=z->arcinfo.size);
+}
+
 static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
 {
     if (z->arcexists && info->type==FT_FILE && same_file(info, &z->arcinfo)) {
@@ -659,8 +684,9 @@ static void scan(zip *z, s8 path, s8 name, os_info *info, dirid *up,
     }
     dirid self = {up, info};
 
-    iz  n    = 0;
-    s8 *kids = os_listdir(z->ctx, path, z->hidden, &n, &scratch, scratch);
+    iz         n    = 0;
+    os_dirent *kids = os_listdir(z->ctx, path, z->hidden, &n, &scratch,
+                                 scratch);
     if (!kids) {
         warn(z, S("could not read directory: "), path, scratch);
         z->status = ZE_OPEN;
@@ -670,16 +696,17 @@ static void scan(zip *z, s8 path, s8 name, os_info *info, dirid *up,
 
     s8 sep = path.len && is_sep(z, path.s[path.len-1]) ? S("") : S("/");
     for (iz i = 0; i < n; i++) {
-        s8 kpath = JOIN(&z->perm, path, sep, kids[i]);
-        s8 kname = JOIN(&z->perm, z->junk ? S("") : dname, kids[i]);
-        os_info k = {0};
-        if (!os_stat(z->ctx, kpath, !z->symlinks, &k, scratch)) {
+        s8 kpath = JOIN(&z->perm, path, sep, kids[i].name);
+        s8 kname = JOIN(&z->perm, z->junk ? S("") : dname, kids[i].name);
+        os_info *k = &kids[i].info;
+        if (!listed(z, k) && !os_stat(z->ctx, kpath, !z->symlinks, k,
+                                      scratch)) {
             warn(z, S("could not open for reading: "), kpath, scratch);
             z->status = ZE_OPEN;
             z->nskipped++;
             continue;
         }
-        scan(z, kpath, kname, &k, &self, scratch);
+        scan(z, kpath, kname, k, &self, scratch);
     }
 }
 
@@ -710,8 +737,9 @@ static iz expand(zip *z, s8 path, arena scratch)
     s8 dir  = beg ? (s8){path.s, beg} : S(".");
     s8 pat  = {path.s+beg, end-beg};
     s8 rest = {path.s+end, path.len-end};
-    iz  n    = 0;
-    s8 *kids = os_listdir(z->ctx, dir, z->hidden, &n, &scratch, scratch);
+    iz         n    = 0;
+    os_dirent *kids = os_listdir(z->ctx, dir, z->hidden, &n, &scratch,
+                                 scratch);
     if (!kids) {
         return 0;
     }
@@ -719,17 +747,20 @@ static iz expand(zip *z, s8 path, arena scratch)
 
     iz count = 0;
     for (iz i = 0; i < n; i++) {
-        if (!zip_match(pat, kids[i], ZIP_FOLD)) {
+        if (!zip_match(pat, kids[i].name, ZIP_FOLD)) {
             continue;
         }
-        s8 cand = JOIN(&z->perm, (s8){path.s, beg}, kids[i], rest);
+        s8 cand = JOIN(&z->perm, (s8){path.s, beg}, kids[i].name, rest);
         if (zip_haswild(rest, 0)) {
             count += expand(z, cand, scratch);
             continue;
         }
-        os_info info = {0};
-        if (os_stat(z->ctx, cand, !z->symlinks, &info, scratch)) {
-            scan(z, cand, arg_name(z, cand), &info, 0, scratch);
+        // The listing describes the match only if nothing follows it, and
+        // a bare name, like an argument, may instead name a device (NUL)
+        os_info *info  = &kids[i].info;
+        b32      known = beg && !rest.len && listed(z, info);
+        if (known || os_stat(z->ctx, cand, !z->symlinks, info, scratch)) {
+            scan(z, cand, arg_name(z, cand), info, 0, scratch);
             count++;
         }
     }

@@ -41,8 +41,9 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
     return 1;
 }
 
-static s8 *os_listdir(os *ctx, s8 path, b32 all, iz *count, arena *perm,
-                      arena scratch)
+// Entries tell only names: each is left for os_stat.
+static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
+                             arena *perm, arena scratch)
 {
     (void)ctx;
     (void)all;  // no hidden or system attributes
@@ -50,7 +51,7 @@ static s8 *os_listdir(os *ctx, s8 path, b32 all, iz *count, arena *perm,
     if (!d) {
         return 0;
     }
-    s8s names = {0};
+    os_dirents names = {0};
     for (;;) {
         errno = 0;  // distinguishes an error from the end
         struct dirent *e = readdir(d);
@@ -63,7 +64,7 @@ static s8 *os_listdir(os *ctx, s8 path, b32 all, iz *count, arena *perm,
         }
         s8 copy = {newbytes(perm, name.len), name.len};
         bytecopy(copy.s, name.s, name.len);
-        *push(perm, &names) = copy;
+        *push(perm, &names) = (os_dirent){copy, {0}};  // type FT_NONE
     }
     int err = errno;
     closedir(d);
@@ -71,7 +72,7 @@ static s8 *os_listdir(os *ctx, s8 path, b32 all, iz *count, arena *perm,
         return 0;
     }
     *count = names.len;
-    return names.data ? names.data : new(perm, 1, s8);
+    return names.data ? names.data : new(perm, 1, os_dirent);
 }
 
 static s8 os_readlink(os *ctx, s8 path, arena *perm, arena scratch)

@@ -173,6 +173,10 @@ the file is flushed and closed without error), and
   opened. Links and junctions are followed; cycles are detected by file
   identity, the 128-bit `FileIdInfo` where available (64-bit indexes
   are not unique on ReFS). An unknown (zero) ID matches nothing.
+  Recursion takes plain files' attributes, size, and times from the
+  listing, opening only directories, links, and files the size of the
+  archive, whose identity it needs. (A directory entry can lag for a
+  file changed through another of its hard links, as Microsoft notes.)
 - libdeflate issue #323: Windows' zip folder rejects incomplete Huffman
   codes (such as a lone distance code in a block with at most one
   distinct distance), which DEFLATE permits. `huff_build` always codes at

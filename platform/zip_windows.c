@@ -127,9 +127,14 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
 
 // Hidden and system entries are judged by the attributes in the listing,
 // which are a link's own, as Info-ZIP does, and which need no handle to
-// the file (some, like pagefile.sys, cannot be opened at all).
-static s8 *os_listdir(os *ctx, s8 path, b32 all, iz *count, arena *perm,
-                      arena scratch)
+// the file (some, like pagefile.sys, cannot be opened at all). Plain
+// files and directories are described from the listing too, so that
+// scanning opens only those whose identity it needs. Links, and other
+// reparse points, are left to os_stat, which follows them. A directory
+// entry's size and times can lag for a file changed through another of
+// its hard links, as Microsoft documents, where a handle's would not.
+static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
+                             arena *perm, arena scratch)
 {
     (void)ctx;
     c16 *wpath = winpath(&scratch, path);
@@ -140,7 +145,7 @@ static s8 *os_listdir(os *ctx, s8 path, b32 all, iz *count, arena *perm,
     b32 sep = dir.len && dir.s[dir.len-1]=='\\';
     c16 *pattern = s16cat(&scratch, dir, s16lit(sep ? L"*" : L"\\*"));
 
-    s8s names = {0};
+    os_dirents list = {0};
     find_data fd = {0};
     iptr h = FindFirstFileExW(pattern, 1, &fd, 0, 0,
                               FIND_FIRST_EX_LARGE_FETCH);
@@ -157,8 +162,18 @@ static s8 *os_listdir(os *ctx, s8 path, b32 all, iz *count, arena *perm,
                 continue;
             }
             s8 name = towtf8(perm, fd.name);
-            if (!zequals(name, S(".")) && !zequals(name, S(".."))) {
-                *push(perm, &names) = name;
+            if (zequals(name, S(".")) || zequals(name, S(".."))) {
+                continue;
+            }
+            os_dirent *e = push(perm, &list);
+            *e = (os_dirent){name, {0}};  // type FT_NONE
+            if (!(fd.attributes & FILE_ATTRIBUTE_REPARSE)) {
+                b32 isdir = fd.attributes & FILE_ATTRIBUTE_DIRECTORY;
+                e->info.type  = isdir ? FT_DIR : FT_FILE;
+                e->info.size  = (i64)((u64)fd.size_hi<<32 | fd.size_lo);
+                e->info.mtime = unixtime(fd.written);
+                e->info.atime = unixtime(fd.accessed);
+                e->info.attr  = fd.attributes;
             }
         } while (FindNextFileW(h, &fd));
         b32 done = GetLastError() == ERROR_NO_MORE_FILES;
@@ -167,8 +182,8 @@ static s8 *os_listdir(os *ctx, s8 path, b32 all, iz *count, arena *perm,
             return 0;  // not a partial listing
         }
     }
-    *count = names.len;
-    return names.data ? names.data : new(perm, 1, s8);
+    *count = list.len;
+    return list.data ? list.data : new(perm, 1, os_dirent);
 }
 
 static s8 os_readlink(os *ctx, s8 path, arena *perm, arena scratch)
