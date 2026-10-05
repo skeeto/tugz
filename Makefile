@@ -32,7 +32,8 @@ gzip-debug: platform/gzip_posix.c $(POSIX) $(SRC)
 	$(CC) $(DEBUG) -o $@ platform/gzip_posix.c
 
 gzip.exe: platform/gzip_windows.c $(WINDOWS) $(SRC)
-	$(CROSS)gcc $(OPT) $(WARN) $(WIN32_CFLAGS) -o $@ platform/gzip_windows.c $(WIN32_LIBS)
+	$(CROSS)gcc $(OPT) $(WARN) $(WIN32_CFLAGS) -o $@ \
+	    platform/gzip_windows.c $(WIN32_LIBS)
 
 zip: platform/zip_posix.c $(POSIX) $(ZIPSRC)
 	$(CC) $(OPT) $(WARN) -o $@ platform/zip_posix.c
@@ -41,7 +42,8 @@ zip-debug: platform/zip_posix.c $(POSIX) $(ZIPSRC)
 	$(CC) $(DEBUG) -o $@ platform/zip_posix.c
 
 zip.exe: platform/zip_windows.c $(WINDOWS) $(ZIPSRC)
-	$(CROSS)gcc $(OPT) $(WARN) $(WIN32_CFLAGS) -o $@ platform/zip_windows.c $(WIN32_LIBS)
+	$(CROSS)gcc $(OPT) $(WARN) $(WIN32_CFLAGS) -o $@ \
+	    platform/zip_windows.c $(WIN32_LIBS)
 
 # Single-file Windows source, e.g. for w64devkit. The header carries the
 # version and build command; local includes are dropped.
@@ -122,8 +124,9 @@ bench: test/bench.c $(SRC)
 	$(CC) -O2 $(WARN) -Wno-unused-function -o $@ test/bench.c $(REFLIBS)
 
 clean:
-	rm -rf gzip gzip-debug gzip.exe gzip.c zip zip-debug zip.exe zip.c tests tests-zip tests-lib bench *.dSYM \
-	       libtugz.o tugz.c \
-	       fuzz-inflate fuzz-roundtrip fuzz-diff-inflate fuzz-diff-deflate
+	rm -rf gzip gzip-debug gzip.exe gzip.c zip zip-debug zip.exe zip.c \
+	       tests tests-zip tests-lib bench *.dSYM libtugz.o tugz.c \
+	       fuzz-inflate fuzz-roundtrip fuzz-diff-inflate \
+	       fuzz-diff-deflate fuzz-zipread
 
 .PHONY: amalgamation check fuzz fuzz-seeds clean
