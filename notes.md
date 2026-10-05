@@ -578,6 +578,21 @@ Fuzzers:
   `ulimit -v 200000` both builds exit 4 with that message and leave no
   temporary file. Raspberry Pi 4: 100K files of 100 bytes 3.6 s and
   41 MB (8.9 s, 44 MB), 250K files 5.3 s (14.3 s).
+- zip's lazy POSIX commit, measured in overcommit mode 0 by each
+  process's charged mappings (`VmFlags` `ac` in `/proc/PID/smaps`) and
+  `Committed_AS`. The old reservation without `MAP_NORESERVE`, as
+  strict overcommit charges it, cost 16 GiB at startup in WSL (1 GiB
+  for `-m32`, 4 GiB on the Pi, whose heuristic refused more). The
+  `PROT_NONE` one costs 1 MiB at startup and then what is claimed:
+  129 MiB after reading 64 MiB of `-@` names, 257 MiB after 192 MiB.
+  Under `ulimit -v` and `ulimit -d` (which refuses the `mprotect`, the
+  strict overcommit path), the x86-64, i386, and aarch64 builds, and
+  the `/dev/zero` build forced on Linux, complete small runs, exit 4 on
+  100K or 1M files with no archive or temporary file, and leave an
+  archive being updated untouched. No cost: user+sys for 100K and 1M
+  empty files is unchanged on the Mac (1.71 s, 27.3 s) and in WSL
+  (0.28 s, 2.9 s), and within noise on a loaded Pi (100K, mean of 8:
+  2.28 s before, 2.30 s after).
 
 ## Behavior decisions
 
