@@ -915,10 +915,10 @@ static iz src_read(zip *z, zsrc *s, u8 *buf, iz cap)
 }
 
 typedef struct {
-    zout  *out;
-    u8    *buf;   // input buffer
-    iz     cap;
-    arena  defmem;
+    zout     *out;
+    u8       *buf;  // input buffer
+    iz        cap;
+    deflator *def;  // reset for each entry
 } zwork;
 
 static void store_data(zip *z, zwork *k, zsrc *s, u32 *crc, i64 *usize)
@@ -932,8 +932,8 @@ static void store_data(zip *z, zwork *k, zsrc *s, u32 *crc, i64 *usize)
 
 static void deflate_data(zip *z, zwork *k, zsrc *s, u32 *crc, i64 *usize)
 {
-    arena     a = k->defmem;
-    deflator *d = deflate_new(&a, z->level);
+    deflator *d = k->def;
+    deflate_reset(d);
     for (b32 more = 1; more;) {
         iz n = src_read(z, s, k->buf, k->cap);
         more = n > 0;
@@ -1218,10 +1218,8 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     k.cap = 1 << 18;
     k.buf = newbytes(&scratch, k.cap);
     if (z->level) {
-        iz size = deflate_memsize();
-        k.defmem.beg = (byte *)newbytes(&scratch, size);
-        k.defmem.end = k.defmem.beg + size;
-        k.defmem.ctx = z->ctx;
+        arena a = subarena(&scratch, deflate_memsize());
+        k.def = deflate_new(&a, z->level);
     }
 
     zentry *entries = new(&scratch, items->len, zentry);

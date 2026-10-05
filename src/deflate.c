@@ -34,6 +34,7 @@
 #define NOBS          10    // block split observation categories
 #define OBS_BATCH     512   // observations between block split checks
 #define MIN_BLOCK     10000 // minimum block size in bytes for splitting
+#define FORGET_REHASH 8192  // longest history to clear by rehashing
 
 // Flush modes, matching the library's
 enum {
@@ -347,48 +348,6 @@ static void huff_build(htree *t, u32 const *freq, i32 n, i32 maxlen)
     huff_codes(t, n);
 }
 
-// Memory needed by deflate_new, including alignment padding.
-static iz deflate_memsize(void)
-{
-    return (iz)sizeof(deflator) + WIN_CAP + 2*HASH_SIZE*(iz)sizeof(u32) +
-           2*DEF_WSIZE*(iz)sizeof(u32) + TOK_CAP*(iz)sizeof(token) +
-           DEF_STAGE + 8*64;
-}
-
-// Levels 1 through 9; others are clamped.
-static deflator *deflate_new(arena *a, i32 level)
-{
-    deflator *d = new(a, 1, deflator);
-    d->obuf  = newbytes(a, DEF_STAGE);
-    d->lvl   = deflate_levels[MAX(1, MIN(level, 9))];
-    d->win   = newbytes(a, WIN_CAP);
-    d->head  = new(a, HASH_SIZE, u32);
-    d->prev  = new(a, DEF_WSIZE, u32);
-    d->head3 = new(a, HASH_SIZE, u32);
-    d->prev3 = new(a, DEF_WSIZE, u32);
-    d->toks  = new(a, TOK_CAP, token);
-
-    for (i32 i = 0; i < 288; i++) {
-        d->fixlit.len[i] = (u8)(i<144 ? 8 : i<256 ? 9 : i<280 ? 7 : 8);
-    }
-    huff_codes(&d->fixlit, 288);
-    for (i32 i = 0; i < NDIST; i++) {
-        d->fixdist.len[i] = 5;
-    }
-    huff_codes(&d->fixdist, NDIST);
-
-    for (i32 len = MIN_MATCH; len <= MAX_MATCH; len++) {
-        d->lcode[len] = (u8)length_code(len);
-    }
-    for (i32 dist = 1; dist <= 256; dist++) {
-        d->dcode[dist-1] = (u8)dist_code(dist);
-    }
-    for (i32 i = 2; i < 256; i++) {
-        d->dcode[256+i] = (u8)dist_code((i<<7) + 1);
-    }
-    return d;
-}
-
 // Append n bits, n <= 32. Whole bytes spill into the staging buffer
 // 8 bytes at a time once 32 or more bits accumulate.
 static void bw_put(deflator *d, u64 v, i32 n)
@@ -630,6 +589,18 @@ static void emit_dynamic(deflator *d, dynblock *b)
     emit_tokens(d, &b->lt, &b->dt);
 }
 
+// Empty the token buffer and its statistics for the next block.
+static void clear_block(deflator *d)
+{
+    d->ntok = 0;
+    d->blk_len = 0;
+    bytefill(d->lit_freq, 0, sizeof(d->lit_freq));
+    bytefill(d->dist_freq, 0, sizeof(d->dist_freq));
+    bytefill(d->obs, 0, sizeof(d->obs));
+    bytefill(d->newobs, 0, sizeof(d->newobs));
+    d->nobs = d->nnewobs = 0;
+}
+
 static void flush_block(deflator *d, b32 final)
 {
     if (!d->ntok) {
@@ -669,13 +640,7 @@ static void flush_block(deflator *d, b32 final)
         }
     }
 
-    d->ntok = 0;
-    d->blk_len = 0;
-    bytefill(d->lit_freq, 0, sizeof(d->lit_freq));
-    bytefill(d->dist_freq, 0, sizeof(d->dist_freq));
-    bytefill(d->obs, 0, sizeof(d->obs));
-    bytefill(d->newobs, 0, sizeof(d->newobs));
-    d->nobs = d->nnewobs = 0;
+    clear_block(d);
 }
 
 // Decide whether the latest batch of observations differs enough from
@@ -881,7 +846,8 @@ static match match_at(deflator *d, iz p, i32 depth)
 }
 
 // Decide whether 3-byte matching is worthwhile by sampling how often
-// 4-byte hashes collide in the first part of the input.
+// 4-byte hashes collide in the first part of the input. The 3-byte heads,
+// still empty, briefly serve as a bitmap of the hashes seen.
 static void sample(deflator *d)
 {
     d->sampled = 1;
@@ -889,13 +855,15 @@ static void sample(deflator *d)
     if (n < 64) {
         return;
     }
-    u32 hits = 0;
+    u32 *seen = d->head3;
+    u32  hits = 0;
     for (iz i = 0; i+4 <= n; i++) {
-        u32 h = hash4(load32(d->win + i));
-        hits += d->head3[h] != 0;
-        d->head3[h] = 1;
+        u32 h   = hash4(load32(d->win + i));
+        u32 bit = (u32)1 << (h & 31);
+        hits += (seen[h>>5] & bit) != 0;
+        seen[h>>5] |= bit;
     }
-    bytefill(d->head3, 0, HASH_SIZE*(iz)sizeof(u32));
+    bytefill(seen, 0, HASH_SIZE/8);
     d->use3 = (u64)hits*10 < (u64)(n - 3)*7;
 }
 
@@ -975,6 +943,96 @@ static void slide(deflator *d)
     }
 }
 
+// Forget all history by emptying the hash chains. Clearing the heads is
+// enough: chains then lead only to positions inserted afterward, whose
+// links are written on insertion. Positions inserted since the heads
+// were last empty all lie below ins, still in the window (a slide empties
+// the heads of positions it discards), so after a short history it is
+// cheaper to rehash them and clear only their slots.
+static void forget(deflator *d)
+{
+    iz n = MIN(d->ins, d->win_len - (HASH_LEN - 1));
+    if (n > FORGET_REHASH) {
+        bytefill(d->head, 0, HASH_SIZE*(iz)sizeof(u32));
+        if (d->use3) {
+            bytefill(d->head3, 0, HASH_SIZE*(iz)sizeof(u32));
+        }
+        return;
+    }
+    for (iz p = 0; p < n; p++) {
+        u32 v = load32(d->win + p);
+        d->head[hash4(v)] = 0;
+        if (d->use3) {
+            d->head3[hash3(v)] = 0;
+        }
+    }
+}
+
+// Prepare to compress a new stream at the same level. This costs time in
+// proportion to the previous stream, up to clearing the hash heads, and
+// so is far cheaper than deflate_new for short streams.
+static void deflate_reset(deflator *d)
+{
+    forget(d);
+    d->olen       = d->ooff = 0;
+    d->blkready   = d->flushing = d->finished = 0;
+    d->win_len    = 0;
+    d->base       = 0;
+    d->pos        = d->ins = 0;
+    d->sampled    = d->use3 = 0;
+    d->blk_start  = 0;
+    d->pend_start = 0;
+    d->pend_len   = 0;
+    d->bitbuf     = 0;
+    d->bitcnt     = 0;
+    clear_block(d);
+}
+
+// Memory needed by deflate_new, including alignment padding.
+static iz deflate_memsize(void)
+{
+    return (iz)sizeof(deflator) + WIN_CAP + 2*HASH_SIZE*(iz)sizeof(u32) +
+           2*DEF_WSIZE*(iz)sizeof(u32) + TOK_CAP*(iz)sizeof(token) +
+           DEF_STAGE + 8*64;
+}
+
+// Levels 1 through 9; others are clamped. Tokens and chain links are
+// always written before they are used (see forget), so of the large
+// tables only the hash heads start zeroed.
+static deflator *deflate_new(arena *a, i32 level)
+{
+    deflator *d = new(a, 1, deflator);
+    d->obuf  = newbytes(a, DEF_STAGE);
+    d->lvl   = deflate_levels[MAX(1, MIN(level, 9))];
+    d->win   = newbytes(a, WIN_CAP);
+    d->head  = new(a, HASH_SIZE, u32);
+    d->prev  = alloc(a, DEF_WSIZE, sizeof(u32), _Alignof(u32), 0);
+    d->head3 = new(a, HASH_SIZE, u32);
+    d->prev3 = alloc(a, DEF_WSIZE, sizeof(u32), _Alignof(u32), 0);
+    d->toks  = alloc(a, TOK_CAP, sizeof(token), _Alignof(token), 0);
+
+    for (i32 i = 0; i < 288; i++) {
+        d->fixlit.len[i] = (u8)(i<144 ? 8 : i<256 ? 9 : i<280 ? 7 : 8);
+    }
+    huff_codes(&d->fixlit, 288);
+    for (i32 i = 0; i < NDIST; i++) {
+        d->fixdist.len[i] = 5;
+    }
+    huff_codes(&d->fixdist, NDIST);
+
+    for (i32 len = MIN_MATCH; len <= MAX_MATCH; len++) {
+        d->lcode[len] = (u8)length_code(len);
+    }
+    for (i32 dist = 1; dist <= 256; dist++) {
+        d->dcode[dist-1] = (u8)dist_code(dist);
+    }
+    for (i32 i = 2; i < 256; i++) {
+        d->dcode[256+i] = (u8)dist_code((i<<7) + 1);
+    }
+    deflate_reset(d);
+    return d;
+}
+
 // Ensure staging room for one emission step, compacting if needed.
 static b32 def_room(deflator *d)
 {
@@ -1030,10 +1088,7 @@ static void def_flush(deflator *d, i32 flush)
         flush_pending(d, 0);
         emit_stored_chunk(d, 0, 0, 0);
         if (flush == DEF_FULL) {
-            bytefill(d->head,  0, HASH_SIZE*(iz)sizeof(u32));
-            bytefill(d->prev,  0, DEF_WSIZE*(iz)sizeof(u32));
-            bytefill(d->head3, 0, HASH_SIZE*(iz)sizeof(u32));
-            bytefill(d->prev3, 0, DEF_WSIZE*(iz)sizeof(u32));
+            forget(d);
             d->ins = d->pos;
         }
         break;

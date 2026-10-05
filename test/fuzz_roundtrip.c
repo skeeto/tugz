@@ -1,10 +1,49 @@
 // libFuzzer harness: compress then decompress must reproduce the input
 // The first bytes select the level, push size, and stream offset. Output
-// must also be identical regardless of push size and offset, and must
-// decompress identically under zlib.
+// must also be identical regardless of push size and offset, and from a
+// deflator reset after another stream, and must decompress identically
+// under zlib.
 // $ clang -g -O1 -fsanitize=fuzzer,address,undefined test/fuzz_roundtrip.c -lz
 #include "fuzzos.c"
 #include <zlib.h>
+
+// Compress all input with a flush, appending output to env->ctx.out.
+static void deflate_all(fuzzenv *env, deflator *d, u8 const *in, iz len,
+                        i32 flush)
+{
+    zbuf b = {in, len, 0, 0};
+    for (;;) {
+        i32 status = deflate_stream(d, &b, flush);
+        s8  p = deflate_pending(d);
+        CHECK(p.len <= env->ctx.outcap-env->ctx.outlen);
+        memcpy(env->ctx.out+env->ctx.outlen, p.s, (uz)p.len);
+        env->ctx.outlen += p.len;
+        deflate_consume(d, p.len);
+        if (status != GZ_NEEDOUT) {
+            CHECK(status == (flush==DEF_NONE ? GZ_NEEDIN : GZ_OK));
+            return;
+        }
+    }
+}
+
+// Raw deflate with a deflator that first compressed the input repeated
+// one to eight times, through a sync flush or to the end, then was reset.
+// Output goes to env->ctx.out.
+static void reused_deflate(fuzzenv *env, u8 const *in, iz len, i32 level,
+                           u8 how)
+{
+    arena a = env->perm;
+    deflator *d = deflate_new(&a, level);
+    env->ctx.outlen = 0;
+    i32 reps = 1 + (how>>1)%8;
+    for (i32 i = 0; i < reps; i++) {
+        i32 flush = i<reps-1 ? DEF_NONE : how&1 ? DEF_FINISH : DEF_SYNC;
+        deflate_all(env, d, in, len, flush);
+    }
+    deflate_reset(d);
+    env->ctx.outlen = 0;
+    deflate_all(env, d, in, len, DEF_FINISH);
+}
 
 int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
 {
@@ -28,6 +67,10 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     memcpy(z, env->ctx.out, (uz)zlen);
 
     fuzz_deflate(env, in, len, level, piece, base);
+    CHECK(env->ctx.outlen == zlen);
+    CHECK(!memcmp(env->ctx.out, z, (uz)zlen));
+
+    reused_deflate(env, in, len, level, data[2]);
     CHECK(env->ctx.outlen == zlen);
     CHECK(!memcmp(env->ctx.out, z, (uz)zlen));
 

@@ -98,6 +98,13 @@ CPU models with and without PCLMUL.
   hash chains so no match reaches behind the flush. zlib headers match
   zlib's byte for byte (FLEVEL). gzip decoding stops after each member;
   the program's driver applies the GNU trailing-data policy.
+- Of the deflator's large tables only the hash heads start zeroed:
+  tokens and chain links are always written before use. Forgetting
+  history (a FULL flush, or `deflate_reset` before a new stream) clears
+  the heads by rehashing the inserted positions when there are at most
+  8192, else by zeroing them, so a reused deflator costs time in
+  proportion to the stream, not the table sizes. zip resets one deflator
+  per entry; a fresh deflator still zeroes 512 KiB.
 - Programs reach the buffers without copying (`*_pending`/`*_consume`),
   so the program's throughput is unchanged by the restructure.
 - `make libtugz.o` builds an object exporting only `tugz_*` (no writable
