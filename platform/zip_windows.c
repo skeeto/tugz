@@ -35,21 +35,31 @@ typedef struct {
     c16  name[];
 } rename_info;
 
+typedef struct {
+    u64 volume;
+    u64 id[2];  // 128 bits
+} file_id_info;
+
 W32(b32)  FindClose(iptr);
 W32(iptr) FindFirstFileExW(c16 *, i32, find_data *, i32, uptr, u32);
 W32(b32)  FindNextFileW(iptr, find_data *);
 W32(u32)  GetEnvironmentVariableW(c16 *, c16 *, u32);
 W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 
+#define FILE_ATTRIBUTE_HIDDEN      0x02u
+#define FILE_ATTRIBUTE_SYSTEM      0x04u
 #define FILE_READ_ATTRIBUTES       0x80u
 #define FILE_FLAG_BACKUP_SEMANTICS 0x02000000u
 #define FIND_FIRST_EX_LARGE_FETCH  2u
 #define FILE_RENAME_REPLACE        1u
 #define FILE_RENAME_POSIX          2u
+#define ERROR_FILE_NOT_FOUND       2u
+#define ERROR_NO_MORE_FILES        18u
 
 enum {
     FileRenameInfo    = 3,
     FileEndOfFileInfo = 6,
+    FileIdInfo        = 18,
     FileRenameInfoEx  = 22,
 };
 
@@ -77,28 +87,46 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
         return 0;
     }
     by_handle_info bh = {0};
+    file_id_info   id = {0};
     b32 ok   = GetFileInformationByHandle(h, &bh);
+    b32 isid = GetFileInformationByHandleEx(h, FileIdInfo, &id, sizeof(id));
     u32 type = GetFileType(h);
     CloseHandle(h);
     if (!ok) {
         return 0;
     }
 
+    // The 64-bit index is not unique on ReFS, so prefer the 128-bit ID,
+    // available from Windows 8 where the file system supports it. An ID
+    // of all zero or all one bits is unknown.
+    if (!isid) {
+        id.volume = bh.volume;
+        id.id[0]  = (u64)bh.index_hi<<32 | bh.index_lo;
+        id.id[1]  = 0;
+    }
+    if (id.id[0]==(u64)-1 && (id.id[1]==(u64)-1 || !id.id[1])) {
+        id.id[0] = id.id[1] = 0;
+    }
+
     b32 dir = bh.attributes & FILE_ATTRIBUTE_DIRECTORY;
-    info->type  = dir ? FT_DIR : type==FILE_TYPE_DISK ? FT_FILE : FT_OTHER;
-    info->size  = (i64)((u64)bh.size_hi<<32 | bh.size_lo);
-    info->mtime = unixtime(bh.written);
-    info->atime = unixtime(bh.accessed);
-    info->mode  = 0;
-    info->attr  = bh.attributes;
-    info->uid   = 0;
-    info->gid   = 0;
-    info->dev   = bh.volume;
-    info->ino   = (u64)bh.index_hi<<32 | bh.index_lo;
+    info->type   = dir ? FT_DIR : type==FILE_TYPE_DISK ? FT_FILE : FT_OTHER;
+    info->size   = (i64)((u64)bh.size_hi<<32 | bh.size_lo);
+    info->mtime  = unixtime(bh.written);
+    info->atime  = unixtime(bh.accessed);
+    info->mode   = 0;
+    info->attr   = bh.attributes;
+    info->uid    = 0;
+    info->gid    = 0;
+    info->dev    = id.volume;
+    info->ino[0] = id.id[0];
+    info->ino[1] = id.id[1];
     return 1;
 }
 
-static s8 *os_listdir(os *ctx, s8 path, iz *count, arena *perm,
+// Hidden and system entries are judged by the attributes in the listing,
+// which are a link's own, as Info-ZIP does, and which need no handle to
+// the file (some, like pagefile.sys, cannot be opened at all).
+static s8 *os_listdir(os *ctx, s8 path, b32 all, iz *count, arena *perm,
                       arena scratch)
 {
     (void)ctx;
@@ -110,20 +138,33 @@ static s8 *os_listdir(os *ctx, s8 path, iz *count, arena *perm,
     b32 sep = dir.len && dir.s[dir.len-1]=='\\';
     c16 *pattern = s16cat(&scratch, dir, s16lit(sep ? L"*" : L"\\*"));
 
+    s8s names = {0};
     find_data fd = {0};
     iptr h = FindFirstFileExW(pattern, 1, &fd, 0, 0,
                               FIND_FIRST_EX_LARGE_FETCH);
     if (h == INVALID_HANDLE_VALUE) {
-        return 0;
-    }
-    s8s names = {0};
-    do {
-        s8 name = towtf8(perm, fd.name);
-        if (!zequals(name, S(".")) && !zequals(name, S(".."))) {
-            *push(perm, &names) = name;
+        // Nothing matched: an empty directory without . and .., such as
+        // an empty drive's root. A missing directory is PATH_NOT_FOUND.
+        if (GetLastError() != ERROR_FILE_NOT_FOUND) {
+            return 0;
         }
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
+    } else {
+        u32 skip = all ? 0 : FILE_ATTRIBUTE_HIDDEN|FILE_ATTRIBUTE_SYSTEM;
+        do {
+            if (fd.attributes & skip) {
+                continue;
+            }
+            s8 name = towtf8(perm, fd.name);
+            if (!zequals(name, S(".")) && !zequals(name, S(".."))) {
+                *push(perm, &names) = name;
+            }
+        } while (FindNextFileW(h, &fd));
+        b32 done = GetLastError() == ERROR_NO_MORE_FILES;
+        FindClose(h);
+        if (!done) {
+            return 0;  // not a partial listing
+        }
+    }
     *count = names.len;
     return names.data ? names.data : new(perm, 1, s8);
 }

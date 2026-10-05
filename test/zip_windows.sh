@@ -103,6 +103,16 @@ list h.zip | grep -q hidden && fail "hidden file included"
 list h2.zip | grep -q hidden.txt || fail "-S omitted hidden file"
 list h2.zip | grep -q system.txt || fail "-S omitted system file"
 
+# ...judged by the directory entry, as Info-ZIP does: a junction to a
+# hidden directory is followed
+mkdir hid jt
+printf j >hid/j.txt
+ps "\$d = Get-Item hid;
+    \$d.Attributes = \$d.Attributes -bor [IO.FileAttributes]::Hidden;
+    New-Item -ItemType Junction -Path jt\\link -Target \$d.FullName | Out-Null"
+"$ZIP" -qr jt.zip jt
+list jt.zip | grep -qx jt/link/j.txt || fail "junction to a hidden directory"
+
 # Wildcards are expanded by zip, case-insensitively, either separator
 "$ZIP" -q w1.zip 'tree/*.txt'
 list w1.zip | grep -v caf | sort >got  # tar prints names in the ANSI code page

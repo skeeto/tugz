@@ -155,9 +155,12 @@ portable format layer (`src/zip.c`, no I/O, fuzzed) and a driver
   `//server/share/` prefix, as Info-ZIP's do, and likewise a device
   path's `//?/X:/` or `//?/UNC/server/share/`. Wildcard arguments are
   expanded per component, case-insensitively, without `[sets]` (as
-  Info-ZIP on Windows). Recursion skips hidden and system files unless
-  `-S`. Links and junctions are followed; cycles are detected by file
-  identity.
+  Info-ZIP on Windows). Recursion and wildcards skip hidden and system
+  entries unless `-S`, judged as Info-ZIP does by the listing (a link's
+  own attributes), so that unopenable ones like `pagefile.sys` are never
+  opened. Links and junctions are followed; cycles are detected by file
+  identity, the 128-bit `FileIdInfo` where available (64-bit indexes
+  are not unique on ReFS). An unknown (zero) ID matches nothing.
 - libdeflate issue #323: Windows' zip folder rejects incomplete Huffman
   codes (such as a lone distance code in a block with at most one
   distinct distance), which DEFLATE permits. `huff_build` always codes at

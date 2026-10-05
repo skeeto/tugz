@@ -35,14 +35,16 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
     info->uid   = (u32)st.st_uid;
     info->gid   = (u32)st.st_gid;
     info->dev   = (u64)st.st_dev;
-    info->ino   = (u64)st.st_ino;
+    info->ino[0] = (u64)st.st_ino;
+    info->ino[1] = 0;
     return 1;
 }
 
-static s8 *os_listdir(os *ctx, s8 path, iz *count, arena *perm,
+static s8 *os_listdir(os *ctx, s8 path, b32 all, iz *count, arena *perm,
                       arena scratch)
 {
     (void)ctx;
+    (void)all;  // no hidden or system attributes
     DIR *d = opendir(tocstr(&scratch, path));
     if (!d) {
         return 0;
