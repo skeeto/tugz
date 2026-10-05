@@ -8,6 +8,7 @@ enum {
     ZE_OK    = 0,
     ZE_FORM  = 3,   // zip file structure invalid
     ZE_MEM   = 4,
+    ZE_TEMP  = 10,  // temporary file failure, as in replacing the archive
     ZE_READ  = 11,  // could not read the existing archive
     ZE_NONE  = 12,  // nothing to do
     ZE_WRITE = 14,
@@ -1359,9 +1360,11 @@ static u16 level_flags(i32 level)
     return level>=8 ? 2 : level<=2 ? 4 : 0;
 }
 
-// Compress a new entry. Returns false if its input could not be read,
-// leaving the output where it began.
-static b32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
+enum { WRITE_OK, WRITE_EOPEN, WRITE_EREAD, WRITE_EDIRFILE };
+
+// Compress a new entry. Returns WRITE_OK, or, having left the output
+// where it began, why its input could not be read.
+static i32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
 {
     zout *w = k->out;
     i64 start = zout_tell(w);
@@ -1386,11 +1389,11 @@ static b32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
     if (f->info.type == FT_DIR) {
         u8 *h = newbytes(&scratch, zip_local_len(e));
         zout_write(w, h, zip_local(h, e)-h);
-        return 1;
+        return WRITE_OK;
     } else if (f->info.type == FT_LINK) {
         src.mem = os_readlink(z->ctx, f->path, &z->perm, scratch);
         if (!src.mem.s) {
-            return 0;
+            return WRITE_EOPEN;
         }
     }
 
@@ -1406,7 +1409,7 @@ static b32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
         e->usize  = 0;
         zout_seek(w, start);  // drop an abandoned attempt, even on failure
         if (!src_open(z, &src, scratch)) {
-            return 0;
+            return WRITE_EOPEN;
         }
 
         iz  hlen = zip_local_len(e);
@@ -1425,7 +1428,7 @@ static b32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
         src_close(z, &src);
         if (src.err) {
             zout_seek(w, start);
-            return 0;
+            return WRITE_EREAD;
         }
 
         if (tryz && e->csize>=e->usize) {
@@ -1440,7 +1443,7 @@ static b32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
         }
         zip_local(h, e);
         zout_patch(w, start, h, hlen);
-        return 1;
+        return WRITE_OK;
     }
 }
 
@@ -1553,11 +1556,15 @@ static i32 create_temp(zip *z, s8 *path, arena scratch)
 
 static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
 {
+    // As in Info-ZIP, failing to replace an archive is a temporary file
+    // failure, naming that file, and to create one is about the archive
     s8  temp = {0};
     i32 fd   = create_temp(z, &temp, scratch);
-    if (fd < 0) {
-        return fail(z, ZE_CREAT, S("Could not create output file"), temp,
-                    scratch);
+    if (fd<0 && ar) {
+        return fail(z, ZE_TEMP, S("Temporary file failure"), temp, scratch);
+    } else if (fd < 0) {
+        return fail(z, ZE_CREAT, S("Could not create output file"),
+                    z->archive, scratch);
     }
 
     zout w = {0};
@@ -1588,23 +1595,30 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
         case ITEM_KEEP:
             copy = it->old;
             break;
-        default:
-            // An entry selected by name may have changed between file
-            // and directory, which Info-ZIP reports, keeping the entry
-            if (is_dirname(it->file->name) != (it->file->info.type==FT_DIR)) {
-                warn(z, S("file and directory with the same name: "),
-                     it->file->name, scratch);
-            } else if (write_file(z, &k, it->file, e, scratch)) {
-                s8 verb = it->kind==ITEM_ADD    ? S("  adding: ") :
+        default: {
+            zfile *f    = it->file;
+            s8     verb = it->kind==ITEM_ADD    ? S("  adding: ") :
                           it->kind==ITEM_UPDATE ? S("updating: ") :
                                                   S("freshening: ");
+            // An entry selected by name may have changed between file
+            // and directory, which Info-ZIP reports, keeping the entry
+            i32 r = WRITE_EDIRFILE;
+            if (is_dirname(f->name) == (f->info.type==FT_DIR)) {
+                r = write_file(z, &k, f, e, scratch);
+            }
+            if (r == WRITE_OK) {
                 report(z, verb, e->name, e, scratch);
                 count++;
                 break;
-            } else {
-                warn(z, S("could not open for reading: "), it->file->path,
-                     scratch);
             }
+
+            // As Info-ZIP does, give the progress line, then warn under
+            // the entry's name
+            report(z, verb, f->name, 0, scratch);
+            s8 why = S("file and directory with the same name: ");
+            why = r==WRITE_EOPEN ? S("could not open for reading: ") :
+                  r==WRITE_EREAD ? S("could not read input file: ")  : why;
+            warn(z, why, f->name, scratch);
             z->status = ZE_OPEN;
             if (it->old) {
                 // Keep the entry it was to replace, as Info-ZIP does
@@ -1613,8 +1627,9 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
                 copy = it->old;
             } else {
                 z->nskipped++;
-                z->bskipped += it->file->info.size;
+                z->bskipped += f->info.size;
             }
+        }
         }
         if (copy) {
             i32 err = copy_entry(z, ar, &k, copy, e, scratch);
@@ -1653,7 +1668,9 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
         warn(z, S("zip file empty"), S(""), scratch);
     }
     if (!os_commit(z->ctx, fd, z->archive, scratch)) {
-        return fail(z, ZE_CREAT, S("Could not replace archive"), z->archive,
+        // Info-ZIP's status when closing or renaming its temporary file
+        // fails, which a deferred write error (fsync) also is
+        return fail(z, ZE_TEMP, S("Temporary file failure"), z->archive,
                     scratch);
     }
     return 0;
@@ -1903,9 +1920,15 @@ static i32 zip_main(zipconfig *conf)
         if (err) {
             return err;
         }
-    } else if (z->mode==MODE_DELETE || z->mode==MODE_FRESHEN) {
+    } else if (z->mode != MODE_ADD && z->mode != MODE_SYNC) {
+        // Info-ZIP warns, and -u goes on to add files
         warn(z, z->archive, S(" not found or empty"), scratch);
-        return fail(z, ZE_NONE, S("Nothing to do!"), z->archive, scratch);
+        if (z->mode == MODE_DELETE) {
+            return fail(z, ZE_NONE, S("Nothing to do!"), z->archive,
+                        scratch);
+        } else if (z->mode == MODE_FRESHEN) {
+            return ZE_NONE;
+        }
     }
     iz nold = ar ? (iz)ar->end.count : 0;
 
@@ -2039,6 +2062,8 @@ static i32 zip_main(zipconfig *conf)
                 say(z, 1, S("Archive is current\n"));
             }
             return z->status;
+        } else if (z->mode==MODE_UPDATE || z->mode==MODE_FRESHEN) {
+            return ZE_NONE;  // silently, as in Info-ZIP
         }
         return fail(z, ZE_NONE, S("Nothing to do!"), z->archive, scratch);
     }

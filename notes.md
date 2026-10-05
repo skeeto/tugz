@@ -130,11 +130,15 @@ the file is flushed and closed without error), and
   (including the level bits: 0x4 for -1/-2, 0x2 for -8/-9, set whenever
   compression was attempted), method, external attributes, local and
   central `UT`/`ux` extra fields, times, and CRCs are byte-identical.
-  Messages, warnings, and exit statuses (12 nothing to do, 16 usage,
-  18 unreadable files, 3 bad archive) follow Info-ZIP, except warnings
-  and errors go to standard error. Info-ZIP's quirks kept: `../` stays
-  in names, an emptied archive remains as a 22-byte file, entries that
-  do not shrink are stored, odd seconds round up.
+  Messages, warnings, and exit statuses (12 nothing to do, silently for
+  `-u` and `-f`; 16 usage; 18 unreadable files; 3 bad archive; 10
+  temporary file failure, including failing to replace the archive;
+  15 for an archive that cannot be created) follow Info-ZIP, except
+  warnings and errors go to standard error. A file that cannot be added
+  still gets its progress line, then a warning under its entry's name
+  that tells a failed open from a failed read. Info-ZIP's quirks kept:
+  `../` stays in names, an emptied archive remains as a 22-byte file,
+  entries that do not shrink are stored, odd seconds round up.
 - Options: Info-ZIP's grammar and names. Long names may be abbreviated
   to a prefix of exactly one of Info-ZIP's long names (supported or
   not, so `--rec` is ambiguous). Only `-X` is negatable; other negations
@@ -189,6 +193,13 @@ the file is flushed and closed without error), and
   name on disk is taken literally. `-@` and `@file` lines are read as
   Info-ZIP's getnam does (any CR or LF ends a line, a NUL ends a name),
   and `-@` names come before the arguments.
+- Departures in exit status, chosen as friendlier: `-u` and `-f` with
+  nothing newer exit 0 (Info-ZIP: 12); an unreadable directory, or a
+  dangling link (or one whose target vanished), met while recursing
+  warns and exits 18 (Info-ZIP adds the directory silently and warns
+  "name not matched" for the link, exiting 0); and `-i` that matches
+  nothing has nothing to do, 12 (Info-ZIP writes an empty archive,
+  exiting 0, when the archive is new). `test/zip.sh` asserts each.
 - Departures: entries are sorted by name within each directory (Info-ZIP
   uses readdir order), doubled slashes collapse (in patterns too, and
   so `d/a d//a` is one path rather than two entries), different paths

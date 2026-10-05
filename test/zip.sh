@@ -213,6 +213,10 @@ cmp -s got want || fail "-x: $(cat got)"
 names i.zip >got
 printf 'tree/Z.txt\ntree/a.txt\ntree/b.txt\n' >want
 cmp -s got want || fail "-i list ended by @: $(cat got)"
+# Departure: -i matching nothing has nothing to do (12), where Info-ZIP
+# writes an empty archive (0)
+expect_status 12 "$ZIP" -r inone.zip tree -i '*.none'
+[ ! -e inone.zip ] || fail "-i matching nothing made an archive"
 printf '*.txt\ntree/s*\n' >patterns
 "$ZIP" -qr x2.zip tree -x@patterns
 names x2.zip >got
@@ -276,6 +280,15 @@ if ln -s a.txt tree/link 2>/dev/null; then
     "$ZIP" -qry loop2.zip tree/sub
     verify loop2.zip
     rm tree/link tree/sub/loop
+
+    # Departure: a dangling link while recursing exits 18, where Info-ZIP
+    # warns that the name is not matched (0)
+    mkdir dl
+    printf x >dl/f
+    ln -s nowhere dl/dangling
+    expect_status 18 "$ZIP" -r dl.zip dl
+    [ "$(names dl.zip | tr '\n' ' ')" = "dl/ dl/f " ] ||
+        fail "dangling link: $(names dl.zip)"
 fi
 
 # UTF-8 names get bit 11; ASCII names do not
@@ -307,6 +320,9 @@ cp u.zip u0.zip
 "$ZIP" -u u.zip tree/a.txt tree/one >out
 [ ! -s out ] || fail "-u with nothing newer: $(cat out)"
 cmp -s u.zip u0.zip || fail "-u with nothing newer changed the archive"
+# Departure: with nothing newer, -u and -f exit 0 (Info-ZIP: 12)
+expect_status 0 "$ZIP" -u u.zip tree/a.txt tree/one
+expect_status 0 "$ZIP" -f u.zip tree/a.txt tree/b.txt
 touch -t 202101010000 tree/one
 "$ZIP" -u u.zip tree/a.txt tree/one tree/b.txt >out
 progress out >got
@@ -431,7 +447,7 @@ cp sel.zip sel/t.zip
 rm sel/d1/b.log
 mkdir sel/d1/b.log
 touch -t 202001010000 sel/d1
-selz 'updating: d1/a.txt updating: d1/s/c.txt ' -u t.zip
+selz 'updating: d1/a.txt updating: d1/b.log updating: d1/s/c.txt ' -u t.zip
 grep -q 'file and directory with the same name: d1/b.log' err ||
     fail "file then directory: $(cat err)"
 [ "$(unzip -p sel/t.zip d1/b.log)" = b ] || fail "file then directory kept"
@@ -545,6 +561,24 @@ if mkfifo fifo.zip 2>/dev/null; then
 fi
 ln -s /dev/null null.zip && expect_status 3 "$ZIP" null.zip tree/a.txt
 
+# A failed read is told from a failed open (Linux: reading this file at
+# offset 0 fails)
+if [ -r /proc/self/mem ]; then
+    "$ZIP" mem.zip /proc/self/mem >out 2>err && fail "read error succeeded"
+    grep -qx 'zip warning: could not read input file: proc/self/mem' err ||
+        fail "read error: $(cat err)"
+fi
+
+# With nothing to update, -u and -f exit 12 silently, as Info-ZIP does,
+# and on a missing archive it warns
+"$ZIP" -u u.zip missing >out 2>&1 && fail "-u with nothing found"
+grep -q 'Nothing to do' out && fail "-u with nothing found: $(cat out)"
+"$ZIP" -f u0.zip missing >out 2>&1 && fail "-f with nothing found"
+grep -q 'Nothing to do' out && fail "-f with nothing found: $(cat out)"
+"$ZIP" -u newu.zip tree/a.txt >out 2>&1
+grep -q 'newu.zip not found or empty' out || fail "-u, no archive: $(cat out)"
+names newu.zip | grep -q tree/a.txt || fail "-u, no archive: $(names newu.zip)"
+
 if [ "$(id -u)" != 0 ]; then
     cp tree/a.txt unreadable
     chmod 000 unreadable
@@ -552,7 +586,35 @@ if [ "$(id -u)" != 0 ]; then
     names r.zip >got
     printf 'tree/b.txt\n' >want
     cmp -s got want || fail "unreadable file: $(cat got)"
+
+    # As in Info-ZIP, the progress line comes first, and the warning
+    # gives the entry's name
+    "$ZIP" -j r2.zip ./unreadable tree/b.txt >out 2>err &&
+        fail "unreadable file succeeded"
+    grep -qx '  adding: unreadable' out || fail "unreadable: $(cat out)"
+    grep -qx 'zip warning: could not open for reading: unreadable' err ||
+        fail "unreadable: $(cat err)"
     chmod 644 unreadable
+
+    # Failing to create the temporary file is Info-ZIP's temporary file
+    # failure (10) when replacing an archive, else it names the archive
+    mkdir ro
+    "$ZIP" -q ro/x.zip tree/a.txt
+    chmod 555 ro
+    expect_status 10 "$ZIP" ro/x.zip tree/b.txt
+    "$ZIP" ro/new.zip tree/b.txt 2>err && fail "archive in read-only directory"
+    grep -q 'Could not create output file (ro/new.zip)' err ||
+        fail "read-only directory: $(cat err)"
+    chmod 755 ro
+
+    # Departure: an unreadable directory while recursing exits 18, where
+    # Info-ZIP adds it silently (0)
+    mkdir -p ud/sub
+    chmod 000 ud/sub
+    expect_status 18 "$ZIP" -r ud.zip ud
+    [ "$(names ud.zip | tr '\n' ' ')" = "ud/ ud/sub/ " ] ||
+        fail "unreadable directory: $(names ud.zip)"
+    chmod 755 ud/sub
 
     # A directory after a failed file gets none of its fields
     mkdir -p fd/sub
