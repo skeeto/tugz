@@ -387,15 +387,7 @@ neither inflate nor the gzip container.
 - Merging: the central directory is parsed with every field bounds
   checked; copied entries get regenerated local headers (descriptor flag
   cleared, except for traditionally encrypted entries, whose check byte
-  depends on it) and raw data copies. The old archive is read through a
-  1 MiB window, so one read serves the headers and data of many small
-  entries (a pread for each header, name, and data made adding a file to
-  200K entries syscall-bound). Entries are copied in central directory
-  order, usually but not necessarily file order, so the read-ahead
-  doubles from a page to the window with each fill that carries on from
-  the last, and drops back to a page at a jump elsewhere: an entry out of
-  order costs one small read, and data larger than the window is read a
-  window at a time. They keep their extra fields, even
+  depends on it) and raw data copies. They keep their extra fields, even
   with `-X`, which as in Info-ZIP applies only to entries written (some
   fields are needed to extract, such as AES's), except Zip64 fields,
   made anew; one whose fields leave no room for a Zip64 field it now
@@ -428,6 +420,22 @@ neither inflate nor the gzip container.
   empty file, a directory, a FIFO, or a device fails with 3 before any
   work, as Info-ZIP fails (it waits on a FIFO, and cannot open a socket,
   15). An empty file therefore never adds itself.
+- Reading the old archive: through a 1 MiB window, so that one read
+  serves the headers and data of many small entries (a pread for each
+  local header, name, and data made adding a file to many entries
+  syscall-bound: for 200K empty ones, 400,405 preads, now 48, against
+  Info-ZIP's 200,216 seeks and 7,962 reads). Entries are copied in
+  central directory order, usually but not necessarily file order, so
+  the read-ahead doubles from a page to the window with each fill that
+  carries on from the last, and drops back to a page at a jump
+  elsewhere: an entry out of order costs a small read, and data larger
+  than the window is read a window at a time. Read-ahead stays within
+  the size the archive had when examined; should a fill fail, as when
+  the archive has shrunk since, the bytes needed are read alone, so that
+  it fails only where reading just those would. The central directory is
+  read through the window too, a header at a time, and each entry keeps
+  only its name, extra fields (without Zip64), and comment, packed, not
+  the directory.
 - Windows: made-by host 0 (FAT, the most widely understood), DOS
   attributes, `UT` extra field. Names drop a drive or a UNC
   `//server/share/` prefix, as Info-ZIP's do, and likewise a device
@@ -499,11 +507,28 @@ neither inflate nor the gzip container.
   perm's last allocation grow in place (`push` returns zeroed slots), as
   `-@` lists and their text do, and the list of items is sized exactly.
   Whatever the write grows with is allocated before the temporary file
-  is created: the central directory, as pointers to entries, kept ones
-  updated in place; new entries and their central extra fields; the
-  buffers and deflate state; and a megabyte of room for any one entry's
-  headers and messages, each forgotten before the next. So running out
-  of memory cannot strike once output has started.
+  is created: the central directory, as pointers to entries, kept and
+  replaced ones updated in place; added entries and new ones' central
+  extra fields; the buffers and deflate state (the old archive's read
+  window comes earlier, as it is read); and a megabyte of room for any
+  one entry's headers and messages, each forgotten before the next. So
+  running out of memory cannot strike once output has started.
+- Memory per existing entry: about 200 bytes for names of 17 bytes with
+  `UT` and `ux` fields (Info-ZIP 3.0: about 270 on macOS, 390 on Linux).
+  A 112-byte `zentry` (its Zip64 flag a byte, in what was padding), its
+  strings (41 bytes), a 24-byte item, a slot in the table that finds
+  entries by name (8 to 16 bytes: open addressing over entry indexes, at
+  most half full, where a hash trie took a 56-byte node), and while
+  writing, a pointer for the central directory. Unicode names, which few
+  entries have, are listed sparsely by index rather than given every
+  entry a slot. A replacement is written over its entry, which is
+  restored if the file cannot be read, so that only added files take new
+  entries. What remains: the `zentry`'s `lextra` (16 bytes, used only
+  for new entries and while copying, but tests build entries with it),
+  the items, and for a refresh (`zip -r` over the archive's own files),
+  each file's record as in a fresh run (a 112-byte `zfile` holding a
+  72-byte `os_info`, its path, and a 56-byte trie node by name), which
+  Info-ZIP avoids by marking the entry it found instead.
 - Scanning: the directories being listed form a stack in scratch
   rather than on the call stack, so that only memory bounds a tree's
   depth (with `\\?\` paths of up to 32K characters, the Windows build's
@@ -599,20 +624,27 @@ Fuzzers:
   about 280 bytes at -9 1.2 s vs 2.0 s.
 - zip memory, `-qr` over empty files unless noted, versus Info-ZIP 3.0.
   Before the reserved arena, 250K files ran out of the fixed 256 MiB.
-  Apple M-series: 1M files 27 s and 371 MB peak RSS (36 s, 370 MB);
-  refreshing that archive 27 s and 690 MB (37 s, 393 MB), and adding one
-  file to it 0.8 s and 330 MB (0.9 s, 301 MB); 100K files of 100 bytes
-  5 s and 41 MB (11 s, 40 MB), with a 1M-file subtree excluded by `-x`
-  too, scanned at no cost in memory; one directory of 500K files 214 MB.
-  Windows 11: a one-file run commits 7 MB (257 MB committed up front
-  before), 100K files 46 MB, 1M files 398 MB (i686 298 MB); a tree
+  Apple M-series: 1M files 27 s and 371 MB peak RSS (36 s, 370 MB).
+  Merging into an archive of 1M empty files in 1,000 directories (names
+  of 17 bytes), in MiB: adding one file 0.15 s and 191 (0.73 s, 255),
+  refreshing with `-r` 27 s and 406 (38 s, 309), and with `-ru` 6.1 s
+  and 374 (10.7 s, 271); before the read window and the cuts per entry,
+  0.73 s and 325, 27 s and 677, and 6.2 s and 531. 100K files of 100
+  bytes 5 s and 41 MB (11 s, 40 MB), with a 1M-file subtree excluded by
+  `-x` too, scanned at no cost in memory; one directory of 500K files
+  214 MB. Windows 11: a one-file run commits 7 MB (257 MB committed up
+  front before), 100K files 46 MB, 1M files 398 MB (i686 298 MB); a tree
   15,000 levels deep (30K-character paths) archives on x86-64 and on
   i686 runs out of its 1 GiB reservation with "zip error: Out of memory"
   (4), where the recursive build overflowed its stack by 8,000 levels.
   WSL: the `-m32` build zips 1M files in 4 s and 265 MB, and under
   `ulimit -v 200000` both builds exit 4 with that message and leave no
   temporary file. Raspberry Pi 4: 100K files of 100 bytes 3.6 s and
-  41 MB (8.9 s, 44 MB), 250K files 5.3 s (14.3 s).
+  41 MB (8.9 s, 44 MB), 250K files 5.3 s (14.3 s). Merging there, as
+  above, in CPU seconds (the shared Pi's wall times were noise) and MiB:
+  adding one file 1.6 s and 190 (6.5 s, 376), `-r` 24 s and 405 (61 s,
+  452), and `-ru` 10 s and 373 (20 s, 414); before, 6.3 s and 325, 26 s
+  and 676, and 12 s and 530.
 - zip's lazy POSIX commit, measured in overcommit mode 0 by each
   process's charged mappings (`VmFlags` `ac` in `/proc/PID/smaps`) and
   `Committed_AS`. The old reservation without `MAP_NORESERVE`, as
