@@ -67,7 +67,7 @@ follow a longer history still clears as init does. Inflate init and
 | `-1`..`-9` | compression level (default 6) |
 | `-c` | write to standard output, keep input files |
 | `-d` | decompress |
-| `-f` | force: overwrite outputs, follow links, allow terminals |
+| `-f` | force: overwrite outputs, follow links, allow terminals; with `-dc`, copy data that is not gzip |
 | `-k` | keep input files |
 | `-q` | suppress warnings |
 | `-t` | test compressed file integrity |
@@ -78,10 +78,12 @@ Installed (or linked) as `gunzip` it decompresses, and as `zcat` or
 `gzcat` it decompresses to standard output.
 
 Behavior follows GNU gzip: concatenated members, warnings for trailing
-garbage, exit status 0/1/2 for success/error/warning, metadata copied to
+garbage (but not zero padding), `zcat -f` passing other data through,
+exit status 0/1/2 for success/error/warning, metadata copied to
 outputs, no partial outputs on failure or interruption, and refusal to
 replace links or special files without `-f`. Not yet supported: `-r`,
-`-l`, `-v`, `-S`, `-n`/`-N`, and the `GZIP` environment variable.
+`-l`, `-v`, `-S`, `-n`/`-N`, the `GZIP` environment variable, and GNU
+gzip's other input formats (compress, pack, LZH, zip).
 
 ## zip
 

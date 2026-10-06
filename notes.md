@@ -805,6 +805,11 @@ Fuzzers:
   gzip magic, in which case it must be a valid member. GNU gzip reads
   the magic as a pair, so a lone byte at the end, other than zero, is a
   truncated member (exit 1).
+- Also as in GNU gzip, with `-f`, decompressing to standard output
+  (`zcat -f`, or from standard input) copies data that is not gzip
+  through unchanged, whole or after a member, and `-tf` passes it; in
+  place it is still an error. Only gzip is read, so GNU's other input
+  formats (compress, pack, LZH, zip) pass through too.
 - gzip's exit status: 0 success, 1 error, 2 warning; errors take
   precedence. (zip's follow Info-ZIP: see its section.)
 - As in GNU gzip, the program name sets the default mode: names starting

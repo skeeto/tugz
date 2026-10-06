@@ -113,6 +113,19 @@ cp cut.gz cut1.gz
 expect_status 1 "$GZIP" -d cut1.gz
 [ -e cut1.gz ] && [ ! -e cut1 ] || fail "cleanup after a cut member"
 
+# Forced, as in GNU gzip (zcat -f), data that is not gzip, whole or after
+# a member, passes through to standard output, or passes a test, but in
+# place it is still an error
+printf 'plain\n' >plain
+{ cat plain one one; printf junk; cat plain; } >pass.want
+"$GZIP" -dcf plain m1.gz tg.gz - <plain >pass.got || fail "-dcf status"
+cmp -s pass.got pass.want || fail "-dcf pass-through"
+expect_status 0 "$GZIP" -tf plain tg.gz
+expect_status 1 "$GZIP" -dc plain
+cp plain pl.gz
+expect_status 1 "$GZIP" -df pl.gz
+[ -e pl.gz ] && [ ! -e pl ] || fail "-df in place"
+
 # Corrupt output is removed, input kept
 cp trunc.gz bad.gz
 expect_status 1 "$GZIP" -d bad.gz

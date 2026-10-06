@@ -34,7 +34,8 @@ static s8 const usage_text = S8(
     "  -1..-9  compression level (default 6)\n"
     "  -c      write to standard output, keep input files\n"
     "  -d      decompress\n"
-    "  -f      force overwrite of output files\n"
+    "  -f      force: overwrite outputs, follow links, allow terminals,\n"
+    "          and with -dc copy data that is not gzip unchanged\n"
     "  -h      print this message\n"
     "  -k      keep input files\n"
     "  -q      suppress warnings\n"
@@ -150,12 +151,17 @@ static i32 warn(options *o, s8 name, s8 msg, arena scratch)
     return EXIT_WARN;
 }
 
-static i32 transform(options *o, i32 in, i32 out, arena scratch)
+// As in GNU gzip, forced decompression to standard output copies data
+// that is not gzip through unchanged (zcat -f), and a forced test passes
+// it. In place, it is still an error.
+static i32 transform(options *o, i32 in, i32 out, b32 in_place,
+                     arena scratch)
 {
+    b32 copy = o->force && !in_place;
     if (o->test) {
-        return stream_decompress(o->dec, in, -1, scratch);
+        return stream_decompress(o->dec, in, -1, copy, scratch);
     } else if (o->decompress) {
-        return stream_decompress(o->dec, in, out, scratch);
+        return stream_decompress(o->dec, in, out, copy, scratch);
     }
     return gzip_compress(o->enc, in, out, o->level, scratch);
 }
@@ -194,7 +200,7 @@ static i32 process_file(options *o, s8 path, arena scratch)
         if (r >= 0) {
             return r;
         }
-        i32 status = transform(o, 0, 1, scratch);
+        i32 status = transform(o, 0, 1, 0, scratch);
         return report(o, S("stdin"), status, scratch);
     }
 
@@ -236,7 +242,7 @@ static i32 process_file(options *o, s8 path, arena scratch)
     }
 
     if (!in_place) {
-        i32 status = transform(o, in, 1, scratch);
+        i32 status = transform(o, in, 1, 0, scratch);
         os_close(ctx, in);
         return report(o, path, status, scratch);
     }
@@ -253,7 +259,7 @@ static i32 process_file(options *o, s8 path, arena scratch)
 
     // The output is discarded on close unless explicitly kept, so that
     // failures and interruptions never leave a partial file behind.
-    i32 status = transform(o, in, out, scratch);
+    i32 status = transform(o, in, out, 1, scratch);
     b32 ok = status==GZ_OK || status==GZ_TRAILING;
     if (ok) {
         os_copymeta(ctx, in, out);

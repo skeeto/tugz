@@ -366,7 +366,7 @@ static i32 do_gzip(os *ctx, arena a, u8 const *p, iz len, i32 level, s8 *out)
 static i32 do_gunzip(os *ctx, arena a, u8 const *p, iz len, s8 *out)
 {
     set_stdin(ctx, p, len);
-    i32 status = stream_decompress(stream_decoder(&a, FMT_GZIP), 0, 1, a);
+    i32 status = stream_decompress(stream_decoder(&a, FMT_GZIP), 0, 1, 0, a);
     *out = get_stdout(ctx);
     return status;
 }
@@ -374,7 +374,7 @@ static i32 do_gunzip(os *ctx, arena a, u8 const *p, iz len, s8 *out)
 static i32 do_inflate(os *ctx, arena a, u8 const *p, iz len, s8 *out)
 {
     set_stdin(ctx, p, len);
-    i32 status = stream_decompress(stream_decoder(&a, FMT_RAW), 0, 1, a);
+    i32 status = stream_decompress(stream_decoder(&a, FMT_RAW), 0, 1, 0, a);
     *out = get_stdout(ctx);
     return status;
 }
@@ -2150,7 +2150,9 @@ static void test_cli(os *ctx, arena a)
             snprintf(names[i], sizeof(names[i]), "z%c.gz", 'a'+i);
             mfs_put(ctx, names[i], zs[i].s, zs[i].len);
         }
-        static char const *const modes[] = {"-dc", "-t", "-dkf"};
+        static char const *const modes[] = {
+            "-dc", "-t", "-dkf", "-dcf", "-tf",
+        };
         for (i32 m = 0; m < countof(modes); m++) {
             char cmd[256];
             iz len = snprintf(cmd, sizeof(cmd), "%s", modes[m]);
@@ -2267,6 +2269,38 @@ static void test_cli(os *ctx, arena a)
     TEST(o.len == 100000);
     TEST(!memcmp(o.s, text, 50000) && !memcmp(o.s+50000, text, 50000));
     TEST(has(ctx, "ok.gz"));
+
+    // Forced, as in GNU gzip (zcat -f), data that is not gzip, whole or
+    // after a member, is copied to standard output, or passes a test,
+    // but in place it is still an error
+    mfs_put(ctx, "plain", (u8 *)"plain\n", 6);
+    TEST(run(ctx, a, "-dc plain") == EXIT_ERR);
+    TEST(run(ctx, a, "-dcf plain ok.gz plain") == EXIT_OK);
+    o = mfs_get(ctx, "<stdout>");
+    TEST(o.len == 50012 && !memcmp(o.s, "plain\n", 6));
+    TEST(!memcmp(o.s+6, text, 50000) && !memcmp(o.s+50006, "plain\n", 6));
+    TEST(!mfs_get(ctx, "<stderr>").len);
+    trail = cat(gzbytes(gz.s, gz.len), (u8 *)"\0junk", 5);
+    mfs_put(ctx, "tr.gz", trail.s, trail.len);
+    TEST(run(ctx, a, "-dcf tr.gz") == EXIT_OK);
+    o = mfs_get(ctx, "<stdout>");
+    TEST(o.len==50005 && !memcmp(o.s+50000, "\0junk", 5));
+    TEST(run(ctx, a, "-tf tr.gz plain") == EXIT_OK);
+    TEST(!mfs_get(ctx, "<stdout>").len && !mfs_get(ctx, "<stderr>").len);
+    free(trail.s);
+    static char const *const shorts[] = {"", "\0", "\x1f", "j"};
+    for (i32 i = 0; i < countof(shorts); i++) {
+        mfs_put(ctx, "short", (u8 *)shorts[i], i>0);
+        TEST(run(ctx, a, "-dcf short") == EXIT_OK);
+        TEST(equals(mfs_get(ctx, "<stdout>"), (u8 *)shorts[i], i>0));
+    }
+    set_stdin(ctx, (u8 *)"plain\n", 6);
+    TEST(run(ctx, a, "-df") == EXIT_OK);  // standard input goes out too
+    TEST(equals(mfs_get(ctx, "<stdout>"), (u8 *)"plain\n", 6));
+    mfs_put(ctx, "p.gz", (u8 *)"plain\n", 6);
+    TEST(run(ctx, a, "-df p.gz") == EXIT_ERR);
+    TEST(stderr_has(ctx, "not in gzip format"));
+    TEST(has(ctx, "p.gz") && !has(ctx, "p"));
 
     // Standard input
     set_stdin(ctx, text, 50000);

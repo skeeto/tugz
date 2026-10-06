@@ -168,7 +168,7 @@ static void decompress_with(bench *b, i32 codec, u8 const *z, iz zlen)
         b->ctx.outlen = 0;
         b->ctx.outcap = b->len;
         arena a = b->perm;
-        if (stream_decompress(stream_decoder(&a, FMT_GZIP), 0, 1, a) ||
+        if (stream_decompress(stream_decoder(&a, FMT_GZIP), 0, 1, 0, a) ||
             b->ctx.outlen!=b->len) {
             abort();
         }
