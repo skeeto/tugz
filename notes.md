@@ -318,15 +318,17 @@ neither inflate nor the gzip container.
   (Info-ZIP's binary search finds any one). A missing file leaves its
   entry (deleted by `-FS`). One that has changed between file and
   directory keeps it, with Info-ZIP's warning and status 18. Special
-  files, named or met while recursing, are left out with Info-ZIP's
-  warnings ("ignoring special file: ", for a FIFO "ignoring FIFO (Named
-  Pipe)"), which leave the exit status alone (12 if nothing else is
-  left), and a `-d` name that is one on disk marks nothing. A pattern
-  without wildcards, such as a `-d` name of a file gone from disk, is
-  looked up by name rather than matched with every entry, unless some
-  names share the index's slots (duplicates, or names that differ only
-  in case on Windows, or by Unicode names): `-d` of 2,000 such names
-  from 100,000 entries took 3.1 s, now 0.02 s (Info-ZIP: 1.7 s).
+  files, named, met while recursing, or named by an entry (which is then
+  left as for a missing file, where Info-ZIP would wait reading a FIFO),
+  are left out with Info-ZIP's warnings ("ignoring special file: ", for
+  a FIFO "ignoring FIFO (Named Pipe)"), which leave the exit status
+  alone (12 if nothing else is left), and a `-d` name that is one on
+  disk marks nothing. A pattern without wildcards, such as a `-d` name
+  of a file gone from disk, is looked up by name rather than matched
+  with every entry, unless some names share the index's slots
+  (duplicates, or names that differ only in case on Windows, or by
+  Unicode names): `-d` of 2,000 such names from 100,000 entries took
+  3.1 s, now 0.02 s (Info-ZIP: 1.7 s).
 - Updates: as in Info-ZIP, `-u` and `-f` take a file that is newer
   than its entry by the Unix time of the entry's last `UT` field, if
   that has one, or failing any, of an old `UX` field (Info-ZIP 2's), so

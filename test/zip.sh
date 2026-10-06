@@ -1023,6 +1023,30 @@ if mkfifo spf/fifo 2>/dev/null; then
     [ "$(cat err)" = 'zip warning: ignoring FIFO (Named Pipe): spf/fifo' ] ||
         fail "special file in -r: $(cat err)"
     expect_status 12 "$ZIP" spf3.zip spf/fifo
+
+    # ...even one named by an entry, which -u and -f, without paths, or
+    # a pattern select, keeping the entry (Info-ZIP waits on the FIFO)
+    mkdir spfe
+    printf x >spfe/fifo
+    printf y >spfe/f
+    "$ZIP" -q spfe.zip spfe/fifo spfe/f
+    rm spfe/fifo
+    mkfifo spfe/fifo
+    touch -t 203001010000 spfe/fifo spfe/f
+    cp spfe.zip spfe.orig
+    fifo_entry() {
+        cp spfe.orig spfe.zip
+        "$ZIP" "$@" >out 2>err || fail "FIFO by entry, $*"
+        w='zip warning: ignoring FIFO (Named Pipe): spfe/fifo'
+        [ "$(cat err)" = "$w" ] || fail "FIFO by entry, $*: $(cat err)"
+        [ "$(unzip -p spfe.zip spfe/fifo)" = x ] &&
+            [ "$(unzip -p spfe.zip spfe/f)" = y ] ||
+            fail "FIFO by entry, $*: entries lost"
+        ! grep -q fifo out || fail "FIFO by entry, $*: $(cat out)"
+    }
+    fifo_entry -u spfe.zip
+    fifo_entry -f spfe.zip
+    fifo_entry spfe.zip 'spfe/f*'
 fi
 if [ -n "$PY" ] && $PY -c 'import socket, sys
 socket.socket(socket.AF_UNIX).bind(sys.argv[1])' spf/sock 2>/dev/null; then

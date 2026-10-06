@@ -2977,6 +2977,12 @@ static b32 scan_entries(zip *z, zarchive *ar, iz n, zindex *old, s8 pattern,
         if (!os_stat(z->ctx, path, !z->symlinks, &info, iter) ||
             is_archive(z, path, &info, iter)) {
             continue;
+        } else if (info.type == FT_OTHER) {
+            // Left out as a special file named or met while recursing is,
+            // its entry left as for a missing file (Info-ZIP would block
+            // reading a FIFO)
+            ignore_special(z, path, &info, iter);
+            continue;
         } else if (zindex_find(old, name) != i) {
             also[i] = new_file(z, path, name, &info);
             continue;
