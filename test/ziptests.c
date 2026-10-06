@@ -1,8 +1,9 @@
-// Unit tests for the portable ZIP format layer (src/zip.c)
+// Unit tests for the portable ZIP format layer (src/zip.c, src/wild.c)
 // On success prints "all zip tests pass". A failure traps.
 // $ cc -g3 -fsanitize=address,undefined -o tests-zip test/ziptests.c
 #include "../src/base.c"
 #include "../src/zip.c"
+#include "../src/wild.c"
 
 #include <stdio.h>
 #include <stdlib.h>

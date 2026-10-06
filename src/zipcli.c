@@ -18,31 +18,7 @@ enum {
     ZE_OPEN  = 18,  // some input files could not be read
 };
 
-// Platform interface for the zip program, beyond src/io.c
-
-enum { FT_NONE, FT_FILE, FT_DIR, FT_LINK, FT_OTHER };
-
-typedef struct {
-    i32 type;
-    i64 size;
-    i64 mtime;  // Unix seconds
-    i64 atime;
-    u32 mode;   // POSIX st_mode (zero on Windows)
-    u32 attr;   // DOS attributes (Windows)
-    u32 uid;
-    u32 gid;
-    u64 dev;     // device and file ID identify a file, unless the ID
-    u64 ino[2];  // is zero (unknown); 128 bits on Windows
-} os_info;
-
-// A directory entry, with what the listing itself tells of the file:
-// info as os_stat would report it following links, but with an unknown
-// identity, or type FT_NONE where the listing does not tell (always for
-// links), in which case os_stat must examine it.
-typedef struct {
-    s8      name;
-    os_info info;
-} os_dirent;
+// Platform interface for the zip program, beyond src/io.c and src/dir.c
 
 // Returns false if the path does not exist or cannot be examined, which
 // os_missing then tells apart. With follow, symbolic links are followed;
@@ -54,11 +30,6 @@ static b32  os_stat(os *, s8 path, b32 follow, os_info *, arena scratch);
 static b32  os_missing(os *);
 // As os_stat, for the file that an open descriptor reads.
 static b32  os_fstat(os *, i32 fd, os_info *);
-// Entries within a directory, excluding . and .., in any order. Unless
-// all, hidden and system entries (Windows) are left out, judged by the
-// entry itself rather than a link's target. Returns null on error. The
-// listing and any temporaries come from one arena.
-static os_dirent *os_listdir(os *, s8 path, b32 all, iz *count, arena *);
 // Target of a symbolic link, or a null string on error. It and any
 // temporaries come from one arena.
 static s8   os_readlink(os *, s8 path, arena *);
@@ -112,10 +83,6 @@ static s8   os_error(os *);
 // A name in the OEM code page, or else the ANSI one, as UTF-8 (Windows),
 // or a null string if that code page cannot decode it.
 static s8   os_fromcp(os *, s8 name, b32 oem, arena *perm, arena scratch);
-// A name in upper case as the file system compares names ignoring case
-// (Windows), beyond ASCII too, or the name itself. It and any temporaries
-// come from one arena.
-static s8   os_upcase(os *, s8 name, arena *);
 // A file's full path, past links, which tells files apart where their
 // file IDs are unknown (Windows), or a null string.
 static s8   os_fullpath(os *, s8 path, arena *perm, arena scratch);
@@ -181,12 +148,6 @@ typedef struct {
     iz  len;
     iz  cap;
 } s8s;
-
-typedef struct {
-    os_dirent *data;
-    iz         len;
-    iz         cap;
-} os_dirents;
 
 typedef struct {
     s8      path;  // on the file system
@@ -255,37 +216,6 @@ typedef struct {
     i64     bskipped;
 } zip;
 
-// Append a zeroed slot to a dynamic array, returning a pointer to it.
-#define push(a, s) \
-    ((s)->len==(s)->cap ? grow(a, (void **)&(s)->data, &(s)->cap, \
-                               sizeof(*(s)->data)) : (void)0, \
-     (s)->data + (s)->len++)
-
-// Whether data of len bytes ends where the arena's next allocation
-// begins, so that it can grow in place.
-static b32 at_tip(arena *a, void *data, iz len)
-{
-    return !a->down && data && (byte *)data+len==a->beg;
-}
-
-// Double an array's capacity: in place if it is the last allocation in
-// an arena that grows up (perm), else by moving it, which leaves the
-// old copy as garbage until the arena is freed (in perm, never). An
-// empty one, which doubling would leave empty, moves to a fresh 16.
-static void grow(arena *a, void **data, iz *cap, iz size)
-{
-    if (*cap && at_tip(a, *data, *cap*size)) {
-        alloc(a, *cap, size, 1, 1);
-        *cap *= 2;
-        return;
-    }
-    iz   n = *cap ? 2 * *cap : 16;
-    void *r = alloc(a, n, size, 16, 1);
-    bytecopy(r, *data, *cap*size);
-    *data = r;
-    *cap  = n;
-}
-
 static s8 zjoin(arena *a, s8 const *parts, iz n)
 {
     iz len = 0;
@@ -348,44 +278,6 @@ static b32 zequals(s8 a, s8 b)
 static b32 zisspace(u8 c)
 {
     return c==' ' || (c>='\t' && c<='\r');
-}
-
-static i32 zcompare(s8 a, s8 b)
-{
-    iz n = MIN(a.len, b.len);
-    i32 r = n ? __builtin_memcmp(a.s, b.s, (uz)n) : 0;
-    return r ? r : a.len<b.len ? -1 : a.len>b.len;
-}
-
-// A directory listing sorted by name bytes, as pointers to its entries,
-// which are large to move: a stable bottom-up merge sort.
-static os_dirent **zsort(os_dirent *list, iz n, arena *a)
-{
-    os_dirent **v = new(a, n, os_dirent *);
-    for (iz i = 0; i < n; i++) {
-        v[i] = list + i;
-    }
-    arena       t   = *a;
-    os_dirent **tmp = new(&t, n, os_dirent *);
-    for (iz w = 1; w < n; w *= 2) {
-        for (iz lo = 0; lo < n; lo += 2*w) {
-            iz mid = MIN(lo+w, n);
-            iz hi  = MIN(lo+2*w, n);
-            iz i = lo, j = mid, k = lo;
-            while (i<mid && j<hi) {
-                b32 lt = zcompare(v[j]->name, v[i]->name) < 0;
-                tmp[k++] = lt ? v[j++] : v[i++];
-            }
-            while (i < mid) {
-                tmp[k++] = v[i++];
-            }
-            while (j < hi) {
-                tmp[k++] = v[j++];
-            }
-        }
-        bytecopy(v, tmp, n*(iz)sizeof(*v));
-    }
-    return v;
 }
 
 static u64 zhash(s8 s)
@@ -1468,70 +1360,20 @@ static b32 hidden_file(zip *z, os_info *info)
            (info->attr & 0x06);
 }
 
-// Expand wildcards in a path's components against the file system, as
-// Windows shells do not, matching as Info-ZIP does there: ignoring case,
-// by characters, with DOS rules, and with -nw only ?. Returns the number
-// of matches.
-static iz expand(zip *z, s8 path, arena scratch)
+// Scan a wildcard argument's match (expand_wild) as an argument: as its
+// listing entry describes it, if that does, else once examined. Returns
+// whether it was scanned.
+static b32 scan_match(void *data, s8 path, os_dirent *entry, arena scratch)
 {
-    // Find the first component with a wildcard. A drive ends a component:
-    // "C:*.c" lists the drive's current directory, "C:".
-    u8 drive = path.len>=2 && path.s[1]==':' ? (u8)(path.s[0] | 0x20) : 0;
-    iz beg = 0;
-    iz end = 0;
-    for (iz i = drive>='a' && drive<='z' ? 2 : 0;; i = end + 1) {
-        beg = i;
-        for (end = i; end<path.len && !is_sep(z, path.s[end]); end++) {}
-        s8 comp = {path.s+beg, end-beg};
-        if (zip_haswild(comp, 0)) {
-            break;
-        } else if (end == path.len) {
-            return 0;
-        }
+    zip    *z    = data;
+    os_info info = entry ? entry->info : (os_info){0};
+    if ((entry && listed(z, &info)) ||
+        os_stat(z->ctx, path, !z->symlinks, &info, scratch)) {
+        s8 name = arg_name(z, path, &info, &scratch);
+        scan(z, path, name, &info, scratch);
+        return 1;
     }
-
-    s8 dir  = beg ? (s8){path.s, beg} : S(".");
-    s8 pat  = {path.s+beg, end-beg};
-    s8 rest = {path.s+end, path.len-end};
-    iz         n    = 0;
-    os_dirent *list = os_listdir(z->ctx, dir, z->hidden, &n, &scratch);
-    if (!list) {
-        return 0;
-    }
-    os_dirent **kids = zsort(list, n, &scratch);
-
-    // Beyond ASCII, which ZIP_FOLD folds, case is ignored by comparing in
-    // upper case, as the file system and Info-ZIP's port (by towupper)
-    // compare names, where the pattern or the name needs it
-    i32 flags = ZIP_FOLD | ZIP_DOS | ZIP_UTF8 | (z->nowild ? ZIP_NOWILD : 0);
-    b32 wide  = zip_utf8(pat) != 0;
-    s8  upat  = wide ? os_upcase(z->ctx, pat, &scratch) : pat;
-    iz  count = 0;
-    for (iz i = 0; i < n; i++) {
-        arena tmp = scratch;
-        s8    kid = kids[i]->name;
-        b32   up  = wide || zip_utf8(kid) != 0;
-        if (!zip_match(up ? upat : pat,
-                       up ? os_upcase(z->ctx, kid, &tmp) : kid, flags)) {
-            continue;
-        }
-        arena iter = scratch;  // forgets each match's strings
-        s8    cand = JOIN(&iter, (s8){path.s, beg}, kids[i]->name, rest);
-        if (zip_haswild(rest, 0)) {
-            count += expand(z, cand, iter);
-            continue;
-        }
-        // The listing describes the match only if nothing follows it, and
-        // a bare name, like an argument, may instead name a device (NUL)
-        os_info *info  = &kids[i]->info;
-        b32      known = beg && !rest.len && listed(z, info);
-        if (known || os_stat(z->ctx, cand, !z->symlinks, info, iter)) {
-            s8 name = arg_name(z, cand, info, &iter);
-            scan(z, cand, name, info, iter);
-            count++;
-        }
-    }
-    return count;
+    return 0;
 }
 
 // Scan a path argument. Returns false if it is not on disk, for it to
@@ -1548,7 +1390,9 @@ static b32 scan_arg(zip *z, s8 arg, arena scratch)
         }
     } else if (!z->windows || z->mode==MODE_FRESHEN) {
         return 0;
-    } else if (!zip_haswild(arg, 0) || !expand(z, arg, scratch)) {
+    } else if (!zip_haswild(arg, 0) ||
+               !expand_wild(z->ctx, arg, z->hidden, z->nowild, scan_match, z,
+                            scratch)) {
         warn(z, S("name not matched: "), arg, scratch);
     }
     return 1;

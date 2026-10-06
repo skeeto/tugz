@@ -20,7 +20,8 @@ no I/O: callers hand it input and output buffers of any size and it
 resumes where it stopped. Its only hooks are `os_oom` and `os_extend`
 (for an arena that runs out). Programs add `src/io.c` (the `os_*` file
 interface and a buffered reader and writer); gzip adds `src/gzipio.c`
-(descriptor drivers) and `src/cli.c`, and zip `src/zip.c` and
+(descriptor drivers) and `src/cli.c`, and zip `src/zip.c`,
+`src/wild.c` (wildcards), `src/dir.c` (directories), and
 `src/zipcli.c`. The library layer adds none of them. The shared `os_*`
 implementations live in `platform/posix.c` and `platform/windows.c`.
 
@@ -35,7 +36,9 @@ implementations live in `platform/posix.c` and `platform/windows.c`.
 | `src/io.c`               | programs only: `os_*` interface, reader/writer  |
 | `src/gzipio.c`           | gzip program: descriptor drivers for the codec  |
 | `src/cli.c`              | gzip command line driver, `gzip_main`           |
-| `src/zip.c`              | ZIP format: headers, Zip64, parsing, wildcards  |
+| `src/zip.c`              | ZIP format: headers, Zip64, parsing, names      |
+| `src/wild.c`             | wildcard matching, as Info-ZIP's                |
+| `src/dir.c`              | directory listings, wildcard expansion on disk  |
 | `src/zipcli.c`           | zip command line and archive driver, `zip_main` |
 | `platform/posix.c`       | shared POSIX `os_*` implementation              |
 | `platform/windows.c`     | shared CRT-free Win32 `os_*`, paths, arguments  |
@@ -158,7 +161,8 @@ CPU models with and without PCLMUL.
 ## zip
 
 The zip program shares the deflate core and `src/io.c`, adding a
-portable format layer (`src/zip.c`, no I/O, fuzzed) and a driver
+portable format layer (`src/zip.c`, no I/O, fuzzed), wildcard matching
+and directory listings (`src/wild.c`, `src/dir.c`), and a driver
 (`src/zipcli.c`) over a few more platform functions: `os_stat`,
 `os_listdir`, `os_readlink`, positioned `os_readat`/`os_writeat`,
 `os_truncate`, `os_commit` (atomic rename over the target, only once

@@ -9,6 +9,8 @@
 #include "../src/deflate.c"
 #include "../src/io.c"
 #include "../src/zip.c"
+#include "../src/wild.c"
+#include "../src/dir.c"
 #include "../src/zipcli.c"
 #include "posix.c"
 

@@ -21,7 +21,8 @@ CORE = src/base.c src/crc32.c src/adler32.c src/inflate.c src/deflate.c \
        src/gzip.c
 SRC  = $(CORE) src/io.c src/gzipio.c src/cli.c
 LIB  = platform/libtugz.c tugz.h $(CORE)
-ZIPSRC = src/base.c src/crc32.c src/deflate.c src/io.c src/zip.c src/zipcli.c
+ZIPSRC = src/base.c src/crc32.c src/deflate.c src/io.c src/zip.c src/wild.c \
+         src/dir.c src/zipcli.c
 POSIX   = platform/posix.c
 WINDOWS = platform/windows.c
 
@@ -73,7 +74,7 @@ tests: test/tests.c $(SRC)
 tests-lib: test/libtests.c $(LIB)
 	$(CC) $(DEBUG) -o $@ test/libtests.c $(REFLIBS)
 
-tests-zip: test/ziptests.c src/base.c src/zip.c
+tests-zip: test/ziptests.c src/base.c src/zip.c src/wild.c
 	$(CC) $(DEBUG) -o $@ test/ziptests.c
 
 check: tests tests-lib tests-zip gzip zip-debug
