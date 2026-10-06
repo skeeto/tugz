@@ -203,6 +203,26 @@ static int zlib_wbits(int format)
     return format==TUGZ_RAW ? -15 : format==TUGZ_ZLIB ? 15 : 31;
 }
 
+// zlib's output from the first len bytes of a stream in one call, and
+// whether it ended there (1), was cut short (0), or failed (-1).
+static buf zlib_prefix(int format, u8 const *p, iz len, int *how)
+{
+    z_stream s = {0};
+    TEST(inflateInit2(&s, zlib_wbits(format)) == Z_OK);
+    iz cap = 1 << 22;
+    buf r = {malloc((uz)cap), 0};
+    s.next_in = (u8 *)p;
+    s.avail_in = (u32)len;
+    s.next_out = r.s;
+    s.avail_out = (u32)cap;
+    int status = inflate(&s, Z_FINISH);
+    TEST(s.avail_out);
+    *how = status==Z_STREAM_END ? 1 : status==Z_BUF_ERROR ? 0 : -1;
+    r.len = (iz)s.total_out;
+    inflateEnd(&s);
+    return r;
+}
+
 static iz const pieces[] = {0, 1, 2, 3, 7, 16, 17, 100, 4096};
 
 static void test_memory(void)
@@ -503,9 +523,19 @@ static void test_zlib_format(void)
     static u8 const small[] = {0x08, 0x1d, 0x03, 0x00, 0, 0, 0, 1};
     TEST((small[0]<<8 | small[1]) % 31 == 0);
     TEST(zlib_header(small, 8) == TUGZ_DONE);
-    static u8 const dict[] = {0x78, 0xbb, 0, 0, 0, 1, 0x03, 0x00};
+    // A preset dictionary is unsupported, but as with zlib, which asks
+    // for it (Z_NEED_DICT) once it has the ID, input ending before then
+    // is truncation
+    static u8 const dict[] = {0x78, 0xbb, 0, 0, 0x30, 0x39, 0x03, 0x00};
     TEST((dict[0]<<8 | dict[1]) % 31 == 0);
-    TEST(zlib_header(dict, 8) == TUGZ_EHEADER);
+    for (iz len = 0; len <= 8; len++) {
+        int how;
+        buf z = zlib_prefix(TUGZ_ZLIB, dict, len, &how);
+        TEST(!z.len && how==(len<6 ? 0 : -1));
+        free(z.s);
+        TEST(zlib_header(dict, len) == (len<6 ? TUGZ_NEED_INPUT
+                                              : TUGZ_EHEADER));
+    }
     static u8 const badsum[] = {0x78, 0x9c, 0x03, 0x00, 0, 0, 0, 2};
     TEST(zlib_header(badsum, 8) == TUGZ_ECHECK);
     TEST(zlib_header(empty, 7) == TUGZ_NEED_INPUT);
@@ -1210,26 +1240,6 @@ static void test_deflate_init(void)
         free(ref.s);
         free(p[k]);
     }
-}
-
-// zlib's output from the first len bytes of a stream in one call, and
-// whether it ended there (1), was cut short (0), or failed (-1).
-static buf zlib_prefix(int format, u8 const *p, iz len, int *how)
-{
-    z_stream s = {0};
-    TEST(inflateInit2(&s, zlib_wbits(format)) == Z_OK);
-    iz cap = 1 << 22;
-    buf r = {malloc((uz)cap), 0};
-    s.next_in = (u8 *)p;
-    s.avail_in = (u32)len;
-    s.next_out = r.s;
-    s.avail_out = (u32)cap;
-    int status = inflate(&s, Z_FINISH);
-    TEST(s.avail_out);
-    *how = status==Z_STREAM_END ? 1 : status==Z_BUF_ERROR ? 0 : -1;
-    r.len = (iz)s.total_out;
-    inflateEnd(&s);
-    return r;
 }
 
 // Inflate decodes ahead of the caller's output buffer into its window,

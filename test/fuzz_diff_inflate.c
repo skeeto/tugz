@@ -103,11 +103,6 @@ static void diff_stream(fuzzenv *env, u8 cfg, u8 const *in, iz len)
         CHECK(!memcmp(zout, env->ctx.out, (uz)zlen));
         break;
     case Z_BUF_ERROR:  // truncated
-        if (format==FMT_ZLIB && len>=2 && in[1]&0x20) {
-            // zlib reads the dictionary ID before reporting it
-            CHECK(got==GZ_NEEDIN || got==GZ_EHEADER);
-            break;
-        }
         CHECK(got == GZ_NEEDIN);
         CHECK(env->ctx.outlen == zlen);  // nothing held back
         CHECK(!memcmp(zout, env->ctx.out, (uz)zlen));

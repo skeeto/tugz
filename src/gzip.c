@@ -52,7 +52,7 @@ static u32 check_init(i32 format)
 }
 
 enum {
-    DEC_FIXED,    // gzip: first 10 bytes; zlib: 2 bytes
+    DEC_FIXED,    // gzip: first 10 bytes; zlib: 2, and any dictionary ID
     DEC_XLEN,
     DEC_EXTRA,
     DEC_NAME,
@@ -201,13 +201,16 @@ static void gzip_header_span(decoder *z, zbuf *b)
     }
 }
 
-// Consume one zlib header byte. Validation follows zlib's order.
+// Consume one zlib header byte. Validation follows zlib's order. Preset
+// dictionaries (FDICT) are unsupported, but like zlib, which then asks
+// for the dictionary, the decoder first reads its 4-byte ID, so that
+// input ending sooner is truncation, as there.
 static i32 zlib_header_byte(decoder *z, u8 c)
 {
     z->hpos++;
     z->buf[z->len++] = c;
-    if (z->len < 2) {
-        return GZ_OK;
+    if (z->len != 2) {
+        return z->len<6 ? GZ_OK : GZ_EHEADER;  // CMF, or the dictionary ID
     }
     u32 cmf = z->buf[0];
     u32 flg = z->buf[1];
@@ -218,7 +221,7 @@ static i32 zlib_header_byte(decoder *z, u8 c)
     } else if ((cmf >> 4) > 7) {
         return GZ_EHEADER;  // window larger than 32 KiB
     } else if (flg & 0x20) {
-        return GZ_EHEADER;  // preset dictionary unsupported
+        return GZ_OK;  // a preset dictionary: its ID follows
     }
     z->len = 0;
     z->state = DEC_BODY;

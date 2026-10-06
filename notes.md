@@ -102,6 +102,10 @@ CPU models with and without PCLMUL.
   every input length (checked by `fuzz-diff-inflate`, and by
   `test_inflate_splits` at every split of streams with lone and empty
   distance codes, whose invalid 1-bit entries expose an early lookup).
+  That includes zlib streams with a preset dictionary (FDICT), which
+  tugz does not support: `TUGZ_EHEADER` comes once the 4-byte
+  dictionary ID is in, where zlib asks for the dictionary, and not
+  sooner, at the flag.
 - Inflate decodes ahead of the caller's output buffer, into its window
   (up to 256 KiB), so a call returns `TUGZ_NEED_OUTPUT` whenever decoded
   output remains, even with the input used up or an error found. Any

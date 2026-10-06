@@ -34,7 +34,9 @@
 // begin a member produce TUGZ_ENOTGZ. TUGZ_NEED_INPUT means all input was
 // consumed: supply more, or if there is no more, the stream is truncated.
 // Errors are sticky, and reported once the output before them has been
-// delivered.
+// delivered. Preset dictionaries are unsupported: a zlib stream with one
+// (FDICT) gets TUGZ_EHEADER once its dictionary ID has been read, where
+// zlib asks for the dictionary.
 //
 // Deflate with TUGZ_NONE returns TUGZ_NEED_INPUT once it has consumed all
 // input, though output may remain staged internally. Staging is bounded,
