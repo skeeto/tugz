@@ -1310,13 +1310,17 @@ static zdir *enter(zip *z, zdir *up, s8 path, s8 name, os_info *info,
     }
     // Entries join the directory's path with a separator, unless it ends
     // in one, but those of "." are named by theirs alone, as Info-ZIP's
-    // procname names them, so that "d/a" is a path met again, not "./d/a"
-    b32   dot = zequals(path, S("."));
-    zdir *d   = new(scratch, 1, zdir);
+    // procname names them, so that "d/a" is a path met again, not "./d/a".
+    // Nor does a bare drive (Windows), its current directory, take one,
+    // which would join them at its root ("C:" listed, "C:/a" opened).
+    u8    drive = path.len==2 && path.s[1]==':' ? (u8)(path.s[0] | 0x20) : 0;
+    b32   bare  = z->windows && drive>='a' && drive<='z';
+    b32   dot   = zequals(path, S("."));
+    b32   join  = !dot && !bare && path.len && !is_sep(z, path.s[path.len-1]);
+    zdir *d     = new(scratch, 1, zdir);
     d->up    = up;
     d->path  = dot ? S("") : path;
-    d->sep   = dot || (path.len && is_sep(z, path.s[path.len-1])) ? S("")
-             : S("/");
+    d->sep   = join ? S("/") : S("");
     d->name  = dname;
     d->info  = info;
     d->kids  = zsort(list, n, scratch);

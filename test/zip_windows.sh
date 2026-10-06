@@ -306,6 +306,16 @@ cmp -s got want.txt || fail "paths: $(cat got)"
 (cd tree && "$ZIP" -q ../p8.zip "${here%%:*}:*.txt") ||
     fail "zip ../p8.zip C:*.txt"
 [ "$(list p8.zip | wc -l)" = 4 ] || fail "drive-relative wildcard"
+# A bare drive is its current directory, whose entries are examined
+# there, not at its root (where Info-ZIP's port, by its sources, joins
+# them). Their names are unlike any at the root, should that recur.
+mkdir -p bare/zq37d
+printf a >bare/zq37a.txt
+printf b >bare/zq37d/zq37b.txt
+(cd bare && "$ZIP" -qr ../pdrive.zip "${here%%:*}:") ||
+    fail "zip -r ../pdrive.zip C:"
+[ "$(list pdrive.zip | tr '\n' ' ')" = "zq37a.txt zq37d/ zq37d/zq37b.txt " ] ||
+    fail "zip -r C: $(list pdrive.zip)"
 expect_status 12 "$ZIP" -r p5.zip ''
 
 # Names drop a device or UNC prefix along with the drive, as Info-ZIP

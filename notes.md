@@ -653,7 +653,10 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   name ends in is followed, as for any path, unless `-y`. Info-ZIP reads
   them all, absolute names included. Other entries are refreshed only by
   naming their files as paths (`zip -u a.zip ../f`), and as when their
-  files are missing, `-FS` deletes them unless so named.
+  files are missing, `-FS` deletes them unless so named. On Windows,
+  `zip -r t.zip C:` adds the entries of the drive's current directory,
+  where Info-ZIP's port, by its sources, lists that directory but
+  examines and reads its entries at the drive's root.
 - Special files: sockets and block devices are left out too. Info-ZIP's
   Unix port (judging by its behavior, a type test by masking mode bits)
   takes a socket for a regular file, which it then cannot open (18; `-d`
