@@ -990,7 +990,9 @@ Fuzzers:
   hard-linked file is skipped with a warning (2); FIFOs, devices, and
   directories are always skipped. With `-c` or `-t`, anything but a
   directory may be read (e.g. `gzip -c <(cmd)`). Failing to remove the
-  input afterward is a warning, as in GNU gzip, leaving both files.
+  input afterward is a warning, as in GNU gzip, leaving both files. On
+  Windows a read-only input is removed all the same, as unlinking
+  ignores the mode on POSIX, just as `-f` replaces a read-only output.
 - Output files are created owner-only, then given the input's mode,
   ownership (when permitted; set-ID bits dropped otherwise), and
   timestamps at full resolution, all as the input had them when opened,

@@ -441,31 +441,43 @@ static i32 open_input(c16 *wpath, i32 mode, iptr *out)
 // does, which ignores the read-only attribute that refuses DeleteFileW:
 // clear it through a handle, mark the file deleted, then restore it,
 // which the deletion survives, for any other hard links to the file. A
-// directory, read-only or not, is left alone.
-static void remove_file(c16 *wpath)
+// directory, read-only or not, is left alone. Returns whether the file
+// was deleted, and if not, leaves why in the last error.
+static b32 remove_file(c16 *wpath)
 {
-    if (DeleteFileW(wpath) || GetLastError()!=ERROR_ACCESS_DENIED) {
-        return;
+    if (DeleteFileW(wpath)) {
+        return 1;
+    } else if (GetLastError() != ERROR_ACCESS_DENIED) {
+        return 0;
     }
     u32 attr = GetFileAttributesW(wpath);
     u32 kind = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_DIRECTORY;
     if (attr==INVALID_FILE_ATTRIBUTES || (attr&kind)!=FILE_ATTRIBUTE_READONLY) {
-        return;
+        SetLastError(ERROR_ACCESS_DENIED);  // as DeleteFileW said
+        return 0;
     }
     iptr h = CreateFileW(wpath, DELETE|FILE_WRITE_ATTRIBUTES, FILE_SHARE_ALL,
                          0, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE, 0);
     if (h == INVALID_HANDLE_VALUE) {
-        return;
+        return 0;
     }
+    b32 deleted = 0;
+    u32 err     = 0;
     basic_info info = {0};
     info.attributes = FILE_ATTRIBUTE_NORMAL;
     if (SetFileInformationByHandle(h, FileBasicInfo, &info, sizeof(info))) {
         u8 discard = 1;
-        SetFileInformationByHandle(h, FileDispositionInfo, &discard, 1);
+        deleted = SetFileInformationByHandle(h, FileDispositionInfo,
+                                             &discard, 1);
+        err = GetLastError();
         info.attributes = attr;
         SetFileInformationByHandle(h, FileBasicInfo, &info, sizeof(info));
+    } else {
+        err = GetLastError();
     }
     CloseHandle(h);
+    SetLastError(err);
+    return deleted;
 }
 
 // Created files are marked delete-pending immediately, so that the file
@@ -630,11 +642,16 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
     return 1;
 }
 
+// As unlink, even of a read-only file (remove_file).
 [[maybe_unused]] static b32 os_remove(os *ctx, s8 path, arena scratch)
 {
     (void)ctx;
     c16 *wpath = winpath(&scratch, path);
-    return wpath && DeleteFileW(wpath);
+    if (!wpath) {
+        SetLastError(ERROR_INVALID_NAME);  // as in os_open
+        return 0;
+    }
+    return remove_file(wpath);
 }
 
 // Created files not kept are delete-pending, so they need no cleanup.

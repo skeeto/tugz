@@ -314,6 +314,16 @@ if chflags uchg stuck 2>/dev/null; then
         fail "input not removed: status $st"
 fi
 
+# A read-only input is removed all the same, as unlinking ignores the
+# mode, as in GNU gzip (on Windows, chmod sets the read-only attribute)
+printf 'read-only\n' >roin
+chmod 444 roin
+"$GZIP" roin || fail "read-only input: status $?"
+[ ! -e roin ] && [ -e roin.gz ] || fail "read-only input kept"
+chmod 444 roin.gz
+"$GZIP" -d roin.gz || fail "read-only input to -d: status $?"
+[ -e roin ] && [ ! -e roin.gz ] || fail "read-only input to -d kept"
+
 # FIFOs are never replaced, and checking one must not block
 if command -v mkfifo >/dev/null && mkfifo fifo 2>/dev/null; then
     expect_status 2 "$GZIP" fifo
