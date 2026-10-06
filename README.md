@@ -81,9 +81,11 @@ Installed (or linked) as `gunzip` it decompresses, and as `zcat` or
 Behavior follows GNU gzip: concatenated members, warnings for trailing
 garbage (but not zero padding), `zcat -f` passing other data through,
 its suffixes (`.gz`, `.z`, `-gz`, `-z`, `_z`, and `.tgz` or `.taz` for
-`.tar`), exit status 0/1/2 for success/error/warning, metadata copied to
-outputs, and no partial outputs on failure or interruption. In place,
-it skips links unless `-f`, and special files always.
+`.tar`), its messages (with the system's reason for a failure), exit
+status 0/1/2 for success/error/warning, a stop at the first read or
+write error, metadata copied to outputs, and no partial outputs on
+failure or interruption. In place, it skips links unless `-f`, and
+special files always, and it reads a header before replacing a file.
 
 Headers record no file name or time, as GNU gzip's do under `-n`, which
 is therefore accepted (as in `gzip -9n`). Not yet supported: `-r`, `-l`,
