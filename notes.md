@@ -877,6 +877,12 @@ Fuzzers:
   formats (compress, pack, LZH, zip) pass through too.
 - gzip's exit status: 0 success, 1 error, 2 warning; errors take
   precedence. (zip's follow Info-ZIP: see its section.)
+- As in GNU gzip, a read or write error (including a failed close of an
+  output) ends the run at once: nothing more of the file is read or
+  written, and no later file is begun, where reading on would only
+  waste work or, with a closed pipe and no SIGPIPE (Windows), never
+  end. A stream that a read error cuts short is left unfinished, so
+  that it cannot pass for all of its input.
 - Headers record no name and no time (FLG and MTIME 0), which is GNU
   gzip's `-n` output but for XFL (always 0), so `-n` and `--no-name` are
   accepted and do nothing. `-N`, which asks for a name and time to be

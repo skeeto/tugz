@@ -61,27 +61,33 @@ static encoder *gzip_encoder(arena *perm, i32 level)
 // Compress a descriptor into a descriptor as a new stream at a level,
 // first resetting the encoder: for small inputs this costs a fraction
 // of a new encoder, so one serves every file.
+//
+// As in GNU gzip, a read or write error stops at once: a stream left
+// unfinished by a read error cannot pass for all of the input.
 static i32 gzip_compress(encoder *e, i32 in, i32 out, i32 level,
                          arena scratch)
 {
     encoder_reset(e, level);
     reader *r = newreader(&scratch, in, IO_RDBUF);
-    b32 werr = 0;
     for (;;) {
-        b32  more = reader_fill(r);
-        zbuf b    = {r->buf+r->off, r->len-r->off, 0, 0};
+        b32 more = reader_fill(r);
+        if (r->err) {
+            return GZ_EREAD;
+        }
+        zbuf b = {r->buf+r->off, r->len-r->off, 0, 0};
         i32 status = encoder_run(e, &b, more ? DEF_NONE : DEF_FINISH);
         r->off = r->len - b.inlen;
         if (status != GZ_NEEDIN) {
             s8 p = encoder_pending(e);
-            put_pending(r->ctx, out, p, &werr);
+            if (!put_pending(r->ctx, out, p)) {
+                return GZ_EWRITE;
+            }
             encoder_consume(e, p.len);
         }
         if (status == GZ_OK) {
-            break;
+            return GZ_OK;
         }
     }
-    return r->err ? GZ_EREAD : werr ? GZ_EWRITE : GZ_OK;
 }
 
 // A decoder in a FMT_* format for stream_decompress, which can reuse it
@@ -120,12 +126,16 @@ static i32 not_gzip(decoder *z, reader *r, b32 first)
 
 // Copy input that is not a gzip member to the output unchanged, from the
 // first bytes, which the decoder took.
-static i32 pass_through(decoder *z, reader *r, i32 out, b32 *werr)
+static i32 pass_through(decoder *z, reader *r, i32 out)
 {
-    put_pending(r->ctx, out, (s8){z->buf, z->len}, werr);
+    if (!put_pending(r->ctx, out, (s8){z->buf, z->len})) {
+        return GZ_EWRITE;
+    }
     while (reader_fill(r)) {
         s8 rest = {r->buf+r->off, r->len-r->off};
-        put_pending(r->ctx, out, rest, werr);
+        if (!put_pending(r->ctx, out, rest)) {
+            return GZ_EWRITE;
+        }
         r->off = r->len;
     }
     return r->err ? GZ_EREAD : GZ_OK;
@@ -164,19 +174,25 @@ static b32 stream_header(decoder *z, reader *r)
 // starts with the gzip magic, in which case it must be a valid member.
 // With copy, as for GNU's gzip -cdf (zcat -f), data that is not gzip,
 // from the start or after a member, is instead copied unchanged.
+//
+// As in GNU gzip, a read or write error stops at once.
 static i32 stream_decode(decoder *z, reader *r, i32 out, b32 copy)
 {
     i32 format = z->format;
-    b32 werr = 0;
-    i32 status;
     for (b32 first = 1;; first = 0) {
+        i32 status;
         for (;;) {
-            b32  more = reader_fill(r);
-            zbuf b    = {r->buf+r->off, r->len-r->off, 0, 0};
+            b32 more = reader_fill(r);
+            if (r->err) {
+                return GZ_EREAD;
+            }
+            zbuf b = {r->buf+r->off, r->len-r->off, 0, 0};
             status = decoder_run(z, &b);
             r->off = r->len - b.inlen;
             s8 p = decoder_pending(z);
-            put_pending(r->ctx, out, p, &werr);
+            if (!put_pending(r->ctx, out, p)) {
+                return GZ_EWRITE;
+            }
             decoder_consume(z, p.len);
             if ((status!=GZ_NEEDIN || !more) && status!=GZ_NEEDOUT) {
                 break;
@@ -184,27 +200,17 @@ static i32 stream_decode(decoder *z, reader *r, i32 out, b32 copy)
         }
 
         // Two bytes without the gzip magic, or fewer at the end of input
-        b32 ended = status==GZ_NEEDIN && !r->err;
+        b32 ended = status == GZ_NEEDIN;
         if (format==FMT_GZIP && (status==GZ_ENOTGZ || (ended && z->hpos<2))) {
-            status = copy ? pass_through(z, r, out, &werr)
-                          : not_gzip(z, r, first);
-            break;
-        } else if (status == GZ_NEEDIN) {
-            // Input ended inside a stream or member
-            status = r->err ? GZ_EREAD : GZ_ETRUNC;
-            break;
+            return copy ? pass_through(z, r, out) : not_gzip(z, r, first);
+        } else if (ended) {
+            return GZ_ETRUNC;  // inside a stream or member
         } else if (status!=GZ_OK || format!=FMT_GZIP) {
-            break;
+            return status;
         } else if (!reader_fill(r)) {
-            status = r->err ? GZ_EREAD : GZ_OK;
-            break;
+            return r->err ? GZ_EREAD : GZ_OK;
         }
     }
-
-    if (werr && (status==GZ_OK || status==GZ_TRAILING)) {
-        status = GZ_EWRITE;
-    }
-    return status;
 }
 
 // Decompress from a descriptor, as stream_decode, first resetting the

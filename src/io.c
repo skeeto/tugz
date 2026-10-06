@@ -174,10 +174,8 @@ typedef struct {
     return r;
 }
 
-// Hand pending output to a descriptor, if any, noting the first failure.
-[[maybe_unused]] static void put_pending(os *ctx, i32 fd, s8 p, b32 *err)
+// Hand pending output to a descriptor, if any. Returns false on failure.
+[[maybe_unused]] static b32 put_pending(os *ctx, i32 fd, s8 p)
 {
-    if (p.len && fd>=0 && !*err) {
-        *err = !os_write(ctx, fd, p.s, p.len);
-    }
+    return !p.len || fd<0 || os_write(ctx, fd, p.s, p.len);
 }

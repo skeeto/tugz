@@ -399,13 +399,27 @@ EOF
     "$GZIP" -kf pend || fail "-f once no longer delete-pending"
 fi
 
-# Write errors
+# As in GNU gzip, a read error ends the run, and leaves the stream
+# unfinished rather than passing for all of the input (standard input
+# here is open only for writing)
+: >wo
+for opts in -c -dc; do
+    set +e
+    "$GZIP" $opts - m1.gz 0>>wo >wo.out 2>wo.err
+    st=$?
+    set -e
+    [ $st = 1 ] && [ ! -s wo.out ] && [ "$(grep -c . wo.err)" = 1 ] ||
+        fail "$opts read error: status $st, $(wc -c <wo.out) bytes out"
+done
+
+# Write errors, which likewise end the run
 if [ -w /dev/full ]; then
     set +e
-    "$GZIP" -c text >/dev/full 2>/dev/null
+    "$GZIP" -c text text >/dev/full 2>full.err
     st=$?
     set -e
     [ $st = 1 ] || fail "write to /dev/full: status $st"
+    [ "$(grep -c . full.err)" = 1 ] || fail "write to /dev/full: messages"
 fi
 
 # An interrupted in-place operation leaves no partial output. A

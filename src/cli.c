@@ -24,6 +24,7 @@ typedef struct {
     b32 force;
     b32 keep;
     b32 quiet;
+    b32 stop;      // a read or write error ends the run, as in GNU gzip
     encoder *enc;  // when compressing, shared by every file
     decoder *dec;  // when decompressing or testing, likewise
 } options;
@@ -154,6 +155,7 @@ static i32 report(options *o, s8 name, i32 status, arena scratch)
         }
         return EXIT_WARN;
     }
+    o->stop |= status==GZ_EREAD || status==GZ_EWRITE;
     message(scratch, name, status_message(status));
     return EXIT_ERR;
 }
@@ -476,7 +478,7 @@ static i32 gzip_main(config *conf)
     }
 
     i32 code = EXIT_OK;
-    for (i32 i = 0; i < nfiles; i++) {
+    for (i32 i = 0; i<nfiles && !o.stop; i++) {
         code = exit_combine(code, process_file(&o, files[i], *perm));
     }
     return code;

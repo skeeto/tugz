@@ -57,8 +57,11 @@ struct os {
         b32 keep;
     } fds[MAX_FDS];
     iz  readlimit;   // max bytes per read, to exercise short reads
-    b32 failread;    // reads of non-standard descriptors fail
+    b32 failread;    // reads fail at an offset of failreadat or beyond
+    iz  failreadat;
     b32 failwrite;   // writes to descriptors other than stderr fail
+    iz  reads;       // calls to os_read
+    iz  writes;      // calls to os_write, other than for stderr
     b32 failclose;   // closing created files fails
     b32 failremove;  // removing files fails
     b32 tty[3];      // standard descriptors attached to a terminal
@@ -154,7 +157,7 @@ static void mfs_reset(os *ctx)
     for (i32 i = 0; i < MAX_FDS; i++) {
         ctx->fds[i].open = 0;
     }
-    ctx->readlimit = 0;
+    ctx->readlimit = ctx->failreadat = 0;
     ctx->failread = ctx->failwrite = ctx->failclose = ctx->failremove = 0;
     ctx->tty[0] = ctx->tty[1] = ctx->tty[2] = 0;
     static char *std[] = {"<stdin>", "<stdout>", "<stderr>"};
@@ -246,13 +249,18 @@ static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
 {
     TEST(fd>=0 && fd<MAX_FDS && ctx->fds[fd].open);
     TEST(cap > 0);
-    if (ctx->failread && fd>2) {
+    ctx->reads++;
+    iz off = ctx->fds[fd].off;
+    if (ctx->failread && off>=ctx->failreadat) {
         return -1;
     }
     mfile *f = ctx->files + ctx->fds[fd].file;
-    iz n = MIN(cap, f->len - ctx->fds[fd].off);
+    iz n = MIN(cap, f->len - off);
     if (ctx->readlimit) {
         n = MIN(n, ctx->readlimit);
+    }
+    if (ctx->failread) {
+        n = MIN(n, ctx->failreadat - off);
     }
     if (n) {
         memcpy(buf, f->data + ctx->fds[fd].off, (uz)n);
@@ -265,6 +273,7 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
 {
     TEST(fd>=0 && fd<MAX_FDS && ctx->fds[fd].open);
     TEST(fd != 0);
+    ctx->writes += fd != 2;
     if (ctx->failwrite && fd!=2) {
         return 0;
     }
@@ -2046,6 +2055,7 @@ static i32 run_as(os *ctx, arena a, char *name, char *cmdline)
     mfs_put(ctx, "<stdout>", 0, 0);
     mfs_put(ctx, "<stderr>", 0, 0);
     ctx->fds[0].off = 0;
+    ctx->reads = ctx->writes = 0;
     config conf = {0};
     conf.perm = a;
     conf.name = cstrs8(name);
@@ -2675,6 +2685,66 @@ static void test_cli_safety(os *ctx, arena a)
     free(text);
 }
 
+// As in GNU gzip, a read or write error stops reading and writing at
+// once, and ends the run
+static void test_io_stops(os *ctx, arena a)
+{
+    iz len = 4<<20;  // 16 reads, compressed or not
+    u8 *big = randbytes(len, 1);
+    s8 bigz, out;
+    TEST(do_gzip(ctx, a, big, len, 6, &bigz) == GZ_OK);
+    TEST(bigz.len > len);
+    mfs_reset(ctx);
+    mfs_put(ctx, "r", big, len);
+    mfs_put(ctx, "z.gz", bigz.s, bigz.len);
+    mfs_put(ctx, "s", big, 1000);
+    mfs_put(ctx, "plain", (u8 *)"plain\n", 6);
+
+    // A read error leaves a stream unfinished, so that it cannot pass for
+    // all of the input, as finishing it would
+    ctx->failread = 1;
+    ctx->failreadat = len/2;
+    TEST(run(ctx, a, "-c r missing") == EXIT_ERR);
+    TEST(stderr_has(ctx, "r: read error") && !stderr_has(ctx, "missing"));
+    s8 o = dup8(mfs_get(ctx, "<stdout>"));
+    ctx->failread = 0;
+    TEST(do_gunzip(ctx, a, o.s, o.len, &out) == GZ_ETRUNC);
+    free(out.s);
+    free(o.s);
+    ctx->failread = 1;
+    TEST(run(ctx, a, "r s") == EXIT_ERR);
+    TEST(has(ctx, "r") && !has(ctx, "r.gz") && !has(ctx, "s.gz"));
+    TEST(run(ctx, a, "-dc z.gz missing") == EXIT_ERR);
+    TEST(stderr_has(ctx, "read error") && !stderr_has(ctx, "missing"));
+    TEST(run(ctx, a, "-d z.gz s") == EXIT_ERR);
+    TEST(has(ctx, "z.gz") && !has(ctx, "z") && !has(ctx, "s.gz"));
+    ctx->failreadat = 0;
+    set_stdin(ctx, big, 1000);
+    TEST(run(ctx, a, "-c - s") == EXIT_ERR);
+    TEST(stderr_has(ctx, "stdin: read error"));
+    TEST(!mfs_get(ctx, "<stdout>").len);  // not even an empty stream
+    ctx->failread = 0;
+
+    // Nor does anything more get read after a write error, nor any more
+    // files, whether compressing, decompressing, or passing data through
+    static char *const cmds[] = {
+        "-c r missing", "r missing", "-dc z.gz missing", "-dk z.gz missing",
+        "-dcf z.gz missing", "-dcf plain missing",
+    };
+    for (i32 i = 0; i < countof(cmds); i++) {
+        ctx->failwrite = 1;
+        TEST(run(ctx, a, cmds[i]) == EXIT_ERR);
+        ctx->failwrite = 0;
+        TEST(ctx->writes==1 && ctx->reads<len/IO_RDBUF/2);
+        TEST(stderr_has(ctx, "write error") && !stderr_has(ctx, "missing"));
+        TEST(has(ctx, "r") && !has(ctx, "r.gz"));
+        TEST(has(ctx, "z.gz") && !has(ctx, "z"));
+    }
+
+    free(bigz.s);
+    free(big);
+}
+
 static void test_oom(os *ctx, arena a)
 {
     // Every truncation of the arena must fail cleanly via os_exit
@@ -2727,6 +2797,7 @@ int main(void)
     test_io_errors(&ctx, a);
     test_cli(&ctx, a);
     test_cli_safety(&ctx, a);
+    test_io_stops(&ctx, a);
     test_program_names(&ctx, a);
     test_oom(&ctx, a);
     test_push_invariance(&ctx, a);
