@@ -190,18 +190,23 @@ static s8 os_readlink(os *ctx, s8 path, arena *a)
 // Links are read one at a time, so that a dangling one leads where it
 // points, a relative target being relative to the link's directory. But
 // only links the system itself would follow are: not a loop, nor one
-// that Linux's protected_symlinks refuses in a sticky directory.
+// that Linux's protected_symlinks refuses in a sticky directory. So a
+// chain may be as long as stat follows, up to Linux's 40 links (others
+// allow fewer), leaving one more read to find the file at its end.
 static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
 {
     struct stat st;
     if (stat(tocstr(&scratch, path), &st) && errno!=ENOENT) {
         return (s8){0};
     }
-    for (i32 hops = 0; hops < 40; hops++) {
+    for (i32 links = 0;; links++) {
         s8 target = os_readlink(ctx, path, &scratch);
         if (!target.s) {
             // Not a link (EINVAL), or nothing there
             return errno==EINVAL || errno==ENOENT ? path : (s8){0};
+        } else if (links == 40) {
+            errno = ELOOP;  // a chain grown since stat followed it
+            return (s8){0};
         }
         iz cut = path.len;
         if (target.len && target.s[0]=='/') {
@@ -213,7 +218,6 @@ static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
         bytecopy(next.s+cut, target.s, target.len);
         path = next;
     }
-    return (s8){0};
 }
 
 // Judged by the system, as when Info-ZIP opens the archive to update

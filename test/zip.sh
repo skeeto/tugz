@@ -1361,6 +1361,22 @@ if ln -s ../store/r.zip al/dist/rel.zip 2>/dev/null; then
     grep -q 'Could not create output file (al/loop.zip)' err ||
         fail "archive link loop: $(cat err)"
     [ -L al/loop.zip ] || fail "archive link loop replaced"
+
+    # A chain as long as the system follows (Linux: 40 links) is
+    # followed too, and one link more is a loop, with its reason
+    mkdir al/chain
+    "$ZIP" -q al/chain/l0.zip tree/a.txt
+    n=0
+    while [ -e al/chain/l$n.zip ] && [ $n -lt 100 ]; do
+        ln -s l$n.zip al/chain/l$((n+1)).zip
+        n=$((n + 1))
+    done
+    "$ZIP" -q al/chain/l$((n-1)).zip tree/b.txt ||
+        fail "archive through $((n-1)) links"
+    [ "$(names al/chain/l0.zip | tr '\n' ' ')" = "tree/a.txt tree/b.txt " ] ||
+        fail "archive through $((n-1)) links: $(names al/chain/l0.zip)"
+    "$ZIP" al/chain/l$n.zip tree/one 2>err && fail "$n links succeeded"
+    grep -q 'zip I/O error: ..' err || fail "$n links: $(cat err)"
 fi
 
 # Departure: a hard-linked archive is replaced by a new file, which its
