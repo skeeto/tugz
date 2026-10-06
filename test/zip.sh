@@ -470,6 +470,34 @@ cmp -s got want || fail "-x: $(cat got)"
 names i.zip >got
 printf 'tree/Z.txt\ntree/a.txt\ntree/b.txt\n' >want
 cmp -s got want || fail "-i list ended by @: $(cat got)"
+
+# As in Info-ZIP, a list's first value is the next argument, whatever it
+# is; later ones end at any argument starting with '-', a lone "-" (here
+# streaming, rejected) included. An attached value is the whole list,
+# even an empty one, which matches nothing. A missing list is an error.
+printf d >./-dash
+"$ZIP" -q dl1.zip tree/a.txt tree/b.txt ./-dash -x -dash tree/b.txt
+[ "$(names dl1.zip)" = tree/a.txt ] || fail "-x -dash: $(names dl1.zip)"
+"$ZIP" -q dl2.zip tree/a.txt tree/b.txt -i -- tree/b.txt
+[ "$(names dl2.zip)" = tree/b.txt ] || fail "-i --: $(names dl2.zip)"
+"$ZIP" -q dl3.zip tree/a.txt -x tree/b.txt - 2>err && fail "list then -"
+grep -q '(streaming with - not supported)$' err || fail "list then -: $(cat err)"
+"$ZIP" -q dl3.zip tree/a.txt -x @ tree/b.txt 2>err && fail "-x @"
+grep -q '(missing file after @)$' err || fail "-x @: $(cat err)"
+"$ZIP" -q dl4.zip tree/a.txt -x= tree/b.txt --exclude=
+[ "$(names dl4.zip)" = "tree/a.txt
+tree/b.txt" ] || fail "-x=: $(names dl4.zip)"
+"$ZIP" -q dl5.zip --exclude= tree/a.txt
+[ "$(names dl5.zip)" = tree/a.txt ] || fail "--exclude=: $(names dl5.zip)"
+expect_status 12 "$ZIP" -q dl6.zip tree/a.txt -i=  # Departure, as above
+"$ZIP" -q dl7.zip tree/a.txt -x 2>err && fail "-x without a list"
+grep -q "(option 'x' (exclude files matching patterns) requires a value)$" \
+    err || fail "-x without a list: $(cat err)"
+"$ZIP" -q dl7.zip tree/a.txt --inc 2>err && fail "--inc without a list"
+grep -q "'include' (include only files matching patterns) requires a value)$" \
+    err || fail "--inc without a list: $(cat err)"
+expect_status 16 "$ZIP" -q dl7.zip tree/a.txt --exclude
+rm ./-dash
 # Departure: -i matching nothing has nothing to do (12), where Info-ZIP
 # writes an empty archive (0)
 expect_status 12 "$ZIP" -r inone.zip tree -i '*.none'
@@ -1664,6 +1692,7 @@ EOF
     expect_status 0 "$ZIP" -r ud3.zip ud -x 'ud/su*'
     expect_status 0 "$ZIP" -r ud4.zip ud -i 'ud/f' 'src/*'
     expect_status 18 "$ZIP" -r ud7.zip ud -i 'ud/f' '*.txt'
+    expect_status 0 "$ZIP" -r ud8.zip ud -i 'ud/f' ''  # matching nothing
     expect_status 18 "$ZIP" -r ud5.zip ud -x 'ud/sub/'
     expect_status 18 "$ZIP" -r ud6.zip ud -i 'ud/*'
     chmod 755 ud/sub

@@ -496,9 +496,12 @@ static void push_lines(zip *z, s8s *list, s8 text)
     }
 }
 
+// Whether an argument ends a pattern list after its first value: an
+// option, or as in Info-ZIP any argument starting with '-', a lone "-"
+// and "--" included, or a lone @, which is dropped.
 static b32 is_list_end(s8 arg)
 {
-    return (arg.len>1 && arg.s[0]=='-') || zequals(arg, S("@"));
+    return (arg.len && arg.s[0]=='-') || zequals(arg, S("@"));
 }
 
 // Add an element of a pattern list: a pattern, or @file, a file of them,
@@ -538,31 +541,6 @@ static i32 add_patterns(zip *z, s8s *list, s8 arg, arena scratch)
     }
     for (iz i = first; i < list->len; i++) {
         list->data[i] = zip_name(&z->perm, list->data[i], z->windows);
-    }
-    return 0;
-}
-
-// Collect a pattern list option's values: an attached value, else the
-// following arguments up to the next option or a lone @.
-static i32 take_list(zip *z, s8s *list, s8 value, s8 *args, i32 nargs,
-                     i32 *i, arena scratch)
-{
-    if (value.len) {
-        return add_patterns(z, list, value, scratch);
-    }
-    i32 n = 0;
-    for (; *i+1<nargs && !is_list_end(args[*i+1]); n++) {
-        i32 err = add_patterns(z, list, args[++*i], scratch);
-        if (err) {
-            return err;
-        }
-    }
-    if (*i+1<nargs && zequals(args[*i+1], S("@"))) {
-        ++*i;
-    }
-    if (!n) {
-        return fail(z, ZE_PARMS, S("Invalid command arguments"),
-                    S("missing pattern list"), scratch);
     }
     return 0;
 }
@@ -738,6 +716,28 @@ static i32 misused(zip *z, s8 opt, zoption const *o, s8 how, arena scratch)
     return fail(z, ZE_PARMS, S("Invalid command arguments"), msg, scratch);
 }
 
+// Collect a pattern list option's values as Info-ZIP's get_option does:
+// an attached value, even an empty one ("-x=", which matches nothing),
+// else the next argument, whatever it is, and those after it up to the
+// end of the list.
+static i32 take_list(zip *z, zoption const *o, s8 opt, s8s *list, s8 value,
+                     s8 *args, i32 nargs, i32 *i, arena scratch)
+{
+    if (value.s) {
+        return add_patterns(z, list, value, scratch);
+    } else if (*i+1 == nargs) {
+        return misused(z, opt, o, S("requires a value"), scratch);
+    }
+    i32 err = add_patterns(z, list, args[++*i], scratch);
+    for (; !err && *i+1<nargs && !is_list_end(args[*i+1]);) {
+        err = add_patterns(z, list, args[++*i], scratch);
+    }
+    if (!err && *i+1<nargs && zequals(args[*i+1], S("@"))) {
+        ++*i;
+    }
+    return err;
+}
+
 // Apply an option, as given by opt, taking a pattern list's values from
 // value or the following arguments. Returns an exit status to stop with:
 // an error, or -1 for success after an informational option.
@@ -766,7 +766,7 @@ static i32 apply_option(zip *z, zoption const *o, s8 opt, b32 negate,
                     S("-mm not supported, Must_Match is -MM"), scratch);
     } else if (o->flags & OPT_LIST) {
         s8s *list = key.s[0]=='x' ? &z->exclude : &z->include;
-        return take_list(z, list, value, args, nargs, i, scratch);
+        return take_list(z, o, opt, list, value, args, nargs, i, scratch);
     }
 
     b32 on = !negate;
@@ -845,16 +845,16 @@ static i32 parse_args(zip *z, s8 *args, i32 nargs, arena scratch)
                     return badopt(z, S("short"), opt, scratch);
                 }
 
-                // A list's value is the rest of the argument, even "-"
+                // A list's value is the rest of the argument, if any,
+                // even "-" or nothing after a leading '=', which is cut
                 s8  value  = {0};
                 b32 negate = 0;
                 if (o->flags & OPT_LIST) {
-                    value = (s8){arg.s+k, arg.len-k};
-                    if (value.len && value.s[0]=='=') {
-                        value.s++;
-                        value.len--;
+                    if (k < arg.len) {
+                        k += arg.s[k] == '=';
+                        value = (s8){arg.s+k, arg.len-k};
+                        k = arg.len;
                     }
-                    k = arg.len;
                 } else {
                     negate = k<arg.len && arg.s[k]=='-';
                     k += negate;
@@ -1257,7 +1257,8 @@ static b32 same_start(zip *z, s8 a, s8 b, iz n)
 // ending in a slash, so that nothing is lost by failing to list it: an
 // -x pattern of a leading part of the name and then only stars matches
 // them all, and an -i pattern whose part before any wildcard parts from
-// the name matches none. Other patterns may match some or none.
+// the name matches none, nor does an empty one (as from "-i="). Other
+// patterns may match some or none.
 static b32 subtree_out(zip *z, s8 dname)
 {
     for (iz i = 0; i < z->exclude.len; i++) {
@@ -1271,7 +1272,8 @@ static b32 subtree_out(zip *z, s8 dname)
     }
     for (iz i = 0; i < z->include.len; i++) {
         s8 p = z->include.data[i];
-        if (same_start(z, p, dname, MIN(literal_len(z, p), dname.len))) {
+        iz k = MIN(literal_len(z, p), dname.len);
+        if (p.len && same_start(z, p, dname, k)) {
             return 0;
         }
     }

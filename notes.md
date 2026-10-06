@@ -230,22 +230,26 @@ neither inflate nor the gzip container.
   in Info-ZIP's builds. Its two-letter short options (those of its
   Windows port there) are matched before single letters, so that
   unsupported ones are rejected by name (`-fd`), `-mm` with Info-ZIP's
-  own message ("Must_Match is -MM"), and `-h2` is `-h`. An action, `-u`,
-  `-f`, or `-d`, may be given once ("specify just one action"), and
-  `-FS`, a flag in Info-ZIP, may be repeated but not combined with one
-  (its message, but for a stray line break before the closing
-  parenthesis). `--` ends options only after the archive name. `ZIPOPT`,
-  or if it holds only whitespace `ZIP`, supplies options before the
-  arguments, split as Info-ZIP's envargs does (whitespace; on POSIX,
-  double quotes group, keeping a backslash before an inner quote). A
-  lone `-v` (after those) or `--version` prints the version, `-L` the
-  license (the Unlicense), `-h` the usage; `-v` with other arguments
-  (verbose) does nothing, nor does `-p` (store paths, the default). With
-  no arguments and no terminal on standard output, or no archive name,
-  Info-ZIP streams to standard output; that is rejected as streaming. A
-  terminal gets the usage, or Info-ZIP's "cannot write zip file to
-  terminal". `-d` warns, as Info-ZIP does, that `-r` and `-0` are
-  ignored.
+  own message ("Must_Match is -MM"), and `-h2` is `-h`. A pattern list,
+  `-x` or `-i`, is its attached value alone, if it has one (`-x=` and
+  `--exclude=` attach an empty pattern, which matches nothing), and
+  otherwise the next argument, whatever it is (`-x -dash`), and those
+  after it up to one that starts with `-` (a lone `-` included) or a
+  lone `@`, which is dropped. An action, `-u`, `-f`, or `-d`, may be
+  given once ("specify just one action"), and `-FS`, a flag in Info-ZIP,
+  may be repeated but not combined with one (its message, but for a
+  stray line break before the closing parenthesis). `--` ends options
+  only after the archive name. `ZIPOPT`, or if it holds only whitespace
+  `ZIP`, supplies options before the arguments, split as Info-ZIP's
+  envargs does (whitespace; on POSIX, double quotes group, keeping a
+  backslash before an inner quote). A lone `-v` (after those) or
+  `--version` prints the version, `-L` the license (the Unlicense), `-h`
+  the usage; `-v` with other arguments (verbose) does nothing, nor does
+  `-p` (store paths, the default). With no arguments and no terminal on
+  standard output, or no archive name, Info-ZIP streams to standard
+  output; that is rejected as streaming. A terminal gets the usage, or
+  Info-ZIP's "cannot write zip file to terminal". `-d` warns, as
+  Info-ZIP does, that `-r` and `-0` are ignored.
 - Names: as Info-ZIP's ex2in makes them, `/` and `./` prefixes are
   dropped and `../` kept, and on POSIX too a leading `//host/share/` is
   dropped (`zip t.zip //h/s/f` stores `f`). A directory is named with
