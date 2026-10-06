@@ -168,6 +168,42 @@ expect_status 1 "$GZIP" -d bad.gz
 mkdir d
 expect_status 2 "$GZIP" d
 
+# Long options, help and version on standard output, end of options
+"$GZIP" -9 -c text >o9.gz
+"$GZIP" -1 -c text >o1.gz
+"$GZIP" --best --stdout text | cmp -s - o9.gz || fail "--best --stdout"
+"$GZIP" --fast --to-stdout text | cmp -s - o1.gz || fail "--fast"
+"$GZIP" --decompress --stdout o9.gz | cmp -s - text || fail "--decompress"
+"$GZIP" --uncompress -c o1.gz | cmp -s - text || fail "--uncompress"
+expect_status 0 "$GZIP" --test o9.gz
+cp one kk
+"$GZIP" --keep kk
+[ -e kk ] && [ -e kk.gz ] || fail "--keep"
+expect_status 2 "$GZIP" -k kk
+"$GZIP" --force --keep kk || fail "--force"
+expect_status 1 "$GZIP" --bogus kk
+expect_status 1 "$GZIP" -x kk
+for opt in -h --help -V --version; do
+    "$GZIP" $opt >opt.out 2>opt.err || fail "$opt status"
+    [ -s opt.out ] && [ ! -s opt.err ] || fail "$opt output"
+done
+printf data >-k
+"$GZIP" -- -k
+[ -e -k.gz ] && [ ! -e -k ] || fail "-- -k"
+
+# -q silences warnings but not errors, and keeps the status
+set +e
+"$GZIP" -dcq tg.gz >/dev/null 2>q1.err
+st1=$?
+"$GZIP" --quiet -t tg.gz 2>q2.err
+st2=$?
+"$GZIP" -q gone 2>q3.err
+st3=$?
+set -e
+[ $st1 = 2 ] && [ ! -s q1.err ] || fail "-q warning: $st1"
+[ $st2 = 2 ] && [ ! -s q2.err ] || fail "--quiet warning: $st2"
+[ $st3 = 1 ] && [ -s q3.err ] || fail "-q error: $st3"
+
 # The program name selects a default mode
 ext=
 case "$GZIP" in *.exe) ext=.exe;; esac
