@@ -76,7 +76,10 @@ follow a longer history still clears as init does. Inflate init and
 
 Long forms (`--stdout`, `--decompress`, `--best`, ...) are accepted.
 Installed (or linked) as `gunzip` it decompresses, and as `zcat` or
-`gzcat` it decompresses to standard output.
+`gzcat` it decompresses to standard output. On Windows, where `cmd`
+and PowerShell pass wildcards on as they are, arguments with them are
+expanded as zip expands them, ignoring case, but for hidden and system
+files, as a POSIX shell leaves out dotfiles.
 
 Behavior follows GNU gzip: concatenated members, warnings for trailing
 garbage (but not zero padding), `zcat -f` passing other data through,

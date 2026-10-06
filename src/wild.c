@@ -1,8 +1,8 @@
 // tugz wildcards: matching names against patterns as Info-ZIP does
 //
 // For zip's patterns (-x, -i, and paths matched against entries) on
-// every platform, and on Windows for wildcard arguments, which it
-// expands on disk (src/dir.c), as Windows shells do not.
+// every platform, and on Windows for wildcard arguments, which zip and
+// gzip expand on disk (src/dir.c), as Windows shells do not.
 
 enum {
     ZIP_SETS   = 1 << 0,  // [sets] and backslash escapes, as on Unix

@@ -12,15 +12,6 @@
 #include "windows.c"
 
 typedef struct {
-    u32 attributes;
-    u32 created[2], accessed[2], written[2];
-    u32 size_hi, size_lo;
-    u32 reserved[2];
-    c16 name[260];
-    c16 altname[14];
-} find_data;
-
-typedef struct {
     uptr internal, internal_high;
     u32  offset, offset_high;
     uptr event;
@@ -42,40 +33,26 @@ typedef struct {
     u64 id[2];  // 128 bits
 } file_id_info;
 
-W32(b32)  FindClose(iptr);
-W32(iptr) FindFirstFileExW(c16 *, i32, find_data *, i32, uptr, u32);
-W32(b32)  FindNextFileW(iptr, find_data *);
 W32(b32)  FlushFileBuffers(iptr);
 W32(u32)  GetEnvironmentVariableW(c16 *, c16 *, u32);
 W32(u32)  GetFinalPathNameByHandleW(iptr, c16 *, u32, u32);
-W32(i32)  LCMapStringW(u32, u32, c16 const *, i32, c16 *, i32);
 W32(i32)  MultiByteToWideChar(u32, u32, u8 const *, i32, c16 *, i32);
 W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 
 #define CP_ACP                     0u
 #define CP_OEMCP                   1u
 #define MB_ERR_INVALID_CHARS       0x8u
-#define LOCALE_INVARIANT           0x7fu
-#define LCMAP_UPPERCASE            0x200u
-#define FILE_ATTRIBUTE_HIDDEN      0x02u
-#define FILE_ATTRIBUTE_SYSTEM      0x04u
 #define FILE_ATTRIBUTE_ARCHIVE     0x20u
 #define FILE_ATTRIBUTE_NOT_INDEXED 0x2000u
 #define FILE_READ_ATTRIBUTES       0x80u
 #define FILE_FLAG_BACKUP_SEMANTICS 0x02000000u
 #define FILE_FLAG_DELETE_ON_CLOSE  0x04000000u
 #define FILE_TYPE_UNKNOWN          0u
-#define FIND_FIRST_EX_LARGE_FETCH  2u
 #define FILE_RENAME_REPLACE        1u
 #define FILE_RENAME_POSIX          2u
-#define ERROR_INVALID_FUNCTION     1u
-#define ERROR_FILE_NOT_FOUND       2u
 #define ERROR_PATH_NOT_FOUND       3u
-#define ERROR_NO_MORE_FILES        18u
 #define ERROR_LOCK_VIOLATION       33u
-#define ERROR_NOT_SUPPORTED        50u
 #define ERROR_DISK_FULL            112u
-#define ERROR_INVALID_NAME         123u
 #define ERROR_ALREADY_EXISTS       183u
 #define ERROR_ENVVAR_NOT_FOUND     203u
 
@@ -135,13 +112,6 @@ static void os_extend(os *ctx, arena *a, iz need)
             a->end  = ctx->lo;
         }
     }
-}
-
-// Unix seconds from a FILETIME, rounding down.
-static i64 unixtime(u32 const ft[2])
-{
-    i64 t = (i64)((u64)ft[1]<<32 | ft[0]) - 116444736000000000;
-    return t>=0 ? t/10000000 : -((-t + 9999999)/10000000);
 }
 
 static b32 handle_info(iptr h, os_info *info)
@@ -231,70 +201,6 @@ static b32 os_missing(os *ctx)
 static b32 os_fstat(os *ctx, i32 fd, os_info *info)
 {
     return handle_info(ctx->handles[fd], info);
-}
-
-// Hidden and system entries are judged by the attributes in the listing,
-// which are a link's own, as Info-ZIP does, and which need no handle to
-// the file (some, like pagefile.sys, cannot be opened at all). Plain
-// files and directories are described from the listing too, so that
-// scanning opens only those whose identity it needs. Links, and other
-// reparse points, are left to os_stat, which follows them. A directory
-// entry's size and times can lag for a file changed through another of
-// its hard links, as Microsoft documents, where a handle's would not.
-// The search pattern, dead once the search begins, is overwritten by the
-// listing, so that a deep tree's directories do not each keep theirs.
-static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
-                             arena *a)
-{
-    (void)ctx;
-    arena tmp   = *a;
-    c16  *wpath = winpath(&tmp, path);
-    if (!wpath) {
-        return 0;
-    }
-    s16 dir = s16lit(wpath);
-    b32 sep = dir.len && dir.s[dir.len-1]=='\\';
-    c16 *pattern = s16cat(&tmp, dir, s16lit(sep ? L"*" : L"\\*"));
-
-    os_dirents list = {0};
-    find_data fd = {0};
-    iptr h = FindFirstFileExW(pattern, 1, &fd, 0, 0,
-                              FIND_FIRST_EX_LARGE_FETCH);
-    if (h == INVALID_HANDLE_VALUE) {
-        // Nothing matched: an empty directory without . and .., such as
-        // an empty drive's root. A missing directory is PATH_NOT_FOUND.
-        if (GetLastError() != ERROR_FILE_NOT_FOUND) {
-            return 0;
-        }
-    } else {
-        u32 skip = all ? 0 : FILE_ATTRIBUTE_HIDDEN|FILE_ATTRIBUTE_SYSTEM;
-        do {
-            if (fd.attributes & skip) {
-                continue;
-            }
-            s8 name = towtf8(a, fd.name);
-            if (zequals(name, S(".")) || zequals(name, S(".."))) {
-                continue;
-            }
-            os_dirent *e = push(a, &list);
-            *e = (os_dirent){name, {0}};  // type FT_NONE
-            if (!(fd.attributes & FILE_ATTRIBUTE_REPARSE)) {
-                b32 isdir = fd.attributes & FILE_ATTRIBUTE_DIRECTORY;
-                e->info.type  = isdir ? FT_DIR : FT_FILE;
-                e->info.size  = (i64)((u64)fd.size_hi<<32 | fd.size_lo);
-                e->info.mtime = unixtime(fd.written);
-                e->info.atime = unixtime(fd.accessed);
-                e->info.attr  = fd.attributes;
-            }
-        } while (FindNextFileW(h, &fd));
-        b32 done = GetLastError() == ERROR_NO_MORE_FILES;
-        FindClose(h);
-        if (!done) {
-            return 0;  // not a partial listing
-        }
-    }
-    *count = list.len;
-    return list.data ? list.data : new(a, 1, os_dirent);
 }
 
 static s8 os_readlink(os *ctx, s8 path, arena *a)
@@ -616,24 +522,6 @@ static s8 os_fromcp(os *ctx, s8 name, b32 oem, arena *perm, arena scratch)
                                    len);
     w[n>0 ? n : 0] = 0;
     return n>0 ? towtf8(perm, w) : (s8){0};
-}
-
-// Upper case by the system's "file system rules", its default without
-// LCMAP_LINGUISTIC_CASING, which map each UTF-16 unit to one, as file
-// names are compared ignoring case: the case that the C runtime's
-// towupper, which Info-ZIP's port matches wildcards with, gives too.
-static s8 os_upcase(os *ctx, s8 name, arena *a)
-{
-    (void)ctx;
-    s16  w = fromwtf8(a, name);
-    c16 *u = new(a, w.len+1, c16);
-    i32  n = LCMapStringW(LOCALE_INVARIANT, LCMAP_UPPERCASE, w.s, (i32)w.len,
-                          u, (i32)w.len);
-    if (n != w.len) {
-        return name;
-    }
-    u[n] = 0;
-    return towtf8(a, u);
 }
 
 // An environment variable as WTF-8, or a null string if it is unset.

@@ -1,9 +1,19 @@
 // Shared CRT-free Win32 platform code: the os_* file interface of
-// src/io.c, path conversion, and the command line. Included by each
-// Windows program after the sources it needs.
+// src/io.c, directory listings for src/dir.c, path conversion, and the
+// command line. Included by each Windows program after the sources it
+// needs.
 
 typedef unsigned short c16;
 typedef uptr           iptr;
+
+typedef struct {
+    u32 attributes;
+    u32 created[2], accessed[2], written[2];
+    u32 size_hi, size_lo;
+    u32 reserved[2];
+    c16 name[260];
+    c16 altname[14];
+} find_data;
 
 #define W32(r) __declspec(dllimport) r __stdcall
 W32(b32)    CloseHandle(iptr);
@@ -11,6 +21,9 @@ W32(c16 **) CommandLineToArgvW(c16 *, i32 *);
 W32(iptr)   CreateFileW(c16 *, u32, u32, uptr, u32, u32, iptr);
 W32(b32)    DeleteFileW(c16 *);
 [[noreturn]] W32(void) ExitProcess(u32);
+W32(b32)    FindClose(iptr);
+W32(iptr)   FindFirstFileExW(c16 *, i32, find_data *, i32, uptr, u32);
+W32(b32)    FindNextFileW(iptr, find_data *);
 W32(c16 *)  GetCommandLineW(void);
 W32(u32)    GetCurrentDirectoryW(u32, c16 *);
 W32(u32)    GetFullPathNameW(c16 *, u32, c16 *, c16 **);
@@ -23,6 +36,7 @@ W32(u32)    GetLastError(void);
 W32(b32)    GetNamedPipeHandleStateW(iptr, u32 *, u32 *, u32 *, u32 *, c16 *,
                                      u32);
 W32(iptr)   GetStdHandle(u32);
+W32(i32)    LCMapStringW(u32, u32, c16 const *, i32, c16 *, i32);
 W32(b32)    ReadFile(iptr, void *, u32, u32 *, uptr);
 W32(b32)    SetFileInformationByHandle(iptr, i32, void *, u32);
 W32(b32)    SetNamedPipeHandleState(iptr, u32 *, u32 *, u32 *);
@@ -40,20 +54,27 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define CREATE_ALWAYS              2u
 #define OPEN_EXISTING              3u
 #define FILE_ATTRIBUTE_READONLY    0x01u
+#define FILE_ATTRIBUTE_HIDDEN      0x02u
+#define FILE_ATTRIBUTE_SYSTEM      0x04u
 #define FILE_ATTRIBUTE_NORMAL      0x80u
 #define FILE_ATTRIBUTE_DIRECTORY   0x10u
 #define FILE_ATTRIBUTE_REPARSE     0x400u
 #define FILE_FLAG_OPEN_REPARSE     0x00200000u
 #define FILE_TYPE_DISK             1u
+#define FIND_FIRST_EX_LARGE_FETCH  2u
 #define PIPE_NOWAIT                1u
 #define PIPE_READMODE_MESSAGE      2u
 #define IO_REPARSE_TAG_MOUNT_POINT 0xa0000003u
 #define IO_REPARSE_TAG_SYMLINK     0xa000000cu
 #define INVALID_FILE_ATTRIBUTES    0xffffffffu
 #define INVALID_HANDLE_VALUE       ((iptr)-1)
+#define LOCALE_INVARIANT           0x7fu
+#define LCMAP_UPPERCASE            0x200u
 #define ERROR_INVALID_FUNCTION     1u
+#define ERROR_FILE_NOT_FOUND       2u
 #define ERROR_TOO_MANY_OPEN_FILES  4u
 #define ERROR_ACCESS_DENIED        5u
+#define ERROR_NO_MORE_FILES        18u
 #define ERROR_SHARING_VIOLATION    32u
 #define ERROR_NOT_SUPPORTED        50u
 #define ERROR_FILE_EXISTS          80u
@@ -195,7 +216,7 @@ static s16 fromwtf8(arena *a, s8 s)
     return r;
 }
 
-[[maybe_unused]] static c16 *s16cat(arena *a, s16 x, s16 y)
+static c16 *s16cat(arena *a, s16 x, s16 y)
 {
     c16 *r = new(a, x.len+y.len+1, c16);
     bytecopy(r, x.s, x.len*(iz)sizeof(c16));
@@ -694,6 +715,95 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
         return 0;
     }
     return remove_file(wpath);
+}
+
+// Unix seconds from a FILETIME, rounding down.
+static i64 unixtime(u32 const ft[2])
+{
+    i64 t = (i64)((u64)ft[1]<<32 | ft[0]) - 116444736000000000;
+    return t>=0 ? t/10000000 : -((-t + 9999999)/10000000);
+}
+
+// Hidden and system entries are judged by the attributes in the listing,
+// which are a link's own, as Info-ZIP does, and which need no handle to
+// the file (some, like pagefile.sys, cannot be opened at all). Plain
+// files and directories are described from the listing too, so that
+// scanning opens only those whose identity it needs. Links, and other
+// reparse points, are left to os_stat, which follows them. A directory
+// entry's size and times can lag for a file changed through another of
+// its hard links, as Microsoft documents, where a handle's would not.
+// The search pattern, dead once the search begins, is overwritten by the
+// listing, so that a deep tree's directories do not each keep theirs.
+static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
+                             arena *a)
+{
+    (void)ctx;
+    arena tmp   = *a;
+    c16  *wpath = winpath(&tmp, path);
+    if (!wpath) {
+        return 0;
+    }
+    s16 dir = s16lit(wpath);
+    b32 sep = dir.len && dir.s[dir.len-1]=='\\';
+    c16 *pattern = s16cat(&tmp, dir, s16lit(sep ? L"*" : L"\\*"));
+
+    os_dirents list = {0};
+    find_data fd = {0};
+    iptr h = FindFirstFileExW(pattern, 1, &fd, 0, 0,
+                              FIND_FIRST_EX_LARGE_FETCH);
+    if (h == INVALID_HANDLE_VALUE) {
+        // Nothing matched: an empty directory without . and .., such as
+        // an empty drive's root. A missing directory is PATH_NOT_FOUND.
+        if (GetLastError() != ERROR_FILE_NOT_FOUND) {
+            return 0;
+        }
+    } else {
+        u32 skip = all ? 0 : FILE_ATTRIBUTE_HIDDEN|FILE_ATTRIBUTE_SYSTEM;
+        do {
+            if (fd.attributes & skip) {
+                continue;
+            }
+            s8 name = towtf8(a, fd.name);
+            if (s8equals(name, S(".")) || s8equals(name, S(".."))) {
+                continue;
+            }
+            os_dirent *e = push(a, &list);
+            *e = (os_dirent){name, {0}};  // type FT_NONE
+            if (!(fd.attributes & FILE_ATTRIBUTE_REPARSE)) {
+                b32 isdir = fd.attributes & FILE_ATTRIBUTE_DIRECTORY;
+                e->info.type  = isdir ? FT_DIR : FT_FILE;
+                e->info.size  = (i64)((u64)fd.size_hi<<32 | fd.size_lo);
+                e->info.mtime = unixtime(fd.written);
+                e->info.atime = unixtime(fd.accessed);
+                e->info.attr  = fd.attributes;
+            }
+        } while (FindNextFileW(h, &fd));
+        b32 done = GetLastError() == ERROR_NO_MORE_FILES;
+        FindClose(h);
+        if (!done) {
+            return 0;  // not a partial listing
+        }
+    }
+    *count = list.len;
+    return list.data ? list.data : new(a, 1, os_dirent);
+}
+
+// Upper case by the system's "file system rules", its default without
+// LCMAP_LINGUISTIC_CASING, which map each UTF-16 unit to one, as file
+// names are compared ignoring case: the case that the C runtime's
+// towupper, which Info-ZIP's port matches wildcards with, gives too.
+static s8 os_upcase(os *ctx, s8 name, arena *a)
+{
+    (void)ctx;
+    s16  w = fromwtf8(a, name);
+    c16 *u = new(a, w.len+1, c16);
+    i32  n = LCMapStringW(LOCALE_INVARIANT, LCMAP_UPPERCASE, w.s, (i32)w.len,
+                          u, (i32)w.len);
+    if (n != w.len) {
+        return name;
+    }
+    u[n] = 0;
+    return towtf8(a, u);
 }
 
 // Created files not kept are delete-pending, so they need no cleanup.

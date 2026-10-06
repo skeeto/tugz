@@ -9,6 +9,8 @@
 #include "../src/io.c"
 #include "../src/gzipio.c"
 #include "../src/cli.c"
+#include "../src/wild.c"
+#include "../src/dir.c"
 
 #include "windows.c"
 
@@ -17,7 +19,6 @@ static b32 os_isatty(os *ctx, i32 fd)
     return (u32)fd<3 && ctx->consoles>>fd & 1;
 }
 
-#define ERROR_FILE_NOT_FOUND    2u
 #define ERROR_PATH_NOT_FOUND    3u
 #define ERROR_LOCK_VIOLATION    33u
 #define ERROR_HANDLE_DISK_FULL  39u
@@ -82,8 +83,6 @@ static osmeta *os_getmeta(os *ctx, i32 fd, arena *a)
     return ok ? m : 0;
 }
 
-#define FILE_ATTRIBUTE_HIDDEN      0x02u
-#define FILE_ATTRIBUTE_SYSTEM      0x04u
 #define FILE_ATTRIBUTE_ARCHIVE     0x20u
 #define FILE_ATTRIBUTE_NOT_INDEXED 0x2000u
 
@@ -104,6 +103,45 @@ static b32 os_setmeta(os *ctx, i32 fd, osmeta *m)
     }
     return SetFileInformationByHandle(ctx->handles[fd], FileBasicInfo,
                                       &set, sizeof(set));
+}
+
+typedef struct {
+    arena *perm;
+    struct {
+        s8 *data;
+        iz  len;
+        iz  cap;
+    } args;
+} expansion;
+
+static b32 add_arg(void *data, s8 path, os_dirent *entry, arena scratch)
+{
+    (void)entry;
+    (void)scratch;
+    expansion *e = data;
+    s8 copy = {newstr(e->perm, path.len), path.len};
+    bytecopy(copy.s, path.s, path.len);
+    *push(e->perm, &e->args) = copy;
+    return 1;
+}
+
+// Expand wildcards in arguments, which Windows shells leave to programs,
+// as zip expands them (src/dir.c) and as a POSIX shell would: one with *
+// or ? becomes the names it matches, in order, but for hidden and system
+// files, as a shell leaves out dotfiles, or if none, stays as it is.
+// The arguments go to perm, and directory listings to scratch.
+static s8 *expand_args(os *ctx, arena *perm, s8 *args, i32 *nargs,
+                       arena scratch)
+{
+    expansion e = {perm, {0}};
+    for (i32 i = 0; i < *nargs; i++) {
+        if (!zip_haswild(args[i], 0) ||
+            !expand_wild(ctx, args[i], 0, 0, add_arg, &e, scratch)) {
+            *push(perm, &e.args) = args[i];
+        }
+    }
+    *nargs = (i32)e.args.len;
+    return e.args.data;
 }
 
 void mainCRTStartup(void)
@@ -138,5 +176,14 @@ void mainCRTStartup(void)
     }
     conf.nargs = argc>0 ? argc-1 : 0;
     conf.args  = argv + (argc>0);
+
+    // Listings take the top three quarters of the memory left, which
+    // the expanded arguments, below them, then leave free
+    arena scratch  = conf.perm;
+    scratch.beg   += (scratch.end - scratch.beg) / 4;
+    conf.perm.end  = scratch.beg;
+    conf.args      = expand_args(&ctx, &conf.perm, conf.args, &conf.nargs,
+                                 scratch);
+    conf.perm.end  = scratch.end;
     os_exit(&ctx, gzip_main(&conf));
 }

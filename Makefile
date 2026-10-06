@@ -20,6 +20,8 @@ WIN32_LIBS   = -nostartfiles -s -Wl,--gc-sections -lmemory -lshell32 -lkernel32
 CORE = src/base.c src/crc32.c src/adler32.c src/inflate.c src/deflate.c \
        src/gzip.c
 SRC  = $(CORE) src/io.c src/gzipio.c src/cli.c
+# gzip.exe also expands wildcard arguments, as zip does
+WINSRC = $(SRC) src/wild.c src/dir.c
 LIB  = platform/libtugz.c tugz.h $(CORE)
 ZIPSRC = src/base.c src/crc32.c src/deflate.c src/io.c src/zip.c src/wild.c \
          src/dir.c src/zipcli.c
@@ -32,7 +34,7 @@ gzip: platform/gzip_posix.c $(POSIX) $(SRC)
 gzip-debug: platform/gzip_posix.c $(POSIX) $(SRC)
 	$(CC) $(DEBUG) -o $@ platform/gzip_posix.c
 
-gzip.exe: platform/gzip_windows.c $(WINDOWS) $(SRC)
+gzip.exe: platform/gzip_windows.c $(WINDOWS) $(WINSRC)
 	$(CROSS)gcc $(OPT) $(WARN) $(WIN32_CFLAGS) -o $@ \
 	    platform/gzip_windows.c $(WIN32_LIBS)
 
@@ -49,7 +51,7 @@ zip.exe: platform/zip_windows.c $(WINDOWS) $(ZIPSRC)
 # Single-file Windows source, e.g. for w64devkit. The header carries the
 # version and build command; local includes are dropped.
 amalgamation: gzip.c zip.c
-gzip.c: platform/gzip_windows.c $(WINDOWS) $(SRC)
+gzip.c: platform/gzip_windows.c $(WINDOWS) $(WINSRC)
 	v=$$(sed -n 's/.*gzip (tugz) \([0-9.]*\).*/\1/p' src/cli.c); \
 	{ echo "// tugz $$v: tiny unity gzip, a drop-in gzip for Windows"; \
 	  echo "// Single-file amalgamation of the tugz sources. Build:"; \
@@ -57,7 +59,7 @@ gzip.c: platform/gzip_windows.c $(WINDOWS) $(SRC)
 	  echo "// Copies named gunzip.exe or zcat.exe decompress by default."; \
 	  echo; \
 	  awk 'FNR==1 && NR>1 {print ""} !/^#include "/ && !/^\/\/ +\$$ cc/' \
-	      $(SRC) $(WINDOWS) platform/gzip_windows.c; } >$@
+	      $(WINSRC) $(WINDOWS) platform/gzip_windows.c; } >$@
 
 zip.c: platform/zip_windows.c $(WINDOWS) $(ZIPSRC)
 	v=$$(sed -n 's/.*tugz zip \([0-9][0-9.]*\).*/\1/p' src/zipcli.c); \

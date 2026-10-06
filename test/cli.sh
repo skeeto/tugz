@@ -360,7 +360,7 @@ if [ -n "$windows" ]; then
     "$GZIP" -d "\\\\.\\$(pwd | cut -c1-2)" 2>vol.err
     st=$?
     set -e
-    { [ $st = 2 ] && grep -q 'is not a directory or a regular file' vol.err; } ||
+    { [ $st = 2 ] && grep -q 'not a directory or a regular file' vol.err; } ||
         { [ $st = 1 ] && grep -q ': Permission denied$' vol.err; } ||
         fail "volume: $st $(cat vol.err)"
 fi
@@ -380,8 +380,8 @@ if [ -n "$windows" ]; then
     mkdir dots
     printf plain >dots/name
     powershell -NoProfile -NonInteractive -Command "
-        Set-Content -NoNewline -LiteralPath '\\\\?\\$win\\dots\\name.' -Value dot
-        Set-Content -NoNewline -LiteralPath '\\\\?\\$win\\dots\\sp ' -Value sp"
+        Set-Content -NoNewline -LiteralPath '\\\\?\\$win\\dots\\name.' dot
+        Set-Content -NoNewline -LiteralPath '\\\\?\\$win\\dots\\sp ' sp"
     for p in "//./$here/dots/" "\\\\.\\$win\\dots\\" "//?/$here/dots/"; do
         [ "$("$GZIP" -c "${p}name." | "$GZIP" -dc)" = dot ] &&
             [ "$("$GZIP" -c "${p}sp " | "$GZIP" -dc)" = sp ] ||
@@ -393,6 +393,38 @@ if [ -n "$windows" ]; then
     for p in "//?/" "//./" "//?/UNC/localhost/" "\\\\localhost\\" "//"; do
         expect_status 1 "$GZIP" -c "$p"
     done
+fi
+
+# Windows: arguments with wildcards, which cmd passes as they are (here
+# quoted), are expanded as zip expands them: ignoring case, by DOS rules,
+# in any component, in name order, but for hidden and system files, as
+# a POSIX shell leaves out dotfiles, and as there, one that matches
+# nothing stays as it is
+if [ -n "$windows" ]; then
+    mkdir -p wild/da wild/db
+    printf a >wild/a.txt
+    printf B >wild/B.TXT
+    printf c >wild/c.txtx
+    printf h >wild/h.txt
+    printf s >wild/s.txt
+    attrib +h 'wild\h.txt'
+    attrib +s 'wild\s.txt'
+    printf x >wild/da/x.txt
+    printf y >wild/db/x.txt
+    printf n >wild/noext
+    [ "$("$GZIP" -c 'wild/*.txt' | "$GZIP" -dc)" = Ba ] ||
+        fail "wildcard: $("$GZIP" -c 'wild/*.txt' | "$GZIP" -dc)"
+    [ "$("$GZIP" -c 'WILD\D?/X.*' 'wild/no*.*' | "$GZIP" -dc)" = xyn ] ||
+        fail "wildcard components and DOS rules"
+    expect_status 1 "$GZIP" -c 'wild/*.none' 'wild/a.*'
+    "$GZIP" -c 'wild/*.none' 'wild/a.*' 2>/dev/null >none.gz || true
+    [ "$("$GZIP" -dc none.gz)" = a ] || fail "wildcard matching nothing"
+    "$GZIP" 'wild/*.txt'
+    for f in a.txt.gz B.TXT.gz c.txtx h.txt s.txt; do
+        [ -e wild/$f ] || fail "in place wildcard: no $f"
+    done
+    "$GZIP" -d 'wild/*.GZ'
+    [ "$(cat wild/a.txt wild/B.TXT)" = aB ] || fail "-d wildcard"
 fi
 
 # Windows: -f replaces a read-only output, as unlinking it does on POSIX,

@@ -1066,6 +1066,19 @@ Fuzzers:
   programs: zip skips it as a special file, `gzip -c NUL` reads nothing,
   and no output goes to one. With a directory, such a name is a file, so
   that names from a listing, made on other systems, still round trip.
+- On Windows, whose shells pass wildcards to programs as they are, gzip
+  expands each argument with `*` or `?` before reading its options, as a
+  POSIX shell would, with zip's code (`src/dir.c`, `src/wild.c`): into
+  the names it matches, in name order, matched as zip matches them
+  (ignoring case beyond ASCII too, by DOS rules, in any component), but
+  for hidden and system files, as zip leaves them out and a shell leaves
+  out dotfiles, or if it matches nothing, into itself, which then fails
+  to open (`Invalid argument`: no Windows name holds `*`). Unlike the C
+  runtime's expansion, which w64devkit's busybox gzip gets, `*.txt`
+  matches long names only (not `long.txtx` by its 8.3 name). Listings
+  take three quarters of gzip's fixed 32 MiB meanwhile, which holds a
+  directory of 55,000 names of 13 characters but not one of 67,000:
+  beyond that gzip runs out of memory (1) before doing anything.
 - Output to a Windows console is converted from UTF-8 (WTF-8, for file
   names) to UTF-16 for `WriteConsoleW`, since `WriteFile` would take the
   bytes in the console code page. A sequence split between writes is

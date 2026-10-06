@@ -1,9 +1,9 @@
 // tugz directories: listings, and wildcards expanded in paths
 //
-// zip lists directories to recurse into them, and on Windows, whose
-// shells leave wildcards in arguments to programs, expands those here,
-// as Info-ZIP's Windows port does, matching names by src/wild.c. The
-// platform layer provides os_listdir and os_upcase.
+// zip lists directories to recurse into them. On Windows, whose shells
+// leave wildcards in arguments to programs, zip and gzip both expand
+// them here, as Info-ZIP's Windows port does, matching names by
+// src/wild.c. The platform layer provides os_listdir and os_upcase.
 
 enum { FT_NONE, FT_FILE, FT_DIR, FT_LINK, FT_OTHER };
 
