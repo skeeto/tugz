@@ -2095,8 +2095,38 @@ static void test_container(os *ctx, arena a)
             free(out.s);
         }
 
+        // Fields are taken in spans, so split them at every byte, in two
+        // pieces and in single bytes, with the header CRC good and bad
+        for (i32 bad = 0; bad <= !!(flags & FHCRC); bad++) {
+            g.s[n-1] ^= bad ? 0x40 : 0;
+            i32 want = bad ? GZ_EHCRC : GZ_OK;
+            for (iz cut = 0; cut <= g.len; cut++) {
+                arena t = a;
+                decoder *z = decoder_new(&t, FMT_GZIP);
+                u8 o[16];
+                zbuf b = {g.s, cut, o, countof(o)};
+                i32 r = decoder_run(z, &b);
+                if (r == GZ_NEEDIN) {
+                    b.inlen = g.len - cut;
+                    r = decoder_run(z, &b);
+                }
+                TEST(r == want);
+                TEST(bad || (countof(o)-b.outlen==5 && !memcmp(o, payload, 5)));
+            }
+            arena t = a;
+            decoder *z = decoder_new(&t, FMT_GZIP);
+            u8 o[16];
+            zbuf b = {g.s, 0, o, countof(o)};
+            i32 r = GZ_NEEDIN;
+            for (iz k = 0; r==GZ_NEEDIN && k<g.len; k++) {
+                b.inlen = 1;
+                r = decoder_run(z, &b);
+                TEST(r==want || (r==GZ_NEEDIN && k+1<g.len));
+            }
+            TEST(r == want);
+        }
+
         if (flags & FHCRC) {
-            g.s[n-1] ^= 0x40;
             TEST(do_gunzip(ctx, a, g.s, g.len, &out) == GZ_EHCRC);
             free(out.s);
             TEST(!zlib_inflate(g.s, g.len, 31, &out));

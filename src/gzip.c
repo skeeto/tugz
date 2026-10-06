@@ -105,14 +105,28 @@ static decoder *decoder_new(arena *a, i32 format)
     return z;
 }
 
-// Consume one gzip header byte, advancing the header state.
+// Advance the gzip header state past fields the flags say are absent.
+static void gzip_skip_absent(decoder *z)
+{
+    for (;;) {
+        switch (z->state) {
+        case DEC_XLEN:    if (z->flg & FEXTRA)   return; break;
+        case DEC_EXTRA:   if (z->xlen)           return; break;
+        case DEC_NAME:    if (z->flg & FNAME)    return; break;
+        case DEC_COMMENT: if (z->flg & FCOMMENT) return; break;
+        case DEC_HCRC:    if (z->flg & FHCRC)    return; break;
+        default:          return;
+        }
+        z->state++;
+    }
+}
+
+// Consume one byte of a fixed-size gzip header field: the first 10
+// bytes, XLEN, or the header CRC. The header CRC is computed only when
+// FHCRC asks for it to be checked.
 static i32 gzip_header_byte(decoder *z, u8 c)
 {
     z->hpos++;
-    if (z->state != DEC_HCRC) {
-        z->hcrc = crc32_update(z->hcrc, &c, 1);
-    }
-
     switch (z->state) {
     case DEC_FIXED:
         // Each field is validated as soon as it is complete, like zlib
@@ -127,30 +141,23 @@ static i32 gzip_header_byte(decoder *z, u8 c)
             return GZ_OK;
         }
         z->flg = z->buf[3];
+        if (z->flg & FHCRC) {
+            z->hcrc = crc32_update(0, z->buf, 10);
+        }
         z->len = 0;
         z->xlen = 0;
         z->state = DEC_XLEN;
         break;
     case DEC_XLEN:
+        if (z->flg & FHCRC) {
+            z->hcrc = crc32_update(z->hcrc, &c, 1);
+        }
         z->xlen |= c << 8*z->len++;
         if (z->len < 2) {
             return GZ_OK;
         }
         z->len = 0;
         z->state = DEC_EXTRA;
-        break;
-    case DEC_EXTRA:
-        if (--z->xlen) {
-            return GZ_OK;
-        }
-        z->state = DEC_NAME;
-        break;
-    case DEC_NAME:
-    case DEC_COMMENT:
-        if (c) {
-            return GZ_OK;
-        }
-        z->state++;
         break;
     case DEC_HCRC:
         z->buf[z->len++] = c;
@@ -162,18 +169,35 @@ static i32 gzip_header_byte(decoder *z, u8 c)
         z->state = DEC_BODY;
         break;
     }
+    gzip_skip_absent(z);
+    return GZ_OK;
+}
 
-    // Skip absent fields
-    for (;;) {
-        switch (z->state) {
-        case DEC_XLEN:    if (z->flg & FEXTRA)   return GZ_OK; break;
-        case DEC_EXTRA:   if (z->xlen)           return GZ_OK; break;
-        case DEC_NAME:    if (z->flg & FNAME)    return GZ_OK; break;
-        case DEC_COMMENT: if (z->flg & FCOMMENT) return GZ_OK; break;
-        case DEC_HCRC:    if (z->flg & FHCRC)    return GZ_OK; break;
-        default:          return GZ_OK;
-        }
+// Consume as much of a variable gzip header field (the extra field, the
+// name, or the comment) as b->in holds, at least a byte, in one span
+// rather than byte by byte, as these may be large.
+static void gzip_header_span(decoder *z, zbuf *b)
+{
+    iz  n = 0;
+    b32 done;
+    if (z->state == DEC_EXTRA) {
+        n = MIN(z->xlen, b->inlen);
+        z->xlen -= (i32)n;
+        done = !z->xlen;
+    } else {
+        for (; n<b->inlen && b->in[n]; n++) {}
+        done = n < b->inlen;
+        n += done;  // the terminating zero
+    }
+    if (z->flg & FHCRC) {
+        z->hcrc = crc32_update(z->hcrc, b->in, n);
+    }
+    z->hpos += n;
+    b->in += n;
+    b->inlen -= n;
+    if (done) {
         z->state++;
+        gzip_skip_absent(z);
     }
 }
 
@@ -221,6 +245,9 @@ static i32 decoder_header(decoder *z, zbuf *b)
     while (!z->err && z->state<DEC_BODY) {
         if (!b->inlen) {
             return GZ_NEEDIN;
+        } else if (z->state>=DEC_EXTRA && z->state<=DEC_COMMENT) {
+            gzip_header_span(z, b);  // only gzip has these
+            continue;
         }
         u8 c = *b->in++;
         b->inlen--;
