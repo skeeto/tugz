@@ -357,6 +357,13 @@ static i32 zip_find_end(u8 *tail, iz n, i64 size, zend *e)
         e->cdsize  = get32(p+12);
         e->cdoff   = get32(p+16);
         e->end64   = -1;
+        if (!e->count && !e->cdsize && !e->cdoff) {
+            // An empty central directory at offset 0, as Info-ZIP writes
+            // one wherever it is, as after an emptied self-extractor's
+            // stub, and UnZip takes for an empty archive: it is here, and
+            // whatever precedes it is a preamble
+            e->cdoff = e->endpos;
+        }
 
         if (i>=ZIP_LOC64_LEN && get32(p-ZIP_LOC64_LEN)==ZIP_LOC64_SIG) {
             // On another disk, or one of other than one disk: split

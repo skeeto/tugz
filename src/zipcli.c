@@ -2579,6 +2579,10 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
             zout_write(&w, h, zip_central(h, cd[i])-h);
         }
         i64 cdsize  = zout_tell(&w) - cdoff;
+        // Empty, its offset is 0, as Info-ZIP writes it, for UnZip, which
+        // otherwise takes a preamble (a stub left by deleting all the
+        // entries of a self-extractor) for a misplaced directory
+        cdoff = count ? cdoff : 0;
         s8  comment = ar ? ar->end.comment : (s8){0};
         iz  len     = zip_end_len(count, cdsize, cdoff, comment);
         u8 *end     = newbytes(&scratch, len);

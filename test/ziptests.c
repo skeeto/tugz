@@ -665,6 +665,19 @@ static void test_end_records(arena a)
     TEST(zip_find_end(empty, ZIP_END_LEN, ZIP_END_LEN, &z) == ZIP_OK);
     TEST(z.count==0 && z.endpos==0 && z.end64==-1);
 
+    // Emptied after a stub, which precedes its directory: as Info-ZIP
+    // writes it, offset 0, which UnZip needs to find it empty, or as
+    // tugz once wrote it, at the stub's end, but not elsewhere
+    u8 sfx[28+ZIP_END_LEN] = "#!/bin/sh\necho stub; exit 0\n";
+    i64 offsets[] = {0, 28, 5};
+    i32 want[]    = {ZIP_OK, ZIP_OK, ZIP_EPREFIX};
+    for (i32 i = 0; i < countof(offsets); i++) {
+        zip_end(sfx+28, 0, 0, offsets[i], (s8){0}, 0x031e);
+        z = (zend){0};
+        TEST(zip_find_end(sfx, countof(sfx), countof(sfx), &z) == want[i]);
+        TEST(want[i] || (z.count==0 && z.endpos==28 && z.cdoff==28));
+    }
+
     // One entry whose comment, just before the end record, ends with
     // bytes resembling a Zip64 locator that points at offset 0
     u8 fake[4+ZIP_LOC64_LEN] = "note";

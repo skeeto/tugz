@@ -1407,6 +1407,26 @@ head -c 28 sfx.zip | cmp -s - stub || fail "self-extractor stub lost"
 "$ZIP" -qd sfx.zip '*'
 [ "$(wc -c <sfx.zip | tr -d ' ')" = 50 ] || fail "emptied self-extractor"
 
+# Emptied, its end record gives its directory offset 0, as Info-ZIP's
+# does, by which UnZip finds it empty, past the stub, rather than
+# corrupt; and either form gets entries again after the stub
+tail -c 6 sfx.zip | od -An -tx1 | tr -d ' \n' >got
+[ "$(cat got)" = 000000000000 ] ||
+    fail "emptied self-extractor offset: $(cat got)"
+set +e
+unzip -t sfx.zip >out 2>&1
+st=$?
+set -e
+[ $st = 1 ] && grep -q 'zipfile is empty' out ||
+    fail "emptied self-extractor, unzip: $st $(cat out)"
+{ cat stub; printf 'PK\005\006\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0'; } >sfx0e.zip
+for arc in sfx.zip sfx0e.zip; do
+    "$ZIP" -q $arc sx2.txt
+    verify $arc
+    [ "$(names $arc)" = sx2.txt ] || fail "refilled $arc: $(names $arc)"
+    head -c 28 $arc | cmp -s - stub || fail "refilled $arc: stub lost"
+done
+
 # Likewise a Python zipapp's #! line
 if [ -n "$PY" ]; then
     mkdir app

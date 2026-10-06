@@ -459,23 +459,25 @@ neither inflate nor the gzip container.
   Offsets that do not account for a preamble are refused (3), as in
   Info-ZIP, which needs `-A` to fix them, with a warning saying so. With
   no entries, the preamble is what precedes the central directory, so a
-  file added to an emptied self-extractor keeps its stub. Info-ZIP's own
-  emptied self-extractor, whose end record gives offset 0, is refused as
-  unadjusted. The Zip64 end record gives the program's version made by,
-  as Info-ZIP's does. A Zip64 end record is trusted only if it checks
-  out, or the plain end record calls for it or leaves room for it (its
-  central directory ending short of it, as some writers make small
-  archives), since bytes resembling a Zip64 locator may precede the end
-  record by chance (found by fuzzing); where there is room, a fault in
-  the Zip64 records is theirs, not taken for data before the archive.
-  As in Info-ZIP, an archive is split by its disk numbers (the end
-  record's, the locator's, and the Zip64 record's central directory
-  disk), not by counts of entries on this disk, which writers can get
-  wrong on a single disk, nor by the Zip64 record's own. Only a missing
-  archive is new: anything else at its path must be a zip file, so an
-  empty file, a directory, a FIFO, or a device fails with 3 before any
-  work, as Info-ZIP fails (it waits on a FIFO, and cannot open a socket,
-  15). An empty file therefore never adds itself.
+  file added to an emptied self-extractor keeps its stub. An empty
+  central directory's offset is written as 0, as Info-ZIP writes it,
+  since only so does UnZip find an emptied self-extractor empty (1)
+  rather than corrupt (3); read, an offset of 0 there places it at the
+  end record, after any preamble. The Zip64 end record gives the
+  program's version made by, as Info-ZIP's does. A Zip64 end record is
+  trusted only if it checks out, or the plain end record calls for it or
+  leaves room for it (its central directory ending short of it, as some
+  writers make small archives), since bytes resembling a Zip64 locator
+  may precede the end record by chance (found by fuzzing); where there
+  is room, a fault in the Zip64 records is theirs, not taken for data
+  before the archive. As in Info-ZIP, an archive is split by its disk
+  numbers (the end record's, the locator's, and the Zip64 record's
+  central directory disk), not by counts of entries on this disk, which
+  writers can get wrong on a single disk, nor by the Zip64 record's own.
+  Only a missing archive is new: anything else at its path must be a zip
+  file, so an empty file, a directory, a FIFO, or a device fails with 3
+  before any work, as Info-ZIP fails (it waits on a FIFO, and cannot
+  open a socket, 15). An empty file therefore never adds itself.
 - Reading the old archive: through a 1 MiB window, so that one read
   serves the headers and data of many small entries (a pread for each
   local header, name, and data made adding a file to many entries
