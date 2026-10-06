@@ -2469,8 +2469,9 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
         return err;
     }
 
+    // Once a write fails, as Info-ZIP stops there, nothing more is done
     iz count = 0;
-    for (iz i = 0, n = 0; i < items->len; i++) {
+    for (iz i = 0, n = 0; i<items->len && !w.err; i++) {
         zitem  *it   = items->data + i;
         zentry *copy = 0;
         switch (it->kind) {
@@ -2563,9 +2564,6 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
                 return err;
             }
             cd[count++] = copy;
-        }
-        if (w.err) {
-            break;
         }
     }
 
