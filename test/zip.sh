@@ -335,13 +335,14 @@ while d[p:p+4] == b"PK\1\2":
     cmp -s out want || fail "UT times under SOURCE_DATE_EPOCH: $(cat out)"
 fi
 
-# Times beyond the DOS range clamp to its ends
+# Times beyond the DOS range clamp to its ends. Departure: after 2107,
+# where Info-ZIP wraps the year modulo 128 (2200 becomes 2072)
 printf far >far.txt
 if touch -t 220001010000 far.txt 2>/dev/null; then
     "$ZIP" -qX far.zip far.txt
     zipinfo -T far.zip | grep -q 21071231.235958 || fail "far: $(zipinfo -T far.zip)"
 fi
-touch -t 196001010000 far.txt
+touch -t 196001010000 far.txt  # as in Info-ZIP
 "$ZIP" -qX far.zip far.txt
 zipinfo -T far.zip | grep -q 19800101.000000 || fail "old: $(zipinfo -T far.zip)"
 

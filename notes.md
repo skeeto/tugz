@@ -177,57 +177,57 @@ neither inflate nor the gzip container.
   (including the level bits: 0x4 for -1/-2, 0x2 for -8/-9, set whenever
   compression was attempted), method, external attributes, local and
   central `UT`/`ux` extra fields, times, and CRCs are byte-identical,
-  but for the method of an incompressible file over 32 KiB, and for
-  Zip64, the end records and the order of extra fields (see the
-  departures).
-  Symbolic links (`-y`) are always stored, never compressed, as in
-  Info-ZIP. So, below `-9`, are files whose names end in a suffix of
-  its default `-n` list (`.Z .zip .zoo .arc .lzh .arj`, ignoring case
-  only on Windows), with no level flag bits, as it does not try to
-  compress them; `-n` itself is rejected.
-  Messages, warnings, and exit statuses (12 nothing to do, silently for
-  `-u` and `-f`; 16 usage; 18 unreadable files; 3 bad archive; 10
-  temporary file failure, in creating it or, as a deferred write error,
-  closing it; 15 for an archive that cannot be created or replaced,
-  "was replacing the original zip file") follow Info-ZIP, but for the
-  departures below. As there, an I/O error (10, 11, 14, 15, 18)
-  first gives the system's reason, worded by `strerror` ("zip I/O
-  error: Permission denied"), when there is one; on Windows, for the
-  common errors, worded as its C runtime would (unverified against
-  Info-ZIP's port). A read error in the archive is its "Input file read
-  failure" (11), and one that ends early, having shrunk while zip works,
-  is its "Unexpected end of zip file" (2), either naming the entry being
-  copied ("was copying a.txt"), else the archive. A read-only archive
-  fails with 15 once there is something to do, before doing it, as
-  Info-ZIP finds by opening it to update it (replacing it needs no
-  permission to write it): as `access` judges on POSIX, and on Windows
-  by the read-only attribute, which would otherwise refuse the rename
-  only after all the work. So does, on Windows, an archive that another
-  process holds open without sharing delete access, which the rename
-  needs (by its sources, Info-ZIP's port refuses it up front only if
-  that process also refuses reading or writing, and otherwise at the
-  end, 15 either way): zip finds this by opening the archive with that
-  access, and holds it so until the rename, so that no process can open
-  it that way in the meantime. One that can be neither read nor written
-  is, as in Info-ZIP, taken for a missing archive, which then cannot be
-  written. A missing or empty archive gets Info-ZIP's "not found or
-  empty" warning under `-u`, `-f`, and `-d`, which go on with their
-  arguments (warning of unmatched names, rejecting repeated ones). A
-  file that cannot be added still gets its progress line, then the
-  system's reason as Info-ZIP's `perror` gives it (even under `-q`, as
-  there), then a warning under its entry's name that tells a failed open
-  from a failed read. Should writing the archive fail, its progress line
-  lacks the result, and the error is Info-ZIP's "Output file write
-  failure (write error on zip file)". The "Not all files were readable"
-  summary, before any "zip file empty", as there, counts the files and
-  entries read and skipped as Info-ZIP does, with its abbreviated byte
-  counts ("292K"), in the same words. Info-ZIP's quirks kept: `../`
-  stays in names, an emptied archive remains as a 22-byte file, odd
-  seconds round up (but not past `SOURCE_DATE_EPOCH`). Times beyond the
-  DOS range clamp to its ends. A name over 65,535 bytes (possible in
-  deep Windows paths) is skipped with a warning, exiting 18, as is, its
-  entry kept, a file that an entry names by its name decoded from the
-  OEM code page (Windows), which UTF-8 can make that long.
+  but for the method and version needed of an incompressible file over
+  32 KiB, and for Zip64, the end records and the order of extra fields
+  (see the departures). Symbolic links (`-y`) are always stored, never
+  compressed, as in Info-ZIP. So, below `-9`, are files whose names end
+  in a suffix of its default `-n` list (`.Z .zip .zoo .arc .lzh .arj`,
+  ignoring case only on Windows), with no level flag bits, as it does
+  not try to compress them; `-n` itself is rejected. Messages, warnings,
+  and exit statuses (12 nothing to do, silently for `-u` and `-f`; 16
+  usage; 18 unreadable files; 3 bad archive; 10 temporary file failure,
+  in creating it or, as a deferred write error, closing it; 15 for an
+  archive that cannot be created or replaced, "was replacing the
+  original zip file") follow Info-ZIP, but for the departures below. As
+  there, an I/O error (10, 11, 14, 15, 18) first gives the system's
+  reason, worded by `strerror` ("zip I/O error: Permission denied"),
+  when there is one; on Windows, for the common errors, worded as its C
+  runtime would (unverified against Info-ZIP's port). A read error in
+  the archive is its "Input file read failure" (11), and one that ends
+  early, having shrunk while zip works, is its "Unexpected end of zip
+  file" (2), either naming the entry being copied ("was copying a.txt"),
+  else the archive. A read-only archive fails with 15 once there is
+  something to do, before doing it, as Info-ZIP finds by opening it to
+  update it (replacing it needs no permission to write it): as `access`
+  judges on POSIX, and on Windows by the read-only attribute, which
+  would otherwise refuse the rename only after all the work. So does, on
+  Windows, an archive that another process holds open without sharing
+  delete access, which the rename needs (by its sources, Info-ZIP's port
+  refuses it up front only if that process also refuses reading or
+  writing, and otherwise at the end, 15 either way): zip finds this by
+  opening the archive with that access, and holds it so until the
+  rename, so that no process can open it that way in the meantime. One
+  that can be neither read nor written is, as in Info-ZIP, taken for a
+  missing archive, which then cannot be written. A missing or empty
+  archive gets Info-ZIP's "not found or empty" warning under `-u`, `-f`,
+  and `-d`, which go on with their arguments (warning of unmatched
+  names, rejecting repeated ones). A file that cannot be added still
+  gets its progress line, then the system's reason as Info-ZIP's
+  `perror` gives it (even under `-q`, as there), then a warning under
+  its entry's name that tells a failed open from a failed read. Should
+  writing the archive fail, its progress line lacks the result, and the
+  error is Info-ZIP's "Output file write failure (write error on zip
+  file)". The "Not all files were readable" summary, before any "zip
+  file empty", as there, counts the files and entries read and skipped
+  as Info-ZIP does, with its abbreviated byte counts ("292K"), in the
+  same words. Info-ZIP's quirks kept: `../` stays in names, an emptied
+  archive remains as a 22-byte file, odd seconds round up (but not past
+  `SOURCE_DATE_EPOCH`). Times before the DOS range clamp to its start
+  (and after it, a departure, to its end). A name over 65,535 bytes
+  (possible in deep Windows paths) is skipped with a warning, exiting
+  18, as is, its entry kept, a file that an entry names by its name
+  decoded from the OEM code page (Windows), which UTF-8 can make that
+  long.
 - Options: Info-ZIP's grammar and names. Long names may be abbreviated
   to a prefix of exactly one of Info-ZIP's long names (supported or not,
   so `--rec` is ambiguous). Only `-X` is negatable; other negations and
@@ -509,8 +509,16 @@ neither inflate nor the gzip container.
   its first header checks out, and is filled as each is parsed, so that
   a file that only ends like an archive (sparse, or damaged), whose end
   record claims millions of entries, costs nothing for them.
-- Windows: made-by host 0 (FAT, the most widely understood), DOS
-  attributes, `UT` extra field. Names drop a drive or a UNC
+- Windows: made-by host 0 (FAT), as in Info-ZIP's port, DOS attributes,
+  and a `UT` extra field (see the departures), with DOS times local by
+  each year's own daylight saving rules, as on POSIX
+  (`SystemTimeToTzSpecificLocalTime`). Readers apply DOS attributes
+  under host 0 most widely (libarchive, as in `bsdtar`, under no other,
+  so that under host 11, NTFS, a read-only file extracts writable),
+  though macOS's `/usr/bin/unzip` then ignores flag bit 11 and converts
+  names from the OEM code page, so it cannot extract a non-ASCII name
+  (50, after asking whether to go on past a "write error"), nor can it
+  from the archives of Info-ZIP's port. Names drop a drive or a UNC
   `//server/share/` prefix, as Info-ZIP's do, and likewise a device
   path's `//?/X:/` or `//?/UNC/server/share/`. Wildcard arguments,
   drive-relative ones (`C:*.txt`) included, are expanded per component
@@ -690,7 +698,18 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   offset of 0xffffffff), though not merely because an entry is Zip64;
   Info-ZIP writes them for more than 65,535 entries, or when any entry
   is Zip64. And an entry's Zip64 extra field comes before its others,
-  where Info-ZIP's comes last. Both forms are read alike.
+  where Info-ZIP's comes last. Both forms are read alike. A time after
+  2107 is stored as the DOS range's end, 2107-12-31 23:59:58, where
+  Info-ZIP wraps the year modulo 128 (2108 becomes 1980). On Windows, a
+  `UT` field holds no creation time (flags 3, not 7), and no NT security
+  descriptor (`SD`, 0x4453) field is stored, where Info-ZIP's port
+  stores both, which would tie the archive to when its files were copied
+  and to their access control. DOS times there follow each year's own
+  daylight saving rules, where the port, by its C runtime's `localtime`,
+  applies the current year's to every year: for dates under other rules
+  (in the US, before 2007), the two are an hour apart, so that `-FS`
+  (and `-u` and `-f`, for an entry without a `UT` field) takes such an
+  entry that the port wrote for changed, as the port takes tugz's.
 - Names and selection: doubled slashes collapse, in patterns too, so
   that `d/a d//a` is one path rather than two entries, and `.//a` names
   `a`, where Info-ZIP stores `/a`. Different paths giving one name are

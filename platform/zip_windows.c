@@ -649,6 +649,9 @@ static s8 getenv8(arena *a, c16 *name)
     return towtf8(a, buf);
 }
 
+// By the time zone's rules for that year, as POSIX localtime and .NET
+// apply them, where Info-ZIP's port, by the C runtime's localtime,
+// applies the current year's to every year.
 static void os_localtime(os *ctx, i64 t, i32 tm[6])
 {
     (void)ctx;

@@ -652,6 +652,28 @@ SOURCE_DATE_EPOCH=1700000000 "$ZIP" -qX9r d2.zip tree
 cmp -s d1.zip d2.zip || fail "not deterministic"
 expect_status 16 env SOURCE_DATE_EPOCH= "$ZIP" -q ep.zip tree/a.txt
 
+# DOS times are local by each year's own daylight saving rules, as
+# Windows and .NET give them. Departure: Info-ZIP's port, by its C
+# runtime, applies this year's to every year (in the US, its DOS times
+# for March and late October 2006 are an hour later).
+mkdir dst
+for t in 2006-03-15T16:00:00Z 2006-11-01T16:00:00Z 2026-01-15T16:00:00Z \
+         2026-07-01T16:00:00Z; do  # in order, as entries are
+    f=dst/${t%%T*}.txt
+    printf d >"$f"
+    ps "(Get-Item '$f').LastWriteTimeUtc =
+            [DateTime]::Parse('$t').ToUniversalTime();
+        '${f#dst/} ' + (Get-Item '$f').LastWriteTime.ToString('s')"
+done | tr -d '\r' >want.txt
+"$ZIP" -qXj dst.zip dst/*.txt
+ps "Add-Type -AssemblyName System.IO.Compression.FileSystem;
+    \$z = [IO.Compression.ZipFile]::OpenRead((Resolve-Path dst.zip).Path);
+    foreach (\$e in \$z.Entries) {
+        \$e.Name + ' ' + \$e.LastWriteTime.ToString('s')
+    }
+    \$z.Dispose()" | tr -d '\r' >got
+cmp -s got want.txt || fail "DOS times: $(cat got), not $(cat want.txt)"
+
 expect_status 12 "$ZIP" none.zip missing
 expect_status 16 "$ZIP" -e bad.zip tree/a.txt
 
