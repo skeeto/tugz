@@ -17,14 +17,58 @@ static b32 os_isatty(os *ctx, i32 fd)
     return (u32)fd<3 && ctx->consoles>>fd & 1;
 }
 
-#define ERROR_FILE_NOT_FOUND  2u
-#define ERROR_PATH_NOT_FOUND  3u
+#define ERROR_FILE_NOT_FOUND    2u
+#define ERROR_PATH_NOT_FOUND    3u
+#define ERROR_LOCK_VIOLATION    33u
+#define ERROR_HANDLE_DISK_FULL  39u
+#define ERROR_DISK_FULL         112u
+#define ERROR_ALREADY_EXISTS    183u
+#define ERROR_NO_DATA           232u
 
 static b32 os_missing(os *ctx)
 {
     (void)ctx;
     u32 err = GetLastError();
     return err==ERROR_FILE_NOT_FOUND || err==ERROR_PATH_NOT_FOUND;
+}
+
+// The common errors, worded as the C runtime words the errno values it
+// maps them to, as zip words them, but for a closed pipe.
+static s8 os_error(os *ctx)
+{
+    (void)ctx;
+    switch (GetLastError()) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+        return S("No such file or directory");
+    case ERROR_ACCESS_DENIED:
+    case ERROR_SHARING_VIOLATION:
+    case ERROR_LOCK_VIOLATION:
+        return S("Permission denied");
+    case ERROR_HANDLE_DISK_FULL:
+    case ERROR_DISK_FULL:
+        return S("No space left on device");
+    case ERROR_FILE_EXISTS:
+    case ERROR_ALREADY_EXISTS:
+        return S("File exists");
+    case ERROR_BROKEN_PIPE:
+    case ERROR_NO_DATA:
+        return S("Broken pipe");
+    case ERROR_INVALID_NAME:
+        return S("Invalid argument");
+    case ERROR_TOO_MANY_OPEN_FILES:
+        return S("Too many open files");
+    }
+    return S("");
+}
+
+// A pipe whose reader has gone, which has no SIGPIPE here: writes fail
+// with "the pipe is being closed", or else "the pipe has been ended".
+static b32 os_pipeclosed(os *ctx)
+{
+    (void)ctx;
+    u32 err = GetLastError();
+    return err==ERROR_NO_DATA || err==ERROR_BROKEN_PIPE;
 }
 
 // Windows has no meaningful equivalent of mode bits here: new files

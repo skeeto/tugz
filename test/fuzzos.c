@@ -58,6 +58,18 @@ static b32 os_missing(os *ctx)
     __builtin_trap();
 }
 
+static s8 os_error(os *ctx)
+{
+    (void)ctx;
+    __builtin_trap();
+}
+
+static b32 os_pipeclosed(os *ctx)
+{
+    (void)ctx;
+    __builtin_trap();
+}
+
 static void os_copymeta(os *ctx, i32 from, i32 to)
 {
     (void)ctx; (void)from; (void)to;

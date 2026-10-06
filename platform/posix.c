@@ -96,9 +96,10 @@ static void release_output(b32 keep)
 
 static i32 open_output(os *ctx, char *cpath, i32 mode)
 {
+    int kept = 0;  // why a name to replace could not be removed
     if (mode & OS_FORCE) {
         // Replace rather than truncate, so a link is never written through
-        unlink(cpath);
+        kept = unlink(cpath) ? errno : 0;
     }
 
     // Exactly one output file is open at a time
@@ -120,9 +121,12 @@ static i32 open_output(os *ctx, char *cpath, i32 mode)
     restore_signals(old);
 
     if (fd < 0) {
-        // Forced, a name not replaced (a directory) is an error
+        // Forced, a name not replaced (a directory) is an error. Leave
+        // the reason in errno for the caller: for that, why it stayed.
         free(copy);
-        return err==EEXIST && !(mode & OS_FORCE) ? OS_EEXIST : OS_ERR;
+        b32 force = !!(mode & OS_FORCE);
+        errno = err==EEXIST && force && kept ? kept : err;
+        return err==EEXIST && !force ? OS_EEXIST : OS_ERR;
     }
     return fd;
 }
@@ -175,11 +179,13 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
 
 static b32 os_close(os *ctx, i32 fd)
 {
-    b32 ok = !close(fd) || errno==EINTR;
+    b32 ok  = !close(fd) || errno==EINTR;
+    int err = errno;  // why, for the caller, past the cleanup
     if (fd == ctx->outfd) {
         ctx->outfd = -1;
         release_output(0);
     }
+    errno = err;
     return ok;
 }
 

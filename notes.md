@@ -882,7 +882,18 @@ Fuzzers:
   written, and no later file is begun, where reading on would only
   waste work or, with a closed pipe and no SIGPIPE (Windows), never
   end. A stream that a read error cuts short is left unfinished, so
-  that it cannot pass for all of its input.
+  that it cannot pass for all of its input. It is an error (1), but as
+  there with SIGPIPE ignored, a closed pipe is a warning (2), silent
+  under `-q`, since the default SIGPIPE would have ended the run
+  quietly; Windows, which has no SIGPIPE, treats one so too.
+- Messages give the system's reason for a failure, as GNU gzip's do
+  (`gzip: f.gz: No space left on device`), naming the file that failed:
+  the input when opening or reading, the output (`stdout` or the new
+  file) when creating, writing, or closing, and for a forced output
+  that could not be replaced, why it could not be removed. The gzip
+  platform layers word Windows' common errors as its C runtime words
+  them (`os_error`), and an error with no such wording gets a
+  description instead (`cannot open for reading`, `write error`).
 - Headers record no name and no time (FLG and MTIME 0), which is GNU
   gzip's `-n` output but for XFL (always 0), so `-n` and `--no-name` are
   accepted and do nothing. `-N`, which asks for a name and time to be

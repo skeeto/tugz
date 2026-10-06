@@ -60,12 +60,17 @@ struct os {
     b32 failread;    // reads fail at an offset of failreadat or beyond
     iz  failreadat;
     b32 failwrite;   // writes to descriptors other than stderr fail
+    b32 brokenpipe;  // ...as to a pipe without a reader
     iz  reads;       // calls to os_read
     iz  writes;      // calls to os_write, other than for stderr
+    b32 failcreate;  // creating files fails
     b32 failclose;   // closing created files fails
     b32 failremove;  // removing files fails
     b32 tty[3];      // standard descriptors attached to a terminal
     b32 missing;     // the last os_open found no such file
+    char *error;     // why the last failing call failed, for os_error
+    b32 pipeclosed;  // the last failing write found no reader
+    b32 noreason;    // os_error knows no reasons
 };
 
 static s8 cstrs8(char *z)
@@ -159,6 +164,7 @@ static void mfs_reset(os *ctx)
     }
     ctx->readlimit = ctx->failreadat = 0;
     ctx->failread = ctx->failwrite = ctx->failclose = ctx->failremove = 0;
+    ctx->brokenpipe = ctx->failcreate = ctx->noreason = 0;
     ctx->tty[0] = ctx->tty[1] = ctx->tty[2] = 0;
     static char *std[] = {"<stdin>", "<stdout>", "<stderr>"};
     for (i32 i = 0; i < 3; i++) {
@@ -178,8 +184,12 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
     mfile *f = mfs_find(ctx, path);
     b32 created = 0;
     ctx->missing = !f;
-    if (mode & OS_CREATE) {
+    if ((mode & (OS_CREATE|OS_FORCE)) && ctx->failcreate) {
+        ctx->error = "Permission denied";
+        return OS_ERR;
+    } else if (mode & OS_CREATE) {
         if (f) {
+            ctx->error = "File exists";
             return OS_EEXIST;
         }
         f = mfs_create(ctx, path);
@@ -188,6 +198,7 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
         f = mfs_create(ctx, path);
         created = 1;
     } else if (!f) {
+        ctx->error = "No such file or directory";
         return OS_ERR;
     } else if (f->isdir) {
         return OS_EISDIR;
@@ -214,7 +225,10 @@ static b32 os_close(os *ctx, i32 fd)
         if (!ctx->fds[fd].keep) {
             ctx->files[ctx->fds[fd].file].live = 0;
         }
-        return !ctx->failclose;
+        if (ctx->failclose) {
+            ctx->error = "Disk quota exceeded";
+            return 0;
+        }
     }
     return 1;
 }
@@ -236,6 +250,16 @@ static b32 os_missing(os *ctx)
     return ctx->missing;
 }
 
+static s8 os_error(os *ctx)
+{
+    return ctx->error && !ctx->noreason ? cstrs8(ctx->error) : S("");
+}
+
+static b32 os_pipeclosed(os *ctx)
+{
+    return ctx->pipeclosed;
+}
+
 static void os_copymeta(os *ctx, i32 from, i32 to)
 {
     TEST(ctx->fds[from].open && ctx->fds[to].open && ctx->fds[to].created);
@@ -252,6 +276,7 @@ static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
     ctx->reads++;
     iz off = ctx->fds[fd].off;
     if (ctx->failread && off>=ctx->failreadat) {
+        ctx->error = "Input/output error";
         return -1;
     }
     mfile *f = ctx->files + ctx->fds[fd].file;
@@ -274,7 +299,9 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
     TEST(fd>=0 && fd<MAX_FDS && ctx->fds[fd].open);
     TEST(fd != 0);
     ctx->writes += fd != 2;
-    if (ctx->failwrite && fd!=2) {
+    if ((ctx->failwrite || ctx->brokenpipe) && fd!=2) {
+        ctx->pipeclosed = ctx->brokenpipe;
+        ctx->error = ctx->brokenpipe ? "Broken pipe" : "No space left on device";
         return 0;
     }
     mfs_append(ctx->files + ctx->fds[fd].file, buf, len);
@@ -286,11 +313,14 @@ static b32 os_remove(os *ctx, s8 path, arena scratch)
     (void)scratch;
     mfile *f = mfs_find(ctx, path);
     if (ctx->failremove) {
+        ctx->error = "Operation not permitted";
         return 0;
-    } else if (f) {
-        f->live = 0;
+    } else if (!f) {
+        ctx->error = "No such file or directory";
+        return 0;
     }
-    return !!f;
+    f->live = 0;
+    return 1;
 }
 
 static void os_exit(os *ctx, i32 status)
@@ -2240,7 +2270,7 @@ static void test_cli(os *ctx, arena a)
     TEST(run(ctx, a, "-q f.gz") == EXIT_OK);
     TEST(!mfs_get(ctx, "<stderr>").len);
     TEST(run(ctx, a, "missing.gz") == EXIT_ERR);
-    TEST(stderr_has(ctx, "missing.gz: cannot open"));
+    TEST(stderr_has(ctx, "missing.gz: No such file or directory"));
     mfs_put(ctx, "g", text, 100);
     TEST(run(ctx, a, "-d g") == EXIT_WARN);
     TEST(stderr_has(ctx, "unknown suffix"));
@@ -2275,9 +2305,9 @@ static void test_cli(os *ctx, arena a)
         os_remove(ctx, cstrs8(suffixed[i].plain), a);
     }
     TEST(run(ctx, a, "s.TAZ") == EXIT_ERR);  // missing
-    TEST(stderr_has(ctx, "s.TAZ: cannot open"));
+    TEST(stderr_has(ctx, "s.TAZ: No such file or directory"));
     TEST(run(ctx, a, "-q s.TAZ") == EXIT_ERR);
-    TEST(stderr_has(ctx, "s.TAZ: cannot open"));
+    TEST(stderr_has(ctx, "s.TAZ: No such file or directory"));
 
     // Decompressing or testing a missing name without a suffix tries it
     // with suffixes in turn, as GNU gzip does: zcat nf reads nf.gz
@@ -2296,7 +2326,7 @@ static void test_cli(os *ctx, arena a)
     TEST(stderr_has(ctx, "nf.gz: already exists"));
     os_remove(ctx, S("nf"), a);
     TEST(run(ctx, a, "nf") == EXIT_ERR);
-    TEST(stderr_has(ctx, "nf: cannot open"));
+    TEST(stderr_has(ctx, "nf: No such file or directory"));
     os_remove(ctx, S("nf.gz"), a);
     static char *const others[] = {"nf.z", "nf-z", "nf.Z"};
     for (i32 i = 0; i < countof(others); i++) {
@@ -2314,12 +2344,12 @@ static void test_cli(os *ctx, arena a)
     for (i32 i = 0; i < countof(untried); i++) {
         mfs_put(ctx, untried[i], gz.s, gz.len);
         TEST(run(ctx, a, "-dqc nf") == EXIT_ERR);  // an error, not quiet
-        TEST(stderr_has(ctx, "nf.gz: cannot open"));
+        TEST(stderr_has(ctx, "nf.gz: No such file or directory"));
         os_remove(ctx, cstrs8(untried[i]), a);
     }
     mfs_put(ctx, "nf.gz.gz", gz.s, gz.len);  // nor with a suffix already
     TEST(run(ctx, a, "-dc nf.gz") == EXIT_ERR);
-    TEST(stderr_has(ctx, "nf.gz: cannot open"));
+    TEST(stderr_has(ctx, "nf.gz: No such file or directory"));
     os_remove(ctx, S("nf.gz.gz"), a);
     mfs_create(ctx, S("nf.gz"))->isdir = 1;
     TEST(run(ctx, a, "-dc nf") == EXIT_WARN);
@@ -2472,7 +2502,7 @@ static void test_cli(os *ctx, arena a)
 
     // Missing file, directory, unknown option, help, version
     TEST(run(ctx, a, "missing") == EXIT_ERR);
-    TEST(stderr_has(ctx, "missing: cannot open"));
+    TEST(stderr_has(ctx, "missing: No such file or directory"));
     mfs_create(ctx, S("dir"))->isdir = 1;
     TEST(run(ctx, a, "dir") == EXIT_WARN);
     TEST(stderr_has(ctx, "is a directory"));
@@ -2623,14 +2653,47 @@ static void test_cli_safety(os *ctx, arena a)
     TEST(equals(out, text, 100));
     free(out.s);
 
-    // Failure to close the output keeps the input and removes the output
+    // Failure to close the output keeps the input and removes the output,
+    // naming the output, as in GNU gzip, with the reason
     mfs_put(ctx, "c", text, 20000);
     ctx->failclose = 1;
     TEST(run(ctx, a, "c") == EXIT_ERR);
-    TEST(stderr_has(ctx, "write error"));
+    TEST(stderr_has(ctx, "gzip: c.gz: Disk quota exceeded\n"));
     ctx->failclose = 0;
     TEST(equals(mfs_get(ctx, "c"), text, 20000));
     TEST(!has(ctx, "c.gz"));
+
+    // ...as when it cannot be created
+    ctx->failcreate = 1;
+    TEST(run(ctx, a, "c") == EXIT_ERR);
+    TEST(stderr_has(ctx, "gzip: c.gz: Permission denied\n"));
+    TEST(run(ctx, a, "-f c") == EXIT_ERR);
+    TEST(stderr_has(ctx, "gzip: c.gz: Permission denied\n"));
+    ctx->failcreate = 0;
+    TEST(has(ctx, "c") && !has(ctx, "c.gz"));
+
+    // Where the system gives no reason, the failure is described
+    ctx->noreason = 1;
+    TEST(run(ctx, a, "missing") == EXIT_ERR);
+    TEST(stderr_has(ctx, "gzip: missing: cannot open for reading\n"));
+    ctx->failcreate = 1;
+    TEST(run(ctx, a, "c") == EXIT_ERR);
+    TEST(stderr_has(ctx, "gzip: c.gz: cannot open for writing\n"));
+    ctx->failcreate = 0;
+    ctx->failclose = 1;
+    TEST(run(ctx, a, "c") == EXIT_ERR);
+    TEST(stderr_has(ctx, "gzip: c.gz: write error\n"));
+    ctx->failclose = 0;
+    ctx->failread = 1;
+    TEST(run(ctx, a, "-c c") == EXIT_ERR);
+    TEST(stderr_has(ctx, "gzip: c: read error\n"));
+    ctx->failread = 0;
+    ctx->failremove = 1;
+    TEST(run(ctx, a, "c") == EXIT_WARN);
+    TEST(stderr_has(ctx, "gzip: c: cannot remove input file\n"));
+    ctx->failremove = 0;
+    ctx->noreason = 0;
+    os_remove(ctx, S("c.gz"), a);
 
     // Write failure mid-stream: nothing partial left behind
     ctx->failwrite = 1;
@@ -2642,7 +2705,7 @@ static void test_cli_safety(os *ctx, arena a)
     // files remain, with a warning
     ctx->failremove = 1;
     TEST(run(ctx, a, "c") == EXIT_WARN);
-    TEST(stderr_has(ctx, "c: cannot remove input file"));
+    TEST(stderr_has(ctx, "c: Operation not permitted"));
     TEST(has(ctx, "c") && has(ctx, "c.gz"));
     TEST(run(ctx, a, "-dqf c.gz") == EXIT_WARN);
     TEST(!mfs_get(ctx, "<stderr>").len);
@@ -2705,7 +2768,7 @@ static void test_io_stops(os *ctx, arena a)
     ctx->failread = 1;
     ctx->failreadat = len/2;
     TEST(run(ctx, a, "-c r missing") == EXIT_ERR);
-    TEST(stderr_has(ctx, "r: read error") && !stderr_has(ctx, "missing"));
+    TEST(stderr_has(ctx, "r: Input/output error") && !stderr_has(ctx, "missing"));
     s8 o = dup8(mfs_get(ctx, "<stdout>"));
     ctx->failread = 0;
     TEST(do_gunzip(ctx, a, o.s, o.len, &out) == GZ_ETRUNC);
@@ -2715,28 +2778,53 @@ static void test_io_stops(os *ctx, arena a)
     TEST(run(ctx, a, "r s") == EXIT_ERR);
     TEST(has(ctx, "r") && !has(ctx, "r.gz") && !has(ctx, "s.gz"));
     TEST(run(ctx, a, "-dc z.gz missing") == EXIT_ERR);
-    TEST(stderr_has(ctx, "read error") && !stderr_has(ctx, "missing"));
+    TEST(stderr_has(ctx, "gzip: z.gz: Input/output error\n"));
+    TEST(!stderr_has(ctx, "missing"));
     TEST(run(ctx, a, "-d z.gz s") == EXIT_ERR);
     TEST(has(ctx, "z.gz") && !has(ctx, "z") && !has(ctx, "s.gz"));
     ctx->failreadat = 0;
     set_stdin(ctx, big, 1000);
     TEST(run(ctx, a, "-c - s") == EXIT_ERR);
-    TEST(stderr_has(ctx, "stdin: read error"));
+    TEST(stderr_has(ctx, "stdin: Input/output error"));
     TEST(!mfs_get(ctx, "<stdout>").len);  // not even an empty stream
     ctx->failread = 0;
 
     // Nor does anything more get read after a write error, nor any more
-    // files, whether compressing, decompressing, or passing data through
-    static char *const cmds[] = {
-        "-c r missing", "r missing", "-dc z.gz missing", "-dk z.gz missing",
-        "-dcf z.gz missing", "-dcf plain missing",
+    // files, whether compressing, decompressing, or passing data through.
+    // A write error names the output. As in GNU gzip, a closed pipe, which
+    // the default SIGPIPE would have ended quietly, is only a warning.
+    static struct {
+        char *cmd;
+        char *out;
+    } const cmds[] = {
+        {"-c r missing",       "gzip: stdout: "},
+        {"r missing",          "gzip: r.gz: "},
+        {"-dc z.gz missing",   "gzip: stdout: "},
+        {"-dk z.gz missing",   "gzip: z: "},
+        {"-dcf z.gz missing",  "gzip: stdout: "},
+        {"-dcf plain missing", "gzip: stdout: "},
     };
     for (i32 i = 0; i < countof(cmds); i++) {
+        char want[64];
         ctx->failwrite = 1;
-        TEST(run(ctx, a, cmds[i]) == EXIT_ERR);
+        TEST(run(ctx, a, cmds[i].cmd) == EXIT_ERR);
         ctx->failwrite = 0;
         TEST(ctx->writes==1 && ctx->reads<len/IO_RDBUF/2);
-        TEST(stderr_has(ctx, "write error") && !stderr_has(ctx, "missing"));
+        snprintf(want, sizeof(want), "%sNo space left on device\n", cmds[i].out);
+        TEST(stderr_has(ctx, want) && !stderr_has(ctx, "missing"));
+        TEST(has(ctx, "r") && !has(ctx, "r.gz"));
+        TEST(has(ctx, "z.gz") && !has(ctx, "z"));
+
+        ctx->brokenpipe = 1;
+        TEST(run(ctx, a, cmds[i].cmd) == EXIT_WARN);
+        TEST(ctx->writes==1 && ctx->reads<len/IO_RDBUF/2);
+        snprintf(want, sizeof(want), "%sBroken pipe\n", cmds[i].out);
+        TEST(stderr_has(ctx, want) && !stderr_has(ctx, "missing"));
+        char quiet[64];
+        snprintf(quiet, sizeof(quiet), "-q %s", cmds[i].cmd);
+        TEST(run(ctx, a, quiet) == EXIT_WARN);
+        TEST(!mfs_get(ctx, "<stderr>").len);
+        ctx->brokenpipe = 0;
         TEST(has(ctx, "r") && !has(ctx, "r.gz"));
         TEST(has(ctx, "z.gz") && !has(ctx, "z"));
     }

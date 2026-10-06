@@ -139,25 +139,8 @@ static s8 status_message(i32 status)
     case GZ_EDATA:    return S("invalid compressed data--format violated");
     case GZ_ECRC:     return S("invalid compressed data--crc error");
     case GZ_ELEN:     return S("invalid compressed data--length error");
-    case GZ_EREAD:    return S("read error");
-    case GZ_EWRITE:   return S("write error");
     }
     return S("unknown error");
-}
-
-static i32 report(options *o, s8 name, i32 status, arena scratch)
-{
-    if (status == GZ_OK) {
-        return EXIT_OK;
-    } else if (status == GZ_TRAILING) {
-        if (!o->quiet) {
-            message(scratch, name, status_message(status));
-        }
-        return EXIT_WARN;
-    }
-    o->stop |= status==GZ_EREAD || status==GZ_EWRITE;
-    message(scratch, name, status_message(status));
-    return EXIT_ERR;
 }
 
 static i32 warn(options *o, s8 name, s8 msg, arena scratch)
@@ -166,6 +149,42 @@ static i32 warn(options *o, s8 name, s8 msg, arena scratch)
         message(scratch, name, msg);
     }
     return EXIT_WARN;
+}
+
+// Why an os_* call just failed, as GNU gzip says in the system's words,
+// or where those are unknown, a description.
+static s8 reason(os *ctx, s8 otherwise)
+{
+    s8 why = os_error(ctx);
+    return why.len ? why : otherwise;
+}
+
+// Report a transform's status, from reading in and writing out. As in
+// GNU gzip, a read or write error names the file that failed, with the
+// system's reason, and ends the run: as an error, or for a closed pipe,
+// which the default SIGPIPE would have ended quietly, as a warning.
+static i32 report(options *o, s8 in, s8 out, i32 status, arena scratch)
+{
+    os *ctx = scratch.ctx;
+    switch (status) {
+    case GZ_OK:
+        return EXIT_OK;
+    case GZ_TRAILING:
+        return warn(o, in, status_message(status), scratch);
+    case GZ_EREAD:
+        o->stop = 1;
+        message(scratch, in, reason(ctx, S("read error")));
+        return EXIT_ERR;
+    case GZ_EWRITE:
+        o->stop = 1;
+        if (os_pipeclosed(ctx)) {
+            return warn(o, out, reason(ctx, S("broken pipe")), scratch);
+        }
+        message(scratch, out, reason(ctx, S("write error")));
+        return EXIT_ERR;
+    }
+    message(scratch, in, status_message(status));
+    return EXIT_ERR;
 }
 
 // Transform a file to standard output, or test it. As in GNU gzip,
@@ -243,7 +262,7 @@ static i32 process_file(options *o, s8 path, arena scratch)
             return r;
         }
         i32 status = transform(o, 0, 1, scratch);
-        return report(o, S("stdin"), status, scratch);
+        return report(o, S("stdin"), S("stdout"), status, scratch);
     }
 
     // The input of an in-place operation is deleted afterward, so only
@@ -268,14 +287,15 @@ static i32 process_file(options *o, s8 path, arena scratch)
         return warn(o, path, S("has other links -- file ignored"), scratch);
     }
     if (in < 0) {
-        message(scratch, path, S("cannot open for reading"));
+        message(scratch, path, reason(ctx, S("cannot open for reading")));
         return EXIT_ERR;
     }
 
     if (!in_place) {
         i32 status = transform(o, in, 1, scratch);
+        i32 code = report(o, path, S("stdout"), status, scratch);
         os_close(ctx, in);
-        return report(o, path, status, scratch);
+        return code;
     }
 
     // Like GNU gzip, check the name once the input qualifies. Leaving a
@@ -309,8 +329,9 @@ static i32 process_file(options *o, s8 path, arena scratch)
         r = stream_reader(&scratch, in);
         if (!stream_header(o->dec, r)) {
             i32 status = stream_decode(o->dec, r, -1, 0);
+            i32 code = report(o, path, outpath, status, scratch);
             os_close(ctx, in);
-            return report(o, path, status, scratch);
+            return code;
         }
     }
 
@@ -319,8 +340,8 @@ static i32 process_file(options *o, s8 path, arena scratch)
         os_close(ctx, in);
         return warn(o, outpath, S("already exists; not overwritten"), scratch);
     } else if (out < 0) {
+        message(scratch, outpath, reason(ctx, S("cannot open for writing")));
         os_close(ctx, in);
-        message(scratch, outpath, S("cannot open for writing"));
         return EXIT_ERR;
     }
 
@@ -329,28 +350,29 @@ static i32 process_file(options *o, s8 path, arena scratch)
     // place, data that is not gzip is an error even when forced.
     i32 status = r ? stream_decode(o->dec, r, out, 0)
                    : gzip_compress(o->enc, in, out, o->level, scratch);
-    b32 ok = status==GZ_OK || status==GZ_TRAILING;
-    if (ok) {
-        os_copymeta(ctx, in, out);
-        os_keep(ctx, out);
+    i32 code = report(o, path, outpath, status, scratch);
+    if (status!=GZ_OK && status!=GZ_TRAILING) {
+        os_close(ctx, out);
+        os_close(ctx, in);
+        return code;
     }
+    os_copymeta(ctx, in, out);
+    os_keep(ctx, out);
+
     // A failed close may mean lost data, so the input must survive it
-    if (!os_close(ctx, out) && ok) {
+    if (!os_close(ctx, out)) {
+        code = report(o, path, outpath, GZ_EWRITE, scratch);
         os_remove(ctx, outpath, scratch);
-        status = GZ_EWRITE;
-        ok = 0;
+        os_close(ctx, in);
+        return code;
     }
     os_close(ctx, in);
-    if (!ok) {
-        return report(o, path, status, scratch);
-    }
 
     // Failing to remove the input loses nothing, so as in GNU gzip it is
     // only a warning
-    i32 code = report(o, path, status, scratch);
     if (!o->keep && !os_remove(ctx, path, scratch)) {
-        s8 msg = S("cannot remove input file");
-        code = exit_combine(code, warn(o, path, msg, scratch));
+        s8 why = reason(ctx, S("cannot remove input file"));
+        code = exit_combine(code, warn(o, path, why, scratch));
     }
     return code;
 }

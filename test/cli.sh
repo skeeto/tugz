@@ -393,7 +393,7 @@ EOF
     wait $pid || true
     [ $st1 = 2 ] && grep -q 'already exists' err1 ||
         fail "delete-pending output: $st1 $(cat err1)"
-    [ $st2 = 1 ] && grep -q 'cannot open for writing' err2 ||
+    [ $st2 = 1 ] && grep -q '^gzip: pend.gz: Permission denied' err2 ||
         fail "-f delete-pending output: $st2 $(cat err2)"
     [ $st3 = 1 ] && [ -s err3 ] || fail "-qf delete-pending output: $st3"
     "$GZIP" -kf pend || fail "-f once no longer delete-pending"
@@ -412,15 +412,43 @@ for opts in -c -dc; do
         fail "$opts read error: status $st, $(wc -c <wo.out) bytes out"
 done
 
-# Write errors, which likewise end the run
+# Write errors, which likewise end the run, naming the output
 if [ -w /dev/full ]; then
     set +e
     "$GZIP" -c text text >/dev/full 2>full.err
     st=$?
     set -e
     [ $st = 1 ] || fail "write to /dev/full: status $st"
-    [ "$(grep -c . full.err)" = 1 ] || fail "write to /dev/full: messages"
+    [ "$(grep -c . full.err)" = 1 ] && grep -q '^gzip: stdout: ' full.err ||
+        fail "write to /dev/full: $(cat full.err)"
 fi
+
+# ...but a closed pipe, which the default SIGPIPE ends quietly, is only a
+# warning, as in GNU gzip where SIGPIPE is ignored, or (Windows) absent
+for opts in -c -dc; do
+    f=random
+    [ $opts = -dc ] && f=random.gz
+    (
+        trap '' PIPE 2>/dev/null || true
+        { st=0; "$GZIP" $opts $f $f 2>pipe.err || st=$?
+          echo $st >pipe.st; } | head -c 10 >/dev/null
+    )
+    [ "$(cat pipe.st)" = 2 ] && [ "$(grep -c . pipe.err)" = 1 ] &&
+        grep -q '^gzip: stdout: Broken pipe$' pipe.err ||
+        fail "$opts to a closed pipe: $(cat pipe.st) $(cat pipe.err)"
+done
+
+# Failures give the system's reason, as in GNU gzip
+for opts in '' -d; do
+    set +e
+    "$GZIP" $opts nothere 2>why.err
+    st=$?
+    set -e
+    name=nothere
+    [ -n "$opts" ] && name=nothere.gz
+    [ $st = 1 ] && grep -q "^gzip: $name: No such file or directory\$" why.err ||
+        fail "$opts nothere: $st $(cat why.err)"
+done
 
 # An interrupted in-place operation leaves no partial output. A
 # non-interactive shell starts background jobs ignoring SIGINT, which

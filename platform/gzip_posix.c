@@ -27,6 +27,18 @@ static b32 os_missing(os *ctx)
     return errno == ENOENT;
 }
 
+static s8 os_error(os *ctx)
+{
+    (void)ctx;
+    return errno ? cstr(strerror(errno)) : S("");
+}
+
+static b32 os_pipeclosed(os *ctx)
+{
+    (void)ctx;
+    return errno == EPIPE;
+}
+
 static void os_copymeta(os *ctx, i32 from, i32 to)
 {
     (void)ctx;

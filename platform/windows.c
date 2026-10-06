@@ -46,10 +46,12 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define IO_REPARSE_TAG_SYMLINK     0xa000000cu
 #define INVALID_FILE_ATTRIBUTES    0xffffffffu
 #define INVALID_HANDLE_VALUE       ((iptr)-1)
+#define ERROR_TOO_MANY_OPEN_FILES  4u
 #define ERROR_ACCESS_DENIED        5u
 #define ERROR_SHARING_VIOLATION    32u
 #define ERROR_FILE_EXISTS          80u
 #define ERROR_BROKEN_PIPE          109u
+#define ERROR_INVALID_NAME         123u
 #define ERROR_HANDLE_EOF           38u
 #define MEM_COMMIT                 0x1000u
 #define MEM_RESERVE                0x2000u
@@ -518,6 +520,9 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
     for (; fd<MAX_HANDLES && ctx->handles[fd]; fd++) {}
     c16 *wpath = winpath(&scratch, path);
     if (fd==MAX_HANDLES || !wpath) {
+        // Say why, as a failed CreateFileW would, for os_missing and the
+        // like: a path that names nothing is a name no file can have
+        SetLastError(wpath ? ERROR_TOO_MANY_OPEN_FILES : ERROR_INVALID_NAME);
         return OS_ERR;
     }
 
