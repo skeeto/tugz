@@ -2032,6 +2032,28 @@ if ln -s x race/link 2>/dev/null && mkfifo race/fifo 2>/dev/null; then
     swapped d_dir dir -ry
 fi
 
+# A file whose size has changed since the scan, which gave the entry its
+# time, is stored as read, with the warning of Info-ZIP's Unix port, for
+# one that changes while it reads it, which leaves the status alone
+rm -f rz/race.zip
+printf small >race/e_grow
+if bgzip rz rz/race.zip race/a_big race/e_grow; then
+    printf er >>race/e_grow
+    kill -CONT $pid
+    wait $bg
+    if [ "$(unzip -p rz/race.zip race/e_grow)" = small ]; then
+        echo "zip.sh: zip read race/e_grow before it could grow" >&2
+    else
+        w='zip warning:  file size changed while zipping race/e_grow'
+        [ "$(cat bg.status)" = 0 ] && [ "$(cat bg.err)" = "$w" ] &&
+            [ "$(unzip -p rz/race.zip race/e_grow)" = smaller ] ||
+            fail "file grown: $(cat bg.status) $(cat bg.err)"
+    fi
+else
+    wait $bg
+    echo "zip.sh: zip finished before race/e_grow could grow" >&2
+fi
+
 # Running out of memory exits 4, as in Info-ZIP, before any output, as
 # zip allocates what grows with its work first: no archive is created
 # (here under one limit) or changed (under the other), and no temporary

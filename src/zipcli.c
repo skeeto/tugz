@@ -2503,6 +2503,15 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
                 // A replaced entry keeps its comment, as in Info-ZIP
                 e->comment = was.comment;
                 report(z, verb, e->name, e, scratch);
+                if (!z->windows && f->info.type==FT_FILE &&
+                    e->usize!=f->info.size) {
+                    // Warn, as Info-ZIP's Unix port does (not its Windows
+                    // port), of data whose size differs from the file's
+                    // as examined: there just before reading it, here in
+                    // the scan, from which the entry's time comes
+                    warn(z, S(" file size changed while zipping "), f->path,
+                         scratch);
+                }
                 z->nread++;
                 z->bread += e->usize;
                 e->lextra = (s8){0};  // in write_file's scratch, and written

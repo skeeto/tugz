@@ -718,7 +718,13 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   swapped in for a file, and under `-y`, though it examines each file
   again just before reading it, still reads through a directory swapped
   for a link once its files were found, and stores whichever link is
-  there. (Both read through one swapped in while the scan is in it.)
+  there. (Both read through one swapped in while the scan is in it.) A
+  file whose data turns out larger or smaller than it was is stored as
+  read, with the warning of Info-ZIP's Unix port ("file size changed
+  while zipping", leaving the status alone; its Windows port gives none,
+  nor does tugz there), but compared with its size in the scan, from
+  which its entry's time comes, where Info-ZIP examines each file again
+  just before reading it, and so warns only of changes while it reads.
 - Existing archives: under `-FS`, an entry whose replacement cannot be
   read is kept, as in other modes (Info-ZIP warns that it will copy it
   over, then drops it). A file added to an emptied self-extractor keeps
