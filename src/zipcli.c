@@ -255,10 +255,11 @@ static b32 at_tip(arena *a, void *data, iz len)
 
 // Double an array's capacity: in place if it is the last allocation in
 // an arena that grows up (perm), else by moving it, which leaves the
-// old copy as garbage until the arena is freed (in perm, never).
+// old copy as garbage until the arena is freed (in perm, never). An
+// empty one, which doubling would leave empty, moves to a fresh 16.
 static void grow(arena *a, void **data, iz *cap, iz size)
 {
-    if (at_tip(a, *data, *cap*size)) {
+    if (*cap && at_tip(a, *data, *cap*size)) {
         alloc(a, *cap, size, 1, 1);
         *cap *= 2;
         return;
