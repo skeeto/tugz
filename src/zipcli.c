@@ -1308,10 +1308,15 @@ static zdir *enter(zip *z, zdir *up, s8 path, s8 name, os_info *info,
     if (!list) {
         return up;
     }
-    zdir *d  = new(scratch, 1, zdir);
+    // Entries join the directory's path with a separator, unless it ends
+    // in one, but those of "." are named by theirs alone, as Info-ZIP's
+    // procname names them, so that "d/a" is a path met again, not "./d/a"
+    b32   dot = zequals(path, S("."));
+    zdir *d   = new(scratch, 1, zdir);
     d->up    = up;
-    d->path  = path;
-    d->sep   = path.len && is_sep(z, path.s[path.len-1]) ? S("") : S("/");
+    d->path  = dot ? S("") : path;
+    d->sep   = dot || (path.len && is_sep(z, path.s[path.len-1])) ? S("")
+             : S("/");
     d->name  = dname;
     d->info  = info;
     d->kids  = zsort(list, n, scratch);

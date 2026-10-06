@@ -251,9 +251,11 @@ neither inflate nor the gzip container.
   dropped (`zip t.zip //h/s/f` stores `f`). A directory is named with
   its separator, as procname names it, so a share root `//h/s` is named
   by nothing, like `//h/s/`, and so are its entries' prefixes
-  (`zip -r t.zip //h/s` stores `f`). The same path reached twice (`f f`,
-  `d d/a`, `d d/`, `find d | zip -r@`) is added once, silently, as in
-  Info-ZIP; different paths giving one name (`./d/a d/a`, or a `-j`
+  (`zip -r t.zip //h/s` stores `f`). As procname names them, the
+  entries of `.` have paths without `./` (`d/a`, in messages too). The
+  same path reached twice (`f f`, `d d/a`, `d d/`, `. d/a`,
+  `find d | zip -r@`) is added once, silently, as in Info-ZIP;
+  different paths giving one name (`./d/a d/a`, `. ./d/a`, or a `-j`
   collision) are an error (16), reported as there once every path is
   scanned and matched: only the first name repeated in order of names,
   by the first two of its paths in order (a directory's with a slash),
@@ -591,15 +593,17 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   covers all below it, or no `-i` pattern can match there, judged by
   their parts before any wildcard. `-i` that matches nothing has nothing
   to do, 12 (Info-ZIP writes an empty archive, exiting 0, when the
-  archive is new). A list that cannot be read (`@file` or `-@`, standard
-  input closed included) fails, 18 or for `-@` 11, where Info-ZIP's getc
-  ends the list at any read error, which silently selects, or excludes,
-  less. An archive that can be written but not read fails (11, "Could
-  not open archive"), where Info-ZIP takes it for a missing one and
-  replaces it, losing its entries. So does, before any work, one that
-  cannot be examined for any reason but that nothing is there, such as
-  an I/O error (Info-ZIP opens it regardless, and replaces one that it
-  cannot open).
+  archive is new). A directory named by nothing, `./`, `/`, or a share
+  root, adds nothing without `-r`, silently, where Info-ZIP fails with
+  an internal logic error (5, "empty name without -j or -r"). A list
+  that cannot be read (`@file` or `-@`, standard input closed included)
+  fails, 18 or for `-@` 11, where Info-ZIP's getc ends the list at any
+  read error, which silently selects, or excludes, less. An archive that
+  can be written but not read fails (11, "Could not open archive"),
+  where Info-ZIP takes it for a missing one and replaces it, losing its
+  entries. So does, before any work, one that cannot be examined for any
+  reason but that nothing is there, such as an I/O error (Info-ZIP opens
+  it regardless, and replaces one that it cannot open).
 - Messages: warnings and errors go to standard error, where Info-ZIP
   writes all but `perror`'s to standard output, and without the tab that
   starts most of its warnings. Advice on options that tugz rejects is

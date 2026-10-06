@@ -376,6 +376,21 @@ expect_status 16 "$ZIP" dup4.zip tree/a.txt ./tree/a.txt
 grep -q 'result of using -j' out || fail "-j collision: $(cat out)"
 [ ! -e dup4.zip ] && [ ! -e dup5.zip ] || fail "made an archive with dups"
 
+# Entries of "." are named without "./", as Info-ZIP names them, so a
+# path below it named again is the same path, and one with ./ is not
+(cd tree && "$ZIP" -qr ../dot1.zip . sub/random a.txt) || fail ". sub/random"
+[ $(names dot1.zip | wc -l) = $(($(wc -l <want) - 1)) ] ||
+    fail ". sub/random: $(names dot1.zip)"
+(cd tree && expect_status 16 "$ZIP" -r ../dot2.zip . ./a.txt)
+(cd tree && "$ZIP" -r ../dot3.zip . ./sub 2>../out) && fail ". ./sub"
+grep -q 'second full name: sub/$' out || fail ". ./sub: $(cat out)"
+
+# Departure: "./" without -r names nothing and is passed over, where
+# Info-ZIP fails with an internal logic error (5, "empty name")
+(cd tree && "$ZIP" -q ../dot4.zip ./ a.txt) || fail "./ without -r"
+[ "$(names dot4.zip)" = a.txt ] || fail "./ without -r: $(names dot4.zip)"
+(cd tree && echo ./ | expect_status 12 "$ZIP" ../dot5.zip -@)
+
 # As in Info-ZIP, only the first repeat in order of names is reported,
 # by the first two of its paths in order, in one indented warning
 "$ZIP" -j dup6.zip tree/b.txt ./tree/b.txt tree/a.txt tree/sub ./tree/a.txt \
