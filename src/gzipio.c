@@ -4,7 +4,8 @@ static b32  os_isatty(os *, i32 fd);
 // Whether the os_open that just failed (OS_ERR) found no such file.
 static b32  os_missing(os *);
 // Why the os_* call that just failed did, in the system's words (as C's
-// strerror gives them), or an empty string if unknown.
+// strerror gives them), or an empty string if unknown. The text may last
+// only until the next call (the BSDs' strerror reuses one buffer).
 static s8   os_error(os *);
 // Whether the os_write that just failed found a pipe with no reader.
 static b32  os_pipeclosed(os *);

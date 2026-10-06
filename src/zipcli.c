@@ -78,7 +78,8 @@ static void os_localtime(os *, i64 t, i32 tm[6]);
 static b32  os_isatty(os *, i32 fd);
 // Why the last failed system call failed, in the words of the C
 // library's strerror, as Info-ZIP reports I/O errors, or an empty string
-// if unknown.
+// if unknown. The text may last only until the next call, as the BSDs'
+// strerror reuses one buffer, so a reason kept for later is copied.
 static s8   os_error(os *);
 // A name in the OEM code page, or else the ANSI one, as UTF-8 (Windows),
 // or a null string if that code page cannot decode it.
@@ -1701,21 +1702,22 @@ static s8 shown_name(zarchive *ar, zentry *e)
 // Output: buffered positioned writes into the temporary file
 
 typedef struct {
-    os  *ctx;
-    i32  fd;
-    u8  *buf;
-    iz   len;
-    iz   cap;
-    i64  pos;  // file offset of buf[0]
-    b32  err;
-    s8   why;  // of the error, told before anything else could fail
+    os    *ctx;
+    arena *perm;  // for why
+    i32    fd;
+    u8    *buf;
+    iz     len;
+    iz     cap;
+    i64    pos;  // file offset of buf[0]
+    b32    err;
+    s8     why;  // of the error, as it occurred
 } zout;
 
 static void zout_writeat(zout *w, u8 *p, iz n, i64 off)
 {
     if (!w->err && !os_writeat(w->ctx, w->fd, p, n, off)) {
         w->err = 1;
-        w->why = os_error(w->ctx);
+        w->why = JOIN(w->perm, os_error(w->ctx));
     }
 }
 
@@ -1852,7 +1854,7 @@ static iz src_read(zip *z, zsrc *s, u8 *buf, iz cap)
     iz n = os_read(z->ctx, s->fd, buf, cap);
     if (n<0 && !s->err) {
         s->err = 1;
-        s->why = os_error(z->ctx);
+        s->why = JOIN(&z->perm, os_error(z->ctx));
     }
     return n<0 ? 0 : n;
 }
@@ -2282,9 +2284,10 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     zentry  *fresh = new(&scratch, nadd, zentry);
 
     zout w = {0};
-    w.ctx = z->ctx;
-    w.cap = 1 << 20;
-    w.buf = newbytes(&scratch, w.cap);
+    w.ctx  = z->ctx;
+    w.perm = &z->perm;
+    w.cap  = 1 << 20;
+    w.buf  = newbytes(&scratch, w.cap);
 
     zwork k = {0};
     k.out    = &w;
