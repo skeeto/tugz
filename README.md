@@ -82,8 +82,8 @@ Behavior follows GNU gzip: concatenated members, warnings for trailing
 garbage (but not zero padding), `zcat -f` passing other data through,
 its suffixes (`.gz`, `.z`, `-gz`, `-z`, `_z`, and `.tgz` or `.taz` for
 `.tar`), exit status 0/1/2 for success/error/warning, metadata copied to
-outputs, no partial outputs on failure or interruption, and in-place
-operation skipping links unless `-f`, and special files always.
+outputs, and no partial outputs on failure or interruption. In place,
+it skips links unless `-f`, and special files always.
 
 Headers record no file name or time, as GNU gzip's do under `-n`, which
 is therefore accepted (as in `gzip -9n`). Not yet supported: `-r`, `-l`,

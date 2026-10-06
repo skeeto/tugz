@@ -77,7 +77,7 @@ static b32 ascii_iequals(s8 a, s8 b)
 
 // The suffix of a compressed file's name, as written in it (regardless
 // of case), or a null string: GNU gzip's list. A suffix alone, or alone
-// after a directory separator, is not a name with that suffix.
+// after a directory separator (/ or \), is not a name with that suffix.
 static s8 known_suffix(s8 path)
 {
     static s8 const suffixes[] = {
@@ -277,26 +277,27 @@ static i32 process_file(options *o, s8 path, arena scratch)
         return report(o, path, status, scratch);
     }
 
-    // Like GNU gzip, check the name once the input qualifies. Skipping a
-    // compressed file is no failure, unless it was to be compressed again.
+    // Like GNU gzip, check the name once the input qualifies. Leaving a
+    // file named as compressed is no failure, and -f compresses it anyway.
     s8 outpath = {0};
-    s8 suffix  = known_suffix(path);
     if (o->decompress) {
         outpath = strip_suffix(&scratch, path);
         if (!outpath.s) {
             os_close(ctx, in);
             return warn(o, path, S("unknown suffix -- ignored"), scratch);
         }
-    } else if (suffix.s && !o->force) {
-        os_close(ctx, in);
-        if (!o->quiet) {
-            s8 msg = s8concat(&scratch, path, S(" already has "));
-            msg = s8concat(&scratch, msg, suffix);
-            msg = s8concat(&scratch, msg, S(" suffix -- unchanged"));
-            message(scratch, (s8){0}, msg);
-        }
-        return EXIT_OK;
     } else {
+        s8 suffix = known_suffix(path);
+        if (suffix.s && !o->force) {
+            os_close(ctx, in);
+            if (!o->quiet) {
+                s8 msg = s8concat(&scratch, path, S(" already has "));
+                msg = s8concat(&scratch, msg, suffix);
+                msg = s8concat(&scratch, msg, S(" suffix -- unchanged"));
+                message(scratch, (s8){0}, msg);
+            }
+            return EXIT_OK;
+        }
         outpath = s8concat(&scratch, path, S(".gz"));
     }
 
