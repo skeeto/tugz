@@ -832,6 +832,33 @@ for n in sys.argv[2:]: a.writestr(z.ZipInfo(n), "" if n == "./" else "x")' \
         fail "-f of escaping names: $(cat esc/log)"
     entries esc/top/work/sub/e.zip >got
     cmp -s got want || fail "escaping names by pattern: $(cat got)"
+
+    # Every entry of a name that entries select is refreshed, as Info-ZIP
+    # examines the file of each entry it selects, while a path names only
+    # the first (Info-ZIP's binary search finds any one of them)
+    mkdir dups
+    $PY -c 'import sys, warnings, zipfile as z
+warnings.simplefilter("ignore")
+a = z.ZipFile(sys.argv[1], "w")
+for n, d in ("f", "one"), ("g", "g"), ("f", "two"):
+    a.writestr(z.ZipInfo(n), d)' dups/d0.zip
+    printf new >dups/f
+    printf g >dups/g
+    dups() {  # zip arguments, the archive dups/d.zip as d.zip
+        cp dups/d0.zip dups/d.zip
+        (cd dups && "$ZIP" -q "$@") || fail "duplicate names: $*"
+        entries dups/d.zip | tr '\n' ' ' >got
+    }
+    for args in '-f d.zip' '-u d.zip' '-FS d.zip ?'; do
+        set -f
+        dups $args
+        set +f
+        [ "$(cat got)" = "f new g g f new " ] ||
+            fail "$args over duplicates: $(cat got)"
+    done
+    dups -u d.zip f
+    [ "$(cat got)" = "f new g g f two " ] ||
+        fail "a path over duplicates: $(cat got)"
 fi
 
 # Delete
@@ -1221,6 +1248,37 @@ open(sys.argv[1], "wb").write(loc + cen + end)' up2.zip
             [ "$(unzip -p up.zip x.txt)" = "new x" ] &&
             [ "$(unzip -p up.zip y.txt)" = "new y" ] ||
             fail "$files, one entry: $(cat check.out)"
+    done
+    # ...while a pattern refreshes every entry of a name that it selects
+    mkdir upd
+    cp x.txt y.txt upd/
+    printf 'new f' >upd/f
+    $PY -c 'import struct, sys, zlib
+loc = cen = b""
+for n, d in (b"x.txt", b"old"), (b"f", b"one"), (b"f", b"two"):
+    u = b"y.txt"
+    x = b"up" + struct.pack("<HBI", 5 + len(u), 1, zlib.crc32(n)) + u
+    x = x if n == b"x.txt" else b""
+    c = zlib.crc32(d)
+    cen += struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 0x31e, 10, 0, 0,
+                       0, 0x5021, c, len(d), len(d), len(n), len(x), 0, 0,
+                       0, 0x81a40000, len(loc)) + n + x
+    loc += struct.pack("<IHHHHHIIIHH", 0x04034b50, 10, 0, 0, 0, 0x5021, c,
+                       len(d), len(d), len(n), len(x)) + n + x + d
+end = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 3, 3, len(cen), len(loc), 0)
+open(sys.argv[1], "wb").write(loc + cen + end)' up3.zip
+    for files in "x.txt y.txt" "y.txt x.txt"; do
+        cp up3.zip upd/up.zip
+        (cd upd && "$ZIP" -u up.zip $files '?' >../out) ||
+            fail "$files ?, one entry and two: $(cat out)"
+        verify upd/up.zip
+        printf '%s\n' 'updating: x.txt' 'updating: f' 'updating: f' \
+            '  adding: y.txt' >want
+        progress out | cmp -s - want ||
+            fail "$files ?, one entry and two: $(cat out)"
+        [ "$(entries upd/up.zip | tr '\n' ' ')" = \
+          "x.txt new x f new f f new f y.txt new y " ] ||
+            fail "$files ?, one entry and two: $(entries upd/up.zip)"
     done
 fi
 

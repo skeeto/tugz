@@ -292,13 +292,16 @@ neither inflate nor the gzip container.
   the name passes `-i` and `-x` and stays within the current directory
   (see the departures). Leading `./`, which bsdtar and Windows' `tar`
   write, stays there, so those entries are refreshed, as in Info-ZIP, a
-  `./` entry by the current directory. A missing file leaves its entry
-  (deleted by `-FS`). One that has changed between file and directory
-  keeps it, with Info-ZIP's warning and status 18. Special files, named
-  or met while recursing, are left out with Info-ZIP's warnings
-  ("ignoring special file: ", for a FIFO "ignoring FIFO (Named Pipe)"),
-  which leave the exit status alone (12 if nothing else is left), and a
-  `-d` name that is one on disk marks nothing.
+  `./` entry by the current directory. As there, every entry selected
+  is refreshed, each of an archive's entries with one name (as Python's
+  `zipfile` appends them) included, while a path names only the first
+  (Info-ZIP's binary search finds any one). A missing file leaves its
+  entry (deleted by `-FS`). One that has changed between file and
+  directory keeps it, with Info-ZIP's warning and status 18. Special
+  files, named or met while recursing, are left out with Info-ZIP's
+  warnings ("ignoring special file: ", for a FIFO "ignoring FIFO (Named
+  Pipe)"), which leave the exit status alone (12 if nothing else is
+  left), and a `-d` name that is one on disk marks nothing.
 - Updates: as in Info-ZIP, `-u` and `-f` take a file that is newer
   than its entry by the Unix time of the entry's last `UT` field, if
   that has one, or failing any, of an old `UX` field (Info-ZIP 2's), so

@@ -1023,15 +1023,15 @@ static b32 is_archive(zip *z, s8 path, os_info *info, arena scratch)
     return zequals(full, z->arcpath);
 }
 
-// Record a file to add, its path and name already in perm.
-static void push_file(zip *z, s8 path, s8 name, os_info *info)
+// A file's record, its path and name already in perm.
+static zfile *new_file(zip *z, s8 path, s8 name, os_info *info)
 {
     zfile *f = new(&z->perm, 1, zfile);
     f->path    = path;
     f->name    = name;
     f->info    = *info;
     f->dostime = file_dostime(z, info->mtime, 1);
-    *push(&z->perm, &z->files) = f;
+    return f;
 }
 
 // Copy a file's path and name into perm to record it, sharing bytes
@@ -1191,7 +1191,8 @@ static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
     keep_names(&z->perm, &path, &name);
     *zmap_upsert(&z->names, entry_key(z, name, &z->perm), &z->perm) =
         z->files.len;
-    push_file(z, path, name, info);
+    zfile *f = new_file(z, path, name, info);
+    *push(&z->perm, &z->files) = f;
 }
 
 // A directory being scanned, within those it is in
@@ -2692,10 +2693,13 @@ static b32 linkless(zip *z, s8 path, s8 *checked, arena scratch)
 // file that a selected entry names is examined, without recursion, -D,
 // or -j, if the name passes -i and -x, no path named it already, and it
 // reaches no further than the current directory. A missing file leaves
-// its entry as it is (deleted, under -FS). Returns whether any entry
-// matched.
+// its entry as it is (deleted, under -FS). As in Info-ZIP, which looks
+// up a path's entry by name, but examines the file of every entry it
+// selects, every entry of a name is so refreshed: the first by a file
+// recorded to add, the others by files of their own, in also. Returns
+// whether any entry matched.
 static b32 scan_entries(zip *z, zarchive *ar, iz n, zindex *old, s8 pattern,
-                        b32 *taken, arena scratch)
+                        b32 *taken, zfile **also, arena scratch)
 {
     b32 any     = 0;
     s8  checked = {0};  // directories known to be no links
@@ -2705,10 +2709,9 @@ static b32 scan_entries(zip *z, zarchive *ar, iz n, zindex *old, s8 pattern,
         }
         any = 1;
 
-        // Of entries with one name, files replace the first
         arena iter = scratch;
         s8    name = port_name(z, ar, i);
-        if (zindex_find(old, name)!=i || taken[i] || !included(z, name)) {
+        if (taken[i] || !included(z, name)) {
             continue;
         }
         s8 path = entry_path(z, name, iter);
@@ -2718,14 +2721,57 @@ static b32 scan_entries(zip *z, zarchive *ar, iz n, zindex *old, s8 pattern,
         taken[i] = 1;
 
         os_info info = {0};
-        if (os_stat(z->ctx, path, !z->symlinks, &info, iter) &&
-            !is_archive(z, path, &info, iter)) {
-            s8 key = entry_key(z, name, &z->perm);
-            *zmap_upsert(&z->names, key, &z->perm) = z->files.len;
-            push_file(z, path, name, &info);
+        if (!os_stat(z->ctx, path, !z->symlinks, &info, iter) ||
+            is_archive(z, path, &info, iter)) {
+            continue;
+        } else if (zindex_find(old, name) != i) {
+            also[i] = new_file(z, path, name, &info);
+            continue;
         }
+        s8 key = entry_key(z, name, &z->perm);
+        *zmap_upsert(&z->names, key, &z->perm) = z->files.len;
+        zfile *f = new_file(z, path, name, &info);
+        *push(&z->perm, &z->files) = f;
     }
     return any;
+}
+
+// Mark an entry's item to be replaced by a file of its name, if -u and
+// -f find the file newer, or -FS changed, keeping its name. Returns
+// whether the file replaces it.
+static b32 refresh_entry(zip *z, zarchive *ar, zitem *it, iz i, zfile *f,
+                         arena scratch)
+{
+    zentry *e       = it->old;
+    b32     replace = 0;
+    switch (z->mode) {
+    case MODE_ADD:
+        replace = 1;
+        break;
+    case MODE_UPDATE:
+    case MODE_FRESHEN:
+        replace = is_newer(z, f, e);
+        break;
+    case MODE_SYNC:
+        replace  = differs(z, f, e);
+        it->kind = ITEM_KEEP;
+        if (!replace) {
+            // Current, which Info-ZIP counts as read
+            z->nread++;
+            z->bread += f->info.type==FT_DIR ? 0 : f->info.size;
+        }
+        break;
+    }
+    if (replace) {
+        // The entry keeps its name, in Unicode if the file matched that,
+        // which is then written as UTF-8
+        s8  key    = entry_key(z, f->name, &scratch);
+        b32 stored = zequals(entry_key(z, e->name, &scratch), key);
+        it->kind = z->mode==MODE_FRESHEN ? ITEM_FRESHEN : ITEM_UPDATE;
+        it->file = f;
+        f->name  = stored ? e->name : entry_unicode(ar, i);
+    }
+    return replace;
 }
 
 static i32 zip_main(zipconfig *conf)
@@ -2860,6 +2906,7 @@ static i32 zip_main(zipconfig *conf)
 
     zitems items = {0};
     b32 changed = 0;
+    iz  found   = 0;  // files found to add or refresh
     if (z->mode == MODE_DELETE) {
         b32 *hit = new(&scratch, nold, b32);
         for (iz p = 0; p < z->paths.len; p++) {
@@ -2894,9 +2941,10 @@ static i32 zip_main(zipconfig *conf)
 
         // Then paths not on disk select entries, as do -u and -f without
         // paths, except entries that paths on disk already selected
-        b32 *taken    = new(&scratch, nold, b32);
-        b32 *bystored = new(&scratch, nold, b32);
-        iz   nadd     = 0;  // files with no entry, as entries select none
+        b32    *taken    = new(&scratch, nold, b32);
+        b32    *bystored = new(&scratch, nold, b32);
+        zfile **also     = new(&scratch, nold, zfile *);
+        iz      nadd     = 0;  // files with no entry, as entries select none
         for (iz i = 0; i < z->files.len; i++) {
             iz v = zindex_stored(&old, z->files.data[i]->name);
             if (v >= 0) {
@@ -2913,12 +2961,13 @@ static i32 zip_main(zipconfig *conf)
         }
         for (iz p = 0; p < missing.len; p++) {
             s8 pattern = zip_name(&scratch, missing.data[p], z->windows);
-            if (!scan_entries(z, &arc, nold, &old, pattern, taken, scratch)) {
+            if (!scan_entries(z, &arc, nold, &old, pattern, taken, also,
+                              scratch)) {
                 warn(z, S("name not matched: "), missing.data[p], scratch);
             }
         }
         if (refresh && !z->paths.len) {
-            scan_entries(z, &arc, nold, &old, (s8){0}, taken, scratch);
+            scan_entries(z, &arc, nold, &old, (s8){0}, taken, also, scratch);
         }
         if (z->dups[0].name.s) {
             return repeated(z, scratch);
@@ -2939,61 +2988,33 @@ static i32 zip_main(zipconfig *conf)
             it->file = 0;
         }
 
+        found = z->files.len;
         for (iz i = 0; i < z->files.len; i++) {
-            arena  tmp = scratch;
-            zfile *f   = z->files.data[i];
-            s8     key = entry_key(z, f->name, &tmp);
-            iz     v   = file_entry(&old, f->name, bystored);
-            if (v < 0) {
-                if (z->mode != MODE_FRESHEN) {
-                    zitem *it = push(&z->perm, &items);
-                    it->kind = ITEM_ADD;
-                    it->old  = 0;
-                    it->file = f;
-                    changed  = 1;
-                }
-                continue;
-            }
-
-            zitem  *it = items.data + v;
-            zentry *e  = it->old;
-            b32 replace = 0;
-            switch (z->mode) {
-            case MODE_ADD:
-                replace = 1;
-                break;
-            case MODE_UPDATE:
-            case MODE_FRESHEN:
-                replace = is_newer(z, f, e);
-                break;
-            case MODE_SYNC:
-                replace  = differs(z, f, e);
-                it->kind = ITEM_KEEP;
-                if (!replace) {
-                    // Current, which Info-ZIP counts as read
-                    z->nread++;
-                    z->bread += f->info.type==FT_DIR ? 0 : f->info.size;
-                }
-                break;
-            }
-            if (replace) {
-                // The entry keeps its name, in Unicode if the file matched
-                // that, which is then written as UTF-8
-                b32 stored = zequals(entry_key(z, e->name, &tmp), key);
-                it->kind = z->mode==MODE_FRESHEN ? ITEM_FRESHEN : ITEM_UPDATE;
+            zfile *f = z->files.data[i];
+            iz     v = file_entry(&old, f->name, bystored);
+            if (v >= 0) {
+                changed |= refresh_entry(z, ar, items.data+v, v, f, scratch);
+            } else if (z->mode != MODE_FRESHEN) {
+                zitem *it = push(&z->perm, &items);
+                it->kind = ITEM_ADD;
+                it->old  = 0;
                 it->file = f;
-                f->name  = stored ? e->name : entry_unicode(ar, v);
                 changed  = 1;
             }
         }
         for (iz i = 0; i < nold; i++) {
+            if (also[i]) {
+                found++;
+                changed |= refresh_entry(z, ar, items.data+i, i, also[i],
+                                         scratch);
+            }
             changed |= items.data[i].kind == ITEM_DELETE;
         }
     }
 
     if (!changed) {
         b32 none = z->mode==MODE_FRESHEN && !nold;  // nothing to freshen
-        if (z->files.len && !none) {
+        if (found && !none) {
             // Already up to date, which only -FS reports, as in Info-ZIP
             if (z->mode==MODE_SYNC && !z->quiet) {
                 say(z, 1, S("Archive is current\n"));
