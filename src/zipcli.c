@@ -3021,16 +3021,29 @@ static b32 refresh_entry(zip *z, zarchive *ar, zitem *it, iz i, zfile *f,
         }
         break;
     }
-    if (replace) {
-        // The entry keeps its name, in Unicode if the file matched that,
-        // which is then written as UTF-8
-        s8  key    = entry_key(z, f->name, &scratch);
-        b32 stored = zequals(entry_key(z, e->name, &scratch), key);
-        it->kind = z->mode==MODE_FRESHEN ? ITEM_FRESHEN : ITEM_UPDATE;
-        it->file = f;
-        f->name  = stored ? e->name : entry_unicode(ar, i);
+    if (!replace) {
+        return 0;
     }
-    return replace;
+
+    // The entry keeps its name, in Unicode if the file matched that,
+    // which is then written as UTF-8
+    s8  key    = entry_key(z, f->name, &scratch);
+    b32 stored = zequals(entry_key(z, e->name, &scratch), key);
+    s8  name   = stored ? e->name : entry_unicode(ar, i);
+    if (name.len > ZIP_MAX16) {
+        // Decoded from the OEM code page (Windows), as an entry selected
+        // it, a Unicode name can outgrow its stored name and a header: as
+        // a long path is, it is skipped, and the entry kept
+        warn(z, S("name too long for a zip entry: "), f->path, scratch);
+        z->status = ZE_OPEN;
+        z->nskipped++;
+        z->bskipped += f->info.type==FT_FILE ? f->info.size : 0;
+        return 0;
+    }
+    it->kind = z->mode==MODE_FRESHEN ? ITEM_FRESHEN : ITEM_UPDATE;
+    it->file = f;
+    f->name  = name;
+    return 1;
 }
 
 // Fail with nothing to do, naming the archive, or, as Info-ZIP does when

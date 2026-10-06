@@ -456,6 +456,43 @@ oem o4.zip
 grep -q '^deleting: caf' out || fail "-d OEM name pattern: $(cat out)"
 rm caf*.txt
 
+# ...but one so long, decoded (here 0xc4, U+2500, three bytes as UTF-8,
+# 22,000 times), that no header could hold it, is skipped as a long path
+# is, keeping the entry, rather than written with its length wrapped
+cat >oem5.ps1 <<'EOF'
+$part = [string]::new([char]0x2500, 250)
+$rel = (@($part) * 88) -join '\'
+$base = '\\?\' + (Resolve-Path .).Path + '\oem5'
+New-Item -ItemType Directory -Path ($base + '\' + $rel) | Out-Null
+Set-Content -LiteralPath ($base + '\' + $rel + '\f.txt') -Value new -NoNewline
+$name = [Collections.Generic.List[byte]]::new()
+foreach ($i in 1..88) { $name.AddRange([byte[]](@(0xC4) * 250)); $name.Add(0x2F) }
+$name.AddRange([Text.Encoding]::ASCII.GetBytes('f.txt'))
+$n = $name.ToArray()
+$ms = New-Object IO.MemoryStream
+$w = New-Object IO.BinaryWriter($ms)
+$w.Write([uint32]0x04034b50); $w.Write([uint16]10); $w.Write([uint16]0); $w.Write([uint16]0); $w.Write([uint16]0); $w.Write([uint16]0x1421)
+$w.Write([uint32]0); $w.Write([uint32]0); $w.Write([uint32]0); $w.Write([uint16]$n.Length); $w.Write([uint16]0); $w.Write($n)
+$cd = $ms.Position
+$w.Write([uint32]0x02014b50); $w.Write([uint16]0x14); $w.Write([uint16]10); $w.Write([uint16]0); $w.Write([uint16]0); $w.Write([uint16]0); $w.Write([uint16]0x1421)
+$w.Write([uint32]0); $w.Write([uint32]0); $w.Write([uint32]0); $w.Write([uint16]$n.Length); $w.Write([uint16]0); $w.Write([uint16]0); $w.Write([uint16]0); $w.Write([uint16]0)
+$w.Write([uint32]0x20); $w.Write([uint32]0); $w.Write($n)
+$cs = $ms.Position - $cd
+$w.Write([uint32]0x06054b50); $w.Write([uint16]0); $w.Write([uint16]0); $w.Write([uint16]1); $w.Write([uint16]1); $w.Write([uint32]$cs); $w.Write([uint32]$cd); $w.Write([uint16]0)
+$w.Flush()
+[IO.File]::WriteAllBytes((Resolve-Path .).Path + '\o5.zip', $ms.ToArray())
+EOF
+powershell -NoProfile -NonInteractive -Command - <oem5.ps1 >/dev/null
+cp o5.zip o5.orig
+set +e
+(cd oem5 && "$ZIP" -u ../o5.zip >../out 2>../err)
+st=$?
+set -e
+ps "Remove-Item -LiteralPath ('\\\\?\\' + (Resolve-Path oem5).Path) -Recurse -Force"
+[ $st = 18 ] && grep -q '^zip warning: name too long for a zip entry: ' err ||
+    fail "OEM name too long: $st $(head -c 200 err)"
+cmp -s o5.zip o5.orig || fail "OEM name too long: archive changed"
+
 # Long paths beyond MAX_PATH
 long=$(printf '%0100d' 0 | tr 0 d)/$(printf '%0100d' 0 | tr 0 e)/$(printf '%0100d' 0 | tr 0 f)
 ps "\$p = '\\\\?\\' + (Resolve-Path .).Path + '\\deep\\$long' -replace '/', '\\';

@@ -225,7 +225,9 @@ neither inflate nor the gzip container.
   stays in names, an emptied archive remains as a 22-byte file, odd
   seconds round up (but not past `SOURCE_DATE_EPOCH`). Times beyond the
   DOS range clamp to its ends. A name over 65,535 bytes (possible in
-  deep Windows paths) is skipped with a warning, exiting 18.
+  deep Windows paths) is skipped with a warning, exiting 18, as is, its
+  entry kept, a file that an entry names by its name decoded from the
+  OEM code page (Windows), which UTF-8 can make that long.
 - Options: Info-ZIP's grammar and names. Long names may be abbreviated
   to a prefix of exactly one of Info-ZIP's long names (supported or not,
   so `--rec` is ambiguous). Only `-X` is negatable; other negations and
