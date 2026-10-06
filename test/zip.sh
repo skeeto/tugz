@@ -1463,6 +1463,16 @@ fi
 # Errors and warnings
 expect_status 12 "$ZIP" nothing.zip missing
 [ ! -e nothing.zip ] || fail "created an archive with nothing to do"
+# Under -r without patterns, Info-ZIP's error suggests the paths as -i
+# patterns of ".", in the arguments with options first
+env ZIPOPT=-9 "$ZIP" -r nothing.zip missing -q -- missing2 2>err &&
+    fail "-r with nothing to do"
+[ "$(cat err)" = "
+zip error: Nothing to do! (try: zip -9 -r -q nothing.zip . -i missing -- missing2)" ] ||
+    fail "-r with nothing to do: $(cat err)"
+"$ZIP" -qr nothing.zip missing -x missing2 2>err && fail "-r -x, nothing to do"
+[ "$(cat err)" = "
+zip error: Nothing to do! (nothing.zip)" ] || fail "-r -x, nothing to do: $(cat err)"
 expect_status 0 "$ZIP" some.zip missing tree/a.txt
 expect_status 16 "$ZIP" dup.zip tree/a.txt ./tree/a.txt
 expect_status 16 "$ZIP" -K bad.zip tree/a.txt

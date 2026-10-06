@@ -229,6 +229,9 @@ typedef struct {
     s8      archive;
     s8      target;  // past links at the archive path; null if unfollowable
     s8s     paths;
+    s8s     optargs;    // option arguments, values included, in order
+    s8s     nonopts;    // the other arguments: archive, paths, and "--"
+    iz      firstpath;  // the index in nonopts of the first path, if any
     s8s     include;
     s8s     exclude;
     zfiles  files;
@@ -813,8 +816,10 @@ static i32 parse_args(zip *z, s8 *args, i32 nargs, arena scratch)
                 z->archive = arg;
             } else {
                 dash |= zequals(arg, S("-"));
+                z->firstpath = z->firstpath ? z->firstpath : z->nonopts.len;
                 *push(&z->perm, &z->paths) = arg;
             }
+            *push(&z->perm, &z->nonopts) = arg;
             continue;
         }
 
@@ -824,7 +829,12 @@ static i32 parse_args(zip *z, s8 *args, i32 nargs, arena scratch)
                             S("can't use -- before archive name"), scratch);
             }
             options = 0;
-        } else if (arg.s[1] == '-') {
+            *push(&z->perm, &z->nonopts) = arg;  // as Info-ZIP orders it
+            continue;
+        }
+
+        i32 first = i;
+        if (arg.s[1] == '-') {
             s8 name  = {arg.s+2, arg.len-2};
             s8 value = {0};
             for (iz k = 0; k < name.len; k++) {
@@ -880,6 +890,9 @@ static i32 parse_args(zip *z, s8 *args, i32 nargs, arena scratch)
                     return err;
                 }
             }
+        }
+        for (; first <= i; first++) {
+            *push(&z->perm, &z->optargs) = args[first];
         }
     }
 
@@ -2952,6 +2965,34 @@ static b32 refresh_entry(zip *z, zarchive *ar, zitem *it, iz i, zfile *f,
     return replace;
 }
 
+// Fail with nothing to do, naming the archive, or, as Info-ZIP does when
+// recursing into paths without patterns, suggesting the command that
+// takes them as -i patterns of the current directory: its arguments,
+// options first, as Info-ZIP moves them there, and the paths after
+// "-i" ("try: zip -r a.zip . -i src").
+static i32 nothing_to_do(zip *z, arena scratch)
+{
+    if (!z->recurse || !z->firstpath || z->mode==MODE_DELETE ||
+        z->include.len || z->exclude.len) {
+        return fail(z, ZE_NONE, S("Nothing to do!"), z->archive, scratch);
+    }
+    s8s parts = {0};
+    *push(&scratch, &parts) = S("try: zip");
+    for (iz i = 0; i < z->optargs.len; i++) {
+        *push(&scratch, &parts) = S(" ");
+        *push(&scratch, &parts) = z->optargs.data[i];
+    }
+    for (iz i = 0; i < z->nonopts.len; i++) {
+        if (i == z->firstpath) {
+            *push(&scratch, &parts) = S(" . -i");
+        }
+        *push(&scratch, &parts) = S(" ");
+        *push(&scratch, &parts) = z->nonopts.data[i];
+    }
+    s8 hint = zjoin(&scratch, parts.data, parts.len);
+    return fail(z, ZE_NONE, S("Nothing to do!"), hint, scratch);
+}
+
 static i32 zip_main(zipconfig *conf)
 {
     zip *z = new(&conf->perm, 1, zip);
@@ -3160,7 +3201,7 @@ static i32 zip_main(zipconfig *conf)
 
         if (z->mode==MODE_SYNC && !z->files.len) {
             // Rather than delete every entry, as for a misspelled path
-            return fail(z, ZE_NONE, S("Nothing to do!"), z->archive, scratch);
+            return nothing_to_do(z, scratch);
         }
 
         // An item for each entry, and one for each file to add
@@ -3208,7 +3249,7 @@ static i32 zip_main(zipconfig *conf)
         } else if (refresh) {
             return ZE_NONE;  // silently, as in Info-ZIP
         }
-        return fail(z, ZE_NONE, S("Nothing to do!"), z->archive, scratch);
+        return nothing_to_do(z, scratch);
     }
 
     // Once there is something to do, and before doing it, Info-ZIP opens
