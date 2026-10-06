@@ -1619,6 +1619,18 @@ if ln -s ../store/r.zip al/dist/rel.zip 2>/dev/null; then
         fail "archive link loop: $(cat err)"
     [ -L al/loop.zip ] || fail "archive link loop replaced"
 
+    # So cannot an empty link, which macOS and the BSDs allow, and which
+    # leads nowhere: not to its directory, nor to an empty path
+    for e in al/empty.zip empty.zip; do
+        ln -s '' $e 2>/dev/null || break  # Linux refuses one
+        printf '%s\n' 'zip I/O error: No such file or directory' \
+            "zip error: Could not create output file ($e)" >want
+        "$ZIP" $e tree/a.txt >out 2>err && fail "empty link $e succeeded"
+        [ ! -s out ] && cmp -s err want || fail "empty link $e: $(cat out err)"
+        [ -L $e ] || fail "empty link $e replaced"
+        rm $e
+    done
+
     # A chain as long as the system follows (Linux: 40 links) is
     # followed too, and one link more is a loop, with its reason
     mkdir al/chain
