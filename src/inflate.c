@@ -78,22 +78,27 @@ typedef struct {
 
 enum {
     INF_HEAD,     // next is a block header
+    INF_LENS,     // reading a dynamic block's code lengths
     INF_STORED,   // copying stored block data
     INF_SYMBOLS,  // decoding a compressed block
     INF_END,      // the final block has ended
 };
 
-// Decoding proceeds in atomic units: a block header (including a whole
-// dynamic table header), or one literal or length/distance pair. When
-// input runs out partway through a unit, it is rolled back and its
-// bytes are saved in the stash, to be completed by the next call's
-// input. A unit is at most about 300 bytes, which the stash covers.
+// Decoding proceeds in atomic units: a block header (for a dynamic
+// block, up to its code lengths), a run of a dynamic block's code
+// lengths, or one literal or length/distance pair. When input runs out
+// partway through a unit, it is rolled back and its bytes are saved in
+// the stash, to be completed by the next call's input. A unit that runs
+// out needs at most 10 bytes (a dynamic block header's 74 bits; a run of
+// code lengths runs out only in its first), which the stash covers.
+// Since the code lengths resume where they stopped, as zlib's do, input
+// in tiny pieces costs no more per byte than it otherwise would.
 //
 // Input invariant: between calls the bit buffer holds fewer than 8
 // bits. Whole bytes are always given back to the input, so the stream
 // end is reported exactly, and the stash only ever holds bytes of one
 // incomplete unit.
-#define INF_STASH   1024
+#define INF_STASH   32
 
 typedef struct {
     u8 const *in;     // input cursor for the current call
@@ -115,6 +120,14 @@ typedef struct {
 
     iz  stashlen;
     u8  stash[INF_STASH];
+
+    // A dynamic block's code descriptions, while being read
+    htable cl;      // code length code
+    i32 nlit;       // literal/length code lengths, then distance ones
+    i32 nlens;      // total
+    i32 nread;      // read so far
+    u16 lens[286+30];
+    u32 cl_entries[128];
 
     u32 lit_entries[LIT_ENOUGH];
     u32 dist_entries[DIST_ENOUGH];
@@ -398,9 +411,10 @@ static void inflate_reset(inflator *s)
 }
 
 // Only the fields inflate_reset sets need a value: each block header
-// sets lt and dt (building the dynamic tables) before any symbol is
-// decoded, and the stash is filled before it is read. So the state
-// starts uncleared, and costs no more to set up than to reset.
+// sets lt and dt (a dynamic one through its code lengths, which it
+// starts) before any symbol is decoded, every code length is written
+// before it is read, and the stash is filled before it is read. So the
+// state starts uncleared, and costs no more to set up than to reset.
 static inflator *inflate_new(arena *a)
 {
     inflator *s = alloc(a, 1, sizeof(inflator), _Alignof(inflator), 0);
@@ -715,8 +729,8 @@ static void inf_symbol(inflator *s)
     s->wpos += len;
 }
 
-// Read a dynamic block's code descriptions and build its tables into lt
-// and dt.
+// Read a dynamic block's code counts and code length code, which
+// describes the code lengths that follow (inf_lens).
 static void inf_dynamic(inflator *s)
 {
     i32 hlit  = (i32)inf_bits(s, 5) + 257;
@@ -729,24 +743,34 @@ static void inf_dynamic(inflator *s)
         return;
     }
 
-    u16 lens[286+30] = {0};
+    u16 cllens[19] = {0};
     for (i32 i = 0; i < hclen; i++) {
-        lens[inf_cl_order[i]] = (u16)inf_bits(s, 3);
+        cllens[inf_cl_order[i]] = (u16)inf_bits(s, 3);
     }
     if (s->err) {
         return;
-    }
-    htable cl;
-    u32 cl_entries[128];
-    if (!htable_build(&cl, cl_entries, countof(cl_entries), lens, 19,
-                      HUFF_CODELEN, 7)) {
+    } else if (!htable_build(&s->cl, s->cl_entries, countof(s->cl_entries),
+                             cllens, 19, HUFF_CODELEN, 7)) {
         s->err = GZ_EDATA;
         return;
     }
+    s->nlit  = hlit;
+    s->nlens = hlit + hdist;
+    s->nread = 0;
+}
 
-    i32 total = hlit + hdist;
-    for (i32 n = 0; n < total;) {
-        u32 e = inf_decode(s, &cl);
+// Read a dynamic block's code lengths, one per symbol (with its repeat),
+// and once all are read, build the block's tables into lt and dt. Only
+// the first can run out of input: each takes at most 14 bits, and the
+// next is read only with 2 more bytes at hand. Errors are found as zlib
+// finds them, the tables' once the last length is read.
+static void inf_lens(inflator *s)
+{
+    i32  total = s->nlens;
+    i32  n     = s->nread;
+    u16 *lens  = s->lens;
+    do {
+        u32 e = inf_decode(s, &s->cl);
         if (s->err) {
             return;
         }
@@ -780,19 +804,25 @@ static void inf_dynamic(inflator *s)
         for (; repeat; repeat--) {
             lens[n++] = fill;
         }
+    } while (n<total && s->inend-s->in>=2);
+    s->nread = n;
+    if (n < total) {
+        return;
     }
 
     if (!lens[256] ||
         !htable_build(&s->lt, s->lit_entries, countof(s->lit_entries),
-                      lens, hlit, HUFF_LITLEN, LIT_ROOT) ||
+                      lens, s->nlit, HUFF_LITLEN, LIT_ROOT) ||
         !htable_build(&s->dt, s->dist_entries, countof(s->dist_entries),
-                      lens+hlit, hdist, HUFF_DIST, DIST_ROOT)) {
+                      lens+s->nlit, total-s->nlit, HUFF_DIST, DIST_ROOT)) {
         s->err = GZ_EDATA;
+        return;
     }
+    s->state = INF_SYMBOLS;
 }
 
-// Read a block header, including a stored block's lengths or a dynamic
-// block's code descriptions.
+// Read a block header, including a stored block's lengths or the start
+// of a dynamic block's code descriptions.
 static void inf_header(inflator *s)
 {
     b32 final = (b32)inf_bits(s, 1);
@@ -821,11 +851,11 @@ static void inf_header(inflator *s)
         s->state = INF_SYMBOLS;
         break;
     case 2:
-        inf_dynamic(s);  // into lt and dt
+        inf_dynamic(s);
         if (s->err) {
             return;
         }
-        s->state = INF_SYMBOLS;
+        s->state = INF_LENS;
         break;
     default:
         s->err = GZ_EDATA;
@@ -840,10 +870,10 @@ static b32 inf_unit(inflator *s)
     u8 const *in = s->in;
     u64 bitbuf = s->bitbuf;
     i32 bitcnt = s->bitcnt;
-    if (s->state == INF_HEAD) {
-        inf_header(s);
-    } else {
-        inf_symbol(s);
+    switch (s->state) {
+    case INF_HEAD: inf_header(s); break;
+    case INF_LENS: inf_lens(s);   break;
+    default:       inf_symbol(s);
     }
     if (s->err == GZ_NEEDIN) {
         s->in = in;

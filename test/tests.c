@@ -1663,6 +1663,37 @@ static void test_inflate_splits(arena a)
     }
 }
 
+// A dynamic block's code lengths resume where input ran out, as zlib's
+// do, rather than the whole header being decoded again from its first
+// bit on each call, which costs quadratic time for input in tiny pieces.
+// So fed a byte at a time, the decoder never stashes more than the
+// bytes of one block header without its code lengths (at most 9).
+static void test_inflate_resume(arena a)
+{
+    for (i32 kind = 2; kind <= 4; kind += 2) {
+        iz len = 100000;
+        u8 *p = randbytes(len, kind);
+        s8 z = zlib_deflate(p, len, 9, -15, Z_DEFAULT_STRATEGY);
+        TEST((z.s[0]>>1 & 3) == 2);  // dynamic
+        u8 *out = malloc((uz)len);
+        arena t = a;
+        decoder *d = decoder_new(&t, FMT_RAW);
+        zbuf b = {z.s, 0, out, len};
+        i32 r = GZ_NEEDIN;
+        iz most = 0;
+        for (iz n = 0; r==GZ_NEEDIN && n<z.len; n++) {
+            b.inlen = 1;
+            r = decoder_run(d, &b);
+            most = MAX(most, d->inf->stashlen);
+        }
+        TEST(r==GZ_OK && !b.outlen && !memcmp(out, p, (uz)len));
+        TEST(most < 10);
+        free(out);
+        free(z.s);
+        free(p);
+    }
+}
+
 static void test_inflate_zlib(os *ctx, arena a)
 {
     static i32 const strategies[] = {
@@ -3009,6 +3040,7 @@ int main(void)
     test_inflate_vectors(&ctx, a);
     test_inflate_repeats(&ctx, a);
     test_inflate_splits(a);
+    test_inflate_resume(a);
     test_container(&ctx, a);
     test_io_errors(&ctx, a);
     test_cli(&ctx, a);

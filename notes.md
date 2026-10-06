@@ -82,14 +82,19 @@ CPU models with and without PCLMUL.
   library: init checks the size first, so it is unreachable. Programs
   allocate their codecs from exactly-sized sub-arenas, so every program
   run checks the size calculation.
-- Inflate decodes in atomic units: a block header (with a whole dynamic
-  table description, at most ~300 bytes) or one literal or
-  length/distance pair. If input runs out mid-unit, the unit rolls back
-  and its bytes go to a 1 KiB stash, completed by the next call's input.
-  Invariant: between calls the bit buffer holds fewer than 8 bits (whole
-  bytes are returned to the input), and the stash holds only bytes of one
-  incomplete unit. So the stream end is exact: after `TUGZ_DONE`, `in`
-  points just past the stream, as zlib's `avail_in` does.
+- Inflate decodes in atomic units: a block header (for a dynamic block,
+  up to its code lengths: at most 74 bits), a run of code lengths, or
+  one literal or length/distance pair. If input runs out mid-unit, the
+  unit rolls back and its bytes go to a 32-byte stash, completed by the
+  next call's input. Invariant: between calls the bit buffer holds fewer
+  than 8 bits (whole bytes are returned to the input), and the stash
+  holds only bytes of one incomplete unit. So the stream end is exact:
+  after `TUGZ_DONE`, `in` points just past the stream, as zlib's
+  `avail_in` does. The code lengths resume where they stopped, as
+  zlib's do, where a whole dynamic header (up to ~300 bytes) once was
+  one unit, decoded again from its first bit on every call: fed a byte
+  at a time, a stream of 20,000 header-only blocks decoded at 355 ns per
+  input byte (zlib 14), now 25.
 - Errors are reported only once every bit of the offending field is
   present, in zlib's order, and a unit stops at the first field input
   cannot finish, never looking up the next one in the bits at hand. So
