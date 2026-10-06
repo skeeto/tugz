@@ -248,8 +248,9 @@ expect_status 12 "$ZIP" -d x2.zip 'TREE/*'
 "$ZIP" -q c1.zip TREE/A.TXT
 [ "$(list c1.zip)" = tree/a.txt ] || fail "case-only update: $(list c1.zip)"
 
-# Paths that differ only in case are one path, added once under the
-# first spelling, but different files whose names so differ collide
+# Departure: paths that differ only in case are one path, added once
+# under the first spelling, but different files whose names so differ
+# collide (Info-ZIP's port, by its sources, adds both in either case)
 "$ZIP" -q c2.zip TREE/A.TXT tree/a.txt 'Tree/*.txt'
 list c2.zip | grep -v caf >got
 printf 'TREE/A.TXT\nTree/b.txt\nTree/literals.txt\n' >want.txt

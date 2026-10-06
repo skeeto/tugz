@@ -258,11 +258,12 @@ neither inflate nor the gzip container.
   different paths giving one name (`./d/a d/a`, `. ./d/a`, or a `-j`
   collision) are an error (16), reported as there once every path is
   scanned and matched: only the first name repeated in order of names,
-  by the first two of its paths in order (a directory's with a slash),
-  in one warning whose lines Info-ZIP indents to line up past its tab.
-  Also as there, a file whose name is the archive's path as given (with
-  `.zip` added) is left out silently even when it is another file, as
-  `-j` may name it (`zip -j dist.zip build/dist.zip`).
+  by the first two of its different paths in order (a directory's with
+  a slash; `a ./a ./a` gives `./a` and `a`), in one warning whose lines
+  Info-ZIP indents to line up past its tab. Also as there, a file whose
+  name is the archive's path as given (with `.zip` added) is left out
+  silently even when it is another file, as `-j` may name it
+  (`zip -j dist.zip build/dist.zip`).
 - Entry names in code pages: files match an entry by its stored name,
   then, as in Info-ZIP, by an Info-ZIP Unicode path field (0x7075) whose
   CRC is the stored name's, as Info-ZIP's Windows port, WinZip, and
@@ -485,7 +486,8 @@ neither inflate nor the gzip container.
   names differ only in case, and those keep their names. A path given
   again in another case (`D/A.txt d/a.txt`) is skipped like any repeat,
   keeping the first spelling, and different files whose names differ
-  only in case collide, as exactly repeated names do. Hidden and
+  only in case collide, as exactly repeated names do (both departures:
+  see Names and selection). Hidden and
   system files are skipped unless `-S`, even when named; recursion and
   wildcards judge them, as Info-ZIP does, by the listing (a link's own
   attributes), so that unopenable ones like `pagefile.sys` are never
@@ -653,10 +655,19 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   name ends in is followed, as for any path, unless `-y`. Info-ZIP reads
   them all, absolute names included. Other entries are refreshed only by
   naming their files as paths (`zip -u a.zip ../f`), and as when their
-  files are missing, `-FS` deletes them unless so named. On Windows,
-  `zip -r t.zip C:` adds the entries of the drive's current directory,
-  where Info-ZIP's port, by its sources, lists that directory but
-  examines and reads its entries at the drive's root.
+  files are missing, `-FS` deletes them unless so named. A file named as
+  the archive is left out before repeats are looked for, as an excluded
+  one is, so two such (`zip -j out.zip a/out.zip b/out.zip`) are no
+  repeat, where Info-ZIP looks for repeats first and fails (16). On
+  Windows, names that differ only in case are one name (see Windows), as
+  Info-ZIP's port finds entries, but by its sources, it compares files
+  to add by bytes (strcmp), adding both of `D/A.txt d/a.txt`, or of two
+  such files under `-j`, whose entries then collide when extracted
+  there, and it reports the first repeat in order of bytes, not ignoring
+  case. Also on Windows, `zip -r t.zip C:` adds the entries of the
+  drive's current directory, where Info-ZIP's port, by its sources,
+  lists that directory but examines and reads its entries at the drive's
+  root.
 - Special files: sockets and block devices are left out too. Info-ZIP's
   Unix port (judging by its behavior, a type test by masking mode bits)
   takes a socket for a regular file, which it then cannot open (18; `-d`

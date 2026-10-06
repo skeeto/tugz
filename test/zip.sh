@@ -403,6 +403,11 @@ printf '%s\n' "zip warning:   first full name: ./tree/a.txt" \
     "zip error: Invalid command arguments (cannot repeat names in zip file)" \
     >want
 cmp -s want out || fail "repeated names: $(cat out)"
+# ...two different paths, a path given again counting once
+"$ZIP" dup7.zip tree/a.txt ./tree/a.txt ./tree/a.txt 2>out && fail "dup7.zip"
+grep -q 'first full name: \./tree/a\.txt$' out &&
+    grep -q 'second full name: tree/a\.txt$' out ||
+    fail "repeated names given again: $(cat out)"
 
 # The archive never includes itself, which it knows by identity, though
 # named otherwise than given (s.zip, ./s.zip) or through a hard link,
@@ -432,6 +437,15 @@ expect_status 12 "$ZIP" -j dist2.zip build/dist2.zip
 [ ! -e dist2.zip ] || fail "made an archive of a file named as it"
 "$ZIP" -qj ./dist2.zip build/dist2.zip  # the path as given differs
 [ "$(names dist2.zip)" = dist2.zip ] || fail "./: $(names dist2.zip)"
+# Departure: they are left out before repeats are looked for, as
+# excluded files are, so two are no repeat (Info-ZIP, after: 16)
+mkdir build2
+printf one >build/dist3.zip
+printf two >build2/dist3.zip
+"$ZIP" -qj dist3.zip build/dist3.zip build2/dist3.zip tree/a.txt ||
+    fail "two named as the archive"
+[ "$(names dist3.zip)" = a.txt ] ||
+    fail "two named as the archive: $(names dist3.zip)"
 
 # Junk paths, no directory entries, include and exclude patterns
 "$ZIP" -qrj j.zip tree/sub

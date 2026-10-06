@@ -1054,7 +1054,10 @@ static void keep_names(arena *perm, s8 *path, s8 *name)
 }
 
 // Key for finding an archive entry, or a file to add, by name: on
-// Windows, ignoring ASCII case, as Info-ZIP's name comparison does there.
+// Windows, ignoring ASCII case, as Info-ZIP's port finds entries (its
+// namecmp). It compares files to add by bytes (strcmp), adding both of
+// two names that differ only in case, which then collide when extracted
+// there, while here they are one name.
 static s8 entry_key(zip *z, s8 name, arena *a)
 {
     if (!z->windows) {
@@ -1083,8 +1086,10 @@ static b32 names_archive(zip *z, s8 name)
     return 1;
 }
 
-// Info-ZIP's namecmp, by which it orders names to find repeats: by
-// bytes, but on Windows ignoring case, as upper case.
+// The order of names and paths in which the first repeat is reported:
+// by bytes, as Info-ZIP's check_dup sorts them (strcmp), but on Windows,
+// where names differing only in case are one name, ignoring case, as
+// upper case, as its port's namecmp compares names.
 static i32 namecmp(zip *z, s8 a, s8 b)
 {
     for (iz i = 0; i<a.len && i<b.len; i++) {
@@ -1102,31 +1107,37 @@ static i32 namecmp(zip *z, s8 a, s8 b)
 }
 
 // Note a file whose name an earlier file has. Info-ZIP sorts files by
-// path, then stably by name, and reports only the first repeat, so of
-// the first name repeated in that order, the first two paths are kept.
-// It names a directory with a slash.
-static void note_repeat(zip *z, zfile *first, s8 path, s8 name, b32 dir)
+// path, drops paths given again, then sorts them stably by name, and
+// reports only the first repeat, so of the first name repeated in that
+// order, the first two different paths are kept. It names a directory
+// with a slash.
+static void note_repeat(zip *z, zfile *first, s8 path, s8 name, b32 dir,
+                        arena scratch)
 {
-    zdup *r    = z->dups;
-    b32   seen = r[0].name.s != 0;
-    i32   cmp  = seen ? namecmp(z, name, r[0].name) : -1;
+    zdup *r     = z->dups;
+    b32   seen  = r[0].name.s != 0;
+    i32   cmp   = seen ? namecmp(z, name, r[0].name) : -1;
+    b32   slash = dir && path.len && !is_sep(z, path.s[path.len-1]);
+    s8    full  = JOIN(&scratch, path, slash ? S("/") : S(""));
     if (cmp > 0) {
         return;
-    }
-    b32  slash = dir && path.len && !is_sep(z, path.s[path.len-1]);
-    zdup d     = {JOIN(&z->perm, name),
-                  JOIN(&z->perm, path, slash ? S("/") : S(""))};
-    if (cmp < 0) {
+    } else if (!cmp) {
+        // This path may be one of the two kept, given again (a ./a ./a)
+        s8 p = trim_path(z, path, &scratch);
+        if (namecmp(z, full, r[1].path) >= 0 ||
+            zequals(p, trim_path(z, r[0].path, &scratch)) ||
+            zequals(p, trim_path(z, r[1].path, &scratch))) {
+            return;
+        }
+    } else {
         // A new first repeat: the file that first had the name, and this
         s8 p = first->path;
         slash = first->info.type==FT_DIR && p.len && !is_sep(z, p.s[p.len-1]);
         r[0] = (zdup){first->name, JOIN(&z->perm, p, slash ? S("/") : S(""))};
-        r[1] = d;
-    } else {
-        r[1] = namecmp(z, d.path, r[1].path)<0 ? d : r[1];
     }
+    r[1] = (zdup){JOIN(&z->perm, name), JOIN(&z->perm, full)};
     if (namecmp(z, r[1].path, r[0].path) < 0) {
-        d    = r[0];
+        zdup d = r[0];
         r[0] = r[1];
         r[1] = d;
     }
@@ -1152,7 +1163,8 @@ static i32 repeated(zip *z, arena scratch)
 // Add a file under its archive name, which -i and -x see whole, before
 // -j junks its directories, as in Info-ZIP. Also as there, a file whose
 // name is the archive's path is left out silently even if it is another
-// file, such as one that -j names so (zip -j dist.zip build/dist.zip).
+// file, such as one that -j names so (zip -j dist.zip build/dist.zip),
+// though here before repeats are looked for, as for excluded files.
 static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
 {
     if (is_archive(z, path, info, scratch)) {
@@ -1182,7 +1194,7 @@ static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
         zfile *first = z->files.data[*seen];
         if (!zequals(trim_path(z, first->path, &scratch),
                      trim_path(z, path, &scratch))) {
-            note_repeat(z, first, path, name, info->type==FT_DIR);
+            note_repeat(z, first, path, name, info->type==FT_DIR, scratch);
         }
         return;
     }
