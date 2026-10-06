@@ -636,7 +636,12 @@ static zoption const zip_options[] = {
 };
 
 // All of Info-ZIP's long option names, supported or not, for its
-// abbreviations: a prefix of exactly one name stands for that name.
+// abbreviations: a prefix of exactly one name stands for that name. A
+// few exist only in its Unix builds, or only in its Windows port, where
+// "--i" is ambiguous.
+static char const zip_longnames_posix[]   = " symlinks ";
+static char const zip_longnames_windows[] =
+    " archive-clear archive-set ignore-case use-privileges ";
 static char const zip_longnames[] =
     " store compress-1 compress-2 compress-3 compress-4 compress-5"
     " compress-6 compress-7 compress-8 compress-9 adjust-sfx temp-path"
@@ -651,8 +656,7 @@ static char const zip_longnames[] =
     " split-bell show-command show-debug show-files show-options"
     " show-unicode show-just-unicode unicode from-date before-date test"
     " unzip-command update copy-entries verbose version wild-stop-dirs"
-    " exclude strip-extra symlinks archive-comment compression-method"
-    " names-stdin ";
+    " exclude strip-extra archive-comment compression-method names-stdin ";
 
 // Whether an argument has one of Info-ZIP's two-letter short options at
 // k, which it matches before single letters, so that each is rejected
@@ -690,16 +694,21 @@ static b32 expand_long(zip *z, s8 *name, arena scratch)
 {
     s8  found = {0};
     i32 count = 0;
-    for (char const *p = zip_longnames+1; *p && name->len; p++) {
-        s8 full = {(u8 *)p, 0};
-        for (; p[full.len] != ' '; full.len++) {}
-        p += full.len;
-        if (zequals(full, *name)) {
-            return 1;
-        } else if (full.len>name->len &&
-                   zequals((s8){full.s, name->len}, *name)) {
-            found = full;
-            count++;
+    char const *lists[] = {
+        zip_longnames, z->windows ? zip_longnames_windows : zip_longnames_posix
+    };
+    for (iz l = 0; l < countof(lists); l++) {
+        for (char const *p = lists[l]+1; *p && name->len; p++) {
+            s8 full = {(u8 *)p, 0};
+            for (; p[full.len] != ' '; full.len++) {}
+            p += full.len;
+            if (zequals(full, *name)) {
+                return 1;
+            } else if (full.len>name->len &&
+                       zequals((s8){full.s, name->len}, *name)) {
+                found = full;
+                count++;
+            }
         }
     }
     if (count > 1) {

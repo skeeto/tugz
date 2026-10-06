@@ -595,6 +595,19 @@ expect_status 16 "$ZIP" -e bad.zip tree/a.txt
 expect_status 16 "$ZIP" -y bad.zip tree/a.txt
 expect_status 16 "$ZIP" --symlinks bad.zip tree/a.txt
 expect_status 16 "$ZIP" -S- bad.zip tree/a.txt
+"$ZIP" --sym bad.zip tree/a.txt 2>err && fail "--sym succeeded"
+grep -q "(long option 'sym' not supported)$" err || fail "--sym: $(cat err)"
+
+# The port's own long options, unsupported here, are names that
+# abbreviations must tell apart: --i is include or ignore-case
+"$ZIP" li.zip tree/a.txt --i tree/a.txt 2>err && fail "--i succeeded"
+grep -q "(long option 'i' ambiguous)$" err || fail "--i: $(cat err)"
+"$ZIP" --ig bad.zip tree/a.txt 2>err && fail "--ig succeeded"
+grep -q "(long option 'ignore-case' not supported)$" err ||
+    fail "--ig: $(cat err)"
+for opt in --archive-clear --archive-set --use-privileges -AC -AS -ic; do
+    expect_status 16 "$ZIP" $opt bad.zip tree/a.txt
+done
 
 # Options from ZIPOPT, where as in Info-ZIP's port a double-quoted word
 # keeps its spaces and backslashes

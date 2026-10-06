@@ -227,7 +227,10 @@ neither inflate nor the gzip container.
   so `--rec` is ambiguous). Only `-X` is negatable; other negations and
   values on options without them are errors, quoting Info-ZIP's
   descriptions. `-y` exists only on POSIX and `-S` only on Windows, as
-  in Info-ZIP's builds. Its two-letter short options (those of its
+  in Info-ZIP's builds, whose long names differ too: on Windows, there
+  is no `--symlinks`, and the port's `--archive-clear`, `--archive-set`,
+  `--ignore-case`, and `--use-privileges` (unsupported) make `--i`
+  ambiguous. Its two-letter short options (those of its
   Windows port there) are matched before single letters, so that
   unsupported ones are rejected by name (`-fd`), `-mm` with Info-ZIP's
   own message ("Must_Match is -MM"), and `-h2` is `-h`. A pattern list,

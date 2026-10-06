@@ -214,6 +214,8 @@ SOURCE_DATE_EPOCH=1700000000 "$ZIP" -qX9 --strip-extra- -rp --paths c4.zip tree
 cmp -s c3.zip c4.zip || fail "--strip-extra- or -p"
 "$ZIP" -q --store c5.zip tree/a.txt
 zipinfo c5.zip | grep -q stor || fail "--store compressed"
+"$ZIP" -q c10.zip tree/a.txt tree/b.txt --i tree/a.txt  # Windows: ambiguous
+[ "$(names c10.zip)" = tree/a.txt ] || fail "--i: $(names c10.zip)"
 for opt in -q- -r- -d- -u- -f- -FS- -0- -9- -j- -nw- -@- -p- --quiet- \
            --delete- --exclude- --rec --compress --no-extra --store-only \
            --system-hidden --quiet=x -S -e --encr; do
