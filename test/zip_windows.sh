@@ -121,6 +121,17 @@ ps "New-Item -ItemType Junction -Path lp\\sub\\up -Target (Resolve-Path lp).Path
 "$ZIP" -r lp.zip lp 2>&1 | grep -q 'skipping directory loop: lp/sub/up' ||
     fail "junction loop"
 
+# Departure: a dangling junction while recursing exits 18, unless -x
+# leaves it out (Info-ZIP warns that the name is not matched, exiting 0)
+mkdir -p dj/gone
+printf x >dj/f
+ps "New-Item -ItemType Junction -Path dj\\link -Target (Resolve-Path dj\\gone).Path |
+    Out-Null"
+rmdir dj/gone
+expect_status 18 "$ZIP" -r dj.zip dj
+"$ZIP" -qr dj2.zip dj -x dj/link 2>err || fail "excluded dangling junction"
+[ ! -s err ] || fail "excluded dangling junction: $(cat err)"
+
 # Recursion describes files from the listing, but still examines those
 # the archive's size: the archive is left out, a copy of it is not, nor
 # is a hard link to it

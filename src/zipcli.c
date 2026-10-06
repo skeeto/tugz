@@ -1209,6 +1209,75 @@ struct zdir {
     arena       base;   // scratch once listed, for each kid to start from
 };
 
+// Length of a pattern's part before its first wildcard, which every
+// name it matches begins with (ignoring case where it does).
+static iz literal_len(zip *z, s8 pat)
+{
+    b32 sets = !z->nowild && !z->windows;  // and backslash escapes
+    iz  k    = 0;
+    for (; k < pat.len; k++) {
+        u8 c = pat.s[k];
+        if (c=='?' || (!z->nowild && c=='*') ||
+            (sets && (c=='[' || c=='\\'))) {
+            break;
+        }
+    }
+    return k;
+}
+
+// Whether two names agree in their first n bytes, as patterns compare.
+static b32 same_start(zip *z, s8 a, s8 b, iz n)
+{
+    i32 flags = match_flags(z);
+    for (iz i = 0; i < n; i++) {
+        if (zip_fold(a.s[i], flags) != zip_fold(b.s[i], flags)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// Whether -x or -i leave out every name below a directory, by its name
+// ending in a slash, so that nothing is lost by failing to list it: an
+// -x pattern of a leading part of the name and then only stars matches
+// them all, and an -i pattern whose part before any wildcard parts from
+// the name matches none. Other patterns may match some or none.
+static b32 subtree_out(zip *z, s8 dname)
+{
+    for (iz i = 0; i < z->exclude.len; i++) {
+        s8 x = z->exclude.data[i];
+        iz k = literal_len(z, x);
+        iz e = k;
+        for (; e<x.len && x.s[e]=='*' && !z->nowild; e++) {}
+        if (e>k && e==x.len && k<=dname.len && same_start(z, x, dname, k)) {
+            return 1;
+        }
+    }
+    for (iz i = 0; i < z->include.len; i++) {
+        s8 p = z->include.data[i];
+        if (same_start(z, p, dname, MIN(literal_len(z, p), dname.len))) {
+            return 0;
+        }
+    }
+    return z->include.len > 0;
+}
+
+// Whether -x or -i leave out a path met while recursing that could not
+// be examined, so that nothing is lost by passing over it, as Info-ZIP
+// does whatever the patterns. A link, as a dangling one, is named as a
+// file, and anything else might be a directory.
+static b32 unseen_out(zip *z, s8 path, s8 name, arena scratch)
+{
+    os_info info = {0};
+    if (included(z, name)) {
+        return 0;
+    } else if (os_stat(z->ctx, path, 0, &info, scratch) &&
+               info.type==FT_LINK) {
+        return 1;
+    }
+    return subtree_out(z, JOIN(&scratch, name, S("/")));
+}
+
 // Add a directory and, with -r, list it, to scan its entries next.
 // Returns the innermost directory being scanned.
 static zdir *enter(zip *z, zdir *up, s8 path, s8 name, os_info *info,
@@ -1232,9 +1301,11 @@ static zdir *enter(zip *z, zdir *up, s8 path, s8 name, os_info *info,
 
     iz         n    = 0;
     os_dirent *list = os_listdir(z->ctx, path, z->hidden, &n, scratch);
-    if (!list) {
+    if (!list && !subtree_out(z, dname)) {
         warn(z, S("could not read directory: "), path, *scratch);
         z->status = ZE_OPEN;
+    }
+    if (!list) {
         return up;
     }
     zdir *d  = new(scratch, 1, zdir);
@@ -1295,10 +1366,11 @@ static void scan(zip *z, s8 path, s8 name, os_info *info, arena scratch)
             if (listed(z, info) ||
                 os_stat(z->ctx, path, !z->symlinks, info, scratch)) {
                 break;
+            } else if (!unseen_out(z, path, name, scratch)) {
+                warn(z, S("could not open for reading: "), path, scratch);
+                z->status = ZE_OPEN;
+                z->nskipped++;
             }
-            warn(z, S("could not open for reading: "), path, scratch);
-            z->status = ZE_OPEN;
-            z->nskipped++;
         }
     }
 }

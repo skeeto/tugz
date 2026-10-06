@@ -566,6 +566,12 @@ if ln -s a.txt tree/link 2>/dev/null; then
     expect_status 18 "$ZIP" -r dl.zip dl
     [ "$(names dl.zip | tr '\n' ' ')" = "dl/ dl/f " ] ||
         fail "dangling link: $(names dl.zip)"
+    # ...unless -x or -i leaves it out, so that nothing is lost (Info-ZIP
+    # warns that the name is not matched, even then)
+    "$ZIP" -qr dl2.zip dl -x dl/dangling 2>err ||
+        fail "excluded dangling link: $(cat err)"
+    [ ! -s err ] || fail "excluded dangling link: $(cat err)"
+    expect_status 0 "$ZIP" -r dl3.zip dl -i dl/f
 fi
 
 # UTF-8 names get bit 11; ASCII names do not
@@ -1598,6 +1604,20 @@ EOF
     expect_status 18 "$ZIP" -r ud.zip ud
     [ "$(names ud.zip | tr '\n' ' ')" = "ud/ ud/sub/ " ] ||
         fail "unreadable directory: $(names ud.zip)"
+    # ...unless -x or -i leaves out all it could hold, silently: -x of a
+    # start of its name and then only stars, or -i whose patterns begin
+    # otherwise; but not -x of its own entry, nor -i that may match
+    printf x >ud/f
+    "$ZIP" -qr ud2.zip ud -x 'ud/sub/*' 2>err ||
+        fail "excluded unreadable directory: $(cat err)"
+    [ ! -s err ] || fail "excluded unreadable directory: $(cat err)"
+    [ "$(names ud2.zip | tr '\n' ' ')" = "ud/ ud/f " ] ||
+        fail "excluded unreadable directory: $(names ud2.zip)"
+    expect_status 0 "$ZIP" -r ud3.zip ud -x 'ud/su*'
+    expect_status 0 "$ZIP" -r ud4.zip ud -i 'ud/f' 'src/*'
+    expect_status 18 "$ZIP" -r ud7.zip ud -i 'ud/f' '*.txt'
+    expect_status 18 "$ZIP" -r ud5.zip ud -x 'ud/sub/'
+    expect_status 18 "$ZIP" -r ud6.zip ud -i 'ud/*'
     chmod 755 ud/sub
 
     # A directory after a failed file gets none of its fields

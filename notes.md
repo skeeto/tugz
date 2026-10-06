@@ -585,16 +585,21 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   An unreadable directory, or a dangling link (or one whose target
   vanished), met while recursing warns and exits 18 (Info-ZIP adds the
   directory silently and warns "name not matched" for the link, exiting
-  0). `-i` that matches nothing has nothing to do, 12 (Info-ZIP writes
-  an empty archive, exiting 0, when the archive is new). A list that
-  cannot be read (`@file` or `-@`, standard input closed included)
-  fails, 18 or for `-@` 11, where Info-ZIP's getc ends the list at any
-  read error, which silently selects, or excludes, less. An archive that
-  can be written but not read fails (11, "Could not open archive"),
-  where Info-ZIP takes it for a missing one and replaces it, losing its
-  entries. So does, before any work, one that cannot be examined for any
-  reason but that nothing is there, such as an I/O error (Info-ZIP opens
-  it regardless, and replaces one that it cannot open).
+  0), unless `-x` or `-i` leaves out all it could add, when it passes
+  silently: a link by its name, a directory when an `-x` pattern of the
+  start of its name and then only stars, such as `'node_modules/*'`,
+  covers all below it, or no `-i` pattern can match there, judged by
+  their parts before any wildcard. `-i` that matches nothing has nothing
+  to do, 12 (Info-ZIP writes an empty archive, exiting 0, when the
+  archive is new). A list that cannot be read (`@file` or `-@`, standard
+  input closed included) fails, 18 or for `-@` 11, where Info-ZIP's getc
+  ends the list at any read error, which silently selects, or excludes,
+  less. An archive that can be written but not read fails (11, "Could
+  not open archive"), where Info-ZIP takes it for a missing one and
+  replaces it, losing its entries. So does, before any work, one that
+  cannot be examined for any reason but that nothing is there, such as
+  an I/O error (Info-ZIP opens it regardless, and replaces one that it
+  cannot open).
 - Messages: warnings and errors go to standard error, where Info-ZIP
   writes all but `perror`'s to standard output, and without the tab that
   starts most of its warnings. Advice on options that tugz rejects is
