@@ -940,6 +940,20 @@ names lit.zip >got
 printf 'lit/\nlit/s*/q\nlit/sx/\nlit/sx/r\n' >want
 cmp -s got want || fail "-d of a name on disk: $(cat got)"
 expect_status 12 "$ZIP" -qdD lit.zip lit
+# Under -j, as Info-ZIP, a file on disk names the entry its name junked
+# would, and a directory none, but -i and -x see the whole name
+"$ZIP" -q dj.zip tree/sub/random lit/sx/r
+"$ZIP" -qj dj.zip tree/sub/random lit/sx/r
+"$ZIP" -qdj dj.zip tree/sub/random
+names dj.zip >got
+printf 'tree/sub/random\nlit/sx/r\nr\n' >want
+cmp -s got want || fail "-dj of a name on disk: $(cat got)"
+expect_status 12 "$ZIP" -dj dj.zip lit/sx
+expect_status 12 "$ZIP" -dj dj.zip lit/sx/r -x 'lit/*'
+"$ZIP" -qdj dj.zip lit/sx/r -x r
+names dj.zip >got
+printf 'tree/sub/random\nlit/sx/r\n' >want
+cmp -s got want || fail "-dj -x: $(cat got)"
 
 # A -d name that is a special file on disk marks nothing
 mkdir ffd

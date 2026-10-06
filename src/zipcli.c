@@ -2675,7 +2675,9 @@ static b32 mark_deletes(zip *z, zarchive *ar, iz n, s8 pattern, b32 *hit)
 // Mark the entry for a -d name on disk, which Info-ZIP takes literally,
 // wildcards and all: a directory names its "dir/" entry, unless -D, and
 // a hidden or system file (Windows) nothing, unless -S, nor does a
-// special file (FIFO, device).
+// special file (FIFO, device). Under -j, as Info-ZIP names a file to
+// add, and as -u and -f do, a file names the entry of its last part,
+// and a directory none, while -i and -x see the whole name.
 static void mark_named(zip *z, zindex *old, s8 path, os_info *info,
                        b32 *hit, arena scratch)
 {
@@ -2683,12 +2685,12 @@ static void mark_named(zip *z, zindex *old, s8 path, os_info *info,
     if (info->type == FT_OTHER) {
         ignore_special(z, path, info, scratch);
         return;
-    } else if (info->type==FT_DIR && (z->nodirs || !name.len)) {
+    } else if (info->type==FT_DIR && (z->nodirs || z->junk || !name.len)) {
         return;
     } else if (hidden_file(z, info)) {
         return;
     }
-    iz v = zindex_find(old, name);
+    iz v = zindex_find(old, z->junk ? basename(z, name) : name);
     if (v>=0 && included(z, name)) {
         hit[v] = 1;
     }
