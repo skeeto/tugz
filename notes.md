@@ -422,12 +422,18 @@ neither inflate nor the gzip container.
   carries on from the last, and drops back to a page at a jump
   elsewhere: an entry out of order costs a small read, and data larger
   than the window is read a window at a time. Read-ahead stays within
-  the size the archive had when examined; should a fill fail, as when
-  the archive has shrunk since, the bytes needed are read alone, so that
-  it fails only where reading just those would. The central directory is
-  read through the window too, a header at a time, and each entry keeps
-  only its name, extra fields (without Zip64), and comment, packed, not
-  the directory.
+  the size the archive had when examined, and once the central
+  directory is read, before it, where the entries end; should a fill
+  fail, as when the archive has shrunk since, the bytes needed are read
+  alone, so that it fails only where reading just those would. The end
+  records are found among the final 64 KiB, read into the window, and
+  the central directory is read through it too, whole if it fits (so a
+  small archive is read once), and parsed a header at a time, each entry
+  keeping only its name, extra fields (without Zip64), and comment,
+  packed, not the directory. Its entries' memory is claimed only once
+  its first header checks out, and is filled as each is parsed, so that
+  a file that only ends like an archive (sparse, or damaged), whose end
+  record claims millions of entries, costs nothing for them.
 - Windows: made-by host 0 (FAT, the most widely understood), DOS
   attributes, `UT` extra field. Names drop a drive or a UNC
   `//server/share/` prefix, as Info-ZIP's do, and likewise a device

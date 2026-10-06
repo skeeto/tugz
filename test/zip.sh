@@ -1543,8 +1543,10 @@ fi
 # reservation then shrinks, and private writable memory (ulimit -d),
 # against which each commit counts. A small run fits under each, while
 # the 65,535 paths through a chain of directories, each linking twice to
-# the next, need some 250 MB. macOS ignores these limits, and sanitizers
-# and emulators cannot run under them.
+# the next, need some 250 MB. A file that only ends like an archive,
+# whose directory of zeros (sparse, 92 MB) would hold 2M entries, is not
+# one (3), however much memory those would take. macOS ignores these
+# limits, and sanitizers and emulators cannot run under them.
 oomskip=
 if [ "$(uname -s)" != Linux ]; then
     oomskip="not Linux"
@@ -1561,6 +1563,18 @@ else
     done
     mkdir oomdag/15
     printf '\nzip error: Out of memory\n' >want
+    if [ -n "$PY" ]; then
+        $PY -c 'import struct, sys
+n = 2000000
+f = open(sys.argv[1], "wb")
+f.truncate(46*n)
+f.seek(46*n)
+f.write(struct.pack("<IQHHIIQQQQ", 0x06064b50, 44, 0x31e, 45, 0, 0, n, n,
+                    46*n, 0))
+f.write(struct.pack("<IIQI", 0x07064b50, 0, 46*n, 1))
+f.write(struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 0xffff, 0xffff,
+                    0xffffffff, 0xffffffff, 0))' oomsparse.zip
+    fi
 fi
 for run in "-v 60000 new.zip" "-d 30000 small.zip"; do  # limit, archive
     limit=${run% *}
@@ -1588,9 +1602,17 @@ for run in "-v 60000 new.zip" "-d 30000 small.zip"; do  # limit, archive
         fail "ulimit $limit, $arc: status $st $(cat err)"
     cmp -s oom/small.zip oom.orig || fail "ulimit $limit changed an archive"
     [ "$(ls oom)" = small.zip ] || fail "ulimit $limit left: $(ls oom)"
+    if [ -e oomsparse.zip ]; then
+        set +e
+        (ulimit $limit && exec "$ZIP" -q oomsparse.zip tree/a.txt) 2>err
+        st=$?
+        set -e
+        [ $st = 3 ] && grep -q 'structure invalid (oomsparse.zip)' err ||
+            fail "ulimit $limit, sparse: status $st $(cat err)"
+    fi
 done
 [ -z "$oomskip" ] || echo "zip.sh: out-of-memory tests skipped: $oomskip" >&2
-rm -rf oomdag
+rm -rf oomdag oomsparse.zip
 
 if [ -n "$SLOW" ]; then
     # Zip64: a 5 GiB file, compressed and stored (pushing a following

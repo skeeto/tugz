@@ -1404,7 +1404,7 @@ static b32 scan_arg(zip *z, s8 arg, arena scratch)
 typedef struct {
     os  *ctx;
     i32  fd;
-    i64  size;   // of the file
+    i64  limit;  // of read-ahead: the file's size, then where entries end
     u8  *buf;
     iz   cap;
     iz   len;    // bytes in the window
@@ -1415,7 +1415,8 @@ typedef struct {
 enum { ZIN_CAP = 1<<20, ZIN_PAGE = 1<<12 };
 
 // Fill the window with the need bytes at off, at most its size, and as
-// many more as the read-ahead takes, within the file as examined. That
+// many more as the read-ahead takes, within its limit: the file as
+// examined, and once the central directory is read, the entries. That
 // doubles, from a page up to the window's size, with each fill that
 // carries on from the last, as when entries are copied in file order,
 // and starts over at a jump elsewhere, so that each entry out of order
@@ -1427,7 +1428,7 @@ static i32 zin_fill(zin *r, i64 off, iz need)
 {
     b32 onward = off>=r->pos && off-r->pos<=r->len+r->ahead;
     r->ahead = onward ? MIN(2*r->ahead, r->cap) : ZIN_PAGE;
-    i64 left = MAX(r->size-off, 0);
+    i64 left = MAX(r->limit-off, 0);
     iz  n    = MAX(need, (iz)MIN(r->ahead, left));
     i32 got  = os_readat(r->ctx, r->fd, r->buf, n, off);
     if (got<=0 && n>need) {
@@ -1539,14 +1540,6 @@ static i32 read_failed(zip *z, i32 r, s8 copying, arena scratch)
     return fail(z, ZE_EOF, S("Unexpected end of zip file"), arg, scratch);
 }
 
-// Read from the archive, bypassing its window, else fail as above.
-static i32 read_at(zip *z, zarchive *ar, u8 *buf, iz len, i64 off,
-                   s8 copying, arena scratch)
-{
-    i32 r = os_readat(z->ctx, ar->in.fd, buf, len, off);
-    return r>0 ? 0 : read_failed(z, r, copying, scratch);
-}
-
 // Returns an exit status on failure, or -1 for an archive that is to be
 // taken for a missing one.
 static i32 read_archive(zip *z, zarchive *ar, arena scratch)
@@ -1570,25 +1563,27 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
         return fail_why(z, ZE_READ, why, S("Could not open archive"),
                         z->archive, scratch);
     }
-    in->size  = z->arcinfo.size;
+    in->limit = z->arcinfo.size;
     in->cap   = ZIN_CAP;
     in->buf   = newbytes(&z->perm, in->cap);  // like all else, before output
     in->ahead = ZIN_PAGE;
 
-    iz  n    = (iz)MIN(in->size, ZIP_END_LEN + ZIP_MAX16 + ZIP_LOC64_LEN);
-    u8 *tail = newbytes(&z->perm, n);
-    i32 err  = read_at(z, ar, tail, n, in->size-n, (s8){0}, scratch);
-    if (err) {
-        return err;
+    // The end records are among the final bytes, read into the window,
+    // which for a small archive then holds its central directory too
+    i64 size = z->arcinfo.size;
+    iz  n    = (iz)MIN(size, ZIP_END_LEN + ZIP_MAX16 + ZIP_LOC64_LEN);
+    u8 *tail = 0;
+    i32 got  = zin_get(in, size-n, n, &tail);
+    if (got <= 0) {
+        return read_failed(z, got, (s8){0}, scratch);
     }
-
-    i32 r = zip_find_end(tail, n, in->size, &ar->end);
+    i32 r = zip_find_end(tail, n, size, &ar->end);
+    ar->end.comment = JOIN(&z->perm, ar->end.comment);  // the window moves
     if (r==ZIP_OK && ar->end.end64>=0) {
-        u8 rec[ZIP_END64_LEN];
-        err = read_at(z, ar, rec, ZIP_END64_LEN, ar->end.end64, (s8){0},
-                      scratch);
-        if (err) {
-            return err;
+        u8 *rec = 0;
+        got = zin_get(in, ar->end.end64, ZIP_END64_LEN, &rec);
+        if (got <= 0) {
+            return read_failed(z, got, (s8){0}, scratch);
         }
         r = zip_parse_end64(rec, &ar->end);
     }
@@ -1608,24 +1603,36 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
                     " not supported"), z->archive, scratch);
     }
 
-    // The central directory is read through the window, a header at a
-    // time, keeping only the names, extra fields (without Zip64), and
-    // comments, packed, rather than the whole directory.
+    // The central directory is read through the window, whole if it
+    // fits, else a window at a time, and parsed a header at a time,
+    // keeping only the names, extra fields (without Zip64), and comments,
+    // packed, rather than the whole directory.
     i64 count = ar->end.count;
     i64 off   = ar->end.cdoff;
     i64 cdend = off + ar->end.cdsize;
-    if (count > ar->end.cdsize/ZIP_CENTRAL_LEN) {
+    u8 *h     = 0;
+    got = zin_get(in, off, (iz)MIN(cdend-off, in->cap), &h);
+    if (got <= 0) {
+        return read_failed(z, got, (s8){0}, scratch);
+    }
+    in->ahead = in->cap;
+
+    // Memory for the entries is claimed only for a directory that begins
+    // with a header, as a file that only ends like an archive (sparse, or
+    // damaged) does not, and is then not touched until each is parsed
+    b32 head = cdend-off>=ZIP_CENTRAL_LEN && zip_central_varlen(h)>=0;
+    if (count > ar->end.cdsize/ZIP_CENTRAL_LEN || (count && !head)) {
         return fail(z, ZE_FORM, S("Zip file structure invalid"), z->archive,
                     scratch);
     } else if ((u64)count > (uz)-1>>1) {
         os_oom(z->ctx);  // larger than the address space (32-bit hosts)
     }
-    ar->entries = new(&z->perm, (iz)count, zentry);
+    iz each = sizeof(zentry);
+    ar->entries = alloc(&z->perm, (iz)count, each, _Alignof(zentry), 0);
     for (i64 i = 0; i < count; i++) {
         // Its fixed part tells its length, at most 192 KiB
-        iz  len = (iz)MIN(cdend-off, ZIP_CENTRAL_LEN);
-        u8 *h   = 0;
-        i32 got = zin_get(in, off, len, &h);
+        iz len = (iz)MIN(cdend-off, ZIP_CENTRAL_LEN);
+        got = zin_get(in, off, len, &h);
         if (got>0 && len==ZIP_CENTRAL_LEN) {
             iz var = zip_central_varlen(h);
             len += (iz)MIN(MAX(var, 0), cdend-off-len);
@@ -1650,6 +1657,7 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
         return fail(z, ZE_FORM, S("Zip file structure invalid"), z->archive,
                     scratch);
     }
+    in->limit = ar->end.cdoff;  // nothing past the entries is read again
 
     // Offsets may account for data before the first entry, such as a
     // self-extractor's stub after zip -A, or a zipapp's #! line, which
