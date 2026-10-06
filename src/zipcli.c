@@ -1895,10 +1895,12 @@ typedef struct {
 // Open a file to read as the scan found it: not a FIFO swapped in since,
 // which would block. Under -y, which stores links as links, not a link
 // swapped in either, nor any other file, as through a directory swapped
-// for a link, so that nothing is read through a link (Info-ZIP examines
-// each file again just before reading it). Without -y, links are
-// followed anyway, and a file saved since by renaming over it is read
-// as it now is.
+// for a link since, so that nothing is read through a link swapped in
+// after the scan (Info-ZIP examines each file again just before reading
+// it). The scan goes by path, as Info-ZIP's does, so one swapped in for
+// a directory while the scan is in it still leads it, and this, astray.
+// Without -y, links are followed anyway, and a file saved since by
+// renaming over it is read as it now is.
 static b32 src_open(zip *z, zsrc *s, arena scratch)
 {
     s->off = 0;

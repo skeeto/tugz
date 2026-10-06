@@ -340,28 +340,32 @@ neither inflate nor the gzip container.
 - Writing: entries go to a temporary file beside the archive (created
   discard-on-close, like gzip's outputs), at explicit offsets so that a
   local header can be patched once sizes are known: new entries need no
-  data descriptors (some copied ones keep theirs: see Merging). An
-  entry that does not shrink is rewritten stored, from the input buffer
-  if one read got it all, else by reopening the input; one that grows
-  past 4 GiB while being read is redone with a Zip64 local header. A
-  size of exactly 0xffffffff gets Zip64 too, as APPNOTE reserves that
-  value, and a central Zip64 extra, once there is one, always holds both
-  sizes (their 32-bit fields saturated), then the offset if it
-  overflows. APPNOTE allows the offset alone, as Info-ZIP writes it, but
-  having read a size of exactly 0xffffffff from one Zip64 extra, UnZip
-  6.0 takes every later one to start with a size, so that a later
-  entry's offset became its size. A file is opened only as a regular
-  file, so a FIFO swapped in since the scan fails as unreadable (18)
-  rather than block, and under `-y` only if it is still the file the
-  scan found, by identity, so that nothing is read through a link
-  swapped in for it or for a directory above it. Likewise a link's
-  target, read by path, is stored only if the link is still the one
-  scanned. Output is buffered 1 MiB at a time, and rewinding to an
-  entry's start or patching its header stays in the buffer when it can,
-  so small entries cost no writes of their own. The file is truncated to
-  its final length and renamed over the target, or for a new archive,
-  moved there only if nothing has appeared there meanwhile (on POSIX, by
-  a hard link, then unlinking the temporary name, where the file system
+  data descriptors (some copied ones keep theirs: see Merging). An entry
+  that does not shrink is rewritten stored, from the input buffer if one
+  read got it all, else by reopening the input; one that grows past
+  4 GiB while being read is redone with a Zip64 local header. A size of
+  exactly 0xffffffff gets Zip64 too, as APPNOTE reserves that value, and
+  a central Zip64 extra, once there is one, always holds both sizes
+  (their 32-bit fields saturated), then the offset if it overflows.
+  APPNOTE allows the offset alone, as Info-ZIP writes it, but having
+  read a size of exactly 0xffffffff from one Zip64 extra, UnZip 6.0
+  takes every later one to start with a size, so that a later entry's
+  offset became its size. A file is opened only as a regular file, so a
+  FIFO swapped in since the scan fails as unreadable (18) rather than
+  block, and under `-y` only if it is still the file the scan found, by
+  identity, so that nothing is read through a link swapped in for it or
+  for a directory above it once it was found. The scan itself goes by
+  path, as Info-ZIP's does, so a directory swapped for a link while it
+  is being listed, or its entries examined, leads the scan, and then the
+  reading, through the link (making it safe would take listing and
+  examining relative to an open directory). Likewise a link's target,
+  read by path, is stored only if the link is still the one scanned.
+  Output is buffered 1 MiB at a time, and rewinding to an entry's start
+  or patching its header stays in the buffer when it can, so small
+  entries cost no writes of their own. The file is truncated to its
+  final length and renamed over the target, or for a new archive, moved
+  there only if nothing has appeared there meanwhile (on POSIX, by a
+  hard link, then unlinking the temporary name, where the file system
   has hard links, which FAT lacks). On POSIX that follows closing it,
   which reports the write errors that network file systems defer, but
   there is no fsync, as in Info-ZIP: on a Raspberry Pi's SD card,
@@ -680,7 +684,8 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
 - Files changed while zip works (see Writing): Info-ZIP blocks on a FIFO
   swapped in for a file, and under `-y`, though it examines each file
   again just before reading it, still reads through a directory swapped
-  for a link, and stores whichever link is there.
+  for a link once its files were found, and stores whichever link is
+  there. (Both read through one swapped in while the scan is in it.)
 - Existing archives: under `-FS`, an entry whose replacement cannot be
   read is kept, as in other modes (Info-ZIP warns that it will copy it
   over, then drops it). A file added to an emptied self-extractor keeps

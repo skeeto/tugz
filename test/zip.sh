@@ -1823,26 +1823,38 @@ else
     echo "zip.sh: zip finished before an archive could be made meanwhile" >&2
 fi
 
-# A file swapped since the scan is not read: under -y, for a link, and
-# in any case for a FIFO (which a zip opening it would wait on, but here
-# has a writer, so that it goes on to read). Zip is stopped while it
-# writes a large file, to swap the next one. If zip read it too soon,
-# nothing is checked.
-swapped() {  # name link|fifo zip-option...
+# A file swapped since the scan is not read: under -y, for a link, or a
+# file through a link swapped in for its directory, and in any case for
+# a FIFO (which a zip opening it would wait on, but here has a writer,
+# so that it goes on to read). Zip is stopped while it writes a large
+# file, to swap the next one. If zip read it too soon, nothing is
+# checked.
+swapped() {  # name link|fifo|dir zip-option...
     name=$1
     kind=$2
     shift 2
     rm -f rz/race.zip
-    printf small >race/$name
+    file=race/$name
+    want=race/a_big
+    if [ $kind = dir ]; then
+        mkdir race/$name
+        file=race/$name/f
+        want="race/a_big race/$name/"
+    fi
+    printf small >$file
     if ! bgzip rz "$@" rz/race.zip race/a_big race/$name; then
         wait $bg
         echo "zip.sh: zip finished before race/$name could be swapped" >&2
         return
     fi
-    rm race/$name
-    if [ $kind = link ]; then
+    if [ $kind = dir ]; then
+        mv race/$name race/$name.old
+        ln -s ../other race/$name
+    elif [ $kind = link ]; then
+        rm race/$name
         ln -s ../secret race/$name
     else
+        rm race/$name
         mkfifo race/$name
         printf leaked >race/$name &
         writer=$!
@@ -1853,20 +1865,24 @@ swapped() {  # name link|fifo zip-option...
         exec 3<>race/$name 3<&-  # end the writer if zip never opened it
         wait $writer 2>/dev/null || :  # (SIGPIPE if zip closed it first)
     fi
-    if [ "$(unzip -p rz/race.zip race/$name 2>/dev/null)" = small ]; then
-        echo "zip.sh: zip read race/$name before it could be swapped" >&2
+    if [ "$(unzip -p rz/race.zip $file 2>/dev/null)" = small ]; then
+        echo "zip.sh: zip read $file before it could be swapped" >&2
         return
     fi
-    [ "$(cat bg.status)" = 18 ] && [ "$(names rz/race.zip)" = race/a_big ] &&
-        grep -q "could not open for reading: race/$name" bg.err ||
+    [ "$(cat bg.status)" = 18 ] &&
+        [ "$(names rz/race.zip | tr '\n' ' ')" = "$want " ] &&
+        grep -q "could not open for reading: $file" bg.err ||
         fail "$kind swapped in: $(cat bg.status) $(names rz/race.zip)" \
              "$(cat bg.err)"
 }
 if ln -s x race/link 2>/dev/null && mkfifo race/fifo 2>/dev/null; then
     rm race/link race/fifo
     printf 'TOP SECRET' >secret
+    mkdir other
+    printf 'TOP SECRET' >other/f
     swapped b_link link -y
     swapped c_fifo fifo
+    swapped d_dir dir -ry
 fi
 
 # Running out of memory exits 4, as in Info-ZIP, before any output, as
