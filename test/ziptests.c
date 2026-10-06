@@ -286,6 +286,12 @@ static void test_percent(void)
     TEST(zip_percent(0, 0) == 0);
     TEST(zip_percent(10, 20) == 0);
     TEST(zip_percent((i64)1<<40, (i64)1<<39) == 50);
+    // Exact over 16 MiB too, as Info-ZIP computes it (not by its disabled
+    // reduction, which gives 100, 67, 91, and 98)
+    TEST(zip_percent(104857600, 524289) == 99);
+    TEST(zip_percent(18918855, 6337836) == 66);
+    TEST(zip_percent(491555167, 41782159) == 92);
+    TEST(zip_percent(20000000, 299977) == 99);
 }
 
 // An archive of three small entries and a comment, written by the header

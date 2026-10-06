@@ -1009,12 +1009,10 @@ static s8 zip_name(arena *a, s8 path, b32 windows)
     return r;
 }
 
-// Info-ZIP's compression percentage, rounded.
+// Info-ZIP's compression percentage, rounded, as its builds with 64-bit
+// offsets compute it, exactly (its 256-divisor reduction for large sizes
+// is disabled), which no real file size can overflow.
 static i32 zip_percent(i64 n, i64 m)
 {
-    while (n > 0xffffff) {
-        n = (n + 0x80) >> 8;
-        m = (m + 0x80) >> 8;
-    }
     return n>m ? (i32)((1 + 200*(n - m)/n) / 2) : 0;
 }
