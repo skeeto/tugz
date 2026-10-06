@@ -596,9 +596,14 @@ expect_status 16 "$ZIP" -y bad.zip tree/a.txt
 expect_status 16 "$ZIP" --symlinks bad.zip tree/a.txt
 expect_status 16 "$ZIP" -S- bad.zip tree/a.txt
 
-# Options from ZIPOPT, unquoted (quotes are POSIX only)
-env ZIPOPT='-q -x tree/b.txt' "$ZIP" -r env.zip tree >out
+# Options from ZIPOPT, where as in Info-ZIP's port a double-quoted word
+# keeps its spaces and backslashes
+printf s >'tree/a b.txt'
+env ZIPOPT='-q -x "tree\a b.txt" tree\b.txt' "$ZIP" -r env.zip tree >out
 [ ! -s out ] || fail "ZIPOPT=-q: $(cat out)"
+list env.zip | grep -q 'tree/a b.txt' && fail "ZIPOPT quoted pattern"
 list env.zip | grep -q tree/b.txt && fail "ZIPOPT pattern"
+list env.zip | grep -q tree/a.txt || fail "ZIPOPT patterns: $(list env.zip)"
+rm 'tree/a b.txt'
 
 echo "windows zip tests pass"

@@ -1787,6 +1787,15 @@ env ZIPOPT='-q -x "tree/a b" tree/b.txt' "$ZIP" -r env4.zip tree
 names env4.zip | grep -q 'tree/a b' && fail "ZIPOPT quoted pattern"
 names env4.zip | grep -q tree/b.txt && fail "ZIPOPT pattern list"
 rm 'tree/a b'
+# ...where, as in Info-ZIP on POSIX, a backslash is dropped, keeping the
+# byte after it, even a quote or a backslash (and a final one escapes
+# nothing), while unquoted words are kept whole
+env ZIPOPT='"e\"n\\v\6" -q' "$ZIP" tree/a.txt
+[ -f 'e"n\v6.zip' ] || fail "ZIPOPT quoted backslashes: $(ls | grep '^e')"
+env ZIPOPT='-q e\"n\v7' "$ZIP" tree/a.txt
+[ -f 'e\"n\v7.zip' ] || fail "ZIPOPT unquoted backslashes: $(ls | grep '^e')"
+env ZIPOPT='-q "env8\' "$ZIP" tree/a.txt
+[ -f env8.zip ] || fail "ZIPOPT final backslash: $(ls | grep '^env')"
 expect_status 16 env ZIPOPT=-e "$ZIP" env5.zip tree/a.txt
 env ZIPOPT=-v "$ZIP" </dev/null >out
 grep -q '^tugz zip [0-9]' out || fail "ZIPOPT=-v: $(cat out)"

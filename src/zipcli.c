@@ -884,24 +884,29 @@ static i32 parse_args(zip *z, s8 *args, i32 nargs, arena scratch)
 }
 
 // Split a ZIPOPT or ZIP value into arguments as Info-ZIP's envargs does:
-// at whitespace, and on POSIX a word that starts with a double quote
-// runs to the next one, which is dropped, though one after a backslash
-// is not (the backslash stays).
+// at whitespace, except that a word starting with a double quote runs to
+// the next one, and both are dropped. On POSIX, a backslash within it is
+// dropped too, and the byte after it kept, even a quote or a backslash.
+// Info-ZIP's Windows port keeps backslashes, its path separators.
 static s8s env_args(zip *z, s8 env)
 {
-    s8s r = {0};
+    s8s r   = {0};
+    u8 *buf = newstr(&z->perm, env.len);  // for quoted words
     for (iz i = 0;;) {
         for (; i<env.len && zisspace(env.s[i]); i++) {}
         if (i == env.len) {
             return r;
         }
         s8 *arg = push(&z->perm, &r);
-        if (!z->windows && env.s[i]=='"') {
-            iz beg = ++i;
-            for (; i<env.len && env.s[i]!='"'; i++) {
-                i += env.s[i]=='\\' && i+1<env.len && env.s[i+1]=='"';
+        if (env.s[i] == '"') {
+            *arg = (s8){buf, 0};
+            for (i++; i<env.len && env.s[i]!='"'; i++) {
+                if (!z->windows && env.s[i]=='\\' && ++i==env.len) {
+                    break;  // escaping nothing
+                }
+                arg->s[arg->len++] = env.s[i];
             }
-            *arg = (s8){env.s+beg, i-beg};
+            buf += arg->len;
             i += i < env.len;
         } else {
             iz beg = i;
