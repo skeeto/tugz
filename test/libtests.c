@@ -787,6 +787,37 @@ static void test_none_staging(void)
     free(noise);
 }
 
+// Staged output moves only to make room for an emission step, so a
+// caller taking output a byte at a time does not pay on each call to
+// move all that remains. Each step (a block of at least MIN_BLOCK bytes
+// of input but for the last, or the finish) moves staging at most twice:
+// once to compact, and once when drained to empty.
+static void test_staging_moves(void)
+{
+    iz n = 300000;
+    u8 *noise = randbytes(n, 22);
+    tugz_deflator *d;
+    void *mem = mem_deflator(TUGZ_RAW, 1, &d);
+    deflator *def = d->e->def;
+    tugz_buf b = {noise, n, 0, 0};
+    u8 out;
+    i32 calls = 0;
+    i32 moves = 0;
+    int status;
+    do {
+        iz ooff = def->ooff;
+        b.out = &out;
+        b.outlen = 1;
+        status = tugz_deflate(d, &b, TUGZ_FINISH);
+        moves += def->ooff != ooff+1;
+        calls++;
+    } while (status == TUGZ_NEED_OUTPUT);
+    TEST(status==TUGZ_DONE && calls>n);
+    TEST(moves <= 2*(n/MIN_BLOCK + 2));
+    free(mem);
+    free(noise);
+}
+
 // Large inputs cross window slides and many blocks in both directions,
 // and deflate's staged output never exceeds its bound.
 static void test_large(void)
@@ -1174,6 +1205,7 @@ int main(void)
     test_flush();
     test_flush_switch();
     test_none_staging();
+    test_staging_moves();
     test_roundtrip();
     test_large();
     test_reset();

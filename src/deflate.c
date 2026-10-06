@@ -1077,10 +1077,13 @@ static deflator *deflate_new(arena *a, i32 level)
     return d;
 }
 
-// Ensure staging room for one emission step, compacting if needed.
+// Ensure staging room for one emission step, compacting only if that
+// makes the room: otherwise a caller taking a little output per call
+// would pay on each call to move all that remains.
 static b32 def_room(deflator *d)
 {
-    if (DEF_STAGE-d->olen < DEF_STAGE_NEED && d->ooff) {
+    iz room = DEF_STAGE - d->olen;
+    if (room<DEF_STAGE_NEED && room+d->ooff>=DEF_STAGE_NEED) {
         bytemove(d->obuf, d->obuf+d->ooff, d->olen-d->ooff);
         d->olen -= d->ooff;
         d->ooff = 0;
