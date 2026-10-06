@@ -57,6 +57,13 @@
 // clamped into that range. The gzip header records no name or time.
 //
 // Define TUGZ_API (e.g. as static) to control the linkage of definitions.
+// The single-file tugz.c (make tugz.c) may so be embedded in a program's
+// translation unit. Its macros are its own: any of the program's with
+// the same names (assert, MIN, ...) are saved before it and restored
+// after, and its type names are renamed (u8 to tugz__u8, and so on).
+// Its other internal names are not: static functions such as alloc and
+// enumerators such as GZ_OK. Should those collide with the program's,
+// compile tugz.c on its own instead.
 #ifndef TUGZ_H
 #define TUGZ_H
 

@@ -177,7 +177,15 @@ CPU models with and without PCLMUL.
   so the program's throughput is unchanged by the restructure.
 - `make libtugz.o` builds an object exporting only `tugz_*` (no writable
   data). `make tugz.c` produces a single-file amalgamation with the header
-  inlined; define `TUGZ_API` as `static` to embed it.
+  inlined; define `TUGZ_API` as `static` to embed it. Around the core it
+  saves and restores (`push_macro`, `pop_macro`) every name the core
+  defines as a macro, so its macros neither leak into the program nor
+  replace the program's: its `assert` once turned a program's
+  assertions into optimizer assumptions, even under `NDEBUG`. Its type
+  names become `tugz__` ones, as they collide with common headers:
+  `<windows.h>` defines `byte`, and on LP64 a program's `int64_t i64` is
+  `long`. Static functions and enumerators still share the program's
+  names (documented in `tugz.h`).
 
 ## zip
 

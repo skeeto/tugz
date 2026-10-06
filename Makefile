@@ -92,15 +92,30 @@ libtugz.o: $(LIB)
 
 # Single-file library source with its header inlined. Define TUGZ_API as
 # static before including it to embed the library in another program.
+# The core's macros, and its type names as tugz__ ones, are scoped to it
+# with push_macro and pop_macro, so that a program's are kept.
 tugz.c: $(LIB)
 	v=$$(sed -n 's/.*gzip (tugz) \([0-9.]*\).*/\1/p' src/cli.c); \
+	m=$$(sed -n 's/^ *# *define \([A-Za-z_0-9]*\).*/\1/p' \
+	         $(CORE) platform/libtugz.c | sort -u); \
+	t=$$(sed -n -e 's/^typedef .*[ *]\([A-Za-z_][A-Za-z_0-9]*\);$$/\1/p' \
+	            -e 's/^} \([A-Za-z_][A-Za-z_0-9]*\);$$/\1/p' \
+	         $(CORE) platform/libtugz.c | sort -u); \
 	{ echo "// tugz $$v: streaming DEFLATE, zlib, and gzip library"; \
 	  echo "// Single-file amalgamation of the tugz sources. Build:"; \
 	  echo "//   \$$ cc -c -O2 tugz.c"; \
 	  echo "// The interface documentation follows."; \
 	  echo; \
+	  cat tugz.h; \
+	  echo; \
+	  for n in $$m $$t; do \
+	      printf '#pragma push_macro("%s")\n#undef %s\n' $$n $$n; done; \
+	  for n in $$t; do echo "#define $$n tugz__$$n"; done; \
+	  echo; \
 	  awk 'FNR==1 && NR>1 {print ""} !/^#include "/ && !/^\/\/ +\$$ cc/' \
-	      tugz.h $(CORE) platform/libtugz.c; } >$@
+	      $(CORE) platform/libtugz.c; \
+	  echo; \
+	  for n in $$m $$t; do echo "#pragma pop_macro(\"$$n\")"; done; } >$@
 
 fuzz-inflate: test/fuzz_inflate.c test/fuzzos.c $(SRC)
 	$(FUZZCC) $(FUZZ) -o $@ test/fuzz_inflate.c
