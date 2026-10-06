@@ -1029,6 +1029,12 @@ Fuzzers:
   On Windows, likewise, a pipe left non-blocking (`PIPE_NOWAIT`), whose
   reads fail with `ERROR_NO_DATA` until input comes, is set to wait,
   keeping its read mode.
+- Files are opened for reading with `O_NOCTTY`, as GNU gzip opens its
+  inputs, so that on Linux (and System V) a session leader without a
+  controlling terminal, such as a daemon, that reads a terminal (`gzip
+  -c /dev/ttyS0`, `zip -i @/dev/tty1`) does not take it on, to be
+  interrupted from it later. Info-ZIP's zip, which reads such lists
+  through `fopen`, does.
 - At startup, a closed standard descriptor is reopened on `/dev/null`,
   keeping output files off it; the opposite access mode makes using it
   fail as before. Without `/dev/null` (some chroots and sandboxes), the

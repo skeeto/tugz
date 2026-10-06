@@ -139,8 +139,10 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
     }
 
     // Opening a FIFO would block until it has a writer, so check the type
-    // without blocking when only regular files are wanted.
-    int flags = O_RDONLY;
+    // without blocking when only regular files are wanted. Nor may opening
+    // a terminal make it the process's controlling one (Linux, System V),
+    // as GNU gzip opens its inputs.
+    int flags = O_RDONLY | O_NOCTTY;
     flags |= mode & OS_NOFOLLOW ? O_NOFOLLOW : 0;
     flags |= mode & OS_REGULAR  ? O_NONBLOCK : 0;
     int fd = open(cpath, flags);
