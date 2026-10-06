@@ -334,10 +334,13 @@ neither inflate nor the gzip container.
   scanned. Output is buffered 1 MiB at a time, and rewinding to an
   entry's start or patching its header stays in the buffer when it can,
   so small entries cost no writes of their own. The file is truncated to
-  its final length and renamed over the target. On POSIX that follows
-  closing it, which reports the write errors that network file systems
-  defer, but there is no fsync, as in Info-ZIP: on a Raspberry Pi's SD
-  card, waiting for the device turned a 0.85 s run storing 256 MiB into
+  its final length and renamed over the target, or for a new archive,
+  moved there only if nothing has appeared there meanwhile (on POSIX, by
+  a hard link, then unlinking the temporary name, where the file system
+  has hard links, which FAT lacks). On POSIX that follows closing it,
+  which reports the write errors that network file systems defer, but
+  there is no fsync, as in Info-ZIP: on a Raspberry Pi's SD card,
+  waiting for the device turned a 0.85 s run storing 256 MiB into
   20-40 s, for only durability across a crash and the rare device error
   that nothing else reports. On Windows the rename is by handle, after
   flushing and clearing delete-pending, so it never appears incomplete.
@@ -552,7 +555,9 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   read error, which silently selects, or excludes, less. An archive that
   can be written but not read fails (11, "Could not open archive"),
   where Info-ZIP takes it for a missing one and replaces it, losing its
-  entries.
+  entries. So does, before any work, one that cannot be examined for any
+  reason but that nothing is there, such as an I/O error (Info-ZIP opens
+  it regardless, and replaces one that it cannot open).
 - Messages: warnings and errors go to standard error, where Info-ZIP
   writes all but `perror`'s to standard output, and without the tab that
   starts most of its warnings. Advice on options that tugz rejects is
@@ -607,10 +612,12 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   Merging).
 - Replacing the archive: a hard-linked archive is replaced by a new
   file, which its other names do not share (Info-ZIP copies into it). A
-  dangling link at its path gets its target created and survives
-  (Info-ZIP leaves an empty file there and replaces the link with the
-  archive). On Windows the new archive is flushed to the device before
-  the rename (see Writing), which Info-ZIP never does.
+  new archive replaces nothing: a file made at its path while zip works
+  is kept, and zip fails (10, "Temporary file failure"), where Info-ZIP
+  replaces it. A dangling link at its path gets its target created and
+  survives (Info-ZIP leaves an empty file there and replaces the link
+  with the archive). On Windows the new archive is flushed to the device
+  before the rename (see Writing), which Info-ZIP never does.
 
 ## Workflow
 

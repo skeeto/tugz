@@ -1473,6 +1473,23 @@ else
     echo "zip.sh: zip finished before it could be terminated" >&2
 fi
 
+# Departure: a new archive replaces nothing, so that one made at its path
+# meanwhile is kept, and zip fails (10) rather than lose what it never
+# read (Info-ZIP replaces it)
+rm -f rz/new.zip
+if bgzip rz -q rz/new.zip race/a_big; then
+    "$ZIP" -q rz/new.zip tree/a.txt
+    kill -CONT $pid
+    wait $bg
+    [ "$(cat bg.status)" = 10 ] && [ "$(names rz/new.zip)" = tree/a.txt ] &&
+        grep -q 'Temporary file failure (rz/new.zip)' bg.err ||
+        fail "archive made meanwhile: $(cat bg.status) $(names rz/new.zip)" \
+             "$(cat bg.err)"
+else
+    wait $bg
+    echo "zip.sh: zip finished before an archive could be made meanwhile" >&2
+fi
+
 # A file swapped since the scan is not read: under -y, for a link, and
 # in any case for a FIFO (which a zip opening it would wait on, but here
 # has a writer, so that it goes on to read). Zip is stopped while it

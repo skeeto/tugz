@@ -68,6 +68,7 @@ W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 #define ERROR_LOCK_VIOLATION       33u
 #define ERROR_NOT_SUPPORTED        50u
 #define ERROR_DISK_FULL            112u
+#define ERROR_INVALID_NAME         123u
 #define ERROR_ALREADY_EXISTS       183u
 #define ERROR_ENVVAR_NOT_FOUND     203u
 
@@ -185,6 +186,7 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
     (void)follow;
     c16 *wpath = winpath(&scratch, path);
     if (!wpath) {
+        SetLastError(ERROR_INVALID_NAME);  // no file can have it
         return 0;
     }
     iptr h = CreateFileW(wpath, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, 0,
@@ -195,6 +197,17 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
     b32 ok = handle_info(h, info);
     CloseHandle(h);
     return ok;
+}
+
+// A name that no file could have, as one with a character Windows does
+// not allow (<, |), is missing, as creating the archive fails anyway.
+// Not so a network path or name not found, which a server down may give.
+static b32 os_missing(os *ctx)
+{
+    (void)ctx;
+    u32 err = GetLastError();
+    return err==ERROR_FILE_NOT_FOUND || err==ERROR_PATH_NOT_FOUND ||
+           err==ERROR_INVALID_NAME;
 }
 
 static b32 os_fstat(os *ctx, i32 fd, os_info *info)
@@ -458,15 +471,16 @@ static b32 os_truncate(os *ctx, i32 fd, i64 len)
                                       &len, sizeof(len));
 }
 
-// Rename by handle while the file is still open, replacing the target,
-// so that it is never visible incomplete under its final name. POSIX
+// Rename by handle while the file is still open, replacing the target
+// if asked, so that it is never visible incomplete under its final name
+// (the rename refuses a target that is not to be replaced). POSIX
 // semantics replace a target that others hold open with delete sharing
 // (scanners, indexers), which the classic rename refuses. Flush first,
 // while the file is still delete-pending, since deferred write errors
 // (network, quotas) may surface only then: closing, the POSIX layer's
 // check, comes after the rename. Once renamed, the archive is replaced,
 // and closing, after the flush, can lose nothing.
-static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
+static b32 os_commit(os *ctx, i32 fd, s8 path, b32 replace, arena scratch)
 {
     iptr h = ctx->handles[fd];
     c16 *wpath = winpath(&scratch, path);
@@ -500,7 +514,7 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
     iz  size = (iz)sizeof(rename_info) + (name.len+1)*(iz)sizeof(c16);
     rename_info *ri = (rename_info *)newbytes(&scratch, size);
     bytefill(ri, 0, size);
-    ri->flags = FILE_RENAME_REPLACE | FILE_RENAME_POSIX;
+    ri->flags = FILE_RENAME_POSIX | (replace ? FILE_RENAME_REPLACE : 0);
     ri->len   = (u32)(name.len * (iz)sizeof(c16));
     bytecopy(ri->name, name.s, name.len*(iz)sizeof(c16));
 
@@ -514,7 +528,7 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
         // (FAT, some SMB servers), which also refuses while os_writable
         // holds the archive
         release_guard(ctx);
-        ri->flags = 1;  // ReplaceIfExists
+        ri->flags = !!replace;  // ReplaceIfExists
         if (!SetFileInformationByHandle(h, FileRenameInfo, ri, (u32)size)) {
             u8 discard = 1;
             SetFileInformationByHandle(h, FileDispositionInfo, &discard, 1);

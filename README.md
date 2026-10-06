@@ -140,12 +140,13 @@ unreadable directory or a dangling link met while recursing exits 18
 (Info-ZIP: 0), and `-i` that matches nothing exits 12 (Info-ZIP writes
 an empty archive). An archive that can be written but not read is an
 error (11), which Info-ZIP replaces as though missing, losing its
-entries. Warnings and errors go to standard error, without the tab
-that starts Info-ZIP's warnings on standard output. Every entry that
-does not shrink is stored (Info-ZIP stores only small ones), and none
-is marked as text. A directory loop through links is not followed. A
-hard-linked archive is replaced by a new file, so its other names keep
-the old archive.
+entries, as is one that cannot be examined (an I/O error), and a new
+archive never replaces a file made at its path meanwhile. Warnings and
+errors go to standard error, without the tab that starts Info-ZIP's
+warnings on standard output. Every entry that does not shrink is stored
+(Info-ZIP stores only small ones), and none is marked as text. A
+directory loop through links is not followed. A hard-linked archive is
+replaced by a new file, so its other names keep the old archive.
 
 Output is deterministic: entries within each directory are sorted by
 name, and with `-X` an archive depends only on file contents, names,

@@ -120,6 +120,12 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
     return 1;
 }
 
+static b32 os_missing(os *ctx)
+{
+    (void)ctx;
+    return errno==ENOENT || errno==ENOTDIR;
+}
+
 static b32 os_fstat(os *ctx, i32 fd, os_info *info)
 {
     (void)ctx;
@@ -258,7 +264,20 @@ static b32 os_truncate(os *ctx, i32 fd, i64 len)
     return !ftruncate(fd, (off_t)len);
 }
 
-static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
+// Move a file to a path where nothing was, failing if anything has
+// appeared there since: by linking it there, then unlinking it, or where
+// the file system has no hard links (FAT, some network file systems), by
+// renaming it, the best that POSIX offers.
+static b32 place(char *src, char *dst)
+{
+    if (!link(src, dst)) {
+        unlink(src);
+        return 1;
+    }
+    return errno!=EEXIST && !rename(src, dst);
+}
+
+static b32 os_commit(os *ctx, i32 fd, s8 path, b32 replace, arena scratch)
 {
     char *dst = tocstr(&scratch, path);
     struct stat st;
@@ -284,7 +303,11 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, arena scratch)
     ctx->outfd = -1;
 
     sigset_t old = block_signals();
-    ok = ok && !rename(pending_output, dst);
+    if (ok && replace) {
+        ok = !rename(pending_output, dst);
+    } else if (ok) {
+        ok = place(pending_output, dst);
+    }
     release_output(ok);
     restore_signals(old);
     return ok;

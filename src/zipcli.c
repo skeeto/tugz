@@ -44,9 +44,14 @@ typedef struct {
     os_info info;
 } os_dirent;
 
-// Returns false if the path does not exist or cannot be examined. With
-// follow, symbolic links are followed; otherwise a link is FT_LINK.
+// Returns false if the path does not exist or cannot be examined, which
+// os_missing then tells apart. With follow, symbolic links are followed;
+// otherwise a link is FT_LINK.
 static b32  os_stat(os *, s8 path, b32 follow, os_info *, arena scratch);
+// Whether the last os_stat failed because nothing is there (no such file
+// or directory, or a name that none could have), rather than for a
+// reason, such as an I/O error, that leaves what is there unknown.
+static b32  os_missing(os *);
 // As os_stat, for the file that an open descriptor reads.
 static b32  os_fstat(os *, i32 fd, os_info *);
 // Entries within a directory, excluding . and .., in any order. Unless
@@ -73,18 +78,22 @@ static s8   os_resolve(os *, s8 path, arena *perm, arena scratch);
 // that no other process holds it open in a way that refuses the rename,
 // which it then prevents until os_commit.
 static b32  os_writable(os *, s8 path, arena scratch);
-// Close a created file and move it over path, keeping it. A file there
-// is replaced by this new one, so its other hard links keep the old. A
-// deferred write error fails it before anything is replaced: on POSIX,
-// one that closing reports (there is no fsync, as in Info-ZIP); on
-// Windows, which renames before closing, one that flushing reports. On
-// POSIX it takes the replaced file's mode, though not its owner, group,
-// or ACL; without one it has a new file's permissions (0666 less the
-// umask, and a default ACL if created with OS_DEFPERMS). On Windows it
-// takes the replaced file's hidden, system, and not-indexed attributes,
-// but like any new file gets its access control from the directory. The
-// descriptor is closed even on failure, which discards the file.
-static b32  os_commit(os *, i32 fd, s8 path, arena scratch);
+// Close a created file and move it over path, keeping it. With replace,
+// a file there is replaced by this new one, so its other hard links keep
+// the old. Without, a file that has appeared there since fails it rather
+// than be replaced (on POSIX, where the file system has hard links, as
+// it is linked there; FAT and some network file systems have none, and
+// there it is renamed). A deferred write error fails it before anything
+// is replaced: on POSIX, one that closing reports (there is no fsync, as
+// in Info-ZIP); on Windows, which renames before closing, one that
+// flushing reports. On POSIX it takes the replaced file's mode, though
+// not its owner, group, or ACL; without one it has a new file's
+// permissions (0666 less the umask, and a default ACL if created with
+// OS_DEFPERMS). On Windows it takes the replaced file's hidden, system,
+// and not-indexed attributes, but like any new file gets its access
+// control from the directory. The descriptor is closed even on failure,
+// which discards the file.
+static b32  os_commit(os *, i32 fd, s8 path, b32 replace, arena scratch);
 // Broken-down local time {year, month, day, hour, minute, second}.
 static void os_localtime(os *, i64 t, i32 tm[6]);
 // Whether a standard descriptor is a terminal (console).
@@ -2349,7 +2358,9 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     if (!count) {
         warn(z, S("zip file empty"), S(""), scratch);
     }
-    if (!os_commit(z->ctx, fd, z->target, scratch)) {
+    // A new archive replaces nothing: should a file have appeared at its
+    // path meanwhile, that is not for zip to lose
+    if (!os_commit(z->ctx, fd, z->target, z->arcexists, scratch)) {
         // Info-ZIP's status when closing or renaming its temporary file
         // fails, which a deferred write error also is
         return fail(z, ZE_TEMP, S("Temporary file failure"), z->archive,
@@ -2701,6 +2712,12 @@ static i32 zip_main(zipconfig *conf)
     zarchive *ar  = 0;
     z->arcexists = z->target.s &&
                    os_stat(z->ctx, z->target, 1, &z->arcinfo, scratch);
+    if (z->target.s && !z->arcexists && !os_missing(z->ctx)) {
+        // Only a missing archive is new: one that could not be examined,
+        // as after an I/O error, may hold entries that replacing it loses
+        return fail(z, ZE_READ, S("Could not open archive"), z->archive,
+                    scratch);
+    }
     if (z->arcexists && !z->arcinfo.ino[0] && !z->arcinfo.ino[1]) {
         z->arcpath = os_fullpath(z->ctx, z->target, &z->perm, scratch);
     }
