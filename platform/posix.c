@@ -237,6 +237,7 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
 [[maybe_unused]] static b32 os_keep(os *ctx, i32 fd)
 {
     if (fd == ctx->outfd) {
+        ctx->outfd = -1;  // so that closing it has nothing to forget
         release_output(1);
     }
     return 1;
