@@ -60,7 +60,7 @@ follow a longer history still clears as init does. Inflate init and
 
 ## Usage
 
-    gzip [-123456789cdfhkqtV] [FILE]...
+    gzip [-123456789cdfhknqtV] [FILE]...
 
 | Option | Meaning |
 |---|---|
@@ -69,6 +69,7 @@ follow a longer history still clears as init does. Inflate init and
 | `-d` | decompress |
 | `-f` | force: overwrite outputs, follow links, allow terminals; with `-dc`, copy data that is not gzip |
 | `-k` | keep input files |
+| `-n` | neither save nor restore the name and time (always the case) |
 | `-q` | suppress warnings |
 | `-t` | test compressed file integrity |
 | `-h`, `-V` | help, version |
@@ -81,10 +82,13 @@ Behavior follows GNU gzip: concatenated members, warnings for trailing
 garbage (but not zero padding), `zcat -f` passing other data through,
 its suffixes (`.gz`, `.z`, `-gz`, `-z`, `_z`, and `.tgz` or `.taz` for
 `.tar`), exit status 0/1/2 for success/error/warning, metadata copied to
-outputs, no partial outputs on failure or interruption, and refusal to
-replace links or special files without `-f`. Not yet supported: `-r`,
-`-l`, `-v`, `-S`, `-n`/`-N`, the `GZIP` environment variable, and GNU
-gzip's other input formats (compress, pack, LZH, zip).
+outputs, no partial outputs on failure or interruption, and in-place
+operation skipping links unless `-f`, and special files always.
+
+Headers record no file name or time, as GNU gzip's do under `-n`, which
+is therefore accepted (as in `gzip -9n`). Not yet supported: `-r`, `-l`,
+`-v`, `-S`, `-N`, the `GZIP` environment variable, and GNU gzip's other
+input formats (compress, pack, LZH, zip).
 
 ## zip
 

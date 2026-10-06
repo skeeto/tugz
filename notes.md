@@ -812,6 +812,10 @@ Fuzzers:
   formats (compress, pack, LZH, zip) pass through too.
 - gzip's exit status: 0 success, 1 error, 2 warning; errors take
   precedence. (zip's follow Info-ZIP: see its section.)
+- Headers record no name and no time (FLG and MTIME 0), which is GNU
+  gzip's `-n` output but for XFL (always 0), so `-n` and `--no-name` are
+  accepted and do nothing. `-N`, which asks for a name and time to be
+  saved or restored, is refused.
 - As in GNU gzip, the program name sets the default mode: names starting
   with `un` or `gun` decompress, and `zcat` or `gzcat` decompress to
   standard output (case-insensitive; Windows drops `.exe`). Platform

@@ -2444,6 +2444,23 @@ static void test_cli(os *ctx, arena a)
     TEST(run(ctx, a, "--decompress --stdout l.gz") == EXIT_OK);
     TEST(equals(mfs_get(ctx, "<stdout>"), text, 1000));
 
+    // Headers never carry a name or time, as GNU gzip's under -n, which
+    // is accepted, but -N, which asks for them, is not
+    TEST(run(ctx, a, "-c l") == EXIT_OK);
+    s8 noname = dup8(mfs_get(ctx, "<stdout>"));
+    TEST(noname.len>8 && !memcmp(noname.s+3, "\0\0\0\0\0", 5));
+    static char *const nflags[] = {"-nc l", "-6n -c l", "--no-name -c l"};
+    for (i32 i = 0; i < countof(nflags); i++) {
+        TEST(run(ctx, a, nflags[i]) == EXIT_OK);
+        TEST(equals(mfs_get(ctx, "<stdout>"), noname.s, noname.len));
+    }
+    free(noname.s);
+    TEST(run(ctx, a, "-dnc l.gz") == EXIT_OK);
+    TEST(equals(mfs_get(ctx, "<stdout>"), text, 1000));
+    TEST(run(ctx, a, "-Nc l") == EXIT_ERR);
+    TEST(run(ctx, a, "--name -c l") == EXIT_ERR);
+    TEST(!mfs_get(ctx, "<stdout>").len);
+
     free(gz.s);
     free(text);
 }

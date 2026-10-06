@@ -29,7 +29,7 @@ typedef struct {
 } options;
 
 static s8 const usage_text = S8(
-    "usage: gzip [-123456789cdfhkqtV] [FILE]...\n"
+    "usage: gzip [-123456789cdfhknqtV] [FILE]...\n"
     "Compress or decompress FILEs (or standard input).\n"
     "  -1..-9  compression level (default 6)\n"
     "  -c      write to standard output, keep input files\n"
@@ -38,6 +38,7 @@ static s8 const usage_text = S8(
     "          and with -dc copy data that is not gzip unchanged\n"
     "  -h      print this message\n"
     "  -k      keep input files\n"
+    "  -n      neither save nor restore the name and time (as always)\n"
     "  -q      suppress warnings\n"
     "  -t      test compressed file integrity\n"
     "  -V      print version\n"
@@ -358,6 +359,7 @@ static i32 parse_long(s8 arg, arena scratch)
         {S8("--force"),      'f'},
         {S8("--help"),       'h'},
         {S8("--keep"),       'k'},
+        {S8("--no-name"),    'n'},
         {S8("--quiet"),      'q'},
         {S8("--stdout"),     'c'},
         {S8("--test"),       't'},
@@ -385,6 +387,7 @@ static i32 apply_option(options *o, i32 c, arena scratch)
     case 'd': o->decompress = 1;       return -1;
     case 'f': o->force      = 1;       return -1;
     case 'k': o->keep       = 1;       return -1;
+    case 'n':                          return -1;  // nothing to save
     case 'q': o->quiet      = 1;       return -1;
     case 't': o->test       = 1;       return -1;
     case 'h':

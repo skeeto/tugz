@@ -106,6 +106,12 @@ expect_status 0 "$GZIP" has.tgz
 [ ! -e has.tgz ] && [ -e has.tgz.gz ] || fail "-f did not compress a .tgz"
 expect_status 1 "$GZIP" has.tgz
 
+# Headers have no name or time, as GNU gzip's under -n, which does nothing
+"$GZIP" -c text >nn.gz
+"$GZIP" -nc text | cmp -s - nn.gz || fail "-n"
+"$GZIP" --no-name -c text | cmp -s - nn.gz || fail "--no-name"
+expect_status 1 "$GZIP" -Nc text
+
 # Multiple members
 "$GZIP" -c one >m1.gz
 "$GZIP" -c text >m2.gz
