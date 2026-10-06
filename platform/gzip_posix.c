@@ -15,22 +15,10 @@
 #include "../src/cli.c"
 #include "posix.c"
 
-static b32 os_isatty(os *ctx, i32 fd)
-{
-    (void)ctx;
-    return isatty(fd);
-}
-
 static b32 os_missing(os *ctx)
 {
     (void)ctx;
     return errno == ENOENT;
-}
-
-static s8 os_error(os *ctx)
-{
-    (void)ctx;
-    return errno ? cstr(strerror(errno)) : S("");
 }
 
 static b32 os_pipeclosed(os *ctx)

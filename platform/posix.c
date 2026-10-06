@@ -252,6 +252,18 @@ static void os_exit(os *ctx, i32 status)
     _exit(status);
 }
 
+static b32 os_isatty(os *ctx, i32 fd)
+{
+    (void)ctx;
+    return isatty(fd);
+}
+
+static s8 os_error(os *ctx)
+{
+    (void)ctx;
+    return errno ? cstr(strerror(errno)) : S("");
+}
+
 // Occupy any closed standard descriptor, so that a file opened later
 // cannot take its place and receive messages. The opposite access mode
 // makes using it fail as though it were still closed. Without /dev/null

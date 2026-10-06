@@ -340,18 +340,6 @@ static i32 os_commit(os *ctx, i32 fd, s8 temp, s8 path, b32 replace,
     return r;
 }
 
-static b32 os_isatty(os *ctx, i32 fd)
-{
-    (void)ctx;
-    return isatty(fd);
-}
-
-static s8 os_error(os *ctx)
-{
-    (void)ctx;
-    return errno ? cstr(strerror(errno)) : S("");
-}
-
 static s8 os_fromcp(os *ctx, s8 name, b32 oem, arena *perm, arena scratch)
 {
     (void)ctx;
