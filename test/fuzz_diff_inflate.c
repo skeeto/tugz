@@ -122,10 +122,13 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
         __builtin_trap();
     }
 
+    // GZ_EWRITE: ours accepted, with more than OUTCAP of output. That
+    // agrees with zlib only if zlib's output did not fit either.
     iz zlen;
     i32 want = zlib_raw(data, (iz)size, &zlen);
     i32 got = fuzz_inflate(env, data, (iz)size);
-    if (want>=0 && got!=GZ_EWRITE) {
+    CHECK(want<0 || got!=GZ_EWRITE);
+    if (want >= 0) {
         CHECK(want == (got==GZ_OK));
         if (want) {
             CHECK(zlen == env->ctx.outlen);
@@ -136,7 +139,8 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     b32 trailing;
     want = zlib_gzip(data, (iz)size, &zlen, &trailing);
     got = fuzz_gunzip(env, data, (iz)size);
-    if (want>=0 && got!=GZ_EWRITE) {
+    CHECK(want<0 || got!=GZ_EWRITE);
+    if (want >= 0) {
         CHECK(want == (got==GZ_OK || got==GZ_TRAILING));
         if (want) {
             CHECK(trailing == (got==GZ_TRAILING));
