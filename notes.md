@@ -298,7 +298,10 @@ neither inflate nor the gzip container.
   without flag bit 11 or such a field, made on DOS or Windows (or OS/2,
   or WinZip's NTFS), is decoded from the OEM code page
   (`MultiByteToWideChar`), as Explorer's zip folder stores names, and
-  there patterns also match the decoded name, which names the file that
+  any other that is not UTF-8 from the ANSI code page, in which the port
+  keeps names, as PKZIP for Windows (2.5, 2.6, 4.0) stored them (the
+  port takes UTF-8 ones for ANSI too, where tugz takes them for UTF-8).
+  There patterns also match the decoded name, which names the file that
   `-u`, `-f`, and patterns select. A replaced entry is written under the
   Unicode name, flagged UTF-8; copied entries keep their bytes. Messages
   give the Unicode name. Elsewhere, as in Info-ZIP's Unix port, patterns

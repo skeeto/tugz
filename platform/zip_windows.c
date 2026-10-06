@@ -50,7 +50,9 @@ W32(i32)  LCMapStringW(u32, u32, c16 const *, i32, c16 *, i32);
 W32(i32)  MultiByteToWideChar(u32, u32, u8 const *, i32, c16 *, i32);
 W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 
+#define CP_ACP                     0u
 #define CP_OEMCP                   1u
+#define MB_ERR_INVALID_CHARS       0x8u
 #define LOCALE_INVARIANT           0x7fu
 #define LCMAP_UPPERCASE            0x200u
 #define FILE_ATTRIBUTE_HIDDEN      0x02u
@@ -598,14 +600,18 @@ static s8 os_error(os *ctx)
     return S("");
 }
 
-// By the system's OEM code page, as Info-ZIP's port converts names with
-// OemToAnsi. A name has at most 65,535 bytes, each at most one unit.
-static s8 os_fromoem(os *ctx, s8 name, arena *perm, arena scratch)
+// By the system's OEM code page, as Info-ZIP's port converts such names
+// with OemToAnsi, or else by its ANSI code page, in which the port keeps
+// names. A name has at most 65,535 bytes, each at most one unit. Bytes
+// that the code page cannot decode (DBCS, UTF-8) leave it without one.
+static s8 os_fromcp(os *ctx, s8 name, b32 oem, arena *perm, arena scratch)
 {
     (void)ctx;
     i32  len = (i32)name.len;
     c16 *w   = new(&scratch, len+1, c16);
-    i32  n   = MultiByteToWideChar(CP_OEMCP, 0, name.s, len, w, len);
+    u32  cp  = oem ? CP_OEMCP : CP_ACP;
+    i32  n   = MultiByteToWideChar(cp, MB_ERR_INVALID_CHARS, name.s, len, w,
+                                   len);
     w[n>0 ? n : 0] = 0;
     return n>0 ? towtf8(perm, w) : (s8){0};
 }

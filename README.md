@@ -130,7 +130,8 @@ paths refresh every entry, and a path not on disk, such as a quoted
 wildcard, selects the entries it matches. As in Info-ZIP, a file also
 matches an entry by its Unicode path field, which Windows tools add to
 names they store in a code page, and on Windows by its name decoded
-from the OEM code page, in which Explorer stores names. Data before the
+from the OEM code page, in which Explorer stores names, or, if made
+elsewhere and not UTF-8, from the ANSI code page. Data before the
 first entry, such as a self-extractor's stub or a Python zipapp's `#!`
 line, is kept when the archive's offsets account for it (as after
 `zip -A`), as in Info-ZIP, while an archive whose offsets do not is

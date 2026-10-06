@@ -109,8 +109,9 @@ static b32  os_isatty(os *, i32 fd);
 // library's strerror, as Info-ZIP reports I/O errors, or an empty string
 // if unknown.
 static s8   os_error(os *);
-// A name in the OEM code page, as UTF-8 (Windows), or a null string.
-static s8   os_fromoem(os *, s8 name, arena *perm, arena scratch);
+// A name in the OEM code page, or else the ANSI one, as UTF-8 (Windows),
+// or a null string if that code page cannot decode it.
+static s8   os_fromcp(os *, s8 name, b32 oem, arena *perm, arena scratch);
 // A name in upper case as the file system compares names ignoring case
 // (Windows), beyond ASCII too, or the name itself. It and any temporaries
 // come from one arena.
@@ -1649,8 +1650,10 @@ static s8 entry_unicode(zarchive *ar, iz i)
 // a file, when it differs from the stored name: from a Unicode path field
 // (written by Info-ZIP's Windows port, WinZip, 7-Zip) that checks out,
 // else on Windows, as Info-ZIP's port reads them, from the OEM code page
-// for names made on DOS or Windows. Returns a null string if none. As
-// Info-ZIP does, warns of a field that does not check out.
+// for names made on DOS or Windows, and from the ANSI code page, the
+// port's own, for others, such as PKZIP for Windows makes, unless they
+// are UTF-8. Returns a null string if none. As Info-ZIP does, warns of a
+// field that does not check out.
 static s8 entry_uname(zip *z, zentry *e, arena *perm, arena scratch)
 {
     if (e->flags & ZIP_FLAG_UTF8) {
@@ -1659,8 +1662,10 @@ static s8 entry_uname(zip *z, zentry *e, arena *perm, arena scratch)
     u32 crc = crc32_update(0, e->name.s, e->name.len);
     s8  u   = zip_extra_upath(e->cextra, crc);
     if (!u.s || zip_utf8(u)<0) {
-        b32 oem = z->windows && zip_oem_name(e) && zip_utf8(e->name);
-        u = oem ? os_fromoem(z->ctx, e->name, perm, scratch) : (s8){0};
+        i32 utf8 = zip_utf8(e->name);
+        b32 oem  = zip_oem_name(e);
+        b32 cp   = z->windows && (oem ? utf8 : utf8<0);
+        u = cp ? os_fromcp(z->ctx, e->name, oem, perm, scratch) : (s8){0};
     }
     if (zip_extra_upath_stale(e->cextra, crc)) {
         s8 name = u.len ? u : e->name;  // Info-ZIP gives "(null)"

@@ -350,13 +350,14 @@ static s8 os_error(os *ctx)
     return errno ? cstr(strerror(errno)) : S("");
 }
 
-static s8 os_fromoem(os *ctx, s8 name, arena *perm, arena scratch)
+static s8 os_fromcp(os *ctx, s8 name, b32 oem, arena *perm, arena scratch)
 {
     (void)ctx;
     (void)name;
+    (void)oem;
     (void)perm;
     (void)scratch;
-    return (s8){0};  // never asked: only Windows reads OEM names
+    return (s8){0};  // never asked: only Windows decodes code pages
 }
 
 static s8 os_upcase(os *ctx, s8 name, arena *a)

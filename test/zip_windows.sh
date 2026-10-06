@@ -454,6 +454,33 @@ grep -q "^deleting: $u" out || fail "-d OEM name: $(cat out)"
 oem o4.zip
 "$ZIP" -d o4.zip 'caf?.txt' >out 2>&1
 grep -q '^deleting: caf' out || fail "-d OEM name pattern: $(cat out)"
+
+# Other names that are not UTF-8 are in the ANSI code page, the port's
+# own, as PKZIP for Windows 2.5 (known by attributes beyond DOS's) and
+# Unix tools in Latin-1 store them (0xe9 is e-acute in code page 1252)
+ansi() {  # archive made-by attributes: an empty caf\xe9.txt from 2020
+    { printf 'PK\003\004\012\0\0\0\0\0\0\0\041P\0\0\0\0\0\0\0\0\0\0\0\0'
+      printf '\010\0\0\0caf\351.txt'
+      printf "PK\\001\\002$2\\012\\0\\0\\0\\0\\0\\0\\0\\041P"
+      printf '\0\0\0\0\0\0\0\0\0\0\0\0\010\0\0\0\0\0\0\0\0\0'
+      printf "$3\\0\\0\\0\\0caf\\351.txt"
+      printf 'PK\005\006\0\0\0\0\001\0\001\0\066\0\0\0\046\0\0\0\0\0'; } >"$1"
+}
+k='HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage'
+acp=$(ps "(Get-ItemProperty '$k').ACP" | tr -d '\r')
+if [ "$acp" = 1252 ]; then
+    ansi a1.zip '\031\0' '\040\0\244\201'  # PKZIP 2.5 for Windows
+    printf '%s\r\n' "$u" | "$ZIP" a1.zip -@ >out
+    grep -q "^updating: $u" out || fail "ANSI name: $(cat out)"
+    [ "$(list a1.zip | wc -l)" = 1 ] || fail "ANSI name duplicated"
+    ansi a2.zip '\036\003' '\0\0\244\201'  # Unix
+    "$ZIP" -f a2.zip >out
+    grep -q "^freshening: $u" out || fail "-f ANSI name: $(cat out)"
+    ansi a3.zip '\031\0' '\040\0\244\201'
+    "$ZIP" a3.zip 'caf*' >out
+    grep -q "^updating: $u" out || fail "ANSI name, wildcard: $(cat out)"
+    [ "$(list a3.zip | wc -l)" = 1 ] || fail "ANSI name duplicated (wildcard)"
+fi
 rm caf*.txt
 
 # ...but one so long, decoded (here 0xc4, U+2500, three bytes as UTF-8,
