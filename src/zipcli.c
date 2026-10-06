@@ -1680,16 +1680,15 @@ static i32 not_zip(zip *z, arena scratch)
 // Fail, just after a read from the archive failed (os_readat's result
 // r), as Info-ZIP does: as an I/O error (11), or at its end, which comes
 // early only if it has shrunk since it was examined, as an unexpected end
-// (2), naming any entry being copied.
+// (2), either naming any entry being copied, else the archive.
 static i32 read_failed(zip *z, i32 r, s8 copying, arena scratch)
 {
-    if (r < 0) {
-        return fail(z, ZE_READ, S("Could not read archive"), z->archive,
-                    scratch);
-    }
     s8 arg = z->archive;
     if (copying.s) {
         arg = JOIN(&scratch, S("was copying "), copying);
+    }
+    if (r < 0) {
+        return fail(z, ZE_READ, S("Input file read failure"), arg, scratch);
     }
     return fail(z, ZE_EOF, S("Unexpected end of zip file"), arg, scratch);
 }
@@ -1949,6 +1948,7 @@ typedef struct {
     iz       off;
     i32      fd;
     b32      err;
+    s8       why;      // of the first read error, as it occurred
     b32      changed;  // not opened, being no longer the file scanned
 } zsrc;
 
@@ -1999,7 +1999,10 @@ static iz src_read(zip *z, zsrc *s, u8 *buf, iz cap)
         return n;
     }
     iz n = os_read(z->ctx, s->fd, buf, cap);
-    s->err |= n < 0;
+    if (n<0 && !s->err) {
+        s->err = 1;
+        s->why = os_error(z->ctx);
+    }
     return n<0 ? 0 : n;
 }
 
@@ -2009,6 +2012,7 @@ typedef struct {
     iz        cap;
     deflator *def;     // reset for each entry
     arena     extras;  // new entries' central extra fields
+    s8        why;     // of a failed read of an entry's input
 } zwork;
 
 static void store_data(zip *z, zwork *k, zsrc *s, u32 *crc, i64 *usize)
@@ -2150,7 +2154,7 @@ enum {
     WRITE_OK,
     WRITE_EOPEN,     // the system refused (os_error tells why)
     WRITE_ECHANGED,  // no longer the file scanned, so not opened
-    WRITE_EREAD,
+    WRITE_EREAD,     // the system failed a read (zwork's why tells why)
     WRITE_EDIRFILE,
 };
 
@@ -2231,6 +2235,7 @@ static i32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
         e->csize = zout_tell(w) - data;
         src_close(z, &src);
         if (src.err) {
+            k->why = src.why;
             zout_seek(w, start);
             return WRITE_EREAD;
         }
@@ -2365,6 +2370,20 @@ static void report(zip *z, s8 verb, s8 name, zentry *e, arena scratch)
     say(z, 1, JOIN(&scratch, verb, name, how, S("\n")));
 }
 
+// Info-ZIP's summary of files and entries read, when any were skipped.
+static void summarize_reads(zip *z, arena scratch)
+{
+    if (z->nskipped && !z->quiet) {
+        s8 msg = JOIN(&scratch,
+            S("\nzip warning: Not all files were readable\n"),
+            S("  files/entries read:  "), znum(&scratch, z->nread),
+            S(" ("), zbytes(&scratch, z->bread), S(" bytes)"),
+            S("  skipped:  "), znum(&scratch, z->nskipped),
+            S(" ("), zbytes(&scratch, z->bskipped), S(" bytes)\n"));
+        say(z, 2, msg);
+    }
+}
+
 // Temporary file beside the archive, past any links, so that it can be
 // renamed over it, created discarded-on-close. For a new archive it has
 // the permissions of a new file from the start. On Windows, beside a
@@ -2475,7 +2494,12 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
             if (is_dirname(f->name) == (f->info.type==FT_DIR)) {
                 r = write_file(z, &k, f, e, scratch);
             }
-            if (r == WRITE_OK) {
+            if (w.err) {
+                // Info-ZIP stops at the write that fails, its progress
+                // line begun, as here without the result
+                report(z, verb, f->name, 0, scratch);
+                break;
+            } else if (r == WRITE_OK) {
                 // A replaced entry keeps its comment, as in Info-ZIP
                 e->comment = was.comment;
                 report(z, verb, e->name, e, scratch);
@@ -2486,17 +2510,18 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
                 break;
             }
 
-            // As Info-ZIP does, give the progress line, then for a failed
-            // open the system's reason, as its perror words it, and warn
+            // As Info-ZIP does, give the progress line, then the system's
+            // reason, as its perror words it, even under -q, and warn
             // under the entry's name
             if (old) {
                 *old = was;
             }
-            s8 reason = r==WRITE_EOPEN ? os_error(z->ctx) : S("");
+            s8 reason = r==WRITE_EOPEN ? os_error(z->ctx) :
+                        r==WRITE_EREAD ? k.why : S("");
             report(z, verb, f->name, 0, scratch);
-            if (reason.len && !z->quiet) {
+            if (reason.len) {
                 arena tmp = scratch;
-                s8    who = old ? f->name : S("zip warning");
+                s8    who = old && r==WRITE_EOPEN ? f->name : S("zip warning");
                 say(z, 2, JOIN(&tmp, who, S(": "), reason, S("\n")));
             }
             s8 why = S("could not open for reading: ");
@@ -2533,28 +2558,36 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
         }
     }
 
-    i64 cdoff = zout_tell(&w);
-    for (iz i = 0; i < count; i++) {
-        arena tmp = scratch;  // each header is forgotten once written
-        u8   *h   = newbytes(&tmp, zip_central_len(cd[i]));
-        zout_write(&w, h, zip_central(h, cd[i])-h);
+    if (!w.err) {
+        // As Info-ZIP, the files read and skipped, before the directory
+        // (and so before "zip file empty")
+        summarize_reads(z, scratch);
+
+        i64 cdoff = zout_tell(&w);
+        for (iz i = 0; i < count; i++) {
+            arena tmp = scratch;  // each header is forgotten once written
+            u8   *h   = newbytes(&tmp, zip_central_len(cd[i]));
+            zout_write(&w, h, zip_central(h, cd[i])-h);
+        }
+        i64 cdsize  = zout_tell(&w) - cdoff;
+        s8  comment = ar ? ar->end.comment : (s8){0};
+        iz  len     = zip_end_len(count, cdsize, cdoff, comment);
+        u8 *end     = newbytes(&scratch, len);
+        u8 *fin     = zip_end(end, count, cdsize, cdoff, comment, made_by(z));
+        zout_write(&w, end, fin-end);
+        zout_flush(&w);
     }
-    i64 cdsize  = zout_tell(&w) - cdoff;
-    s8  comment = ar ? ar->end.comment : (s8){0};
-    u8 *end = newbytes(&scratch, zip_end_len(count, cdsize, cdoff, comment));
-    u8 *fin = zip_end(end, count, cdsize, cdoff, comment, made_by(z));
-    zout_write(&w, end, fin-end);
-    zout_flush(&w);
 
     if (ar) {
         os_close(z->ctx, ar->in.fd);  // before replacing it
         ar->in.fd = -1;
     }
     if (w.err || !os_truncate(z->ctx, fd, zout_tell(&w))) {
+        // Info-ZIP's words for a failed write, in whichever entry
         s8 why = w.err ? w.why : os_error(z->ctx);
         os_close(z->ctx, fd);
         return fail_why(z, ZE_WRITE, why, S("Output file write failure"),
-                        temp, scratch);
+                        S("write error on zip file"), scratch);
     }
     if (!count) {
         warn(z, S("zip file empty"), S(""), scratch);
@@ -3278,17 +3311,5 @@ static i32 zip_main(zipconfig *conf)
                         z->archive, scratch);
     }
     err = write_archive(z, ar, &items, scratch);
-    if (err) {
-        return err;
-    }
-    if (z->nskipped && !z->quiet) {
-        s8 msg = JOIN(&scratch,
-            S("\nzip warning: Not all files were readable\n"),
-            S("  files/entries read:  "), znum(&scratch, z->nread),
-            S(" ("), zbytes(&scratch, z->bread), S(" bytes)"),
-            S("  skipped:  "), znum(&scratch, z->nskipped),
-            S(" ("), zbytes(&scratch, z->bskipped), S(" bytes)\n"));
-        say(z, 2, msg);
-    }
-    return z->status;
+    return err ? err : z->status;
 }

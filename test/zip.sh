@@ -1593,12 +1593,33 @@ if "$ZIP" -q hl1.zip tree/a.txt && ln hl1.zip hl2.zip 2>/dev/null; then
 fi
 
 # A failed read is told from a failed open (Linux: reading this file at
-# offset 0 fails)
+# offset 0 fails), after its reason, as Info-ZIP's perror gives it
 if [ -r /proc/self/mem ]; then
     "$ZIP" mem.zip /proc/self/mem >out 2>err && fail "read error succeeded"
-    grep -qx 'zip warning: could not read input file: proc/self/mem' err ||
-        fail "read error: $(cat err)"
+    printf '%s\n' 'zip warning: Input/output error' \
+        'zip warning: could not read input file: proc/self/mem' >want
+    head -n 2 err | cmp -s - want || fail "read error: $(cat err)"
 fi
+
+# A failed write stops at its entry, whose progress line it ends without
+# a result, with Info-ZIP's error, leaving no archive or temporary file,
+# or the archive as it was
+mkdir wf
+head -c 3000000 /dev/urandom >wf/big
+printf small >wf/small
+"$ZIP" -q wf/u.zip wf/small
+cp wf/u.zip wfu.orig
+printf '%s\n' 'zip I/O error: File too large' \
+    'zip error: Output file write failure (write error on zip file)' >want
+for arc in w u; do
+    (trap '' XFSZ; ulimit -f 2000; exec "$ZIP" wf/$arc.zip wf/big wf/small) \
+        >out 2>err && fail "failed write succeeded ($arc)"
+    grep -qx '  adding: wf/big' out || fail "failed write ($arc): $(cat out)"
+    cmp -s err want || fail "failed write ($arc): $(cat err)"
+done
+cmp -s wf/u.zip wfu.orig || fail "failed write changed the archive"
+[ "$(ls wf | tr '\n' ' ')" = "big small u.zip " ] ||
+    fail "failed write left: $(ls wf)"
 
 # With nothing to update, -u and -f exit 12 silently, as Info-ZIP does,
 # and on a missing archive it warns
@@ -1654,8 +1675,22 @@ EOF
     "$ZIP" -j r3.zip unreadable tree/sub/random >out 2>err || true
     grep -qx '  files/entries read:  1 (292K bytes)  skipped:  1 (24 bytes)' \
         err || fail "unreadable, large: $(cat err)"
+    # Info-ZIP's perror lines come even under -q
     "$ZIP" -q r4.zip unreadable 2>err && fail "unreadable file, -q"
-    [ ! -s err ] || fail "-q, unreadable: $(cat err)"
+    [ "$(cat err)" = 'zip warning: Permission denied' ] ||
+        fail "-q, unreadable: $(cat err)"
+
+    # As there, the summary comes before "zip file empty"
+    "$ZIP" r5.zip unreadable >out 2>err && fail "unreadable file alone"
+    cat >want <<EOF
+zip warning: Permission denied
+zip warning: could not open for reading: unreadable
+
+zip warning: Not all files were readable
+  files/entries read:  0 (0 bytes)  skipped:  1 (24 bytes)
+zip warning: zip file empty
+EOF
+    cmp -s err want || fail "unreadable file alone: $(cat err)"
     chmod 644 unreadable
 
     # Failing to create the temporary file is Info-ZIP's temporary file
@@ -1768,6 +1803,9 @@ zip warning: could not open for reading: stale
 zip warning: will just copy entry over: stale
 EOF
     cmp -s err want || fail "copy over warning: $(cat err)"
+    "$ZIP" -q s.zip stale >out 2>err && fail "unreadable replacement, -q"
+    [ "$(cat err)" = 'stale: Permission denied' ] ||
+        fail "copy over, -q: $(cat err)"
     chmod 644 stale
 fi
 expect_status 0 "$ZIP" -h

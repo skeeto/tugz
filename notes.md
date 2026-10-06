@@ -194,35 +194,38 @@ neither inflate nor the gzip container.
   first gives the system's reason, worded by `strerror` ("zip I/O
   error: Permission denied"), when there is one; on Windows, for the
   common errors, worded as its C runtime would (unverified against
-  Info-ZIP's port). An archive that ends early, having shrunk while zip
-  works, is Info-ZIP's "Unexpected end of zip file" (2), naming the
-  entry being copied, not a read error. A read-only archive fails with
-  15 once there is something to do, before doing it, as Info-ZIP finds
-  by opening it to update it (replacing it needs no permission to write
-  it): as `access` judges on POSIX, and on Windows by the read-only
-  attribute, which would otherwise refuse the rename only after all the
-  work. So does, on Windows, an archive that another process holds
-  open without sharing delete access, which the rename needs (by its
-  sources, Info-ZIP's port refuses it up front only if that process
-  also refuses reading or writing, and otherwise at the end, 15 either
-  way): zip finds this by opening the archive with that access, and
-  holds it so until the rename, so that no process can open it that way
-  in the meantime. One that can be neither read nor written is, as in
-  Info-ZIP, taken for a missing archive, which then cannot be written.
-  A missing or empty archive gets Info-ZIP's "not found or empty"
-  warning under `-u`, `-f`, and `-d`, which go on with their arguments
-  (warning of unmatched names, rejecting repeated ones). A file that
-  cannot be added still gets its progress line, then for a failed open
-  the reason as Info-ZIP's `perror` gives it (though not under `-q`, as
-  there), then a warning under its entry's name that tells a failed
-  open from a failed read. The closing "Not all files were readable"
-  counts the files and entries read and skipped as Info-ZIP does, with
-  its abbreviated byte counts ("292K"), in the same words. Info-ZIP's
-  quirks kept: `../` stays in names, an emptied archive remains as a
-  22-byte file, odd seconds round up (but not past `SOURCE_DATE_EPOCH`).
-  Times beyond the DOS range clamp to its ends. A name over 65,535
-  bytes (possible in deep Windows paths) is skipped with a warning,
-  exiting 18.
+  Info-ZIP's port). A read error in the archive is its "Input file read
+  failure" (11), and one that ends early, having shrunk while zip works,
+  is its "Unexpected end of zip file" (2), either naming the entry being
+  copied ("was copying a.txt"), else the archive. A read-only archive
+  fails with 15 once there is something to do, before doing it, as
+  Info-ZIP finds by opening it to update it (replacing it needs no
+  permission to write it): as `access` judges on POSIX, and on Windows
+  by the read-only attribute, which would otherwise refuse the rename
+  only after all the work. So does, on Windows, an archive that another
+  process holds open without sharing delete access, which the rename
+  needs (by its sources, Info-ZIP's port refuses it up front only if
+  that process also refuses reading or writing, and otherwise at the
+  end, 15 either way): zip finds this by opening the archive with that
+  access, and holds it so until the rename, so that no process can open
+  it that way in the meantime. One that can be neither read nor written
+  is, as in Info-ZIP, taken for a missing archive, which then cannot be
+  written. A missing or empty archive gets Info-ZIP's "not found or
+  empty" warning under `-u`, `-f`, and `-d`, which go on with their
+  arguments (warning of unmatched names, rejecting repeated ones). A
+  file that cannot be added still gets its progress line, then the
+  system's reason as Info-ZIP's `perror` gives it (even under `-q`, as
+  there), then a warning under its entry's name that tells a failed open
+  from a failed read. Should writing the archive fail, its progress line
+  lacks the result, and the error is Info-ZIP's "Output file write
+  failure (write error on zip file)". The "Not all files were readable"
+  summary, before any "zip file empty", as there, counts the files and
+  entries read and skipped as Info-ZIP does, with its abbreviated byte
+  counts ("292K"), in the same words. Info-ZIP's quirks kept: `../`
+  stays in names, an emptied archive remains as a 22-byte file, odd
+  seconds round up (but not past `SOURCE_DATE_EPOCH`). Times beyond the
+  DOS range clamp to its ends. A name over 65,535 bytes (possible in
+  deep Windows paths) is skipped with a warning, exiting 18.
 - Options: Info-ZIP's grammar and names. Long names may be abbreviated
   to a prefix of exactly one of Info-ZIP's long names (supported or not,
   so `--rec` is ambiguous). Only `-X` is negatable; other negations and
@@ -636,7 +639,11 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   where Info-ZIP takes it for a missing one and replaces it, losing its
   entries. So does, before any work, one that cannot be examined for any
   reason but that nothing is there, such as an I/O error (Info-ZIP opens
-  it regardless, and replaces one that it cannot open).
+  it regardless, and replaces one that it cannot open). A file that
+  cannot be read to its end is left out, or its entry kept, with the
+  reason and "could not read input file" (18), where Info-ZIP stores
+  what it read, exiting 0, warning only that the file's size changed
+  (and when storing it, with the reason and that warning too).
 - Messages: warnings and errors go to standard error, where Info-ZIP
   writes all but `perror`'s to standard output, and without the tab that
   starts most of its warnings. Advice on options that tugz rejects is
@@ -645,7 +652,9 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   after "ignoring FIFO (Named Pipe)". An I/O error's reason is the one
   found when the error occurred, where Info-ZIP's can be a later call's.
   A stale Unicode path field is warned of by its entry's name (see Entry
-  names in code pages).
+  names in code pages). A read error in a local or central header of
+  the archive gives its reason once, where Info-ZIP also warns with it
+  first ("reading local entry: Input/output error").
 - Archive contents: entries are sorted by name within each directory
   (Info-ZIP uses readdir order). Any entry that does not shrink is
   stored, though that may take reading the file again, where Info-ZIP
