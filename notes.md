@@ -816,6 +816,11 @@ Fuzzers:
   with `un` or `gun` decompress, and `zcat` or `gzcat` decompress to
   standard output (case-insensitive; Windows drops `.exe`). Platform
   layers pass the name in `config.name`.
+- Names follow GNU gzip's default suffixes, in any case: `.gz`, `.z`,
+  `-gz`, `-z`, `_z`, and `.tgz` and `.taz`, which stand for `.tar`.
+  Decompressing in place drops one; compressing in place leaves a file
+  that has one alone, with a notice but status 0, unless `-f`. As there,
+  the file is checked (missing, a directory, a link) before its name.
 - In-place operation (no `-c`/`-t`) deletes its input, so its input must
   be a regular file: symbolic links and hard-linked files are skipped with
   a warning unless `-f` (then links are followed); FIFOs, devices, and

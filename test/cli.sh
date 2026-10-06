@@ -79,6 +79,24 @@ mkdir dd.gz
 expect_status 2 "$GZIP" -k dd
 expect_status 1 "$GZIP" -kf dd
 
+# GNU gzip's other suffixes, in any case, where .taz stands for .tar
+for s in .z -gz _Z .TAZ; do
+    printf x | "$GZIP" >sfx$s
+    "$GZIP" -d sfx$s
+    case $s in .TAZ) out=sfx.tar;; *) out=sfx;; esac
+    cmp -s $out one && [ ! -e sfx$s ] || fail "-d of a $s suffix"
+    rm $out
+done
+
+# ...and as there, a file with one is left alone, which is no failure,
+# unless forced, but a missing one is an error
+printf data >has.tgz
+expect_status 0 "$GZIP" has.tgz
+[ -e has.tgz ] && [ ! -e has.tgz.gz ] || fail "compressed a .tgz"
+"$GZIP" -f has.tgz
+[ ! -e has.tgz ] && [ -e has.tgz.gz ] || fail "-f did not compress a .tgz"
+expect_status 1 "$GZIP" has.tgz
+
 # Multiple members
 "$GZIP" -c one >m1.gz
 "$GZIP" -c text >m2.gz

@@ -79,7 +79,8 @@ Installed (or linked) as `gunzip` it decompresses, and as `zcat` or
 
 Behavior follows GNU gzip: concatenated members, warnings for trailing
 garbage (but not zero padding), `zcat -f` passing other data through,
-exit status 0/1/2 for success/error/warning, metadata copied to
+its suffixes (`.gz`, `.z`, `-gz`, `-z`, `_z`, and `.tgz` or `.taz` for
+`.tar`), exit status 0/1/2 for success/error/warning, metadata copied to
 outputs, no partial outputs on failure or interruption, and refusal to
 replace links or special files without `-f`. Not yet supported: `-r`,
 `-l`, `-v`, `-S`, `-n`/`-N`, the `GZIP` environment variable, and GNU

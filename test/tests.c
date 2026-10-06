@@ -2213,26 +2213,66 @@ static void test_cli(os *ctx, arena a)
     TEST(equals(out, text, 50000));
     free(out.s);
 
-    // Already has suffix; unknown suffix
-    TEST(run(ctx, a, "f.gz") == EXIT_WARN);
-    TEST(stderr_has(ctx, "already has .gz suffix"));
+    // Already has suffix, which as in GNU gzip is no failure, unless the
+    // file is missing; unknown suffix
+    TEST(run(ctx, a, "f.gz") == EXIT_OK);
+    TEST(stderr_has(ctx, "gzip: f.gz already has .gz suffix -- unchanged"));
+    TEST(run(ctx, a, "-q f.gz") == EXIT_OK);
+    TEST(!mfs_get(ctx, "<stderr>").len);
+    TEST(run(ctx, a, "missing.gz") == EXIT_ERR);
+    TEST(stderr_has(ctx, "missing.gz: cannot open"));
     mfs_put(ctx, "g", text, 100);
     TEST(run(ctx, a, "-d g") == EXIT_WARN);
     TEST(stderr_has(ctx, "unknown suffix"));
     TEST(has(ctx, "g"));
 
-    // Upper case suffix and .tgz
-    mfs_put(ctx, "U.GZ", gz.s, gz.len);
-    TEST(run(ctx, a, "-d U.GZ") == EXIT_OK);
-    TEST(equals(mfs_get(ctx, "U"), text, 50000));
-    mfs_put(ctx, "t.tgz", gz.s, gz.len);
-    TEST(run(ctx, a, "-d t.tgz") == EXIT_OK);
-    TEST(equals(mfs_get(ctx, "t.tar"), text, 50000));
-    TEST(!has(ctx, "t.tgz"));
+    // GNU gzip's suffixes, in any case: .tgz and .taz stand for .tar
+    static struct {
+        char *name;
+        char *plain;
+    } const suffixed[] = {
+        {"s.gz", "s"}, {"U.GZ", "U"}, {"s.z", "s"}, {"s.Z", "s"},
+        {"s-gz", "s"}, {"s-z", "s"}, {"s_z", "s"}, {"s_Z", "s"},
+        {"s.tgz", "s.tar"}, {"s.taz", "s.tar"}, {"s.TAZ", "s.tar"},
+    };
+    for (i32 i = 0; i < countof(suffixed); i++) {
+        char cmd[32];
+        mfs_put(ctx, suffixed[i].name, gz.s, gz.len);
+        snprintf(cmd, sizeof(cmd), "-d %s", suffixed[i].name);
+        TEST(run(ctx, a, cmd) == EXIT_OK);
+        TEST(equals(mfs_get(ctx, suffixed[i].plain), text, 50000));
+        TEST(!has(ctx, suffixed[i].name));
+        mfs_put(ctx, suffixed[i].name, text, 100);
+        TEST(run(ctx, a, suffixed[i].name) == EXIT_OK);
+        TEST(stderr_has(ctx, " suffix -- unchanged"));
+        TEST(equals(mfs_get(ctx, suffixed[i].name), text, 100));
+        snprintf(cmd, sizeof(cmd), "-f %s", suffixed[i].name);
+        TEST(run(ctx, a, cmd) == EXIT_OK);  // as GNU gzip, compress anyway
+        TEST(!has(ctx, suffixed[i].name));
+        snprintf(cmd, sizeof(cmd), "%s.gz", suffixed[i].name);
+        TEST(has(ctx, cmd));
+        os_remove(ctx, cstrs8(cmd), a);
+        os_remove(ctx, cstrs8(suffixed[i].plain), a);
+    }
+    TEST(run(ctx, a, "s.TAZ") == EXIT_ERR);  // missing
+    TEST(stderr_has(ctx, "s.TAZ: cannot open"));
+    TEST(run(ctx, a, "-q s.TAZ") == EXIT_ERR);
+    TEST(stderr_has(ctx, "s.TAZ: cannot open"));
 
-    // A bare ".gz" has no stem
-    mfs_put(ctx, ".gz", gz.s, gz.len);
-    TEST(run(ctx, a, "-d .gz") == EXIT_WARN);
+    // A suffix alone has no stem, even after a directory
+    static char *const stemless[] = {".gz", "d/.gz", "d\\.z"};
+    for (i32 i = 0; i < countof(stemless); i++) {
+        char cmd[32];
+        mfs_put(ctx, stemless[i], gz.s, gz.len);
+        snprintf(cmd, sizeof(cmd), "-dk %s", stemless[i]);
+        TEST(run(ctx, a, cmd) == EXIT_WARN);
+        TEST(stderr_has(ctx, "unknown suffix"));
+        snprintf(cmd, sizeof(cmd), "%s", stemless[i]);
+        TEST(run(ctx, a, cmd) == EXIT_OK);
+        snprintf(cmd, sizeof(cmd), "%s.gz", stemless[i]);
+        TEST(has(ctx, cmd) && !has(ctx, stemless[i]));
+        os_remove(ctx, cstrs8(cmd), a);
+    }
 
     // Corrupt input: error, output removed, input kept
     s8 bad = gzbytes(gz.s, gz.len);

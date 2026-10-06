@@ -74,25 +74,39 @@ static b32 ascii_iequals(s8 a, s8 b)
     return 1;
 }
 
-static b32 has_suffix(s8 s, s8 suffix)
+// The suffix of a compressed file's name, as written in it (regardless
+// of case), or a null string: GNU gzip's list. A suffix alone, or alone
+// after a directory separator, is not a name with that suffix.
+static s8 known_suffix(s8 path)
 {
-    if (s.len <= suffix.len) {
-        return 0;  // a bare suffix is not a name with that suffix
+    static s8 const suffixes[] = {
+        S8(".gz"), S8(".z"), S8("-gz"), S8("-z"), S8("_z"),
+        S8(".tgz"), S8(".taz"),
+    };
+    for (iz i = 0; i < countof(suffixes); i++) {
+        iz len = suffixes[i].len;
+        if (path.len <= len) {
+            continue;
+        }
+        s8 tail = {path.s + path.len - len, len};
+        u8 prev = tail.s[-1];
+        if (prev!='/' && prev!='\\' && ascii_iequals(tail, suffixes[i])) {
+            return tail;
+        }
     }
-    s8 tail = {s.s + s.len - suffix.len, suffix.len};
-    return ascii_iequals(tail, suffix);
+    return (s8){0};
 }
 
-// Output name for decompression, or a null string if unrecognized.
+// Output name for decompression, or a null string if unrecognized: the
+// suffix is dropped, except that .tgz and .taz become .tar.
 static s8 strip_suffix(arena *a, s8 path)
 {
-    s8 r = {0};
-    if (has_suffix(path, S(".gz"))) {
-        r = path;
-        r.len -= 3;
-    } else if (has_suffix(path, S(".tgz"))) {
-        r = path;
-        r.len -= 4;
+    s8 suffix = known_suffix(path);
+    if (!suffix.s) {
+        return suffix;
+    }
+    s8 r = {path.s, path.len - suffix.len};
+    if (ascii_iequals(suffix, S(".tgz")) || ascii_iequals(suffix, S(".taz"))) {
         r = s8concat(a, r, S(".tar"));
     }
     return r;
@@ -204,22 +218,9 @@ static i32 process_file(options *o, s8 path, arena scratch)
         return report(o, S("stdin"), status, scratch);
     }
 
-    b32 in_place = !o->to_stdout && !o->test;
-    if (in_place && !o->decompress && has_suffix(path, S(".gz"))) {
-        return warn(o, path, S("already has .gz suffix -- unchanged"), scratch);
-    }
-
-    s8 outpath = {0};
-    if (in_place) {
-        outpath = o->decompress ? strip_suffix(&scratch, path)
-                                : s8concat(&scratch, path, S(".gz"));
-        if (!outpath.s) {
-            return warn(o, path, S("unknown suffix -- ignored"), scratch);
-        }
-    }
-
     // The input of an in-place operation is deleted afterward, so only
     // plain files qualify. Forcing permits links, which are followed.
+    b32 in_place = !o->to_stdout && !o->test;
     i32 mode = OS_READ;
     if (in_place) {
         mode |= OS_REGULAR;
@@ -245,6 +246,29 @@ static i32 process_file(options *o, s8 path, arena scratch)
         i32 status = transform(o, in, 1, 0, scratch);
         os_close(ctx, in);
         return report(o, path, status, scratch);
+    }
+
+    // Like GNU gzip, check the name once the input qualifies. Skipping a
+    // compressed file is no failure, unless it was to be compressed again.
+    s8 outpath = {0};
+    s8 suffix  = known_suffix(path);
+    if (o->decompress) {
+        outpath = strip_suffix(&scratch, path);
+        if (!outpath.s) {
+            os_close(ctx, in);
+            return warn(o, path, S("unknown suffix -- ignored"), scratch);
+        }
+    } else if (suffix.s && !o->force) {
+        os_close(ctx, in);
+        if (!o->quiet) {
+            s8 msg = s8concat(&scratch, path, S(" already has "));
+            msg = s8concat(&scratch, msg, suffix);
+            msg = s8concat(&scratch, msg, S(" suffix -- unchanged"));
+            message(scratch, (s8){0}, msg);
+        }
+        return EXIT_OK;
+    } else {
+        outpath = s8concat(&scratch, path, S(".gz"));
     }
 
     i32 out = os_open(ctx, outpath, o->force ? OS_FORCE : OS_CREATE, scratch);
