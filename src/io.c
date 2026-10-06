@@ -13,6 +13,8 @@ enum {
     OS_REGULAR  = 1 << 0,  // refuse anything but a regular file
     OS_NOFOLLOW = 1 << 1,  // refuse symbolic links (and reparse points)
     OS_ONELINK  = 1 << 2,  // refuse files with multiple hard links
+    OS_NOSETID  = 1 << 3,  // refuse set-user-ID and set-group-ID (POSIX)
+    OS_NOSTICKY = 1 << 4,  // refuse files with the sticky bit (POSIX)
 
     // Create a file for writing. On POSIX it is created owner-only, for
     // the program to give it permissions later (gzip's os_setmeta, zip's
@@ -21,9 +23,9 @@ enum {
     // inherits access control either way. It is discarded when closed,
     // or if the process is interrupted, unless first kept (os_keep) or
     // committed (zip's os_commit).
-    OS_CREATE   = 1 << 3,  // fail if it exists
-    OS_FORCE    = 1 << 4,  // replace if it exists, OS_ERR if it cannot
-    OS_DEFPERMS = 1 << 5,
+    OS_CREATE   = 1 << 5,  // fail if it exists
+    OS_FORCE    = 1 << 6,  // replace if it exists, OS_ERR if it cannot
+    OS_DEFPERMS = 1 << 7,
 };
 enum {
     OS_ERR      = -1,
@@ -32,6 +34,9 @@ enum {
     OS_ESYMLINK = -4,
     OS_ENOTREG  = -5,
     OS_ELINKS   = -6,
+    OS_ESETUID  = -7,
+    OS_ESETGID  = -8,
+    OS_ESTICKY  = -9,
 };
 
 // Returns a non-negative descriptor or a negative OS_E* code.

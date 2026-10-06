@@ -301,6 +301,51 @@ if ln hard1 hard2 2>/dev/null; then
     [ -e hard1.gz ] && [ -e hard2 ] || fail "-f hard link"
 fi
 
+# Set-ID files are skipped in place with a warning, even when forced, and
+# a file with the sticky bit unless forced, which drops the bit, all as
+# in GNU gzip, decompressing too. Any may still be read with -c.
+if [ -z "$windows" ]; then
+    for f in suid sgid sticky; do
+        printf 'special\n' >$f
+    done
+    chmod 4755 suid
+    chmod 2755 sgid 2>/dev/null || :    # not in the file's group
+    chmod 1755 sticky 2>/dev/null || :  # the BSDs refuse it for files
+    for f in suid sgid sticky; do
+        case $f:$(ls -l $f | cut -c1-10) in
+        suid:-rwsr-xr-x) m=4755 msg='is set-user-ID on execution - ignored';;
+        sgid:-rwxr-sr-x) m=2755 msg='is set-group-ID on execution - ignored';;
+        sticky:-rwxr-xr-t) m=1755 msg='has the sticky bit set - file ignored';;
+        *) continue;;  # the system dropped the bit
+        esac
+        set +e
+        "$GZIP" $f 2>err
+        st=$?
+        set -e
+        [ $st = 2 ] && [ "$(cat err)" = "gzip: $f $msg" ] && [ -e $f ] &&
+            [ ! -e $f.gz ] || fail "$f in place: $st $(cat err)"
+        "$GZIP" -c $f >$f.gz
+        "$GZIP" -dc $f.gz | cmp -s - $f || fail "-c $f"
+        chmod $m $f.gz
+        expect_status 2 "$GZIP" -d $f.gz
+        if [ $f = sticky ]; then
+            rm $f.gz
+            "$GZIP" -f $f
+            [ ! -e $f ] && [ "$(ls -l $f.gz | cut -c1-10)" = -rwxr-xr-x ] ||
+                fail "-f $f: $(ls -l $f.gz | cut -c1-10)"
+            chmod $m $f.gz
+            "$GZIP" -df $f.gz
+            [ ! -e $f.gz ] && [ "$(ls -l $f | cut -c1-10)" = -rwxr-xr-x ] ||
+                fail "-df $f: $(ls -l $f | cut -c1-10)"
+        else
+            expect_status 2 "$GZIP" -df $f.gz
+            rm $f.gz
+            expect_status 2 "$GZIP" -f $f
+            [ -e $f ] && [ ! -e $f.gz ] || fail "-f $f compressed"
+        fi
+    done
+fi
+
 # An input that cannot be removed (here a BSD user-immutable file) is
 # left with its output and a warning, as in GNU gzip
 printf 'stuck\n' >stuck

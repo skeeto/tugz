@@ -42,16 +42,13 @@ static b32 os_setmeta(os *ctx, i32 fd, osmeta *m)
 {
     (void)ctx;
 
-    // Ownership first, since changing it may clear set-ID bits. Without
-    // the original owner, keep no set-ID bits at all.
-    mode_t mode = m->st.st_mode & 07777;
-    if (fchown(fd, m->st.st_uid, m->st.st_gid)) {
-        mode &= ~(mode_t)(S_ISUID|S_ISGID);
-        if (fchown(fd, (uid_t)-1, m->st.st_gid)) {
-            mode &= ~(mode_t)S_ISGID;
-        }
+    // Ownership where permitted, then as in GNU gzip only the permission
+    // bits: an input is never set-ID, and a sticky one's bit is dropped
+    if (fchown(fd, m->st.st_uid, m->st.st_gid) &&
+        fchown(fd, (uid_t)-1, m->st.st_gid)) {
+        // Silently, as in GNU gzip: the group is a new file's
     }
-    int err = fchmod(fd, mode) ? errno : 0;
+    int err = fchmod(fd, m->st.st_mode & 0777) ? errno : 0;
 
     struct timespec times[2] = {m->st.st_atim, m->st.st_mtim};
     if (futimens(fd, times) && !err) {

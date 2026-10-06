@@ -318,12 +318,13 @@ static i32 process_file(options *o, s8 path, arena scratch)
     }
 
     // The input of an in-place operation is deleted afterward, so only
-    // plain files qualify. Forcing permits links, which are followed.
+    // plain files qualify. Forcing permits links, which are followed, and
+    // the sticky bit, but as in GNU gzip, never set-ID bits.
     b32 in_place = !o->to_stdout && !o->test;
     i32 mode = OS_READ;
     if (in_place) {
-        mode |= OS_REGULAR;
-        mode |= o->force ? 0 : OS_NOFOLLOW|OS_ONELINK;
+        mode |= OS_REGULAR | OS_NOSETID;
+        mode |= o->force ? 0 : OS_NOFOLLOW|OS_ONELINK|OS_NOSTICKY;
     }
     i32 in = find_input(o, &path, mode, &scratch);
     switch (in) {
@@ -336,6 +337,15 @@ static i32 process_file(options *o, s8 path, arena scratch)
     case OS_ENOTREG:
         return warn_that(o, path, S(" is not a directory or a regular file "
                                     "- ignored"), scratch);
+    case OS_ESETUID:
+        return warn_that(o, path, S(" is set-user-ID on execution - ignored"),
+                         scratch);
+    case OS_ESETGID:
+        return warn_that(o, path, S(" is set-group-ID on execution - ignored"),
+                         scratch);
+    case OS_ESTICKY:
+        return warn_that(o, path, S(" has the sticky bit set - file ignored"),
+                         scratch);
     case OS_ELINKS:  // which GNU gzip counts
         return warn_that(o, path, S(" has other links -- file ignored"),
                          scratch);

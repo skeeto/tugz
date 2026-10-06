@@ -991,17 +991,20 @@ Fuzzers:
 - In-place operation (no `-c`/`-t`) deletes its input, so its input must
   be a regular file. As in GNU gzip, unless `-f` (then links are
   followed), a symbolic link is refused with an error (1), and a
-  hard-linked file is skipped with a warning (2); FIFOs, devices, and
-  directories are always skipped. On Windows a volume, a disk file that
-  has no file information to give, is skipped as a device, while a file
-  that fails to give it, as on a network error, is an error (1) with the
-  reason, as a failed open is. With `-c` or `-t`, anything but a
-  directory may be read (e.g. `gzip -c <(cmd)`). Failing to remove the
+  hard-linked file, or one with the sticky bit, is skipped with a
+  warning (2); FIFOs, devices, directories, and set-user-ID and
+  set-group-ID files are always skipped, the last two with a warning
+  (2), compressing or decompressing. On Windows a volume, a disk file
+  that has no file information to give, is skipped as a device, while a
+  file that fails to give it, as on a network error, is an error (1)
+  with the reason, as a failed open is. With `-c` or `-t`, anything but
+  a directory may be read (e.g. `gzip -c <(cmd)`). Failing to remove the
   input afterward is a warning, as in GNU gzip, leaving both files. On
   Windows a read-only input is removed all the same, as unlinking
   ignores the mode on POSIX, just as `-f` replaces a read-only output.
-- Output files are created owner-only, then given the input's mode,
-  ownership (when permitted; set-ID bits dropped otherwise), and
+- Output files are created owner-only, then given the input's ownership
+  (when permitted, else its group if the user is in it), permission bits
+  (`mode & 0777`, so a forced sticky input's output lacks the bit), and
   timestamps at full resolution, all as the input had them when opened,
   as in GNU gzip, before reading changed its access time. On Windows,
   timestamps are copied, and in place of the mode the read-only

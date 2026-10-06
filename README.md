@@ -87,8 +87,9 @@ its suffixes (`.gz`, `.z`, `-gz`, `-z`, `_z`, and `.tgz` or `.taz` for
 `.tar`), its messages (with the system's reason for a failure), exit
 status 0/1/2 for success/error/warning, a stop at the first read or
 write error, metadata copied to outputs, and no partial outputs on
-failure or interruption. In place, it skips links unless `-f`, and
-special files always, and it reads a header before replacing a file.
+failure or interruption. In place, it skips links and sticky files
+unless `-f`, and special and set-ID files always, and it reads a header
+before replacing a file.
 
 Headers record no file name or time, as GNU gzip's do under `-n`, which
 is therefore accepted (as in `gzip -9n`). Not yet supported: `-r`, `-l`,

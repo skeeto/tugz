@@ -170,6 +170,12 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
         err = OS_EISDIR;
     } else if ((mode & OS_REGULAR) && !S_ISREG(st.st_mode)) {
         err = OS_ENOTREG;
+    } else if ((mode & OS_NOSETID) && (st.st_mode & S_ISUID)) {
+        err = OS_ESETUID;
+    } else if ((mode & OS_NOSETID) && (st.st_mode & S_ISGID)) {
+        err = OS_ESETGID;
+    } else if ((mode & OS_NOSTICKY) && (st.st_mode & 01000)) {  // S_ISVTX
+        err = OS_ESTICKY;
     } else if ((mode & OS_ONELINK) && st.st_nlink>1) {
         err = OS_ELINKS;
     }
