@@ -2438,7 +2438,7 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     k.cap    = 1 << 18;
     k.buf    = newbytes(&scratch, k.cap);
     k.extras = subarena(&scratch, z->noextra ? 0 : nnew*CEXTRA_MAX);
-    if (z->level) {
+    if (z->level && nnew) {  // not to delete or copy only
         arena a = subarena(&scratch, deflate_memsize());
         k.def = deflate_new(&a, z->level);
     }
@@ -2667,8 +2667,8 @@ static i32 parse_epoch(zip *z, s8 s, arena scratch)
 // its port decodes names, the Unicode name if there is one.
 static s8 port_name(zip *z, zarchive *ar, iz i)
 {
-    s8 u = entry_unicode(ar, i);
-    return z->windows && u.s ? u : ar->entries[i].name;
+    s8 u = z->windows ? entry_unicode(ar, i) : (s8){0};
+    return u.s ? u : ar->entries[i].name;
 }
 
 // Existing entries by name (see zip_main), names that differ only in
