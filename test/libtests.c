@@ -1168,6 +1168,50 @@ static void test_inflate_init(void)
     free(text);
 }
 
+// Init leaves a deflator's chain links and tokens uncleared, so it must
+// compress alike from memory holding anything, though slides rebase
+// links never written. In runs of zeros, level 1 inserts only the start
+// of each 258-byte match, so only even chain slots are written, both
+// with 3-byte matching (chosen by sampling noise and zeros) and without
+// (all zeros). The last pass uses memory as malloc returns it, so that
+// MemorySanitizer can check that unwritten links decide nothing.
+static void test_deflate_init(void)
+{
+    iz n = 1300000;  // past the window
+    u8 *p[2] = {randbytes(n, 23), calloc((uz)n, 1)};
+    memset(p[0]+16384, 0, (uz)(n-16384));
+    memset(p[1]+n/2, 'z', 1000);
+    ptrdiff_t len = tugz_deflate_size(TUGZ_RAW);
+    static u8 const fills[] = {0, 0xff, 0xa5};
+    for (i32 k = 0; k < 2; k++) {
+        buf ref = {0};
+        for (i32 fill = 0; fill <= countof(fills)+1; fill++) {
+            u8 *mem;
+            if (fill < countof(fills)) {
+                mem = malloc((uz)len);
+                memset(mem, fills[fill], (uz)len);
+            } else if (fill == countof(fills)) {
+                mem = randbytes(len, (u64)(24 + k));
+            } else {
+                mem = malloc((uz)len);
+            }
+            tugz_deflator *d = tugz_deflate_init(mem, len, TUGZ_RAW, 1);
+            TEST(d);
+            buf c = tcompress_with(d, p[k], n, 0, 0, 0, 0);
+            TEST(d->e->def->use3 == !k);
+            free(mem);
+            if (!fill) {
+                ref = c;
+                continue;
+            }
+            TEST(same(c, ref.s, ref.len));
+            free(c.s);
+        }
+        free(ref.s);
+        free(p[k]);
+    }
+}
+
 static void test_usage(void)
 {
     tugz_inflator *z;
@@ -1212,6 +1256,7 @@ int main(void)
     test_reset_stamps();
     test_inflate_reset();
     test_inflate_init();
+    test_deflate_init();
     puts("all library tests pass");
     return 0;
 }

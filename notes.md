@@ -113,7 +113,10 @@ CPU models with and without PCLMUL.
   requires repeating the mode). Once FINISH is due, other calls get
   `TUGZ_EUSAGE`.
 - Of the deflator's large tables only the hash heads start zeroed:
-  tokens and chain links are always written before use. Forgetting
+  tokens are written before use, and chains lead only to links that
+  insertions wrote. A slide rebases every link, written or not, so it
+  neither branches on one nor passes one to a call, either of which
+  MemorySanitizer reports (as it did at -O0). Forgetting
   history (a FULL flush, or `deflate_reset` before a new stream) must
   empty the heads. After at most 1024 inserted positions, it rehashes
   them and clears their slots. After more, rather than clear 512 KiB, it

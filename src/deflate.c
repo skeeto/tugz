@@ -931,11 +931,17 @@ static void parse(deflator *d, iz end)
     d->pos = p;
 }
 
-// Rebase an entry, emptying it if its position falls out of the window
-// or it was forgotten, either way at or below lim.
-static u32 slide_entry(u32 v, u32 lim, u32 shift)
+// Rebase a table's entries, emptying those whose positions fall out of
+// the window or were forgotten, either way at or below lim. Chain links
+// that no insertion wrote get rebased too, harmlessly, since no chain
+// leads to them, but without a branch on their unknown values, which
+// MemorySanitizer would report.
+static void slide_table(u32 *t, i32 n, u32 lim, u32 shift)
 {
-    return v>lim ? v-shift : 0;
+    for (i32 i = 0; i < n; i++) {
+        u32 v = t[i];
+        t[i] = (v - shift) & -(u32)(v > lim);
+    }
 }
 
 // Discard window contents more than WSIZE behind the parse position.
@@ -956,19 +962,11 @@ static void slide(deflator *d)
 
     u32 s = (u32)shift;
     u32 lim = d->stamp + s;
-    for (i32 i = 0; i < HASH_SIZE; i++) {
-        d->head[i] = slide_entry(d->head[i], lim, s);
-    }
-    for (i32 i = 0; i < DEF_WSIZE; i++) {
-        d->prev[i] = slide_entry(d->prev[i], lim, s);
-    }
+    slide_table(d->head, HASH_SIZE, lim, s);
+    slide_table(d->prev, DEF_WSIZE, lim, s);
     if (d->use3) {
-        for (i32 i = 0; i < HASH_SIZE; i++) {
-            d->head3[i] = slide_entry(d->head3[i], lim, s);
-        }
-        for (i32 i = 0; i < DEF_WSIZE; i++) {
-            d->prev3[i] = slide_entry(d->prev3[i], lim, s);
-        }
+        slide_table(d->head3, HASH_SIZE, lim, s);
+        slide_table(d->prev3, DEF_WSIZE, lim, s);
     }
 }
 
@@ -1039,9 +1037,9 @@ static iz deflate_memsize(void)
            DEF_STAGE + HASH_SIZE/8 + 9*64;
 }
 
-// Tokens and chain links are always written before they are used (see
-// forget), so of the large tables only the hash heads (and the sampling
-// bitmap) start zeroed.
+// Tokens are written before they are read, and chains lead only to links
+// that insertions wrote (see forget and slide_table), so of the large
+// tables only the hash heads (and the sampling bitmap) start zeroed.
 static deflator *deflate_new(arena *a, i32 level)
 {
     deflator *d = new(a, 1, deflator);
