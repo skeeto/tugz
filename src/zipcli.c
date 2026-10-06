@@ -2095,6 +2095,27 @@ static i32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
     }
 }
 
+// Warn, as Info-ZIP does on copying an entry, of a local header that
+// disagrees with the central one, from which the one written is made:
+// in its version needed, flags, CRC (unless a descriptor follows), or
+// name, in the order and words of Info-ZIP's warnings.
+static void check_local(zip *z, u8 const *loc, s8 lname, zentry *e, s8 name,
+                        arena scratch)
+{
+    s8  what[] = {S("Version Needed To Extract"), S("Entry Flag"),
+                  S("Entry CRC"), S("Entry name")};
+    b32 bad[]  = {get16(loc+4) != e->needed, get16(loc+6) != e->flags,
+                  !(e->flags & ZIP_FLAG_DESCRIPTOR) && get32(loc+14)!=e->crc,
+                  !zequals(lname, e->name)};
+    for (i32 i = 0; i < countof(bad); i++) {
+        if (bad[i]) {
+            s8 msg = JOIN(&scratch, S("Local "), what[i],
+                          S(" does not match CD: "));
+            warn(z, msg, name, scratch);
+        }
+    }
+}
+
 // Copy an entry from the existing archive without recompressing it,
 // updating it in place for the central directory.
 static i32 copy_entry(zip *z, zarchive *ar, zwork *k, zentry *e,
@@ -2108,8 +2129,10 @@ static i32 copy_entry(zip *z, zarchive *ar, zwork *k, zentry *e,
     if (got <= 0) {
         return read_failed(z, got, name, scratch);
     }
-    iz  varlen = zip_local_varlen(fixed);
-    iz  nlen   = get16(fixed+26);  // before the window moves
+    u8 loc[ZIP_LOCAL_LEN];  // before the window moves
+    bytecopy(loc, fixed, ZIP_LOCAL_LEN);
+    iz  varlen = zip_local_varlen(loc);
+    iz  nlen   = get16(loc+26);
     i64 data   = e->offset + ZIP_LOCAL_LEN + varlen;
     if (varlen<0 || data>ar->end.cdoff || e->csize>ar->end.cdoff-data) {
         return fail(z, ZE_FORM, S("Zip file structure invalid"), e->name,
@@ -2120,6 +2143,7 @@ static i32 copy_entry(zip *z, zarchive *ar, zwork *k, zentry *e,
     if (got <= 0) {
         return read_failed(z, got, name, scratch);
     }
+    check_local(z, loc, (s8){var, nlen}, e, name, scratch);
 
     // Its extra fields are kept, as Info-ZIP keeps them even with -X,
     // except that Zip64 fields are made anew. Those must leave room.

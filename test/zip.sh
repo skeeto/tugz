@@ -893,6 +893,34 @@ open(sys.argv[1], "wb").write(loc + cen + end)' nofit.zip
     grep -q 'structure invalid (big: no room' out || fail "no room: $(cat out)"
     cmp -s nofit.zip nofit0.zip || fail "a refused copy changed the archive"
 
+    # A local header that disagrees with the central one gets Info-ZIP's
+    # warnings on copying, in its words and order, but for the CRC that
+    # a descriptor gives, and is written anew from the central header
+    $PY -c 'import struct, sys, zlib
+loc = cen = b""
+for cn, ln, lv, lf, lc, f in ((b"m/a.txt", b"m/b.txt", 20, 0x800, 1, 0),
+                              (b"m/c.txt", b"m/c.txt", 10, 8, 0, 8)):
+    d = cn * 3
+    c, o = zlib.crc32(d), len(loc)
+    loc += struct.pack("<IHHHHHIIIHH", 0x04034b50, lv, lf, 0, 0, 0x5021, lc,
+                       len(d), len(d), len(ln), 0) + ln + d
+    if f:
+        loc += struct.pack("<IIII", 0x08074b50, c, len(d), len(d))
+    cen += struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 0x31e, 10, f, 0, 0,
+                       0x5021, c, len(d), len(d), len(cn), 0, 0, 0, 0,
+                       0x81a40000, o) + cn
+end = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 2, 2, len(cen), len(loc), 0)
+open(sys.argv[1], "wb").write(loc + cen + end)' mm.zip
+    "$ZIP" mm.zip tree/b.txt >out 2>err || fail "mismatched local headers"
+    for what in 'Version Needed To Extract' 'Entry Flag' 'Entry CRC' \
+                'Entry name'; do
+        echo "zip warning: Local $what does not match CD: m/a.txt"
+    done >want
+    cmp -s err want || fail "mismatched local headers: $(cat err)"
+    verify mm.zip
+    [ "$(names mm.zip | tr '\n' ' ')" = "m/a.txt m/c.txt tree/b.txt " ] ||
+        fail "mismatched local headers: $(names mm.zip)"
+
     # As in Info-ZIP, an entry without a name makes the archive invalid
     $PY -c 'import struct, sys
 loc = cen = b""

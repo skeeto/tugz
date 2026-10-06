@@ -380,7 +380,10 @@ neither inflate nor the gzip container.
 - Merging: the central directory is parsed with every field bounds
   checked, and as in Info-ZIP, an entry without a name makes it invalid
   (3, after "zero-length name for entry #1"); copied entries get
-  regenerated local headers and raw data copies. Their descriptor flag
+  regenerated local headers and raw data copies, warning as Info-ZIP
+  does of a local header that disagrees with the central one in its
+  version needed, flags, CRC (unless a descriptor gives it), or name
+  ("Local Entry CRC does not match CD: a.txt"). Their descriptor flag
   is cleared, except for traditionally encrypted entries, whose check
   byte depends on it: those keep it, and a data descriptor after their
   data. They keep their extra fields, even with `-X`, which as in
