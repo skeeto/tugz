@@ -193,9 +193,11 @@ static i32 stream_decode(decoder *z, reader *r, i32 out, b32 copy)
 {
     i32 format = z->format;
     for (b32 first = 1;; first = 0) {
-        i32 status;
+        i32 status = GZ_NEEDIN;
         for (;;) {
-            b32 more = reader_fill(r);
+            // After GZ_NEEDOUT the decoder has output, or an error, to
+            // hand over before it needs input
+            b32 more = status==GZ_NEEDOUT || reader_fill(r);
             if (r->err) {
                 return GZ_EREAD;
             }

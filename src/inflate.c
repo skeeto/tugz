@@ -913,17 +913,31 @@ static void inf_drain(inflator *s, zbuf *b)
     }
 }
 
-// Decode from b->in into b->out, advancing both. Returns GZ_OK when the
-// stream has ended and all output is delivered, with b->in just past the
-// end of the stream. Otherwise returns GZ_NEEDIN when all input has been
-// consumed, GZ_NEEDOUT when the output buffer is full, or an error.
+// Status of a call that has delivered what output fits: GZ_NEEDOUT while
+// decoded output remains to be delivered, else r.
+static i32 inf_held(inflator *s, i32 r)
+{
+    return s->wflushed<s->wpos ? GZ_NEEDOUT : r;
+}
+
+// Decode from b->in into b->out, advancing both. Returns GZ_NEEDOUT while
+// decoded output remains to be delivered, which is only once b->out is
+// full. Otherwise all output decoded so far has been delivered, and it
+// returns GZ_OK at the end of the stream, with b->in just past it,
+// GZ_NEEDIN when all input has been consumed, or an error. Decoding runs
+// ahead of b->out into the window, so without this a caller would see
+// the input run out, or an error, with output still held. An error thus
+// waits for the output before it, as with zlib, which decodes no further
+// than its output buffer.
 //
 // Output may also be taken without copying through inflate_pending and
-// inflate_consume, in which case b->out may be empty.
+// inflate_consume, in which case b->out may be empty, and GZ_NEEDOUT
+// asks the caller to take the pending output and call again.
 static i32 inflate_stream(inflator *s, zbuf *b)
 {
     if (s->err) {
-        return s->err;
+        inf_drain(s, b);
+        return inf_held(s, s->err);
     }
 
     if (s->stashlen) {
@@ -941,7 +955,7 @@ static i32 inflate_stream(inflator *s, zbuf *b)
         if (!inf_unit(s)) {
             assert(s->stashlen < INF_STASH);
             inf_drain(s, b);
-            return GZ_NEEDIN;
+            return inf_held(s, GZ_NEEDIN);
         }
         inf_giveback(s);
         iz left = s->inend - s->in;
@@ -972,9 +986,6 @@ static i32 inflate_stream(inflator *s, zbuf *b)
     if (r == GZ_OK) {
         s->bitbuf = 0;  // padding in the final byte
         s->bitcnt = 0;
-        if (s->wflushed < s->wpos) {
-            return GZ_NEEDOUT;
-        }
     }
-    return r;
+    return inf_held(s, r);
 }

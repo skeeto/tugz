@@ -1212,6 +1212,115 @@ static void test_deflate_init(void)
     }
 }
 
+// zlib's output from the first len bytes of a stream in one call, and
+// whether it ended there (1), was cut short (0), or failed (-1).
+static buf zlib_prefix(int format, u8 const *p, iz len, int *how)
+{
+    z_stream s = {0};
+    TEST(inflateInit2(&s, zlib_wbits(format)) == Z_OK);
+    iz cap = 1 << 22;
+    buf r = {malloc((uz)cap), 0};
+    s.next_in = (u8 *)p;
+    s.avail_in = (u32)len;
+    s.next_out = r.s;
+    s.avail_out = (u32)cap;
+    int status = inflate(&s, Z_FINISH);
+    TEST(s.avail_out);
+    *how = status==Z_STREAM_END ? 1 : status==Z_BUF_ERROR ? 0 : -1;
+    r.len = (iz)s.total_out;
+    inflateEnd(&s);
+    return r;
+}
+
+// Inflate decodes ahead of the caller's output buffer into its window,
+// but holds nothing back at TUGZ_NEED_INPUT or an error. So a caller who
+// calls again only for TUGZ_NEED_OUTPUT (and for more input while there
+// is some), as tugz.h says, gets from any prefix of a stream exactly
+// what zlib does, whatever the buffer sizes: everything decoded before
+// the input ran out, or before the error.
+static void test_held_output(void)
+{
+    // An interactive message, SYNC-flushed: one call delivers what fits,
+    // and the rest follows without more input
+    iz n = 10000;
+    u8 *msg = malloc((uz)n);
+    memset(msg, 'x', (uz)n);
+    tugz_deflator *d;
+    void *mem = mem_deflator(TUGZ_RAW, 6, &d);
+    u8 z[256];
+    tugz_buf b = {msg, n, z, countof(z)};
+    TEST(tugz_deflate(d, &b, TUGZ_SYNC) == TUGZ_DONE);
+    iz zlen = countof(z) - b.outlen;
+    free(mem);
+    tugz_inflator *zs;
+    mem = mem_inflator(TUGZ_RAW, &zs);
+    u8 out[1024];
+    b = (tugz_buf){z, zlen, 0, 0};
+    iz got = 0;
+    int status;
+    do {
+        b.out = out;
+        b.outlen = countof(out);
+        status = tugz_inflate(zs, &b);
+        got += countof(out) - b.outlen;
+    } while (status == TUGZ_NEED_OUTPUT);
+    TEST(status==TUGZ_NEED_INPUT && got==n && !b.inlen);
+    free(mem);
+    free(msg);
+
+    // Prefixes of streams, and of the same streams broken after a SYNC
+    // flush by an invalid block (type 3), the input running out or the
+    // error coming with the window holding over 100 KiB
+    iz len = 150000;
+    u8 *text = textbytes(len, 15);
+    memset(text+20000, 0, 100000);
+    for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
+        buf c[2] = {tcompress(format, 6, text, len, 0, 0, 0, 0)};
+        mem = mem_deflator(format, 6, &d);
+        c[1].s = malloc((uz)len);
+        b = (tugz_buf){text, len, c[1].s, len};
+        TEST(tugz_deflate(d, &b, TUGZ_SYNC) == TUGZ_DONE);
+        c[1].len = b.out - c[1].s;
+        c[1].s[c[1].len++] = 0x07;
+        free(mem);
+
+        for (i32 k = 0; k < 2; k++) {
+            for (iz cut = 0; cut <= c[k].len; cut += 1 + cut/8) {
+                int how;
+                buf want = zlib_prefix(format, c[k].s, cut, &how);
+                TEST(k==1 && cut==c[k].len ? how<0 : how>=0);
+                static iz const outs[] = {7, 1000, 4096, 1<<16};
+                for (i32 i = 0; i < countof(outs); i++) {
+                    result r = tdecompress(format, c[k].s, cut, i&1 ? 3 : 0,
+                                          outs[i]);
+                    TEST(how ? how>0 ? r.status==TUGZ_DONE : r.status<0
+                             : r.status==TUGZ_NEED_INPUT);
+                    TEST(same(r.out, want.s, want.len));
+                    free(r.out.s);
+                }
+                free(want.s);
+            }
+        }
+
+        // The error stays, after the output before it
+        tugz_inflator *zi;
+        mem = mem_inflator(format, &zi);
+        u8 *o = malloc((uz)len);
+        b = (tugz_buf){c[1].s, c[1].len, o, 1000};
+        TEST(tugz_inflate(zi, &b) == TUGZ_NEED_OUTPUT);
+        b.outlen = len - (b.out - o);
+        TEST(tugz_inflate(zi, &b) == TUGZ_EDATA);
+        TEST(b.out-o==len && !memcmp(o, text, (uz)len));
+        TEST(tugz_inflate(zi, &b) == TUGZ_EDATA);
+        TEST(b.out-o == len);
+        free(o);
+        free(mem);
+        free(c[1].s);
+        free(c[0].s);
+    }
+    free(text);
+}
+
 static void test_usage(void)
 {
     tugz_inflator *z;
@@ -1256,6 +1365,7 @@ int main(void)
     test_reset_stamps();
     test_inflate_reset();
     test_inflate_init();
+    test_held_output();
     test_deflate_init();
     puts("all library tests pass");
     return 0;

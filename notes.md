@@ -97,6 +97,18 @@ CPU models with and without PCLMUL.
   every input length (checked by `fuzz-diff-inflate`, and by
   `test_inflate_splits` at every split of streams with lone and empty
   distance codes, whose invalid 1-bit entries expose an early lookup).
+- Inflate decodes ahead of the caller's output buffer, into its window
+  (up to 256 KiB), so a call returns `TUGZ_NEED_OUTPUT` whenever decoded
+  output remains, even with the input used up or an error found. Any
+  other status means everything decoded has been delivered, as with
+  zlib, which decodes no further than its output buffer. A caller can
+  then wait for input at `TUGZ_NEED_INPUT` (an interactive SYNC-flushed
+  stream) or stop there (a truncated file) without losing output, and
+  gets all output before an error. `test_held_output` checks prefixes
+  of streams, and of broken ones, against zlib with small buffers, and
+  `fuzz-diff-inflate` checks the output at truncation and at errors.
+  Programs take output copy-free, so for them `GZ_NEEDOUT` only asks
+  them to take it and call again.
 - Deflate stages output (~576 KiB) and parses into tokens only when its
   window fills or at a flush. Each emission step (one block, a window
   slide, or a flush) needs `DEF_STAGE_NEED` bytes of room: a block has at

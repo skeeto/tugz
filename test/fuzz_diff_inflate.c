@@ -109,11 +109,13 @@ static void diff_stream(fuzzenv *env, u8 cfg, u8 const *in, iz len)
             break;
         }
         CHECK(got == GZ_NEEDIN);
-        CHECK(env->ctx.outlen <= zlen);
-        CHECK(!memcmp(zout, env->ctx.out, (uz)env->ctx.outlen));
+        CHECK(env->ctx.outlen == zlen);  // nothing held back
+        CHECK(!memcmp(zout, env->ctx.out, (uz)zlen));
         break;
     default:  // Z_DATA_ERROR, Z_NEED_DICT
         CHECK(got!=GZ_OK && got!=GZ_NEEDIN);
+        CHECK(env->ctx.outlen == zlen);  // all output before the error
+        CHECK(!memcmp(zout, env->ctx.out, (uz)zlen));
     }
 }
 

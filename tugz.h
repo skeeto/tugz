@@ -25,12 +25,16 @@
 // the format. The deflate reset sets the level, so a deflate state's
 // size depends only on its format.
 //
-// Inflate returns TUGZ_DONE at the end of the stream (for gzip, the end
-// of each member), with b.in pointing just past its last byte. Calling
+// Inflate returns TUGZ_NEED_OUTPUT when the output buffer is full and
+// decoded output remains: call again with more space (and any input
+// left). Any other result means that all output decoded so far has been
+// delivered. TUGZ_DONE marks the end of the stream (for gzip, the end of
+// each member), with b.in pointing just past its last byte. Calling
 // again on a gzip state decodes the next member, and bytes that do not
 // begin a member produce TUGZ_ENOTGZ. TUGZ_NEED_INPUT means all input was
 // consumed: supply more, or if there is no more, the stream is truncated.
-// TUGZ_NEED_OUTPUT means the output buffer is full. Errors are sticky.
+// Errors are sticky, and reported once the output before them has been
+// delivered.
 //
 // Deflate with TUGZ_NONE returns TUGZ_NEED_INPUT once it has consumed all
 // input, though output may remain staged internally. Staging is bounded,
