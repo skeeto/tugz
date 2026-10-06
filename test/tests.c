@@ -1350,6 +1350,230 @@ static void test_inflate_repeats(os *ctx, arena a)
     free(out.s);
 }
 
+// zlib's verdict on the first len bytes of a raw DEFLATE stream decoded
+// in one call, as the status our decoder should return: GZ_OK at the end
+// of the stream, GZ_NEEDIN if truncated, or GZ_EDATA.
+static i32 zlib_prefix(u8 const *p, iz len, u8 *out, iz cap, iz *outlen,
+                       iz *used)
+{
+    z_stream z = {0};
+    TEST(inflateInit2(&z, -15) == Z_OK);
+    z.next_in = (u8 *)p;
+    z.avail_in = (u32)len;
+    z.next_out = out;
+    z.avail_out = (u32)cap;
+    i32 r = inflate(&z, Z_FINISH);
+    TEST(z.avail_out);
+    *outlen = cap - z.avail_out;
+    *used = len - z.avail_in;
+    inflateEnd(&z);
+    TEST(r==Z_STREAM_END || r==Z_BUF_ERROR || r==Z_DATA_ERROR);
+    return r==Z_STREAM_END ? GZ_OK : r==Z_BUF_ERROR ? GZ_NEEDIN : GZ_EDATA;
+}
+
+// The streaming decoder against zlib at every input length of a raw
+// DEFLATE stream followed by junk: each prefix in one piece, the whole
+// split into two pieces at every byte, and one byte at a time. They must
+// agree on success, on truncation versus error, on output, and on
+// exactly where the stream ends.
+static void check_splits(arena a, u8 const *p, iz len)
+{
+    enum { CAP = 1<<16, JUNK = 3 };
+    iz   total = len + JUNK;
+    u8  *in    = malloc((uz)total);
+    u8  *zout  = malloc(CAP);  // zlib's output from the whole input
+    u8  *tmp   = malloc(CAP);
+    u8  *out   = malloc(CAP);
+    i32 *want  = malloc(sizeof(*want) * (uz)(total+1));
+    iz  *wlen  = malloc(sizeof(*wlen) * (uz)(total+1));
+    memcpy(in, p, (uz)len);
+    memset(in+len, 0x5a, JUNK);
+
+    iz end = -1;  // where the stream ends, if it does
+    for (iz n = total; n >= 0; n--) {
+        iz used;
+        want[n] = zlib_prefix(in, n, n==total ? zout : tmp, CAP, wlen+n,
+                              &used);
+        end = n==total && want[n]==GZ_OK ? used : end;
+        TEST(n==total || !memcmp(tmp, zout, (uz)wlen[n]));
+    }
+
+    for (iz n = 0; n <= total; n++) {
+        arena t = a;
+        decoder *z = decoder_new(&t, FMT_RAW);
+        zbuf b = {in, n, out, CAP};
+        i32 r = decoder_run(z, &b);
+        TEST(r == want[n]);
+        TEST(CAP-b.outlen==wlen[n] && !memcmp(out, zout, (uz)wlen[n]));
+        TEST(r!=GZ_OK || b.in-in==end);
+        TEST(r!=GZ_NEEDIN || !b.inlen);
+    }
+
+    for (iz cut = 0; cut <= total; cut++) {
+        arena t = a;
+        decoder *z = decoder_new(&t, FMT_RAW);
+        zbuf b = {in, cut, out, CAP};
+        i32 r = decoder_run(z, &b);
+        TEST(r == want[cut]);
+        if (r == GZ_NEEDIN) {
+            TEST(!b.inlen);
+            b.inlen = total - cut;
+            r = decoder_run(z, &b);
+        }
+        TEST(r == want[total]);
+        TEST(CAP-b.outlen==wlen[total] && !memcmp(out, zout, (uz)wlen[total]));
+        TEST(r!=GZ_OK || b.in-in==end);
+    }
+
+    arena t = a;
+    decoder *z = decoder_new(&t, FMT_RAW);
+    zbuf b = {in, 0, out, CAP};
+    i32 r = GZ_NEEDIN;
+    for (iz n = 1; r==GZ_NEEDIN && n<=total; n++) {
+        b.inlen = 1;
+        r = decoder_run(z, &b);
+        TEST(r == want[n]);
+        TEST(CAP-b.outlen==wlen[n] && !memcmp(out, zout, (uz)wlen[n]));
+        TEST(r!=GZ_OK || (n==end && !b.inlen));
+    }
+    TEST(r == want[total]);
+
+    free(wlen);
+    free(want);
+    free(out);
+    free(tmp);
+    free(zout);
+    free(in);
+}
+
+// A lone 1-bit or empty distance code is decoded with a 1-bit table
+// whose other entries are invalid. Input running out inside a length's
+// extra bits must still be truncation, not those entries' error, which
+// once rejected valid streams depending on how input was split. Go's
+// compress/flate writes lone distance codes at levels 5 to 9.
+static void test_inflate_splits(arena a)
+{
+    static i32 const lensyms[] = {269, 273, 277, 281};  // 2 to 5 extra bits
+    static u8 const lits[] = "abaabbab";
+    bits b;
+
+    // 'a' and 'b': 3 bits, end of block: 2 bits, lengths: 3 bits
+    dyncode c = {0};
+    c.hlit = 282;
+    c.hdist = 6;
+    c.lens['a'] = 3;
+    c.lens['b'] = 3;
+    c.lens[256] = 2;
+    for (i32 i = 0; i < countof(lensyms); i++) {
+        c.lens[lensyms[i]] = 3;
+    }
+
+    // Lone 1-bit distance code, for distance 1 or for 7..8 (1 extra bit):
+    // every length symbol with 2 to 5 extra bits, with every extra value
+    for (i32 dsym = 0; dsym <= 5; dsym += 5) {
+        c.lens[c.hlit+0] = c.lens[c.hlit+5] = 0;
+        c.lens[c.hlit+dsym] = 1;
+        b = (bits){0};
+        dyn_begin(&b, &c);
+        for (i32 i = 0; i < countof(lits)-1; i++) {
+            dyn_lit(&b, &c, lits[i]);
+        }
+        for (i32 i = 0; i < countof(lensyms); i++) {
+            i32 extra = inf_len_extra[lensyms[i]-257];
+            for (u32 v = 0; v < 1u<<extra; v++) {
+                dyn_lit(&b, &c, lensyms[i]);
+                bput(&b, v, extra);
+                dyn_dist(&b, &c, dsym);
+                bput(&b, v, inf_dist_extra[dsym]);
+                dyn_lit(&b, &c, lits[v%8]);
+            }
+        }
+        dyn_lit(&b, &c, 256);
+        check_splits(a, b.buf, b.len);
+
+        // The lone code's unused codeword after a length: an error only
+        // once every extra bit and that codeword's bit are present
+        for (i32 i = 0; i < countof(lensyms); i++) {
+            i32 extra = inf_len_extra[lensyms[i]-257];
+            for (u32 v = 0; v < 1u<<extra; v += 3) {
+                b = (bits){0};
+                dyn_begin(&b, &c);
+                for (i32 j = 0; j < countof(lits)-1; j++) {
+                    dyn_lit(&b, &c, lits[j]);
+                }
+                dyn_lit(&b, &c, lensyms[i]);
+                bput(&b, v, extra);
+                bput(&b, 1, 1);
+                bput(&b, 0, 16);
+                check_splits(a, b.buf, b.len);
+            }
+        }
+    }
+
+    // Empty distance code: valid while no length is decoded
+    c.lens[c.hlit+0] = c.lens[c.hlit+5] = 0;
+    b = (bits){0};
+    dyn_begin(&b, &c);
+    for (i32 i = 0; i < countof(lits)-1; i++) {
+        dyn_lit(&b, &c, lits[i]);
+    }
+    dyn_lit(&b, &c, 256);
+    check_splits(a, b.buf, b.len);
+
+    // ... and after a length, an error only once its extra bits and one
+    // more bit are present, where zlib stops needing input
+    for (i32 i = 0; i < countof(lensyms); i++) {
+        i32 extra = inf_len_extra[lensyms[i]-257];
+        for (u32 v = 0; v < 1u<<extra; v++) {
+            b = (bits){0};
+            dyn_begin(&b, &c);
+            for (i32 j = 0; j < countof(lits)-1; j++) {
+                dyn_lit(&b, &c, lits[j]);
+            }
+            dyn_lit(&b, &c, lensyms[i]);
+            bput(&b, v, extra);
+            bput(&b, v, 16);
+            check_splits(a, b.buf, b.len);
+        }
+    }
+
+    // For contrast, fixed codes, whose invalid distance codes are 5 bits:
+    // every length symbol with extra bits, with its least and greatest
+    // extra values, and distances with extra bits
+    b = (bits){0};
+    bput(&b, 1, 1);
+    bput(&b, 1, 2);
+    static u8 const text[] = "fixed Huffman codes, for contrast";
+    for (i32 i = 0; i < countof(text)-1; i++) {
+        bfixed(&b, text[i]);
+    }
+    for (i32 sym = 265; sym <= 284; sym++) {
+        i32 extra = inf_len_extra[sym-257];
+        for (u32 v = 0; v < 2; v++) {
+            bfixed(&b, sym);
+            bput(&b, v ? (1u<<extra)-1 : 0, extra);
+            u32 dsym = (u32)(sym+(i32)v) % 10;  // at most 32 back
+            bcode(&b, dsym, 5);
+            bput(&b, v ? ~0u : 0, inf_dist_extra[dsym]);
+        }
+    }
+    bfixed(&b, 256);
+    check_splits(a, b.buf, b.len);
+
+    // ... and their invalid distance code 30 after a length
+    for (i32 sym = 265; sym <= 284; sym += 4) {
+        b = (bits){0};
+        bput(&b, 1, 1);
+        bput(&b, 1, 2);
+        bfixed(&b, 'a');
+        bfixed(&b, sym);
+        bput(&b, ~0u, inf_len_extra[sym-257]);
+        bcode(&b, 30, 5);
+        bput(&b, 0, 16);
+        check_splits(a, b.buf, b.len);
+    }
+}
+
 static void test_inflate_zlib(os *ctx, arena a)
 {
     static i32 const strategies[] = {
@@ -2268,6 +2492,7 @@ int main(void)
     test_complete_codes(&ctx, a);
     test_inflate_vectors(&ctx, a);
     test_inflate_repeats(&ctx, a);
+    test_inflate_splits(a);
     test_container(&ctx, a);
     test_io_errors(&ctx, a);
     test_cli(&ctx, a);

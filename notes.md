@@ -88,9 +88,12 @@ CPU models with and without PCLMUL.
   incomplete unit. So the stream end is exact: after `TUGZ_DONE`, `in`
   points just past the stream, as zlib's `avail_in` does.
 - Errors are reported only once every bit of the offending field is
-  present, in zlib's order, so truncation (`TUGZ_NEED_INPUT`) versus
-  corruption agrees with zlib at every input length (checked by
-  `fuzz-diff-inflate`).
+  present, in zlib's order, and a unit stops at the first field input
+  cannot finish, never looking up the next one in the bits at hand. So
+  truncation (`TUGZ_NEED_INPUT`) versus corruption agrees with zlib at
+  every input length (checked by `fuzz-diff-inflate`, and by
+  `test_inflate_splits` at every split of streams with lone and empty
+  distance codes, whose invalid 1-bit entries expose an early lookup).
 - Deflate stages output (~576 KiB) and parses into tokens only when its
   window fills or at a flush. Each emission step (one block, a window
   slide, or a flush) needs `DEF_STAGE_NEED` bytes of room: a block has at
@@ -810,6 +813,14 @@ Fuzzers:
   only at the missing end-of-block code (zlib decodes it as 1-bit zeros);
   a repeat-previous code is validated after its extra bits; gzip magic,
   method, flags, and trailer CRC are checked as soon as each is complete
+- streaming inflate looked up a match's distance code even when input
+  ran out inside the length's extra bits. With a lone 1-bit or empty
+  distance code, an unread extra bit could select an invalid 1-bit
+  entry, making the truncation a sticky data error, so valid files from
+  Go's compress/gzip (most levels, including its default) failed
+  `gzip -t` or the library depending on read boundaries. Fuzzing missed
+  it: zlib never writes such codes, and the streaming check's seeds
+  lacked its config byte
 - `memcpy` with a null pointer and zero length, from callers passing
   empty null buffers (UBSan under GCC)
 - zip: bytes resembling a Zip64 locator before a plain end record made

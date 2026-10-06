@@ -470,9 +470,13 @@ static u32 lookup(u32 const *t, u32 mask, u64 bb)
 
 // Decode one code the careful way, consuming only the code itself. Like
 // zlib, an invalid code is only reported once all its bits are present.
-// Returns a BAD entry on error.
+// Returns a BAD entry on error. The unit must not be starved already:
+// the lookup would then begin at bits of the unfinished field, and an
+// invalid entry there (a lone or empty code has 1-bit ones) would turn
+// truncation into an error.
 static u32 inf_decode(inflator *s, htable const *t)
 {
+    assert(!s->err);
     inf_need(s, 15);
     u32 e = lookup(t->entries, t->mask, s->bitbuf);
     if (ENT_CODELEN(e) > s->bitcnt) {
@@ -675,6 +679,8 @@ static b32 decode_fast(inflator *s)
 
 // Careful path: decode one literal, length/distance pair, or end of
 // block. Output is only written once the whole unit has been decoded.
+// Like zlib, each field is finished before the next begins, so input
+// running out anywhere in the unit is truncation.
 static void inf_symbol(inflator *s)
 {
     u32 e = inf_decode(s, &s->lt);
@@ -688,6 +694,9 @@ static void inf_symbol(inflator *s)
         return;
     }
     iz len = ENT_VAL(e) + inf_bits(s, ENT_EXTRA(e));
+    if (s->err) {
+        return;
+    }
     e = inf_decode(s, &s->dt);
     if (s->err) {
         return;
