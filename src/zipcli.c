@@ -2081,11 +2081,13 @@ static void file_extras(zip *z, zwork *k, zfile *f, zentry *e,
     e->lextra.s = l;
     e->cextra.s = c;
 
+    // Under SOURCE_DATE_EPOCH the access time is the epoch itself, as
+    // reading the file may change an earlier one (Linux's relatime)
     l = put16(l, ZIP_EXTRA_TIME);
     l = put16(l, 9);
     *l++ = 3;  // modification and access times
     l = put_time(l, z, f->info.mtime);
-    l = put_time(l, z, f->info.atime);
+    l = put_time(l, z, z->haveepoch ? z->epoch : f->info.atime);
     c = put16(c, ZIP_EXTRA_TIME);
     c = put16(c, 5);
     *c++ = 3;

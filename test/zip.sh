@@ -206,8 +206,8 @@ grep -q 'tree/empty (stored 0%)' out || fail "stored message: $(cat out)"
 cmp -s c1.zip c2.zip || fail "long options differ from short"
 "$ZIP" --qui --strip --compress-9 --recurse-path c2.zip tree
 cmp -s c1.zip c2.zip || fail "abbreviated long options differ"
-# (An epoch before the tree's times clamps the access times that extra
-# fields hold, which reading the files may change between runs.)
+# (SOURCE_DATE_EPOCH makes the access times that extra fields hold its
+# own, as reading the files may change them between runs.)
 SOURCE_DATE_EPOCH=1700000000 "$ZIP" -qX -X- -9r c3.zip tree
 [ "$(wc -c <c3.zip)" -gt "$(wc -c <c1.zip)" ] || fail "-X- kept -X"
 SOURCE_DATE_EPOCH=1700000000 "$ZIP" -qX9 --strip-extra- -rp --paths c4.zip tree
@@ -293,18 +293,22 @@ grep 'tree/a.txt$' out | grep -q 20231114.221320 || fail "odd epoch: $(cat out)"
 grep 'odd.txt$' out | grep -q 20231114.221320 || fail "odd epoch: $(cat out)"
 grep 'tree/one$' out | grep -q 20000102.030406 || fail "odd epoch: $(cat out)"
 
-# Without -X, the times of the UT extra field are clamped too, access
-# time and all, so that output does not depend on later changes to them
+# Without -X, the times of the UT extra field are clamped too, so that
+# output does not depend on later changes to them, and the access time
+# is the epoch, an earlier one too, as reading a file may change it
 mkdir ut
 printf new >ut/new
 printf old >ut/old
+printf past >ut/past
 touch -t 203001010000 ut/new
 TZ=UTC0 touch -m -t 202001010000 ut/old  # 1577836800, before the epoch
 touch -a -t 203001010000 ut/old
-SOURCE_DATE_EPOCH=1700000000 "$ZIP" -q ut1.zip ut/new ut/old
+TZ=UTC0 touch -t 201001010000 ut/past  # 1262304000, accessed then too
+SOURCE_DATE_EPOCH=1700000000 "$ZIP" -q ut1.zip ut/new ut/old ut/past
 touch -t 203101010000 ut/new
 touch -a -t 203101010000 ut/old
-SOURCE_DATE_EPOCH=1700000000 "$ZIP" -q ut2.zip ut/new ut/old
+touch -a ut/past  # as reading it does on Linux, under relatime
+SOURCE_DATE_EPOCH=1700000000 "$ZIP" -q ut2.zip ut/new ut/old ut/past
 cmp -s ut1.zip ut2.zip || fail "SOURCE_DATE_EPOCH without -X: times not clamped"
 if [ -n "$PY" ]; then  # local modification and access, central times
     $PY -c 'import struct, sys
@@ -326,7 +330,8 @@ while d[p:p+4] == b"PK\1\2":
           *ut(d[p+46+c[10]:p+46+c[10]+c[11]]))
     p += 46 + c[10] + c[11] + c[12]' ut1.zip >out
     printf '%s\n' 'ut/new 1700000000 1700000000 1700000000' \
-        'ut/old 1577836800 1700000000 1577836800' >want
+        'ut/old 1577836800 1700000000 1577836800' \
+        'ut/past 1262304000 1700000000 1262304000' >want
     cmp -s out want || fail "UT times under SOURCE_DATE_EPOCH: $(cat out)"
 fi
 

@@ -670,20 +670,23 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   of the internal attributes is left clear, where Info-ZIP sets it for
   text that it deflates, judged by the literals of its first deflate
   block, whose extent only a replay of its matcher reproduces.
-  `SOURCE_DATE_EPOCH` clamps times and makes them UTC. Names that are
-  valid non-ASCII UTF-8 always get flag bit 11 (Info-ZIP's builds
-  differ: Ubuntu's sets it, macOS's never). A directory reached again
-  through links within it, a loop, is added but not entered, with a
-  warning ("skipping directory loop"), where Info-ZIP follows the links
-  until the system refuses the path (`ELOOP`), adding the loop's
-  entries again at every level. Zip64 end records are written when the
-  count, size, or offset of the central directory needs them, as
-  APPNOTE has it, so for exactly 65,535 entries too, as readers take
-  0xffff to defer to them (and likewise a size or offset of 0xffffffff),
-  though not merely because an entry is Zip64; Info-ZIP writes them for
-  more than 65,535 entries, or when any entry is Zip64. And an entry's
-  Zip64 extra field comes before its others, where Info-ZIP's comes
-  last. Both forms are read alike.
+  `SOURCE_DATE_EPOCH`, which Info-ZIP ignores, clamps times and makes
+  them UTC, and a `UT` field's access time is the epoch itself, since
+  reading a file may change its access time (on Linux, under
+  `relatime`): an earlier one, recorded as it was, would differ in a
+  second run. Names that are valid non-ASCII UTF-8 always get flag bit
+  11 (Info-ZIP's builds differ: Ubuntu's sets it, macOS's never). A
+  directory reached again through links within it, a loop, is added but
+  not entered, with a warning ("skipping directory loop"), where
+  Info-ZIP follows the links until the system refuses the path
+  (`ELOOP`), adding the loop's entries again at every level. Zip64 end
+  records are written when the count, size, or offset of the central
+  directory needs them, as APPNOTE has it, so for exactly 65,535 entries
+  too, as readers take 0xffff to defer to them (and likewise a size or
+  offset of 0xffffffff), though not merely because an entry is Zip64;
+  Info-ZIP writes them for more than 65,535 entries, or when any entry
+  is Zip64. And an entry's Zip64 extra field comes before its others,
+  where Info-ZIP's comes last. Both forms are read alike.
 - Names and selection: doubled slashes collapse, in patterns too, so
   that `d/a d//a` is one path rather than two entries, and `.//a` names
   `a`, where Info-ZIP stores `/a`. Different paths giving one name are
