@@ -194,8 +194,19 @@ static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
     (void)ctx;
     for (;;) {
         iz r = read(fd, buf, (uz)MIN(cap, 1<<30));
-        if (r>=0 || errno!=EINTR) {
-            return r<0 ? -1 : r;
+        if (r >= 0) {
+            return r;
+        } else if (errno == EAGAIN) {
+            // Inherited non-blocking, as a pipe or terminal another program
+            // left so: wait for input from now on, as GNU gzip does
+            int flags = fcntl(fd, F_GETFL);
+            if (flags<0 || !(flags & O_NONBLOCK) ||
+                fcntl(fd, F_SETFL, flags & ~O_NONBLOCK)) {
+                errno = EAGAIN;
+                return -1;
+            }
+        } else if (errno != EINTR) {
+            return -1;
         }
     }
 }

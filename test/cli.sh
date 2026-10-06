@@ -449,6 +449,25 @@ for opts in -c -dc; do
         fail "$opts to a closed pipe: $(cat pipe.st) $(cat pipe.err)"
 done
 
+# Standard input that another program left non-blocking is waited on,
+# as in GNU gzip, rather than failing for want of input yet
+PY=
+if [ -n "$windows" ]; then
+    :
+elif command -v uv >/dev/null 2>&1; then
+    PY="uv run --no-project python3"
+elif command -v python3 >/dev/null 2>&1; then
+    PY=python3
+fi
+if [ -n "$PY" ]; then
+    nb='import fcntl, os, sys
+fcntl.fcntl(0, fcntl.F_SETFL, fcntl.fcntl(0, fcntl.F_GETFL) | os.O_NONBLOCK)
+os.execv(sys.argv[1], sys.argv[1:])'
+    (sleep 1; cat text) | $PY -c "$nb" "$GZIP" -c >nb.gz ||
+        fail "non-blocking standard input"
+    "$GZIP" -dc nb.gz | cmp -s - text || fail "non-blocking standard input"
+fi
+
 # Failures give the system's reason, as in GNU gzip
 for opts in '' -d; do
     set +e

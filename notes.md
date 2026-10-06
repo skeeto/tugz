@@ -933,6 +933,11 @@ Fuzzers:
   SIGPIPE, SIGQUIT, SIGTERM, SIGXCPU, and SIGXFSZ (inherited "ignore"
   dispositions are respected, as under nohup). Windows marks the file
   delete-pending at creation, so even `TerminateProcess` cleans up.
+- An inherited descriptor left non-blocking (a pipe or terminal another
+  program set `O_NONBLOCK` on) is read as GNU gzip reads it: a read
+  that finds no input yet clears the flag and waits, rather than
+  failing. The flag belongs to the open file, shared with whoever else
+  holds it, but as there it is not restored. zip's `-@` reads so too.
 - At startup, a closed standard descriptor is reopened on `/dev/null`,
   keeping output files off it; the opposite access mode makes using it
   fail as before. Without `/dev/null` (some chroots and sandboxes), the
