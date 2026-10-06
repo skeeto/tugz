@@ -791,16 +791,19 @@ static i32 apply_option(zip *z, zoption const *o, s8 opt, b32 negate,
 
 static i32 parse_args(zip *z, s8 *args, i32 nargs, arena scratch)
 {
+    s8  stream  = S("streaming with - not supported");
     b32 options = 1;
+    b32 dash    = 0;
     for (i32 i = 0; i < nargs; i++) {
         s8 arg = args[i];
         if (!options || arg.len<2 || arg.s[0]!='-') {
-            if (zequals(arg, S("-"))) {
+            if (!z->archive.s && zequals(arg, S("-"))) {
                 return fail(z, ZE_PARMS, S("Invalid command arguments"),
-                            S("streaming with - not supported"), scratch);
+                            stream, scratch);
             } else if (!z->archive.s) {
                 z->archive = arg;
             } else {
+                dash |= zequals(arg, S("-"));
                 *push(&z->perm, &z->paths) = arg;
             }
             continue;
@@ -869,6 +872,13 @@ static i32 parse_args(zip *z, s8 *args, i32 nargs, arena scratch)
                 }
             }
         }
+    }
+
+    // A "-" path reads standard input, except that under -d it names
+    // the entry that doing so makes, as in Info-ZIP
+    if (dash && z->mode!=MODE_DELETE) {
+        return fail(z, ZE_PARMS, S("Invalid command arguments"), stream,
+                    scratch);
     }
     return 0;
 }
@@ -3066,7 +3076,14 @@ static i32 zip_main(zipconfig *conf)
         for (iz p = 0; p < z->paths.len; p++) {
             s8 arg = z->paths.data[p];
             os_info info = {0};
-            if (os_stat(z->ctx, arg, !z->symlinks, &info, scratch)) {
+            if (zequals(arg, S("-"))) {
+                // Standard input's entry, by name alone, as Info-ZIP's
+                // procname takes it, never looking on disk nor warning
+                iz v = zindex_find(&old, arg);
+                if (v>=0 && included(z, arg)) {
+                    hit[v] = 1;
+                }
+            } else if (os_stat(z->ctx, arg, !z->symlinks, &info, scratch)) {
                 // Info-ZIP does not warn about names on disk
                 mark_named(z, &old, arg, &info, hit, scratch);
             } else {

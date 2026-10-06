@@ -1468,6 +1468,20 @@ expect_status 16 "$ZIP" -e bad.zip tree/a.txt
 expect_status 16 "$ZIP" --bogus bad.zip tree/a.txt
 expect_status 16 "$ZIP" - tree/a.txt
 
+# A "-" path, which Info-ZIP reads from standard input, is rejected as
+# streaming, but under -d, as there, it names the entry that makes
+printf x >./-
+"$ZIP" -q de.zip ./- tree/a.txt
+rm ./-
+expect_status 16 "$ZIP" de.zip tree/b.txt -
+expect_status 16 "$ZIP" -u de.zip -
+expect_status 12 "$ZIP" -d de.zip - -x -  # -x applies, as to any name
+"$ZIP" de.zip - -d >out || fail "-d -: $(cat out)"
+[ "$(cat out)" = "deleting: -" ] || fail "-d -: $(cat out)"
+[ "$(names de.zip)" = tree/a.txt ] || fail "-d -: $(names de.zip)"
+"$ZIP" -d de.zip - 2>err && fail "-d - without the entry succeeded"
+grep -q 'not matched' err && fail "-d - warned: $(cat err)"
+
 # As in Info-ZIP, -x and -i patterns need something to select from:
 # paths, even from -@, or for -u and -f the archive's entries
 "$ZIP" -q ns.zip tree/a.txt

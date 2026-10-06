@@ -170,8 +170,9 @@ if it is not, its entry is rewritten byte for byte).
 Other options are rejected (16) rather than ignored, among them the
 interactive and legacy features: encryption, comments, splits,
 adjusting self-extractors (`-A`, `-J`), `-F` fixes, line ending
-conversion, streaming (with `-`, or to standard output without an
-archive name), `-T`, `-m`, `-n`, `--out`, and logging.
+conversion, streaming (adding `-`, which `-d` takes as an entry's name,
+or to standard output without an archive name), `-T`, `-m`, `-n`,
+`--out`, and logging.
 
 ## Performance
 

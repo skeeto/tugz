@@ -249,8 +249,10 @@ neither inflate nor the gzip container.
   no arguments and no terminal on standard output, or no archive name,
   Info-ZIP streams to standard output; that is rejected as streaming. A
   terminal gets the usage, or Info-ZIP's "cannot write zip file to
-  terminal". `-d` warns, as Info-ZIP does, that `-r` and `-0` are
-  ignored.
+  terminal". A `-` path, which Info-ZIP reads from standard input, is
+  rejected as streaming too, but under `-d`, as there, it names the
+  entry that reading makes (`zip -d a.zip -`), never a file. `-d` warns,
+  as Info-ZIP does, that `-r` and `-0` are ignored.
 - Names: as Info-ZIP's ex2in makes them, `/` and `./` prefixes are
   dropped and `../` kept, and on POSIX too a leading `//host/share/` is
   dropped (`zip t.zip //h/s/f` stores `f`). A directory is named with
