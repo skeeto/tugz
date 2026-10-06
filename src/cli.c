@@ -257,7 +257,9 @@ static i32 process_file(options *o, s8 path, arena scratch)
     case OS_EISDIR:
         return warn(o, path, S("is a directory -- ignored"), scratch);
     case OS_ESYMLINK:
-        return warn(o, path, S("is a symbolic link -- ignored"), scratch);
+        // An error, not a warning, as GNU gzip's refusal (ELOOP) is
+        message(scratch, path, S("is a symbolic link -- ignored"));
+        return EXIT_ERR;
     case OS_ENOTREG:
         return warn(o, path, S("is not a directory or a regular file -- ignored"), scratch);
     case OS_ELINKS:
@@ -326,10 +328,12 @@ static i32 process_file(options *o, s8 path, arena scratch)
         return report(o, path, status, scratch);
     }
 
+    // Failing to remove the input loses nothing, so as in GNU gzip it is
+    // only a warning
     i32 code = report(o, path, status, scratch);
     if (!o->keep && !os_remove(ctx, path, scratch)) {
-        message(scratch, path, S("cannot remove input file"));
-        code = EXIT_ERR;
+        s8 msg = S("cannot remove input file");
+        code = exit_combine(code, warn(o, path, msg, scratch));
     }
     return code;
 }

@@ -60,6 +60,7 @@ struct os {
     b32 failread;    // reads of non-standard descriptors fail
     b32 failwrite;   // writes to descriptors other than stderr fail
     b32 failclose;   // closing created files fails
+    b32 failremove;  // removing files fails
     b32 tty[3];      // standard descriptors attached to a terminal
     b32 missing;     // the last os_open found no such file
 };
@@ -154,7 +155,7 @@ static void mfs_reset(os *ctx)
         ctx->fds[i].open = 0;
     }
     ctx->readlimit = 0;
-    ctx->failread = ctx->failwrite = ctx->failclose = 0;
+    ctx->failread = ctx->failwrite = ctx->failclose = ctx->failremove = 0;
     ctx->tty[0] = ctx->tty[1] = ctx->tty[2] = 0;
     static char *std[] = {"<stdin>", "<stdout>", "<stderr>"};
     for (i32 i = 0; i < 3; i++) {
@@ -275,7 +276,9 @@ static b32 os_remove(os *ctx, s8 path, arena scratch)
 {
     (void)scratch;
     mfile *f = mfs_find(ctx, path);
-    if (f) {
+    if (ctx->failremove) {
+        return 0;
+    } else if (f) {
         f->live = 0;
     }
     return !!f;
@@ -2516,7 +2519,10 @@ static void test_cli_safety(os *ctx, arena a)
     f = mfs_create(ctx, S("lnk"));
     mfs_append(f, text, 100);
     f->issymlink = 1;
-    TEST(run(ctx, a, "lnk") == EXIT_WARN);
+    // ...which, as for GNU gzip, is an error, not a warning
+    TEST(run(ctx, a, "lnk") == EXIT_ERR);
+    TEST(stderr_has(ctx, "is a symbolic link"));
+    TEST(run(ctx, a, "-q lnk") == EXIT_ERR);
     TEST(stderr_has(ctx, "is a symbolic link"));
     TEST(has(ctx, "lnk") && !has(ctx, "lnk.gz"));
     TEST(run(ctx, a, "-c lnk") == EXIT_OK);
@@ -2562,6 +2568,18 @@ static void test_cli_safety(os *ctx, arena a)
     TEST(run(ctx, a, "c") == EXIT_ERR);
     ctx->failwrite = 0;
     TEST(has(ctx, "c") && !has(ctx, "c.gz"));
+
+    // Failure to remove the input loses nothing: as in GNU gzip, both
+    // files remain, with a warning
+    ctx->failremove = 1;
+    TEST(run(ctx, a, "c") == EXIT_WARN);
+    TEST(stderr_has(ctx, "c: cannot remove input file"));
+    TEST(has(ctx, "c") && has(ctx, "c.gz"));
+    TEST(run(ctx, a, "-dqf c.gz") == EXIT_WARN);
+    TEST(!mfs_get(ctx, "<stderr>").len);
+    TEST(equals(mfs_get(ctx, "c"), text, 20000) && has(ctx, "c.gz"));
+    ctx->failremove = 0;
+    os_remove(ctx, S("c.gz"), a);
 
     // Terminals: no compressed data written to or read from one
     mfs_put(ctx, "t", text, 1000);

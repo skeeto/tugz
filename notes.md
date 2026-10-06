@@ -826,10 +826,12 @@ Fuzzers:
   `foo.gz`), naming `foo.gz` if none exists. The gzip platform layers
   tell a missing file from other failures with `os_missing`.
 - In-place operation (no `-c`/`-t`) deletes its input, so its input must
-  be a regular file: symbolic links and hard-linked files are skipped with
-  a warning unless `-f` (then links are followed); FIFOs, devices, and
+  be a regular file. As in GNU gzip, unless `-f` (then links are
+  followed), a symbolic link is refused with an error (1), and a
+  hard-linked file is skipped with a warning (2); FIFOs, devices, and
   directories are always skipped. With `-c` or `-t`, anything but a
-  directory may be read (e.g. `gzip -c <(cmd)`).
+  directory may be read (e.g. `gzip -c <(cmd)`). Failing to remove the
+  input afterward is a warning, as in GNU gzip, leaving both files.
 - Output files are created owner-only, then given the input's mode,
   ownership (when permitted; set-ID bits dropped otherwise), and
   timestamps at full resolution. On Windows, timestamps are copied and

@@ -207,23 +207,36 @@ want=$(mtime fresh)
 "$GZIP" -d fresh.gz
 [ "$(mtime fresh)" = "$want" ] || fail "mtime lost on decompress"
 
-# Symbolic links are skipped in place unless forced
+# Symbolic links are refused in place unless forced, an error as in GNU gzip
 printf 'target\n' >target
 if ln -s target slink 2>/dev/null; then
-    expect_status 2 "$GZIP" slink
+    expect_status 1 "$GZIP" slink
     [ -e slink ] && [ ! -e slink.gz ] || fail "symlink compressed in place"
     "$GZIP" -c slink | "$GZIP" -dc | cmp -s - target || fail "-c symlink"
     "$GZIP" -f slink
     [ ! -e slink ] && [ -e slink.gz ] && [ -e target ] || fail "-f symlink"
 fi
 
-# Hard-linked files likewise
+# Hard-linked files likewise, but with a warning, as there
 printf 'linked\n' >hard1
 if ln hard1 hard2 2>/dev/null; then
     expect_status 2 "$GZIP" hard1
     [ -e hard1 ] && [ ! -e hard1.gz ] || fail "hard link compressed"
     "$GZIP" -f hard1
     [ -e hard1.gz ] && [ -e hard2 ] || fail "-f hard link"
+fi
+
+# An input that cannot be removed (here a BSD user-immutable file) is
+# left with its output and a warning, as in GNU gzip
+printf 'stuck\n' >stuck
+if chflags uchg stuck 2>/dev/null; then
+    set +e
+    "$GZIP" stuck 2>/dev/null
+    st=$?
+    set -e
+    chflags nouchg stuck
+    [ $st = 2 ] && [ -e stuck ] && [ -e stuck.gz ] ||
+        fail "input not removed: status $st"
 fi
 
 # FIFOs are never replaced, and checking one must not block
