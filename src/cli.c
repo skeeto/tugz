@@ -132,9 +132,6 @@ static s8 status_message(i32 status)
     switch (status) {
     case GZ_TRAILING: return S("decompression OK, trailing garbage ignored");
     case GZ_ENOTGZ:   return S("not in gzip format");
-    case GZ_EMETHOD:  return S("unknown compression method");
-    case GZ_EFLAGS:   return S("unknown header flags set");
-    case GZ_EHCRC:    return S("header crc mismatch");
     case GZ_ETRUNC:   return S("unexpected end of file");
     case GZ_EDATA:    return S("invalid compressed data--format violated");
     case GZ_ECRC:     return S("invalid compressed data--crc error");
@@ -149,6 +146,56 @@ static i32 warn(options *o, s8 name, s8 msg, arena scratch)
         message(scratch, name, msg);
     }
     return EXIT_WARN;
+}
+
+// A warning that runs on from the name, as some of GNU gzip's do.
+static i32 warn_that(options *o, s8 name, s8 msg, arena scratch)
+{
+    s8 line = s8concat(&scratch, name, msg);
+    return warn(o, (s8){0}, line, scratch);
+}
+
+static void writer_num(writer *w, u32 v, u32 base, i32 width)
+{
+    u8  buf[32];
+    i32 len = 0;
+    for (; v || len<width; v /= base) {
+        buf[countof(buf) - ++len] = (u8)"0123456789abcdef"[v % base];
+    }
+    writer_write(w, buf+countof(buf)-len, len);
+}
+
+// Report a bad gzip header as GNU gzip does, from the bytes the decoder
+// holds: the method byte, the flags, or the header check.
+static void bad_header(decoder *z, s8 name, i32 status, arena scratch)
+{
+    writer *w = newwriter(&scratch, 2, 512);
+    writer_s8(w, S("gzip: "));
+    writer_s8(w, name);
+    switch (status) {
+    case GZ_EMETHOD:
+        writer_s8(w, S(": unknown method "));
+        writer_num(w, z->buf[2], 10, 1);
+        writer_s8(w, S(" -- not supported"));
+        break;
+    case GZ_EFLAGS:
+        if (z->buf[3] & 0x20) {
+            writer_s8(w, S(" is encrypted -- not supported"));
+        } else {
+            writer_s8(w, S(" has flags 0x"));
+            writer_num(w, z->buf[3], 16, 1);
+            writer_s8(w, S(" -- not supported"));
+        }
+        break;
+    case GZ_EHCRC:
+        writer_s8(w, S(": header checksum 0x"));
+        writer_num(w, (u32)(z->buf[0] | z->buf[1]<<8), 16, 4);
+        writer_s8(w, S(" != computed checksum 0x"));
+        writer_num(w, z->hcrc & 0xffff, 16, 4);
+        break;
+    }
+    writer_byte(w, '\n');
+    writer_flush(w);
 }
 
 // Why an os_* call just failed, as GNU gzip says in the system's words,
@@ -181,6 +228,11 @@ static i32 report(options *o, s8 in, s8 out, i32 status, arena scratch)
             return warn(o, out, reason(ctx, S("broken pipe")), scratch);
         }
         message(scratch, out, reason(ctx, S("write error")));
+        return EXIT_ERR;
+    case GZ_EMETHOD:
+    case GZ_EFLAGS:
+    case GZ_EHCRC:
+        bad_header(o->dec, in, status, scratch);
         return EXIT_ERR;
     }
     message(scratch, in, status_message(status));
@@ -276,15 +328,17 @@ static i32 process_file(options *o, s8 path, arena scratch)
     i32 in = find_input(o, &path, mode, &scratch);
     switch (in) {
     case OS_EISDIR:
-        return warn(o, path, S("is a directory -- ignored"), scratch);
+        return warn_that(o, path, S(" is a directory -- ignored"), scratch);
     case OS_ESYMLINK:
         // An error, not a warning, as GNU gzip's refusal (ELOOP) is
         message(scratch, path, S("is a symbolic link -- ignored"));
         return EXIT_ERR;
     case OS_ENOTREG:
-        return warn(o, path, S("is not a directory or a regular file -- ignored"), scratch);
-    case OS_ELINKS:
-        return warn(o, path, S("has other links -- file ignored"), scratch);
+        return warn_that(o, path, S(" is not a directory or a regular file "
+                                    "- ignored"), scratch);
+    case OS_ELINKS:  // which GNU gzip counts
+        return warn_that(o, path, S(" has other links -- file ignored"),
+                         scratch);
     }
     if (in < 0) {
         message(scratch, path, reason(ctx, S("cannot open for reading")));
@@ -304,8 +358,11 @@ static i32 process_file(options *o, s8 path, arena scratch)
     if (o->decompress) {
         outpath = strip_suffix(&scratch, path);
         if (!outpath.s) {
+            // Under -q, GNU gzip leaves even the status at 0
             os_close(ctx, in);
-            return warn(o, path, S("unknown suffix -- ignored"), scratch);
+            return o->quiet ? EXIT_OK
+                            : warn(o, path, S("unknown suffix -- ignored"),
+                                   scratch);
         }
     } else {
         s8 suffix = known_suffix(path);
@@ -346,8 +403,12 @@ static i32 process_file(options *o, s8 path, arena scratch)
 
     i32 out = os_open(ctx, outpath, o->force ? OS_FORCE : OS_CREATE, scratch);
     if (out == OS_EEXIST) {
+        // A warning in GNU gzip's words, which it gives even under -q
         os_close(ctx, in);
-        return warn(o, outpath, S("already exists; not overwritten"), scratch);
+        s8 msg = S(" already exists;\tnot overwritten");
+        msg = s8concat(&scratch, outpath, msg);
+        message(scratch, (s8){0}, msg);
+        return EXIT_WARN;
     } else if (out < 0) {
         message(scratch, outpath, reason(ctx, S("cannot open for writing")));
         os_close(ctx, in);

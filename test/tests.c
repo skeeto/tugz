@@ -334,7 +334,8 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
     ctx->writes += fd != 2;
     if ((ctx->failwrite || ctx->brokenpipe) && fd!=2) {
         ctx->pipeclosed = ctx->brokenpipe;
-        ctx->error = ctx->brokenpipe ? "Broken pipe" : "No space left on device";
+        ctx->error = ctx->brokenpipe ? "Broken pipe"
+                                     : "No space left on device";
         return 0;
     }
     mfs_append(ctx->files + ctx->fds[fd].file, buf, len);
@@ -2313,8 +2314,47 @@ static void test_cli(os *ctx, arena a)
     TEST(stderr_has(ctx, "missing.gz: No such file or directory"));
     mfs_put(ctx, "g", text, 100);
     TEST(run(ctx, a, "-d g") == EXIT_WARN);
-    TEST(stderr_has(ctx, "unknown suffix"));
+    TEST(stderr_has(ctx, "gzip: g: unknown suffix -- ignored\n"));
     TEST(has(ctx, "g"));
+    TEST(run(ctx, a, "-dq g") == EXIT_OK);  // as GNU gzip has it
+    TEST(!mfs_get(ctx, "<stderr>").len);
+
+    // An existing output is no error, and as in GNU gzip, said even -q
+    mfs_put(ctx, "g.gz", text, 100);
+    TEST(run(ctx, a, "-q g") == EXIT_WARN);
+    TEST(stderr_has(ctx, "gzip: g.gz already exists;\tnot overwritten\n"));
+    os_remove(ctx, S("g.gz"), a);
+
+    // Bad headers, described from their bytes as GNU gzip does
+    static struct {
+        char *data;
+        iz    len;
+        char *what;
+    } const headers[] = {
+        {"\x1f\x8b\x07\0\0\0\0\0\0\x03", 10,
+         "gzip: h.gz: unknown method 7 -- not supported\n"},
+        {"\x1f\x8b\x00\0\0\0\0\0\0\x03", 10,
+         "gzip: h.gz: unknown method 0 -- not supported\n"},
+        {"\x1f\x8b\x08\x20\0\0\0\0\0\x03", 10,
+         "gzip: h.gz is encrypted -- not supported\n"},
+        {"\x1f\x8b\x08\xe1\0\0\0\0\0\x03", 10,
+         "gzip: h.gz is encrypted -- not supported\n"},
+        {"\x1f\x8b\x08\x40\0\0\0\0\0\x03", 10,
+         "gzip: h.gz has flags 0x40 -- not supported\n"},
+        {"\x1f\x8b\x08\xc1\0\0\0\0\0\x03", 10,
+         "gzip: h.gz has flags 0xc1 -- not supported\n"},
+        {"\x1f\x8b\x08\x02\0\0\0\0\0\x03\xff\xff", 12,
+         "gzip: h.gz: header checksum 0xffff != computed checksum 0x77a7\n"},
+        {"\x1f\x8b\x08\x02\0\0\0\0\0\x03\x01\0", 12,
+         "gzip: h.gz: header checksum 0x0001 != computed checksum 0x77a7\n"},
+    };
+    for (i32 i = 0; i < countof(headers); i++) {
+        mfs_put(ctx, "h.gz", (u8 *)headers[i].data, headers[i].len);
+        TEST(run(ctx, a, "-tq h.gz") == EXIT_ERR);
+        TEST(equals(mfs_get(ctx, "<stderr>"), (u8 *)headers[i].what,
+                    (iz)strlen(headers[i].what)));
+    }
+    os_remove(ctx, S("h.gz"), a);
 
     // GNU gzip's suffixes, in any case: .tgz and .taz stand for .tar
     static struct {
@@ -2363,7 +2403,7 @@ static void test_cli(os *ctx, arena a)
     TEST(stderr_has(ctx, "nf: unknown suffix"));
     mfs_put(ctx, "nf.gz", gz.s, gz.len);
     TEST(run(ctx, a, "nf") == EXIT_WARN);  // compressing: as named
-    TEST(stderr_has(ctx, "nf.gz: already exists"));
+    TEST(stderr_has(ctx, "gzip: nf.gz already exists;\tnot overwritten\n"));
     os_remove(ctx, S("nf"), a);
     TEST(run(ctx, a, "nf") == EXIT_ERR);
     TEST(stderr_has(ctx, "nf: No such file or directory"));
@@ -2393,7 +2433,7 @@ static void test_cli(os *ctx, arena a)
     os_remove(ctx, S("nf.gz.gz"), a);
     mfs_create(ctx, S("nf.gz"))->isdir = 1;
     TEST(run(ctx, a, "-dc nf") == EXIT_WARN);
-    TEST(stderr_has(ctx, "nf.gz: is a directory"));
+    TEST(stderr_has(ctx, "gzip: nf.gz is a directory -- ignored\n"));
     os_remove(ctx, S("nf.gz"), a);
 
     // A suffix alone has no stem, even after a directory
@@ -2493,8 +2533,8 @@ static void test_cli(os *ctx, arena a)
         {"\x1f\x8b", 2, "unexpected end of file"},
         {"\x1f\x8b\x08\x08\0\0\0\0\0\x03name", 14, "unexpected end of file"},
         {"\x1f\x8b\x07\0\0\0\0\0\0\x03", 10, "unknown"},
-        {"\x1f\x8b\x08\x20\0\0\0\0\0\x03", 10, "flags"},
-        {"\x1f\x8b\x08\x02\0\0\0\0\0\x03\xff\xff", 12, "crc"},
+        {"\x1f\x8b\x08\x20\0\0\0\0\0\x03", 10, "encrypted"},
+        {"\x1f\x8b\x08\x02\0\0\0\0\0\x03\xff\xff", 12, "checksum"},
     };
     for (i32 i = 0; i < countof(notgz); i++) {
         static char *const cmds[] = {"-df p.gz", "-d p.gz", "-dfk p.gz"};
@@ -2701,7 +2741,7 @@ static void test_cli_safety(os *ctx, arena a)
     mfs_append(f, text, 100);
     f->nlinks = 1;
     TEST(run(ctx, a, "hard") == EXIT_WARN);
-    TEST(stderr_has(ctx, "has other links"));
+    TEST(stderr_has(ctx, "gzip: hard has other links -- file ignored\n"));
     TEST(has(ctx, "hard") && !has(ctx, "hard.gz"));
     TEST(run(ctx, a, "-f hard") == EXIT_OK);
     TEST(has(ctx, "hard.gz"));
@@ -2711,7 +2751,8 @@ static void test_cli_safety(os *ctx, arena a)
     mfs_append(f, text, 100);
     f->isspecial = 1;
     TEST(run(ctx, a, "fifo") == EXIT_WARN);
-    TEST(stderr_has(ctx, "not a directory or a regular file"));
+    TEST(stderr_has(ctx, "gzip: fifo is not a directory or a regular file "
+                         "- ignored\n"));
     TEST(run(ctx, a, "-f fifo") == EXIT_WARN);
     TEST(has(ctx, "fifo") && !has(ctx, "fifo.gz"));
     TEST(run(ctx, a, "-c fifo") == EXIT_OK);
@@ -2835,7 +2876,8 @@ static void test_io_stops(os *ctx, arena a)
     ctx->failread = 1;
     ctx->failreadat = len/2;
     TEST(run(ctx, a, "-c r missing") == EXIT_ERR);
-    TEST(stderr_has(ctx, "r: Input/output error") && !stderr_has(ctx, "missing"));
+    TEST(stderr_has(ctx, "gzip: r: Input/output error\n"));
+    TEST(!stderr_has(ctx, "missing"));
     s8 o = dup8(mfs_get(ctx, "<stdout>"));
     ctx->failread = 0;
     TEST(do_gunzip(ctx, a, o.s, o.len, &out) == GZ_ETRUNC);
@@ -2877,7 +2919,8 @@ static void test_io_stops(os *ctx, arena a)
         TEST(run(ctx, a, cmds[i].cmd) == EXIT_ERR);
         ctx->failwrite = 0;
         TEST(ctx->writes==1 && ctx->reads<len/IO_RDBUF/2);
-        snprintf(want, sizeof(want), "%sNo space left on device\n", cmds[i].out);
+        snprintf(want, sizeof(want), "%sNo space left on device\n",
+                 cmds[i].out);
         TEST(stderr_has(ctx, want) && !stderr_has(ctx, "missing"));
         TEST(has(ctx, "r") && !has(ctx, "r.gz"));
         TEST(has(ctx, "z.gz") && !has(ctx, "z"));

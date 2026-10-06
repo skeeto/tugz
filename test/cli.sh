@@ -176,6 +176,11 @@ cp keep hd
 expect_status 1 "$GZIP" -df hd.gz
 cmp -s hd keep && cmp -s hd.gz plain || fail "-df over hd: plain"
 
+# A name without a known suffix is skipped with a warning, except that
+# as in GNU gzip, -q leaves the status 0
+expect_status 2 "$GZIP" -d plain
+expect_status 0 "$GZIP" -dq plain
+
 # Corrupt output is removed, input kept
 cp trunc.gz bad.gz
 expect_status 1 "$GZIP" -d bad.gz
@@ -476,7 +481,8 @@ for opts in '' -d; do
     set -e
     name=nothere
     [ -n "$opts" ] && name=nothere.gz
-    [ $st = 1 ] && grep -q "^gzip: $name: No such file or directory\$" why.err ||
+    want="gzip: $name: No such file or directory"
+    [ $st = 1 ] && grep -q "^$want\$" why.err ||
         fail "$opts nothere: $st $(cat why.err)"
 done
 

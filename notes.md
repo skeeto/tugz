@@ -894,6 +894,18 @@ Fuzzers:
   platform layers word Windows' common errors as its C runtime words
   them (`os_error`), and an error with no such wording gets a
   description instead (`cannot open for reading`, `write error`).
+- Other messages are worded as GNU gzip 1.14 words them, bad headers
+  described from their bytes (`unknown method 7 -- not supported`,
+  `has flags 0x40`, `header checksum 0xffff != computed checksum
+  0x77a7`). As there, an existing output is reported even under `-q`,
+  and `-dq` of a name without a known suffix skips it with status 0.
+  Known differences: a hard-linked input "has other links", where GNU
+  counts them ("has 1 other link"), since the platform layers report
+  no count; a refused symbolic link "is a symbolic link -- ignored" on
+  every platform, where GNU gives the reason its open failed ("Too
+  many levels of symbolic links"); a failure to set both the mode and
+  the times is one warning, where GNU gives one for each; and no
+  message begins with GNU's blank line.
 - Headers record no name and no time (FLG and MTIME 0), which is GNU
   gzip's `-n` output but for XFL (always 0), so `-n` and `--no-name` are
   accepted and do nothing. `-N`, which asks for a name and time to be
