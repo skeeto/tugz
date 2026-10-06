@@ -20,9 +20,12 @@ W32(b32)    GetFileInformationByHandle(iptr, void *);
 W32(b32)    GetFileInformationByHandleEx(iptr, i32, void *, u32);
 W32(u32)    GetFileType(iptr);
 W32(u32)    GetLastError(void);
+W32(b32)    GetNamedPipeHandleStateW(iptr, u32 *, u32 *, u32 *, u32 *, c16 *,
+                                     u32);
 W32(iptr)   GetStdHandle(u32);
 W32(b32)    ReadFile(iptr, void *, u32, u32 *, uptr);
 W32(b32)    SetFileInformationByHandle(iptr, i32, void *, u32);
+W32(b32)    SetNamedPipeHandleState(iptr, u32 *, u32 *, u32 *);
 W32(void)   SetLastError(u32);
 W32(void *) VirtualAlloc(uptr, iz, u32, u32);
 W32(b32)    WriteConsoleW(iptr, c16 const *, u32, u32 *, uptr);
@@ -42,6 +45,8 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define FILE_ATTRIBUTE_REPARSE     0x400u
 #define FILE_FLAG_OPEN_REPARSE     0x00200000u
 #define FILE_TYPE_DISK             1u
+#define PIPE_NOWAIT                1u
+#define PIPE_READMODE_MESSAGE      2u
 #define IO_REPARSE_TAG_MOUNT_POINT 0xa0000003u
 #define IO_REPARSE_TAG_SYMLINK     0xa000000cu
 #define INVALID_FILE_ATTRIBUTES    0xffffffffu
@@ -56,6 +61,7 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define ERROR_BROKEN_PIPE          109u
 #define ERROR_INVALID_NAME         123u
 #define ERROR_HANDLE_EOF           38u
+#define ERROR_NO_DATA              232u
 #define MEM_COMMIT                 0x1000u
 #define MEM_RESERVE                0x2000u
 #define PAGE_READWRITE             4u
@@ -583,12 +589,33 @@ static b32 os_close(os *ctx, i32 fd)
 
 static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
 {
-    u32 got = 0;
-    if (!ReadFile(ctx->handles[fd], buf, (u32)MIN(cap, 1<<30), &got, 0)) {
+    iptr h = ctx->handles[fd];
+    for (;;) {
+        u32 got = 0;
+        if (ReadFile(h, buf, (u32)MIN(cap, 1<<30), &got, 0)) {
+            return got;
+        }
         u32 err = GetLastError();
-        return err==ERROR_BROKEN_PIPE || err==ERROR_HANDLE_EOF ? 0 : -1;
+        if (err==ERROR_BROKEN_PIPE || err==ERROR_HANDLE_EOF) {
+            return 0;
+        }
+
+        // An inherited pipe left non-blocking (PIPE_NOWAIT), as another
+        // program may leave one, has no input yet: wait for input from
+        // now on, as POSIX does for O_NONBLOCK, keeping its read mode
+        u32 state = 0;
+        if (err!=ERROR_NO_DATA ||
+            !GetNamedPipeHandleStateW(h, &state, 0, 0, 0, 0, 0) ||
+            !(state & PIPE_NOWAIT)) {
+            SetLastError(err);
+            return -1;
+        }
+        u32 mode = state & PIPE_READMODE_MESSAGE;  // and PIPE_WAIT
+        if (!SetNamedPipeHandleState(h, &mode, 0, 0)) {
+            SetLastError(err);
+            return -1;
+        }
     }
-    return got;
 }
 
 // Write UTF-8 (WTF-8) to a console as UTF-16, since WriteFile would take

@@ -23,7 +23,6 @@ static b32 os_isatty(os *ctx, i32 fd)
 #define ERROR_HANDLE_DISK_FULL  39u
 #define ERROR_DISK_FULL         112u
 #define ERROR_ALREADY_EXISTS    183u
-#define ERROR_NO_DATA           232u
 
 static b32 os_missing(os *ctx)
 {

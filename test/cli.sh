@@ -504,10 +504,95 @@ for opts in -c -dc; do
 done
 
 # Standard input that another program left non-blocking is waited on,
-# as in GNU gzip, rather than failing for want of input yet
+# as in GNU gzip, rather than failing for want of input yet (on Windows,
+# a pipe left PIPE_NOWAIT)
 PY=
 if [ -n "$windows" ]; then
-    :
+    cat >nowait.cs <<'EOF'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading;
+public static class NoWait {
+    [DllImport("kernel32.dll")]
+    static extern bool CreatePipe(out IntPtr r, out IntPtr w, IntPtr sa, int n);
+    [DllImport("kernel32.dll")]
+    static extern bool SetNamedPipeHandleState(IntPtr h, ref int mode,
+                                               IntPtr n, IntPtr t);
+    [DllImport("kernel32.dll")]
+    static extern bool SetHandleInformation(IntPtr h, int mask, int flags);
+    [DllImport("kernel32.dll")]
+    static extern bool WriteFile(IntPtr h, byte[] b, int n, out int done,
+                                 IntPtr o);
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll")]
+    static extern int WaitForSingleObject(IntPtr h, int ms);
+    [DllImport("kernel32.dll")]
+    static extern bool GetExitCodeProcess(IntPtr h, out int code);
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct StartupInfo {
+        public int cb;
+        public string reserved, desktop, title;
+        public int x, y, w, h, cols, rows, fill, flags;
+        public short show, reserved2;
+        public IntPtr reserved3, stdin, stdout, stderr;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct ProcessInfo {
+        public IntPtr process, thread;
+        public int pid, tid;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern bool CreateProcessW(string app, string cmd, IntPtr pa,
+                                      IntPtr ta, bool inherit, int flags,
+                                      IntPtr env, string dir,
+                                      ref StartupInfo si, out ProcessInfo pi);
+    // Run a command with standard input from a pipe left PIPE_NOWAIT,
+    // written only after a second, and its output and errors to files.
+    public static int Run(string cmd, string input, string output,
+                          string errors) {
+        IntPtr r, w;
+        CreatePipe(out r, out w, IntPtr.Zero, 0);
+        int mode = 1;  // PIPE_NOWAIT
+        SetNamedPipeHandleState(r, ref mode, IntPtr.Zero, IntPtr.Zero);
+        FileStream o = File.Create(output);
+        FileStream e = File.Create(errors);
+        StartupInfo si = new StartupInfo();
+        si.cb = Marshal.SizeOf(si);
+        si.flags = 0x100;  // STARTF_USESTDHANDLES
+        si.stdin = r;
+        si.stdout = o.SafeFileHandle.DangerousGetHandle();
+        si.stderr = e.SafeFileHandle.DangerousGetHandle();
+        SetHandleInformation(si.stdin, 1, 1);  // inheritable
+        SetHandleInformation(si.stdout, 1, 1);
+        SetHandleInformation(si.stderr, 1, 1);
+        ProcessInfo pi;
+        if (!CreateProcessW(null, cmd, IntPtr.Zero, IntPtr.Zero, true, 0,
+                            IntPtr.Zero, null, ref si, out pi)) {
+            return -1;
+        }
+        CloseHandle(r);
+        Thread.Sleep(1000);
+        byte[] data = File.ReadAllBytes(input);
+        int done;
+        WriteFile(w, data, data.Length, out done, IntPtr.Zero);
+        CloseHandle(w);
+        WaitForSingleObject(pi.process, -1);
+        int code;
+        GetExitCodeProcess(pi.process, out code);
+        o.Close();
+        e.Close();
+        return code;
+    }
+}
+EOF
+    st=$(powershell -NoProfile -NonInteractive -Command "
+        Add-Type -TypeDefinition (Get-Content -Raw nowait.cs)
+        [NoWait]::Run('\"$GZIP\" -c', 'text', 'nb.gz', 'nb.err')" |
+         tr -d '\r')
+    [ "$st" = 0 ] || fail "non-blocking standard input: $st $(cat nb.err)"
+    "$GZIP" -dc nb.gz | cmp -s - text || fail "non-blocking standard input"
 elif command -v uv >/dev/null 2>&1; then
     PY="uv run --no-project python3"
 elif command -v python3 >/dev/null 2>&1; then

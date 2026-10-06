@@ -1022,6 +1022,9 @@ Fuzzers:
   that finds no input yet clears the flag and waits, rather than
   failing. The flag belongs to the open file, shared with whoever else
   holds it, but as there it is not restored. zip's `-@` reads so too.
+  On Windows, likewise, a pipe left non-blocking (`PIPE_NOWAIT`), whose
+  reads fail with `ERROR_NO_DATA` until input comes, is set to wait,
+  keeping its read mode.
 - At startup, a closed standard descriptor is reopened on `/dev/null`,
   keeping output files off it; the opposite access mode makes using it
   fail as before. Without `/dev/null` (some chroots and sandboxes), the
