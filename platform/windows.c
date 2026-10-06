@@ -559,11 +559,13 @@ static b32 os_close(os *ctx, i32 fd)
     return ok;
 }
 
-[[maybe_unused]] static void os_keep(os *ctx, i32 fd)
+// Setting delete-pending just worked on this handle, so clearing it
+// should too, but a file system or filter may yet refuse.
+[[maybe_unused]] static b32 os_keep(os *ctx, i32 fd)
 {
     u8 keep = 0;
-    SetFileInformationByHandle(ctx->handles[fd], FileDispositionInfo,
-                               &keep, sizeof(keep));
+    return SetFileInformationByHandle(ctx->handles[fd], FileDispositionInfo,
+                                      &keep, sizeof(keep));
 }
 
 static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)

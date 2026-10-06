@@ -433,12 +433,16 @@ static i32 process_file(options *o, s8 path, arena scratch)
         s8 why = reason(ctx, S("cannot set metadata"));
         code = exit_combine(code, warn(o, outpath, why, scratch));
     }
-    os_keep(ctx, out);
-
-    // A failed close may mean lost data, so the input must survive it
-    if (!os_close(ctx, out)) {
+    // A failed close may mean lost data, and an output that cannot be
+    // kept is discarded when closed, so the input must survive either
+    b32 kept = os_keep(ctx, out);
+    if (!kept || !os_close(ctx, out)) {
         code = report(o, path, outpath, GZ_EWRITE, scratch);
-        os_remove(ctx, outpath, scratch);
+        if (kept) {
+            os_remove(ctx, outpath, scratch);
+        } else {
+            os_close(ctx, out);
+        }
         os_close(ctx, in);
         return code;
     }

@@ -45,7 +45,9 @@ static iz   os_read(os *, i32 fd, u8 *buf, iz cap);
 static b32  os_write(os *, i32 fd, u8 *buf, iz len);
 static b32  os_remove(os *, s8 path, arena scratch);
 // Keep a created file when it is closed instead of discarding it.
-static void os_keep(os *, i32 fd);
+// Returns false if it cannot be kept (on Windows, where the file system
+// refuses to cancel its deletion), and closing it still discards it.
+static b32  os_keep(os *, i32 fd);
 // Exit with a status. A created file not yet kept is discarded.
 [[noreturn]] static void os_exit(os *, i32 status);
 

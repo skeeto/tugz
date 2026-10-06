@@ -234,11 +234,12 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
     return !unlink(tocstr(&scratch, path));
 }
 
-[[maybe_unused]] static void os_keep(os *ctx, i32 fd)
+[[maybe_unused]] static b32 os_keep(os *ctx, i32 fd)
 {
     if (fd == ctx->outfd) {
         release_output(1);
     }
+    return 1;
 }
 
 static void os_exit(os *ctx, i32 status)

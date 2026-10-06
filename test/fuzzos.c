@@ -40,7 +40,7 @@ static b32 os_close(os *ctx, i32 fd)
     __builtin_trap();
 }
 
-static void os_keep(os *ctx, i32 fd)
+static b32 os_keep(os *ctx, i32 fd)
 {
     (void)ctx; (void)fd;
     __builtin_trap();

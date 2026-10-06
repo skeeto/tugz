@@ -70,6 +70,7 @@ struct os {
     b32 failstat;    // getting metadata fails
     b32 failmeta;    // setting metadata fails
     b32 failclose;   // closing created files fails
+    b32 failkeep;    // keeping created files fails, as on Windows it may
     b32 failremove;  // removing files fails
     b32 tty[3];      // standard descriptors attached to a terminal
     b32 missing;     // the last os_open found no such file
@@ -170,7 +171,7 @@ static void mfs_reset(os *ctx)
     ctx->readlimit = ctx->failreadat = 0;
     ctx->failread = ctx->failwrite = ctx->failclose = ctx->failremove = 0;
     ctx->brokenpipe = ctx->failcreate = ctx->noreason = 0;
-    ctx->failstat = ctx->failmeta = 0;
+    ctx->failstat = ctx->failmeta = ctx->failkeep = 0;
     ctx->tty[0] = ctx->tty[1] = ctx->tty[2] = 0;
     static char *std[] = {"<stdin>", "<stdout>", "<stderr>"};
     for (i32 i = 0; i < 3; i++) {
@@ -239,10 +240,15 @@ static b32 os_close(os *ctx, i32 fd)
     return 1;
 }
 
-static void os_keep(os *ctx, i32 fd)
+static b32 os_keep(os *ctx, i32 fd)
 {
     TEST(fd>2 && fd<MAX_FDS && ctx->fds[fd].open && ctx->fds[fd].created);
+    if (ctx->failkeep) {
+        ctx->error = "Input/output error";
+        return 0;
+    }
     ctx->fds[fd].keep = 1;
+    return 1;
 }
 
 static b32 os_isatty(os *ctx, i32 fd)
@@ -2770,6 +2776,18 @@ static void test_cli_safety(os *ctx, arena a)
     ctx->failclose = 0;
     TEST(equals(mfs_get(ctx, "c"), text, 20000));
     TEST(!has(ctx, "c.gz"));
+
+    // ...and so does failure to keep it, which closing then discards (on
+    // Windows, where cancelling its deletion could fail)
+    ctx->failkeep = 1;
+    TEST(run(ctx, a, "c") == EXIT_ERR);
+    TEST(stderr_has(ctx, "gzip: c.gz: Input/output error\n"));
+    ctx->failkeep = 0;
+    TEST(equals(mfs_get(ctx, "c"), text, 20000));
+    TEST(!has(ctx, "c.gz"));
+    for (i32 fd = 3; fd < MAX_FDS; fd++) {
+        TEST(!ctx->fds[fd].open);  // the output closed all the same
+    }
 
     // ...as when it cannot be created
     ctx->failcreate = 1;

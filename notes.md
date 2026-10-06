@@ -1011,6 +1011,9 @@ Fuzzers:
   SIGPIPE, SIGQUIT, SIGTERM, SIGXCPU, and SIGXFSZ (inherited "ignore"
   dispositions are respected, as under nohup). Windows marks the file
   delete-pending at creation, so even `TerminateProcess` cleans up.
+  Clearing that could fail (a file system or filter may refuse), which
+  closing would follow by deleting the output, so it is an error like
+  a failed close, keeping the input.
 - An inherited descriptor left non-blocking (a pipe or terminal another
   program set `O_NONBLOCK` on) is read as GNU gzip reads it: a read
   that finds no input yet clears the flag and waits, rather than
