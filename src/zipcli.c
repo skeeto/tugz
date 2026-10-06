@@ -46,7 +46,7 @@ typedef struct {
 
 // Returns false if the path does not exist or cannot be examined, which
 // os_missing then tells apart. With follow, symbolic links are followed;
-// otherwise a link is FT_LINK.
+// otherwise a link (on Windows, or a junction) is FT_LINK.
 static b32  os_stat(os *, s8 path, b32 follow, os_info *, arena scratch);
 // Whether the last os_stat failed because nothing is there (no such file
 // or directory, or a name that none could have), rather than for a
@@ -2623,30 +2623,82 @@ static b32 differs(zip *z, zfile *f, zentry *e)
            (f->info.type==FT_FILE && f->info.size!=e->usize);
 }
 
-// Whether a name is one zip would make, and so safe to read as a path:
-// in an untrusted archive, absolute names (and on Windows, drives and
-// backslashes) could otherwise reach any file.
-static b32 plain_name(zip *z, s8 name, arena scratch)
+// The path by which an entry names its file, or a null string if its
+// name might reach beyond the current directory, as an untrusted
+// archive's could: the name must be one zip would make (not absolute,
+// nor on Windows with a drive or backslashes), but for leading ./ such
+// as bsdtar and Windows' tar write, and have no .. components. A name of
+// only ./ names the current directory.
+static s8 entry_path(zip *z, s8 name, arena scratch)
 {
     for (iz i = 0; i < name.len; i++) {
         if (!name.s[i]) {
-            return 0;
+            return (s8){0};
         }
     }
-    return zequals(zip_name(&scratch, name, z->windows), name);
+    s8 path = name;
+    while (path.len>=2 && path.s[0]=='.' && path.s[1]=='/') {
+        iz skip = 1;
+        for (; skip<path.len && path.s[skip]=='/'; skip++) {}
+        path = (s8){path.s+skip, path.len-skip};
+    }
+    if (!zequals(zip_name(&scratch, path, z->windows), path)) {
+        return (s8){0};
+    }
+    for (iz i = 0, end; i < path.len; i = end + 1) {
+        for (end = i; end<path.len && path.s[end]!='/'; end++) {}
+        if (end-i==2 && path.s[i]=='.' && path.s[i+1]=='.') {
+            return (s8){0};
+        }
+    }
+    path.len -= is_dirname(path);
+    return path.len ? path : S(".");
+}
+
+// Whether the directories along an entry's relative path are just that,
+// none a link (on Windows, nor a junction), through which its name would
+// reach beyond the current directory; a link at its end is followed, as
+// for any path, unless -y. Those of the path checked before, through its
+// last slash, are known to be directories, so that a run of entries in
+// one directory examines it once.
+static b32 linkless(zip *z, s8 path, s8 *checked, arena scratch)
+{
+    iz from = 0;
+    for (iz k = 0; k<path.len && k<checked->len; k++) {
+        if (path.s[k] != checked->s[k]) {
+            break;
+        }
+        from = path.s[k]=='/' ? k+1 : from;
+    }
+    iz last = 0;
+    for (iz k = 0; k < path.len; k++) {
+        if (path.s[k] != '/') {
+            continue;
+        }
+        os_info info = {0};
+        if (k>=from && (!os_stat(z->ctx, (s8){path.s, k}, 0, &info, scratch) ||
+                        info.type!=FT_DIR)) {
+            return 0;
+        }
+        last = k + 1;
+    }
+    *checked = last>from ? (s8){path.s, last} : *checked;
+    return 1;
 }
 
 // Select existing entries as Info-ZIP's procname does for a path not on
 // disk, matching it as a pattern against their names, and as it does
 // for -u and -f without paths, taking every entry (a null pattern). The
 // file that a selected entry names is examined, without recursion, -D,
-// or -j, if the name passes -i and -x and no path named it already. A
-// missing file leaves its entry as it is (deleted, under -FS). Returns
-// whether any entry matched.
+// or -j, if the name passes -i and -x, no path named it already, and it
+// reaches no further than the current directory. A missing file leaves
+// its entry as it is (deleted, under -FS). Returns whether any entry
+// matched.
 static b32 scan_entries(zip *z, zarchive *ar, iz n, zindex *old, s8 pattern,
                         b32 *taken, arena scratch)
 {
-    b32 any = 0;
+    b32 any     = 0;
+    s8  checked = {0};  // directories known to be no links
     for (iz i = 0; i < n; i++) {
         if (pattern.s && !pattern_hit(z, pattern, ar, i)) {
             continue;
@@ -2656,15 +2708,17 @@ static b32 scan_entries(zip *z, zarchive *ar, iz n, zindex *old, s8 pattern,
         // Of entries with one name, files replace the first
         arena iter = scratch;
         s8    name = port_name(z, ar, i);
-        if (zindex_find(old, name)!=i || taken[i] || !included(z, name) ||
-            !plain_name(z, name, iter)) {
+        if (zindex_find(old, name)!=i || taken[i] || !included(z, name)) {
+            continue;
+        }
+        s8 path = entry_path(z, name, iter);
+        if (!path.s || !linkless(z, path, &checked, iter)) {
             continue;
         }
         taken[i] = 1;
 
-        s8 path = {name.s, name.len-is_dirname(name)};
         os_info info = {0};
-        if (path.len && os_stat(z->ctx, path, !z->symlinks, &info, iter) &&
+        if (os_stat(z->ctx, path, !z->symlinks, &info, iter) &&
             !is_archive(z, path, &info, iter)) {
             s8 key = entry_key(z, name, &z->perm);
             *zmap_upsert(&z->names, key, &z->perm) = z->files.len;

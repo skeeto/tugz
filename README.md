@@ -154,7 +154,10 @@ errors go to standard error, without the tab that starts Info-ZIP's
 warnings on standard output. Every entry that does not shrink is stored
 (Info-ZIP stores only small ones), and none is marked as text. A
 directory loop through links is not followed. A hard-linked archive is
-replaced by a new file, so its other names keep the old archive.
+replaced by a new file, so its other names keep the old archive. Entries
+select only files within the current directory, never by absolute names,
+`..`, or linked directories, so that refreshing an untrusted archive
+cannot read other files.
 
 Output is deterministic: entries within each directory are sorted by
 name, and with `-X` an archive depends only on file contents, names,

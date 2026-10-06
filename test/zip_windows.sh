@@ -172,6 +172,27 @@ expect_status 12 "$ZIP" -f fr.zip '*.TXT'
 grep -c '^freshening: ' out | grep -qx 2 || fail "-f '*.txt': $(cat out)"
 list fr.zip | grep -q want.txt && fail "-f added a file"
 
+# Departure: entries select files only within the current directory,
+# not by .. components nor through a junction, which Info-ZIP's port
+# follows (by its sources), though their files can be named as paths
+mkdir -p esc/w/d esc/out
+printf secret >esc/secret
+printf key >esc/out/key
+printf g >esc/w/d/g
+ps "New-Item -ItemType Junction -Path esc\\w\\junc -Target (Resolve-Path esc\\out).Path |
+    Out-Null"
+(cd esc/w && "$ZIP" -q e.zip ../secret junc/key d/g)
+ps "foreach (\$f in 'esc\\secret', 'esc\\out\\key', 'esc\\w\\d\\g') {
+        (Get-Item \$f).LastWriteTime = '2030-01-01' }"
+(cd esc/w && "$ZIP" -u e.zip >../log) || fail "-u of escaping names"
+[ "$(cat esc/log)" = "updating: d/g (stored 0%)" ] ||
+    fail "-u of escaping names: $(cat esc/log)"
+(cd esc/w && "$ZIP" -f e.zip '*' >../log) || fail "-f of escaping names"
+[ ! -s esc/log ] || fail "-f '*' of escaping names: $(cat esc/log)"
+(cd esc/w && "$ZIP" -u e.zip ../secret junc/key >../log) ||
+    fail "-u of named paths"
+[ "$(grep -c '^updating: ' esc/log)" = 2 ] || fail "-u of named paths"
+
 # -nw leaves ? a wildcard, as in Info-ZIP
 "$ZIP" -q -nw nw.zip 'tree/?.txt'
 list nw.zip | sort >got

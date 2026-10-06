@@ -790,14 +790,48 @@ grep -q 'file and directory with the same name: d1/b.log' err ||
 [ "$(unzip -p sel/t.zip d1/b.log)" = b ] || fail "file then directory kept"
 (cd sel && expect_status 18 "$ZIP" -u t.zip)
 
-# Entry names zip would not make are not read as paths, so that an
-# untrusted archive cannot select any file
+# Departure: entry names select files only within the current
+# directory, so that an untrusted archive cannot select any file beyond
+# it: not by an absolute name, by .. components, or through a linked
+# directory (Info-ZIP reads them all). Leading ./, as bsdtar writes it,
+# leads nowhere else, so such entries are refreshed, as in Info-ZIP.
 if [ -n "$PY" ]; then
+    entries() {  # archive: each entry's name and contents
+        $PY -c 'import sys, zipfile as z
+for i in z.ZipFile(sys.argv[1]).infolist():
+    print(i.filename, z.ZipFile(sys.argv[1]).read(i).decode())' "$1"
+    }
     $PY -c 'import sys, zipfile as z
 a = z.ZipFile(sys.argv[1], "w"); a.writestr(z.ZipInfo(sys.argv[2]), "x")' \
         abs.zip "$tmp/tree/a.txt"
     expect_status 12 "$ZIP" -f abs.zip
     [ "$(unzip -p abs.zip)" = x ] || fail "absolute entry name freshened"
+
+    mkdir -p esc/top/work/sub/d esc/out
+    printf secret >esc/top/secret
+    printf outside >esc/out/key
+    printf new >esc/top/work/sub/f
+    printf new >esc/top/work/sub/d/g
+    ln -s ../../../out esc/top/work/sub/link 2>/dev/null || :
+    $PY -c 'import sys, zipfile as z
+a = z.ZipFile(sys.argv[1], "w")
+for n in sys.argv[2:]: a.writestr(z.ZipInfo(n), "" if n == "./" else "x")' \
+        esc/top/work/sub/e.zip ./ ../../secret d/../../../secret \
+        ./../../secret .//./f link/key d/g d/./g f
+    cp esc/top/work/sub/e.zip esc/e0.zip
+    (cd esc/top/work/sub && "$ZIP" -u e.zip >../../../log 2>&1) ||
+        fail "-u of escaping names: $(cat esc/log)"
+    grep -qx 'updating: \./ (stored 0%)' esc/log || fail "./: $(cat esc/log)"
+    entries esc/top/work/sub/e.zip >got
+    printf '%s\n' './ ' '../../secret x' 'd/../../../secret x' \
+        './../../secret x' './/./f new' 'link/key x' 'd/g new' 'd/./g new' \
+        'f new' >want
+    cmp -s got want || fail "escaping names: $(cat got)"
+    cp esc/e0.zip esc/top/work/sub/e.zip
+    (cd esc/top/work/sub && "$ZIP" -f e.zip '*' >../../../log 2>&1) ||
+        fail "-f of escaping names: $(cat esc/log)"
+    entries esc/top/work/sub/e.zip >got
+    cmp -s got want || fail "escaping names by pattern: $(cat got)"
 fi
 
 # Delete

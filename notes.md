@@ -289,7 +289,10 @@ neither inflate nor the gzip container.
   freshening; otherwise it expands wildcards on disk and stops there,
   and so does tugz. The file a selected entry names is examined without
   recursion, `-D`, or `-j` (which does not cut the pattern either), if
-  the name passes `-i` and `-x`. A missing file leaves its entry
+  the name passes `-i` and `-x` and stays within the current directory
+  (see the departures). Leading `./`, which bsdtar and Windows' `tar`
+  write, stays there, so those entries are refreshed, as in Info-ZIP, a
+  `./` entry by the current directory. A missing file leaves its entry
   (deleted by `-FS`). One that has changed between file and directory
   keeps it, with Info-ZIP's warning and status 18. Special files, named
   or met while recursing, are left out with Info-ZIP's warnings
@@ -630,9 +633,15 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   is added, as Info-ZIP's builds without Unicode support do (with it, as
   on Linux, the last file replaces the entry, silently). Patterns given
   after `-j` stay whole (Info-ZIP's name conversion cuts them to their
-  last component, so that `-j -x 'dir/*'` excludes everything). Only
-  entry names zip would make select their files, so an untrusted
-  archive's absolute names select nothing (Info-ZIP reads them).
+  last component, so that `-j -x 'dir/*'` excludes everything). Entry
+  names select files only within the current directory, so that
+  refreshing an untrusted archive reads nothing beyond it: names zip
+  would make (but for leading `./`), without `..` components, through
+  directories that are not links (on Windows, nor junctions); a link the
+  name ends in is followed, as for any path, unless `-y`. Info-ZIP reads
+  them all, absolute names included. Other entries are refreshed only by
+  naming their files as paths (`zip -u a.zip ../f`), and as when their
+  files are missing, `-FS` deletes them unless so named.
 - Special files: sockets and block devices are left out too. Info-ZIP's
   Unix port (judging by its behavior, a type test by masking mode bits)
   takes a socket for a regular file, which it then cannot open (18; `-d`

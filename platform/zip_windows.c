@@ -177,24 +177,35 @@ static b32 handle_info(iptr h, os_info *info)
     return 1;
 }
 
-// Symbolic links and junctions are always followed, as Info-ZIP does on
-// Windows, so follow is ignored.
+// Symbolic links and junctions are followed, as Info-ZIP does on Windows
+// (there is no -y), unless asked not to, as for the directories along an
+// entry's name, when a link or a junction is FT_LINK. Other reparse
+// points, such as cloud placeholders, are ordinary files.
 static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
                    arena scratch)
 {
     (void)ctx;
-    (void)follow;
     c16 *wpath = winpath(&scratch, path);
     if (!wpath) {
         SetLastError(ERROR_INVALID_NAME);  // no file can have it
         return 0;
     }
+    u32 flags = FILE_FLAG_BACKUP_SEMANTICS;
+    flags |= follow ? 0 : FILE_FLAG_OPEN_REPARSE;
     iptr h = CreateFileW(wpath, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, 0,
-                         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0);
+                         OPEN_EXISTING, flags, 0);
     if (h == INVALID_HANDLE_VALUE) {
         return 0;
     }
     b32 ok = handle_info(h, info);
+    attribute_tag_info tag = {0};
+    if (ok && !follow && (info->attr & FILE_ATTRIBUTE_REPARSE) &&
+        GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag,
+                                     sizeof(tag)) &&
+        (tag.reparse_tag==IO_REPARSE_TAG_SYMLINK ||
+         tag.reparse_tag==IO_REPARSE_TAG_MOUNT_POINT)) {
+        info->type = FT_LINK;
+    }
     CloseHandle(h);
     return ok;
 }
