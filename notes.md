@@ -820,7 +820,8 @@ Fuzzers:
   Go's compress/gzip (most levels, including its default) failed
   `gzip -t` or the library depending on read boundaries. Fuzzing missed
   it: zlib never writes such codes, and the streaming check's seeds
-  lacked its config byte
+  lacked its config byte (`test/seeds.py` now writes both; 44 of the
+  new seeds each trap `fuzz-diff-inflate` on the old decoder)
 - `memcpy` with a null pointer and zero length, from callers passing
   empty null buffers (UBSan under GCC)
 - zip: bytes resembling a Zip64 locator before a plain end record made

@@ -22,6 +22,15 @@ def put(target, name, data):
     with open(os.path.join(d, name), "wb") as f:
         f.write(data)
 
+def streaming(fmt, inpiece, outpiece=0):
+    """First byte of a fuzz-diff-inflate input, selecting its streaming
+    check's format and its input and output piece sizes (fuzz_pieces
+    indices) for the rest of the input."""
+    for low in range(4):
+        c = outpiece<<5 | inpiece<<2 | low
+        if c % 3 == fmt:
+            return bytes([c])
+
 n = 0
 for i, s in enumerate(samples):
     for level in (0, 1, 6, 9):
@@ -32,12 +41,188 @@ for i, s in enumerate(samples):
                 z = c.compress(s) + c.flush()
                 for t in ("inflate", "diff-inflate"):
                     put(t, f"s{n}", z)
+                # The streaming check reads the rest after a config byte
+                cfg = streaming(0 if wbits < 0 else 2, 1 + n%7, n//7 % 8)
+                put("diff-inflate", f"s{n}c", cfg + z)
                 n += 1
     for k in range(3):
         cfg = bytes(random.getrandbits(8) for _ in range(8))
         put("roundtrip", f"s{i}_{k}", cfg[:3] + s[:8000])
         put("diff-deflate", f"s{i}_{k}", cfg + s[:8000])
 print(n, "deflate seeds")
+
+# Dynamic blocks with a lone 1-bit distance code, which Go's
+# compress/flate writes when a block's matches share one distance code,
+# or an empty one. zlib never writes either, and random mutation rarely
+# makes one, yet their invalid 1-bit entries once turned truncation inside
+# a length's extra bits into an error in our streaming decoder.
+import heapq, struct
+
+LEN_BASE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35,
+            43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
+LEN_EXTRA = [0]*8 + [1]*4 + [2]*4 + [3]*4 + [4]*4 + [5]*4 + [0]
+DIST_BASE = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
+             257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193,
+             12289, 16385, 24577]
+DIST_EXTRA = [0, 0] + [i//2 for i in range(28)]
+CL_ORDER = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
+
+class Bits:
+    def __init__(self):
+        self.out, self.acc, self.n = bytearray(), 0, 0
+    def put(self, v, n):
+        self.acc |= v << self.n
+        self.n += n
+        while self.n >= 8:
+            self.out.append(self.acc & 255)
+            self.acc >>= 8
+            self.n -= 8
+    def code(self, c, n):  # Huffman codes go most significant bit first
+        self.put(int(f"{c:0{n}b}"[::-1], 2), n)
+    def done(self):
+        return bytes(self.out) + (bytes([self.acc]) if self.n else b"")
+
+def symbol(v, base, extra):
+    i = max(i for i, b in enumerate(base) if b <= v)
+    return i, extra[i], v - base[i]
+
+def code_lengths(freq):
+    """Huffman code lengths, at most 15, for {symbol: count}."""
+    if len(freq) == 1:
+        return {s: 1 for s in freq}  # a lone 1-bit code
+    while True:
+        heap = [(f, s, [s]) for s, f in freq.items()]
+        heapq.heapify(heap)
+        depth = dict.fromkeys(freq, 0)
+        while len(heap) > 1:
+            fa, ka, a = heapq.heappop(heap)
+            fb, kb, b = heapq.heappop(heap)
+            for s in a + b:
+                depth[s] += 1
+            heapq.heappush(heap, (fa+fb, min(ka, kb), a+b))
+        if max(depth.values()) <= 15:
+            return depth
+        freq = {s: (f+1)//2 for s, f in freq.items()}
+
+def canonical(lens):
+    codes, code = [0]*len(lens), 0
+    for n in range(1, 16):
+        for s, l in enumerate(lens):
+            if l == n:
+                codes[s] = code
+                code += 1
+        code <<= 1
+    return codes
+
+def dynamic(w, tokens, final, bad=None):
+    """One dynamic block of tokens, literals or (length, distance), with
+    the code length code {0..15: 4 bits}. bad="empty" gives the matches
+    an empty distance code, and bad="unused" codes the last match's
+    distance with a lone code's unused codeword: both invalid."""
+    lfreq, dfreq = {256: 1}, {}
+    for t in tokens:
+        if isinstance(t, int):
+            lfreq[t] = lfreq.get(t, 0) + 1
+        else:
+            ls = 257 + symbol(t[0], LEN_BASE, LEN_EXTRA)[0]
+            ds = symbol(t[1], DIST_BASE, DIST_EXTRA)[0]
+            lfreq[ls] = lfreq.get(ls, 0) + 1
+            dfreq[ds] = dfreq.get(ds, 0) + 1
+    llens = code_lengths(lfreq)
+    dlens = code_lengths(dfreq) if dfreq and bad != "empty" else {}
+    assert bad != "unused" or len(dlens) == 1
+    hlit = max(llens) + 1
+    hdist = max(dlens) + 1 if dlens else 1
+    lens = ([llens.get(s, 0) for s in range(hlit)] +
+            [dlens.get(s, 0) for s in range(hdist)])
+    w.put(final, 1)
+    w.put(2, 2)
+    w.put(hlit - 257, 5)
+    w.put(hdist - 1, 5)
+    w.put(19 - 4, 4)
+    for s in CL_ORDER:
+        w.put(4 if s < 16 else 0, 3)
+    for l in lens:
+        w.code(l, 4)
+    lc, dc = canonical(lens[:hlit]), canonical(lens[hlit:])
+    last = max((k for k, t in enumerate(tokens) if not isinstance(t, int)),
+               default=-1)
+    for k, t in enumerate(tokens):
+        if isinstance(t, int):
+            w.code(lc[t], lens[t])
+            continue
+        ls, le, lv = symbol(t[0], LEN_BASE, LEN_EXTRA)
+        ds, de, dv = symbol(t[1], DIST_BASE, DIST_EXTRA)
+        w.code(lc[257+ls], lens[257+ls])
+        w.put(lv, le)
+        if bad == "empty":
+            w.put(0, 1)
+        elif bad == "unused" and k == last:
+            w.put(1, 1)
+        else:
+            w.code(dc[ds], lens[hlit+ds])
+        w.put(dv, de)
+    w.code(lc[256], lens[256])
+
+def expand(tokens, out):
+    for t in tokens:
+        if isinstance(t, int):
+            out.append(t)
+        else:
+            for _ in range(t[0]):
+                out.append(out[-t[1]])
+
+def matches(rng, groups, dists):
+    """Groups of literals, each followed by a match at a distance drawn
+    from dists, never farther back than the output so far."""
+    toks, total = [], 0
+    for _ in range(groups):
+        d = rng.choice(dists)
+        lits = max(1, d - total)
+        toks += [rng.choice(b"abcdefgh") for _ in range(lits)]
+        n = rng.randint(3, 258)
+        toks.append((n, d))
+        total += lits + n
+    return toks
+
+rng = random.Random(2)
+blocks = {  # name: [(tokens, bad)] per block
+    "dist1":   [(matches(rng, 40, [1]), None)],       # Go on byte runs
+    "dist7":   [(matches(rng, 40, [7]), None)],
+    "dist8":   [(matches(rng, 30, [7, 8]), None)],    # 1 extra bit
+    "dist300": [(matches(rng, 30, range(257, 385)), None)],  # 7 extra bits
+    "empty":   [([rng.choice(b"xyz") for _ in range(300)], None)],
+    "blocks":  [(matches(rng, 20, [3]), None),
+                ([rng.choice(b"xyz") for _ in range(50)], None),
+                (matches(rng, 20, [1, 2]), None)],
+    "bad-empty":  [(matches(rng, 10, [1]), "empty")],
+    "bad-unused": [(matches(rng, 10, [5]), "unused")],
+}
+nlone = 0
+for name, spec in blocks.items():
+    w, data = Bits(), bytearray()
+    for k, (tokens, bad) in enumerate(spec):
+        dynamic(w, tokens, k == len(spec)-1, bad)
+        expand(tokens, data)
+    raw, data = w.done(), bytes(data)
+    d = zlib.decompressobj(-15)
+    try:
+        ok = d.decompress(raw) == data and d.eof and not d.unused_data
+    except zlib.error:
+        ok = False
+    assert ok == (not name.startswith("bad")), name
+    gz = (b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff" + raw +
+          struct.pack("<II", zlib.crc32(data), len(data)))
+    zl = b"\x78\x01" + raw + struct.pack(">I", zlib.adler32(data))
+    for t in ("inflate", "diff-inflate"):
+        put(t, f"lone-{name}", raw)
+        put(t, f"lone-{name}.gz", gz)
+    for fmt, z in enumerate((raw, zl, gz)):
+        for piece in range(1, 8):
+            put("diff-inflate", f"lone-{name}-f{fmt}p{piece}",
+                streaming(fmt, piece, rng.randrange(8)) + z)
+            nlone += 1
+print(nlone, "lone and empty distance code seeds")
 
 # ZIP archives for fuzz-zipread, mostly from Python's zipfile, some
 # patched into forms it does not write: Zip64 end records and central
