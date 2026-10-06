@@ -104,6 +104,10 @@ static b32  os_isatty(os *, i32 fd);
 static s8   os_error(os *);
 // A name in the OEM code page, as UTF-8 (Windows), or a null string.
 static s8   os_fromoem(os *, s8 name, arena *perm, arena scratch);
+// A name in upper case as the file system compares names ignoring case
+// (Windows), beyond ASCII too, or the name itself. It and any temporaries
+// come from one arena.
+static s8   os_upcase(os *, s8 name, arena *);
 // A file's full path, past links, which tells files apart where their
 // file IDs are unknown (Windows), or a null string.
 static s8   os_fullpath(os *, s8 path, arena *perm, arena scratch);
@@ -1446,10 +1450,19 @@ static iz expand(zip *z, s8 path, arena scratch)
     }
     os_dirent **kids = zsort(list, n, &scratch);
 
+    // Beyond ASCII, which ZIP_FOLD folds, case is ignored by comparing in
+    // upper case, as the file system and Info-ZIP's port (by towupper)
+    // compare names, where the pattern or the name needs it
     i32 flags = ZIP_FOLD | ZIP_DOS | ZIP_UTF8 | (z->nowild ? ZIP_NOWILD : 0);
+    b32 wide  = zip_utf8(pat) != 0;
+    s8  upat  = wide ? os_upcase(z->ctx, pat, &scratch) : pat;
     iz  count = 0;
     for (iz i = 0; i < n; i++) {
-        if (!zip_match(pat, kids[i]->name, flags)) {
+        arena tmp = scratch;
+        s8    kid = kids[i]->name;
+        b32   up  = wide || zip_utf8(kid) != 0;
+        if (!zip_match(up ? upat : pat,
+                       up ? os_upcase(z->ctx, kid, &tmp) : kid, flags)) {
             continue;
         }
         arena iter = scratch;  // forgets each match's strings

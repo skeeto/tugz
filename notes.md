@@ -487,35 +487,39 @@ neither inflate nor the gzip container.
   drive-relative ones (`C:*.txt`) included, are expanded per component
   (except when freshening, when, as in Info-ZIP's port, they only match
   entries) and matched as Info-ZIP's Windows port does: ignoring case,
-  without `[sets]`, by characters, and by its dosmatch, under which a
-  name without a period matches as if it ended in one (`*.*` matches
-  every name). By characters, `?` matches a UTF-8 character, not a
-  byte, as the port matches characters of its multibyte code page, or
-  wide ones (unverified against the port; there a character beyond the
-  BMP would be two wide ones); on Unix, Info-ZIP and tugz match bytes.
-  Filters match the same way, except that case matters against entries
-  (`-d`) and when freshening. Files replace existing entries whose
-  names differ only in case, and those keep their names. A path given
-  again in another case (`D/A.txt d/a.txt`) is skipped like any repeat,
-  keeping the first spelling, and different files whose names differ
-  only in case collide, as exactly repeated names do (both departures:
-  see Names and selection). Hidden and
-  system files are skipped unless `-S`, even when named; recursion and
-  wildcards judge them, as Info-ZIP does, by the listing (a link's own
-  attributes), so that unopenable ones like `pagefile.sys` are never
-  opened. `-@` and `@file` lines lose trailing spaces and periods, as
-  in Info-ZIP. Links and junctions are followed; cycles are detected by
-  file identity, the 128-bit `FileIdInfo` where available (64-bit
-  indexes are not unique on ReFS). An unknown (zero) ID matches nothing,
-  but where the archive's is unknown, as on file systems that report
-  none, a file the archive's size is compared by its final path
-  (`GetFinalPathNameByHandleW`), so that the archive is still left out
-  (Info-ZIP compares sizes and times, never IDs, on Windows).
-  Recursion takes plain files' attributes, size, and times from the
-  listing, opening only directories, links, and files the size of the
-  archive, whose identity it needs. (A directory entry can lag for a
-  file changed through another of its hard links, as Microsoft notes.)
-  Only a letter is a drive: `1:x` names stream `x` of file `1`.
+  beyond ASCII too (`É*` finds `école.txt`), by comparing in upper case
+  as the file system does (`LCMapStringW`'s file system rules), as the
+  port compares by `towupper` (by its sources), without `[sets]`, by
+  characters, and by its dosmatch, under which a name without a period
+  matches as if it ended in one (`*.*` matches every name). By
+  characters, `?` matches a UTF-8 character, not a byte, as the port
+  matches characters of its multibyte code page, or wide ones
+  (unverified against the port; there a character beyond the BMP would
+  be two wide ones); on Unix, Info-ZIP and tugz match bytes. Filters
+  match the same way, except that they ignore only ASCII case, as the
+  port's narrow dosmatch does by its sources, and case matters against
+  entries (`-d`) and when freshening. Files replace existing entries
+  whose names differ only in case, and those keep their names. A path
+  given again in another case (`D/A.txt d/a.txt`) is skipped like any
+  repeat, keeping the first spelling, and different files whose names
+  differ only in case collide, as exactly repeated names do (both
+  departures: see Names and selection). Hidden and system files are
+  skipped unless `-S`, even when named; recursion and wildcards judge
+  them, as Info-ZIP does, by the listing (a link's own attributes), so
+  that unopenable ones like `pagefile.sys` are never opened. `-@` and
+  `@file` lines lose trailing spaces and periods, as in Info-ZIP. Links
+  and junctions are followed; cycles are detected by file identity, the
+  128-bit `FileIdInfo` where available (64-bit indexes are not unique on
+  ReFS). An unknown (zero) ID matches nothing, but where the archive's
+  is unknown, as on file systems that report none, a file the archive's
+  size is compared by its final path (`GetFinalPathNameByHandleW`), so
+  that the archive is still left out (Info-ZIP compares sizes and times,
+  never IDs, on Windows). Recursion takes plain files' attributes, size,
+  and times from the listing, opening only directories, links, and files
+  the size of the archive, whose identity it needs. (A directory entry
+  can lag for a file changed through another of its hard links, as
+  Microsoft notes.) Only a letter is a drive: `1:x` names stream `x` of
+  file `1`.
 - Memory: zip has no fixed cap. Its memory is one reservation of
   address space, as much as the system lends up to 16 GiB on 64-bit
   POSIX hosts and 64 GiB on 64-bit Windows (1 GiB for 32-bit

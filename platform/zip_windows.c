@@ -46,10 +46,13 @@ W32(b32)  FindNextFileW(iptr, find_data *);
 W32(b32)  FlushFileBuffers(iptr);
 W32(u32)  GetEnvironmentVariableW(c16 *, c16 *, u32);
 W32(u32)  GetFinalPathNameByHandleW(iptr, c16 *, u32, u32);
+W32(i32)  LCMapStringW(u32, u32, c16 const *, i32, c16 *, i32);
 W32(i32)  MultiByteToWideChar(u32, u32, u8 const *, i32, c16 *, i32);
 W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 
 #define CP_OEMCP                   1u
+#define LOCALE_INVARIANT           0x7fu
+#define LCMAP_UPPERCASE            0x200u
 #define FILE_ATTRIBUTE_HIDDEN      0x02u
 #define FILE_ATTRIBUTE_SYSTEM      0x04u
 #define FILE_ATTRIBUTE_ARCHIVE     0x20u
@@ -589,6 +592,24 @@ static s8 os_fromoem(os *ctx, s8 name, arena *perm, arena scratch)
     i32  n   = MultiByteToWideChar(CP_OEMCP, 0, name.s, len, w, len);
     w[n>0 ? n : 0] = 0;
     return n>0 ? towtf8(perm, w) : (s8){0};
+}
+
+// Upper case by the system's "file system rules", its default without
+// LCMAP_LINGUISTIC_CASING, which map each UTF-16 unit to one, as file
+// names are compared ignoring case: the case that the C runtime's
+// towupper, which Info-ZIP's port matches wildcards with, gives too.
+static s8 os_upcase(os *ctx, s8 name, arena *a)
+{
+    (void)ctx;
+    s16  w = fromwtf8(a, name);
+    c16 *u = new(a, w.len+1, c16);
+    i32  n = LCMapStringW(LOCALE_INVARIANT, LCMAP_UPPERCASE, w.s, (i32)w.len,
+                          u, (i32)w.len);
+    if (n != w.len) {
+        return name;
+    }
+    u[n] = 0;
+    return towtf8(a, u);
 }
 
 // An environment variable as WTF-8, or a null string if it is unset.

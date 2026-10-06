@@ -338,6 +338,13 @@ static s8 os_fromoem(os *ctx, s8 name, arena *perm, arena scratch)
     return (s8){0};  // never asked: only Windows reads OEM names
 }
 
+static s8 os_upcase(os *ctx, s8 name, arena *a)
+{
+    (void)ctx;
+    (void)a;
+    return name;  // never asked: only Windows expands wildcards
+}
+
 static s8 os_fullpath(os *ctx, s8 path, arena *perm, arena scratch)
 {
     (void)ctx;

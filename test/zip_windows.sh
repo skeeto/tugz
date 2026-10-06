@@ -220,6 +220,21 @@ grep -q "^  adding: u8/$(printf '\342\202\254').txt" out ||
     fail "? as a character: $(cat out)"
 expect_status 12 "$ZIP" u82.zip 'u8/*' -x 'u8/?.txt'
 
+# Wildcards ignore case beyond ASCII too, as the file system and
+# Info-ZIP's port (by towupper) compare names, here given as UTF-8 by
+# -@: E-acute finds e-acute, Cyrillic A finds a. Filters, as the port's
+# narrow dosmatch, by its sources, ignore only ASCII case.
+mkdir uc
+ps "Set-Content -LiteralPath ('uc\\' + [char]0xe9 + 'cole.txt') -Value e;
+    Set-Content -LiteralPath ('uc\\' + [char]0x430 + 'b.txt') -Value a"
+printf 'uc/\303\211*.txt\nuc/\320\220?.TXT\n' | "$ZIP" uc1.zip -@ >out
+grep -q "^  adding: uc/$(printf '\303\251')cole.txt" out &&
+    grep -q "^  adding: uc/$(printf '\320\260')b.txt" out ||
+    fail "case beyond ASCII: $(cat out)"
+printf 'uc/\303\211*\n' >uc.lst
+"$ZIP" uc2.zip 'uc/*' -x@uc.lst >out
+[ "$(grep -c '^  adding: ' out)" = 2 ] || fail "-x beyond ASCII: $(cat out)"
+
 # A hidden or system file is left out even when named, by a wildcard
 # or in a -@ list, unless -S
 expect_status 12 "$ZIP" h3.zip tree/hidden.txt
