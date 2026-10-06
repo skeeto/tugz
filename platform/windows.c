@@ -46,10 +46,13 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define IO_REPARSE_TAG_SYMLINK     0xa000000cu
 #define INVALID_FILE_ATTRIBUTES    0xffffffffu
 #define INVALID_HANDLE_VALUE       ((iptr)-1)
+#define ERROR_INVALID_FUNCTION     1u
 #define ERROR_TOO_MANY_OPEN_FILES  4u
 #define ERROR_ACCESS_DENIED        5u
 #define ERROR_SHARING_VIOLATION    32u
+#define ERROR_NOT_SUPPORTED        50u
 #define ERROR_FILE_EXISTS          80u
+#define ERROR_INVALID_PARAMETER    87u
 #define ERROR_BROKEN_PIPE          109u
 #define ERROR_INVALID_NAME         123u
 #define ERROR_HANDLE_EOF           38u
@@ -399,9 +402,11 @@ static i32 open_input(c16 *wpath, i32 mode, iptr *out)
     iptr h = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_ALL, 0,
                          OPEN_EXISTING, flags, 0);
     if (h == INVALID_HANDLE_VALUE) {
+        u32 why  = GetLastError();
         u32 attr = GetFileAttributesW(wpath);
-        b32 dir = attr!=INVALID_FILE_ATTRIBUTES &&
-                  (attr & FILE_ATTRIBUTE_DIRECTORY);
+        b32 dir  = attr!=INVALID_FILE_ATTRIBUTES &&
+                   (attr & FILE_ATTRIBUTE_DIRECTORY);
+        SetLastError(why);  // not the check's, as for a volume (87)
         return dir ? OS_EISDIR : OS_ERR;
     }
 
@@ -420,17 +425,25 @@ static i32 open_input(c16 *wpath, i32 mode, iptr *out)
         }
     }
 
+    // A volume or raw disk is a disk file too, but it has no file
+    // information, which tells it apart from a file that failed to give
+    // it, as through a network error, which is no file type
     i32 err = 0;
     by_handle_info info = {0};
     if ((mode & OS_REGULAR) && GetFileType(h)!=FILE_TYPE_DISK) {
         err = OS_ENOTREG;
     } else if (!GetFileInformationByHandle(h, &info)) {
-        err = (mode & OS_REGULAR) ? OS_ENOTREG : 0;
+        u32 why    = GetLastError();
+        b32 device = why==ERROR_INVALID_FUNCTION ||
+                     why==ERROR_INVALID_PARAMETER || why==ERROR_NOT_SUPPORTED;
+        err = !(mode & OS_REGULAR) ? 0 : device ? OS_ENOTREG : OS_ERR;
     } else if ((mode & OS_ONELINK) && info.links>1) {
         err = OS_ELINKS;
     }
     if (err) {
+        u32 why = GetLastError();
         CloseHandle(h);
+        SetLastError(why);  // for os_error
         return err;
     }
     *out = h;

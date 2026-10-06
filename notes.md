@@ -988,7 +988,10 @@ Fuzzers:
   be a regular file. As in GNU gzip, unless `-f` (then links are
   followed), a symbolic link is refused with an error (1), and a
   hard-linked file is skipped with a warning (2); FIFOs, devices, and
-  directories are always skipped. With `-c` or `-t`, anything but a
+  directories are always skipped. On Windows a volume, a disk file that
+  has no file information to give, is skipped as a device, while a file
+  that fails to give it, as on a network error, is an error (1) with the
+  reason, as a failed open is. With `-c` or `-t`, anything but a
   directory may be read (e.g. `gzip -c <(cmd)`). Failing to remove the
   input afterward is a warning, as in GNU gzip, leaving both files. On
   Windows a read-only input is removed all the same, as unlinking

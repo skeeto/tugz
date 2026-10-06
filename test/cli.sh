@@ -354,6 +354,15 @@ fi
 if [ -n "$windows" ]; then
     "$GZIP" -c NUL | "$GZIP" -dc | cmp -s - empty || fail "-c NUL"
     expect_status 2 "$GZIP" NUL
+    # ...and so is a volume, as a disk without file information, where
+    # it can be opened at all (elevated; -d reads nothing even if not)
+    set +e
+    "$GZIP" -d "\\\\.\\$(pwd | cut -c1-2)" 2>vol.err
+    st=$?
+    set -e
+    { [ $st = 2 ] && grep -q 'is not a directory or a regular file' vol.err; } ||
+        { [ $st = 1 ] && grep -q ': Permission denied$' vol.err; } ||
+        fail "volume: $st $(cat vol.err)"
 fi
 
 # Windows: a device path is resolved as Win32 resolves it, except one
