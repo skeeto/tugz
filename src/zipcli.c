@@ -2584,10 +2584,11 @@ static void mark_named(zip *z, zindex *old, s8 path, os_info *info,
 }
 
 // Whether a file is newer than its entry, for -u and -f, as Info-ZIP
-// decides: by the Unix time in the entry's UT field if it has one, so
-// that the time zone does not matter, else by DOS times. The file's
-// time is not clamped to SOURCE_DATE_EPOCH, which would hide changes:
-// past the epoch, a file is newer than any entry made with it.
+// decides: by the Unix time in the entry's extra fields if they have one
+// (see zip_extra_mtime), so that the time zone does not matter, else by
+// DOS times. The file's time is not clamped to SOURCE_DATE_EPOCH, which
+// would hide changes: past the epoch, a file is newer than any entry
+// made with it.
 static b32 is_newer(zip *z, zfile *f, zentry *e)
 {
     i64 t = 0;

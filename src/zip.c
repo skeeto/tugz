@@ -36,6 +36,8 @@ enum {
     ZIP_EXTRA_TIME      = 0x5455,  // "UT": Unix times
     ZIP_EXTRA_UPATH     = 0x7075,  // "up": Info-ZIP Unicode path
     ZIP_EXTRA_UNIX      = 0x7875,  // "ux": Unix UID and GID
+    ZIP_EXTRA_UNIX1     = 0x5855,  // "UX": Info-ZIP's first, with times
+    ZIP_EXTRA_UNIX2     = 0x7855,  // "Ux": Info-ZIP's second, IDs only
 };
 
 // Results of parsing an archive's end records.
@@ -444,24 +446,36 @@ static s8 zip_filter_extra(arena *a, s8 x)
     return r;
 }
 
-// The modification time in an extended timestamp ("UT") field among
-// extra fields, as Info-ZIP's -u and -f compare it, unsigned as it reads
-// it. Returns false if there is none.
+// The modification time among extra fields as Info-ZIP's -u and -f
+// compare it (its ef_scan_ut_time), unsigned as it reads it: that of the
+// last extended timestamp ("UT") field, if it has one, else of an old
+// Unix ("UX") field, unless after a newer Unix ("Ux") field, which has
+// none, or a UT field. Returns false if there is none.
 static b32 zip_extra_mtime(s8 x, i64 *t)
 {
+    b32 have  = 0;
+    b32 newer = 0;  // a UT or Ux field, over any UX field
     for (iz i = 0; x.len-i >= 4;) {
         u32 id  = get16(x.s+i);
         iz  len = get16(x.s+i+2);
+        u8 *d   = x.s + i + 4;
         if (len > x.len-i-4) {
             break;
         }
-        if (id==ZIP_EXTRA_TIME && len>=5 && (x.s[i+4] & 1)) {
-            *t = get32(x.s+i+5);
-            return 1;
+        if (id == ZIP_EXTRA_TIME) {
+            newer = 1;
+            have  = len>=5 && (d[0] & 1);
+            *t    = have ? get32(d+1) : *t;
+        } else if (id==ZIP_EXTRA_UNIX2 && !newer) {
+            newer = 1;
+            have  = 0;
+        } else if (id==ZIP_EXTRA_UNIX1 && !newer && len>=8) {
+            have = 1;
+            *t   = get32(d+4);  // after the access time
         }
         i += 4 + len;
     }
-    return 0;
+    return have;
 }
 
 // The data of the first extra field with an ID, else a null string.

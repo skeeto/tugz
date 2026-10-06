@@ -286,10 +286,11 @@ neither inflate nor the gzip container.
   which leave the exit status alone (12 if nothing else is left), and a
   `-d` name that is one on disk marks nothing.
 - Updates: as in Info-ZIP, `-u` and `-f` take a file that is newer
-  than its entry by the Unix time of the entry's `UT` field, if it has
-  one, so the time zone does not matter, else by DOS times; `-FS`
-  replaces one whose DOS time or size differs (time zone and all), and
-  reports "Archive is current" when nothing changed. Under
+  than its entry by the Unix time of the entry's last `UT` field, if
+  that has one, or failing any, of an old `UX` field (Info-ZIP 2's), so
+  the time zone does not matter, else by DOS times; `-FS` replaces one
+  whose DOS time or size differs (time zone and all), and reports
+  "Archive is current" when nothing changed. Under
   `SOURCE_DATE_EPOCH`, files' times are compared unclamped, so a file
   modified after the epoch is always newer than its entry, which the
   clamped archive could not record; an unchanged one is rewritten with

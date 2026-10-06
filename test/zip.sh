@@ -632,6 +632,41 @@ TZ=UTC0 touch -t 202001011000.02 tz.txt  # the same DOS time, rounded up
 "$ZIP" -u tz1.zip tz.txt | grep -q updating || fail "-u by UT time"
 "$ZIP" -u tz2.zip tz.txt | grep -q updating && fail "-u -X by DOS time"
 
+# Also as there, the last UT field decides, though without the time, and
+# failing one, an old UX field: entries a day newer by these, and a day
+# older by DOS time (or the reverse), than the file
+if [ -n "$PY" ]; then
+    printf one >ux.txt
+    TZ=UTC0 touch -t 202311142213.20 ux.txt
+    $PY -c 'import struct, time
+t = 1700000000
+def dos(s):
+    g = time.gmtime(s)
+    return ((g[0]-1980)<<25 | g[1]<<21 | g[2]<<16 | g[3]<<11 | g[4]<<5 |
+            g[5]//2)
+def ut(f, s=None):
+    d = struct.pack("<B", f) + (struct.pack("<I", s) if s else b"")
+    return b"UT" + struct.pack("<H", len(d)) + d
+for kind, x, d in (("ux", b"UX\x08\x00" + struct.pack("<II", t, t+86400),
+                    t-86400),
+                   ("ut2", ut(1, t+86400) + ut(1, t-86400), t+86400),
+                   ("ut0", ut(1, t+86400) + ut(0), t-86400)):
+    n, m = b"ux.txt", dos(d)
+    loc = struct.pack("<IHHHHHIIIHH", 0x04034b50, 10, 0, 0, m & 0xffff,
+                      m >> 16, 0, 0, 0, len(n), 0) + n
+    cen = struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 0x31e, 10, 0, 0,
+                      m & 0xffff, m >> 16, 0, 0, 0, len(n), len(x), 0, 0, 0,
+                      0x81a40000, 0) + n + x
+    end = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 1, 1, len(cen),
+                      len(loc), 0)
+    open("ux-%s.zip" % kind, "wb").write(loc + cen + end)'
+    TZ=UTC0 "$ZIP" -u ux-ux.zip ux.txt | grep -q updating && fail "-u by UX"
+    for kind in ut2 ut0; do
+        TZ=UTC0 "$ZIP" -u ux-$kind.zip ux.txt | grep -q updating ||
+            fail "-u by the last UT field ($kind)"
+    done
+fi
+
 # Under SOURCE_DATE_EPOCH, files changed since the epoch are found newer
 # than entries clamped to it (and unchanged ones rewritten identically)
 printf 'version 1.0.0' >ver.txt
@@ -1140,8 +1175,8 @@ cp sfx0.zip sfx0.orig
 expect_status 3 "$ZIP" sfx0.zip sx2.txt
 expect_status 3 "$ZIP" -d sfx0.zip sx1.txt
 "$ZIP" sfx0.zip sx2.txt >out 2>&1 && fail "unadjusted stub accepted"
-printf '%s\n' 'zip warning: offsets do not account for data before the archive' \
-    '' 'zip error: Zip file structure invalid (sfx0.zip)' >want
+w='zip warning: offsets do not account for data before the archive'
+printf '%s\n' "$w" '' 'zip error: Zip file structure invalid (sfx0.zip)' >want
 cmp -s out want || fail "unadjusted stub: $(cat out)"
 cmp -s sfx0.zip sfx0.orig || fail "a refused stub changed the archive"
 { cat stub; printf 'PK\005\006\0\0\0\0\0\0\0\0\0\0\0\0\034\0\0\0\0\0'; } >sfx.zip

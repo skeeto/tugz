@@ -562,6 +562,38 @@ static void test_extras(arena a)
     s8 cut = S("UT\x09\x00\x03\x80\x5d\x8b\x65");
     TEST(!zip_extra_mtime(cut, &t));
 
+    // As in Info-ZIP, the last UT field decides, even without the time
+    s8 two = S("UT\x05\x00\x01\x01\x00\x00\x00"
+               "UT\x05\x00\x01\x02\x00\x00\x00");
+    TEST(zip_extra_mtime(two, &t) && t==2);
+    s8 cleared = S("UT\x05\x00\x01\x01\x00\x00\x00" "UT\x01\x00\x02");
+    TEST(!zip_extra_mtime(cleared, &t));
+
+    // Failing any, an old UX field (access, then modification time), but
+    // not after a UT field, or a newer Ux field, which holds no times
+    s8 ux1 = S("UX\x08\x00\x01\x00\x00\x00\x03\x00\x00\x00");
+    TEST(zip_extra_mtime(ux1, &t) && t==3);
+    s8 shortux = S("UX\x07\x00\x01\x00\x00\x00\x03\x00\x00");
+    TEST(!zip_extra_mtime(shortux, &t));
+    s8 utfirst = S("UT\x05\x00\x01\x01\x00\x00\x00"
+                   "UX\x08\x00\x01\x00\x00\x00\x03\x00\x00\x00");
+    TEST(zip_extra_mtime(utfirst, &t) && t==1);
+    s8 uxfirst = S("UX\x08\x00\x01\x00\x00\x00\x03\x00\x00\x00"
+                   "UT\x05\x00\x01\x01\x00\x00\x00");
+    TEST(zip_extra_mtime(uxfirst, &t) && t==1);
+    s8 uxthenut = S("UX\x08\x00\x01\x00\x00\x00\x03\x00\x00\x00"
+                    "UT\x01\x00\x00");
+    TEST(!zip_extra_mtime(uxthenut, &t));
+    s8 ux2first = S("Ux\x04\x00\xe8\x03\xe8\x03"
+                    "UX\x08\x00\x01\x00\x00\x00\x03\x00\x00\x00");
+    TEST(!zip_extra_mtime(ux2first, &t));
+    s8 ux2after = S("UX\x08\x00\x01\x00\x00\x00\x03\x00\x00\x00"
+                    "Ux\x04\x00\xe8\x03\xe8\x03");
+    TEST(!zip_extra_mtime(ux2after, &t));
+    s8 newux = S("ux\x0b\x00\x01\x04\xe8\x03\x00\x00\x04\xe8\x03\x00\x00"
+                 "UX\x08\x00\x01\x00\x00\x00\x03\x00\x00\x00");
+    TEST(zip_extra_mtime(newux, &t) && t==3);  // ux holds IDs, ignored
+
     // The Unicode path, after other fields, if its CRC is the stored
     // name's (here "caf\x82.txt") and its version at most 1
     u32 crc   = 0xa0976e8f;
