@@ -2175,6 +2175,13 @@ static void test_cli(os *ctx, arena a)
     TEST(run(ctx, a, "-k9 f") == EXIT_OK);
     TEST(has(ctx, "f") && has(ctx, "f.gz"));
 
+    // A small member goes out in one write, its trailer with the rest
+    mfs_put(ctx, "e", text, 0);
+    TEST(run(ctx, a, "-c f e f") == EXIT_OK);
+    TEST(ctx->writes == 3);
+    TEST(run(ctx, a, "-kf f") == EXIT_OK);
+    TEST(ctx->writes == 1);
+
     // Files in one run share an encoder, reset for each, yet compress
     // exactly as each does alone, in place and to standard output
     u8 *noise = randbytes(20000, 1);

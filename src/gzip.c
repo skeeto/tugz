@@ -342,32 +342,37 @@ static encoder *encoder_new(arena *a, i32 format, i32 level)
 
 // Compress from b->in into b->out with a DEF_* flush mode, appending the
 // trailer once the raw stream has finished. Returns as deflate_stream.
+//
+// The trailer is staged as soon as the final block is, though output may
+// remain, so that a caller draining output gets both together: the step
+// that staged the block had room for more than a trailer.
 static i32 encoder_run(encoder *e, zbuf *b, i32 flush)
 {
+    deflator *d  = e->def;
     u8 const *in = b->in;
-    i32 r = deflate_stream(e->def, b, flush);
+    i32 r = deflate_stream(d, b, flush);
     if (e->format != FMT_RAW) {
         e->check = check_update(e->format, e->check, in, b->in-in);
     }
     e->total += (u64)(b->in - in);
 
-    if (r==GZ_OK && e->def->flushing==DEF_FINISH && !e->done) {
+    if (d->flushing==DEF_FINISH && d->flushed && !e->done) {
         u8 trailer[8];
         switch (e->format) {
         case FMT_GZIP:
             put32le(trailer+0, e->check);
             put32le(trailer+4, (u32)e->total);
-            deflate_bytes(e->def, trailer, 8);
+            deflate_bytes(d, trailer, 8);
             break;
         case FMT_ZLIB:
             for (i32 i = 0; i < 4; i++) {
                 trailer[i] = (u8)(e->check >> (24 - 8*i));
             }
-            deflate_bytes(e->def, trailer, 4);
+            deflate_bytes(d, trailer, 4);
             break;
         }
         e->done = 1;
-        r = deflate_stream(e->def, b, flush);
+        r = deflate_stream(d, b, flush);
     }
     return r;
 }
