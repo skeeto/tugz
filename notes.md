@@ -254,23 +254,24 @@ neither inflate nor the gzip container.
 - Entry names in code pages: files match an entry by its stored name,
   then, as in Info-ZIP, by an Info-ZIP Unicode path field (0x7075) whose
   CRC is the stored name's, as Info-ZIP's Windows port, WinZip, and
-  7-Zip write one for a name not stored as UTF-8. Info-ZIP warns of a
-  stale field, of version 0 or 1 (it skips later ones with another
-  warning) but without that CRC or too short to hold one, in an entry
-  without flag bit 11, and so does tugz, naming the entry where Info-ZIP
-  prints "(null)" (and a stray debugging line on standard output,
-  `unicode_mismatch = 1`, even under `-q`); it warns again of one in a
-  local header, which tugz does not read until copying, and then
-  ignores. On Windows, as in Info-ZIP's port, a name without flag bit 11
-  or such a field, made on DOS or Windows (or OS/2, or WinZip's NTFS),
-  is decoded from the OEM code page (`MultiByteToWideChar`), as
-  Explorer's zip folder stores names, and there patterns also match the
-  decoded name, which names the file that `-u`, `-f`, and patterns
-  select. A replaced entry is written under the Unicode name, flagged
-  UTF-8; copied entries keep their bytes. Messages give the Unicode
-  name. Elsewhere, as in Info-ZIP's Unix port, patterns match stored
-  names only, and an entry they select names its file by its stored
-  name.
+  7-Zip write one for a name not stored as UTF-8, but by that only an
+  entry that no file matches by its stored name (see the departures).
+  Info-ZIP warns of a stale field, of version 0 or 1 (it skips later
+  ones with another warning) but without that CRC or too short to hold
+  one, in an entry without flag bit 11, and so does tugz, naming the
+  entry where Info-ZIP prints "(null)" (and a stray debugging line on
+  standard output, `unicode_mismatch = 1`, even under `-q`); it warns
+  again of one in a local header, which tugz does not read until
+  copying, and then ignores. On Windows, as in Info-ZIP's port, a name
+  without flag bit 11 or such a field, made on DOS or Windows (or OS/2,
+  or WinZip's NTFS), is decoded from the OEM code page
+  (`MultiByteToWideChar`), as Explorer's zip folder stores names, and
+  there patterns also match the decoded name, which names the file that
+  `-u`, `-f`, and patterns select. A replaced entry is written under the
+  Unicode name, flagged UTF-8; copied entries keep their bytes. Messages
+  give the Unicode name. Elsewhere, as in Info-ZIP's Unix port, patterns
+  match stored names only, and an entry they select names its file by
+  its stored name.
 - Selection: as Info-ZIP's procname does, a path not on disk is a
   pattern for the archive's entries (taken up after the paths on disk,
   which come first), and `-u` and `-f` without paths select every
@@ -613,11 +614,15 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   that `d/a d//a` is one path rather than two entries, and `.//a` names
   `a`, where Info-ZIP stores `/a`. Different paths giving one name are
   an error even when the archive has an entry of that name (Info-ZIP
-  lets the last path replace it, silently). Patterns given after `-j`
-  stay whole (Info-ZIP's name conversion cuts them to their last
-  component, so that `-j -x 'dir/*'` excludes everything). Only entry
-  names zip would make select their files, so an untrusted archive's
-  absolute names select nothing (Info-ZIP reads them).
+  lets the last path replace it, silently). Two files that find one
+  entry, one by its stored name and the other by its Unicode path field,
+  are both kept: the one by its stored name replaces it, and the other
+  is added, as Info-ZIP's builds without Unicode support do (with it, as
+  on Linux, the last file replaces the entry, silently). Patterns given
+  after `-j` stay whole (Info-ZIP's name conversion cuts them to their
+  last component, so that `-j -x 'dir/*'` excludes everything). Only
+  entry names zip would make select their files, so an untrusted
+  archive's absolute names select nothing (Info-ZIP reads them).
 - Special files: sockets and block devices are left out too. Info-ZIP's
   Unix port (judging by its behavior, a type test by masking mode bits)
   takes a socket for a regular file, which it then cannot open (18; `-d`

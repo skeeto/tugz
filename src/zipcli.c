@@ -2508,6 +2508,23 @@ static iz zindex_find(zindex *t, s8 name)
     return v ? (iz)((v - 1) >> 1) : -1;
 }
 
+// The index of the entry whose stored name it is, or -1 if none.
+static iz zindex_stored(zindex *t, s8 name)
+{
+    u32 v = *zindex_slot(t, name);
+    return v && !((v - 1) & 1) ? (iz)((v - 1) >> 1) : -1;
+}
+
+// The entry that a file replaces, found by name, or -1 if none, but not
+// by Unicode name one that another file names by its stored name, as
+// marked in bystored: that file replaces it, and this one is added, so
+// that both are kept, where Info-ZIP lets the last replace it.
+static iz file_entry(zindex *t, s8 name, b32 *bystored)
+{
+    iz i = zindex_find(t, name);
+    return i>=0 && bystored[i] && zindex_stored(t, name)<0 ? -1 : i;
+}
+
 static zindex zindex_new(zip *z, zarchive *ar, arena *a)
 {
     iz      n      = ar ? (iz)ar->end.count : 0;
@@ -2823,10 +2840,17 @@ static i32 zip_main(zipconfig *conf)
 
         // Then paths not on disk select entries, as do -u and -f without
         // paths, except entries that paths on disk already selected
-        b32 *taken = new(&scratch, nold, b32);
-        iz   nadd  = 0;  // files with no entry, as entries select none
+        b32 *taken    = new(&scratch, nold, b32);
+        b32 *bystored = new(&scratch, nold, b32);
+        iz   nadd     = 0;  // files with no entry, as entries select none
         for (iz i = 0; i < z->files.len; i++) {
-            iz v = zindex_find(&old, z->files.data[i]->name);
+            iz v = zindex_stored(&old, z->files.data[i]->name);
+            if (v >= 0) {
+                bystored[v] = 1;
+            }
+        }
+        for (iz i = 0; i < z->files.len; i++) {
+            iz v = file_entry(&old, z->files.data[i]->name, bystored);
             if (v >= 0) {
                 taken[v] = 1;
             } else {
@@ -2865,7 +2889,7 @@ static i32 zip_main(zipconfig *conf)
             arena  tmp = scratch;
             zfile *f   = z->files.data[i];
             s8     key = entry_key(z, f->name, &tmp);
-            iz     v   = zindex_find(&old, f->name);
+            iz     v   = file_entry(&old, f->name, bystored);
             if (v < 0) {
                 if (z->mode != MODE_FRESHEN) {
                     zitem *it = push(&z->perm, &items);

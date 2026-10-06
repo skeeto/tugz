@@ -1159,6 +1159,37 @@ open(sys.argv[1], "wb").write(loc + cen + end)' up-$crc.zip $crc
         fail "stale Unicode path matched: $(cat check.out)"
 fi
 
+# Departure: a file matches by Unicode name only an entry that no file
+# matches by stored name, so that one entry for two files (x.txt, by its
+# stored name, and y.txt, by its Unicode path field) keeps both: x.txt
+# replaces it, and y.txt is added (Info-ZIP, with Unicode support, lets
+# the last replace it, losing the other)
+if [ -n "$PY" ]; then
+    $PY -c 'import struct, sys, zlib
+n, u, d = b"x.txt", b"y.txt", b"old"
+x = b"up" + struct.pack("<HBI", 5 + len(u), 1, zlib.crc32(n)) + u
+loc = struct.pack("<IHHHHHIIIHH", 0x04034b50, 10, 0, 0, 0, 0x5021,
+                  zlib.crc32(d), len(d), len(d), len(n), len(x)) + n + x + d
+cen = struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 0x31e, 10, 0, 0, 0,
+                  0x5021, zlib.crc32(d), len(d), len(d), len(n), len(x), 0,
+                  0, 0, 0x81a40000, 0) + n + x
+end = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 1, 1, len(cen), len(loc), 0)
+open(sys.argv[1], "wb").write(loc + cen + end)' up2.zip
+    printf 'new x' >x.txt
+    printf 'new y' >y.txt
+    for files in "x.txt y.txt" "y.txt x.txt"; do
+        cp up2.zip up.zip
+        "$ZIP" up.zip $files >out
+        verify up.zip
+        printf 'updating: x.txt\n  adding: y.txt\n' >want
+        progress out | cmp -s - want || fail "$files, one entry: $(cat out)"
+        [ "$(cut -d' ' -f1 check.out | tr '\n' ' ')" = "x.txt y.txt " ] &&
+            [ "$(unzip -p up.zip x.txt)" = "new x" ] &&
+            [ "$(unzip -p up.zip y.txt)" = "new y" ] ||
+            fail "$files, one entry: $(cat check.out)"
+    done
+fi
+
 # Data before the first entry that offsets account for, such as a
 # self-extractor's stub after zip -A, is kept, as in Info-ZIP, and the
 # offsets stay absolute; offsets that do not account for it are refused,
