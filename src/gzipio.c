@@ -1,6 +1,8 @@
 // tugz gzip program I/O: descriptor drivers for the codec
 
 static b32  os_isatty(os *, i32 fd);
+// Whether the os_open that just failed (OS_ERR) found no such file.
+static b32  os_missing(os *);
 // Best effort: give an open output file the input file's permissions,
 // ownership, and timestamps, as far as the platform supports.
 static void os_copymeta(os *, i32 from, i32 to);

@@ -820,7 +820,11 @@ Fuzzers:
   `-gz`, `-z`, `_z`, and `.tgz` and `.taz`, which stand for `.tar`.
   Decompressing in place drops one; compressing in place leaves a file
   that has one alone, with a notice but status 0, unless `-f`. As there,
-  the file is checked (missing, a directory, a link) before its name.
+  the file is checked (missing, a directory, a link) before its name,
+  and decompressing or testing a missing name without a suffix tries
+  `.gz`, `.z`, `-z`, and `.Z` after it in turn (`zcat foo` reads
+  `foo.gz`), naming `foo.gz` if none exists. The gzip platform layers
+  tell a missing file from other failures with `os_missing`.
 - In-place operation (no `-c`/`-t`) deletes its input, so its input must
   be a regular file: symbolic links and hard-linked files are skipped with
   a warning unless `-f` (then links are followed); FIFOs, devices, and

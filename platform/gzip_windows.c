@@ -17,6 +17,16 @@ static b32 os_isatty(os *ctx, i32 fd)
     return (u32)fd<3 && ctx->consoles>>fd & 1;
 }
 
+#define ERROR_FILE_NOT_FOUND  2u
+#define ERROR_PATH_NOT_FOUND  3u
+
+static b32 os_missing(os *ctx)
+{
+    (void)ctx;
+    u32 err = GetLastError();
+    return err==ERROR_FILE_NOT_FOUND || err==ERROR_PATH_NOT_FOUND;
+}
+
 // Windows has no meaningful equivalent of mode bits here: new files
 // inherit their directory's access control, as they would from GNU gzip.
 // Copy the timestamps.

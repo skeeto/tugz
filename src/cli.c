@@ -205,6 +205,32 @@ static i32 check_terminal(options *o, arena scratch)
     return -1;
 }
 
+// Open an input file. As in GNU gzip, decompressing or testing a missing
+// name without a suffix tries it with suffixes in turn (zcat foo reads
+// foo.gz). The path becomes the name found, or else the first one tried.
+static i32 find_input(options *o, s8 *path, i32 mode, arena *scratch)
+{
+    os *ctx = scratch->ctx;
+    i32 in = os_open(ctx, *path, mode, *scratch);
+    if (in!=OS_ERR || !(o->decompress || o->test) || !os_missing(ctx) ||
+        known_suffix(*path).s) {
+        return in;
+    }
+
+    static s8 const tries[] = {S8(".gz"), S8(".z"), S8("-z"), S8(".Z")};
+    s8 first = s8concat(scratch, *path, tries[0]);
+    for (iz i = 0; i < countof(tries); i++) {
+        s8 name = i ? s8concat(scratch, *path, tries[i]) : first;
+        in = os_open(ctx, name, mode, *scratch);
+        if (in!=OS_ERR || !os_missing(ctx)) {
+            *path = name;
+            return in;
+        }
+    }
+    *path = first;
+    return in;
+}
+
 static i32 process_file(options *o, s8 path, arena scratch)
 {
     os *ctx = scratch.ctx;
@@ -226,7 +252,7 @@ static i32 process_file(options *o, s8 path, arena scratch)
         mode |= OS_REGULAR;
         mode |= o->force ? 0 : OS_NOFOLLOW|OS_ONELINK;
     }
-    i32 in = os_open(ctx, path, mode, scratch);
+    i32 in = find_input(o, &path, mode, &scratch);
     switch (in) {
     case OS_EISDIR:
         return warn(o, path, S("is a directory -- ignored"), scratch);

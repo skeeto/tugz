@@ -88,8 +88,17 @@ for s in .z -gz _Z .TAZ; do
     rm $out
 done
 
-# ...and as there, a file with one is left alone, which is no failure,
-# unless forced, but a missing one is an error
+# As there, decompressing or testing a missing name without a suffix
+# tries it with suffixes (.gz, .z, -z, .Z), so that zcat foo reads foo.gz
+printf x | "$GZIP" >miss-z
+"$GZIP" -dc miss | cmp -s - one || fail "-dc of NAME for NAME-z"
+expect_status 0 "$GZIP" -t miss
+"$GZIP" -d miss
+[ -e miss ] && [ ! -e miss-z ] && cmp -s miss one || fail "-d of NAME-z"
+expect_status 1 "$GZIP" -dq gone
+
+# ...and a file with one is left alone, which is no failure, unless
+# forced, but a missing one is an error
 printf data >has.tgz
 expect_status 0 "$GZIP" has.tgz
 [ -e has.tgz ] && [ ! -e has.tgz.gz ] || fail "compressed a .tgz"
@@ -163,6 +172,7 @@ done
 "$GZIP" -c text >n.gz
 names/gunzip$ext -c n.gz | cmp -s - text || fail "gunzip -c"
 names/zcat$ext n.gz | cmp -s - text || fail "zcat"
+names/zcat$ext n | cmp -s - text || fail "zcat of NAME for NAME.gz"
 names/gzcat$ext <n.gz | cmp -s - text || fail "gzcat stdin"
 [ -e n.gz ] || fail "zcat removed its input"
 names/gunzip$ext n.gz

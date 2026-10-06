@@ -21,6 +21,12 @@ static b32 os_isatty(os *ctx, i32 fd)
     return isatty(fd);
 }
 
+static b32 os_missing(os *ctx)
+{
+    (void)ctx;
+    return errno == ENOENT;
+}
+
 static void os_copymeta(os *ctx, i32 from, i32 to)
 {
     (void)ctx;

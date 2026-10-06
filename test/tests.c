@@ -61,6 +61,7 @@ struct os {
     b32 failwrite;   // writes to descriptors other than stderr fail
     b32 failclose;   // closing created files fails
     b32 tty[3];      // standard descriptors attached to a terminal
+    b32 missing;     // the last os_open found no such file
 };
 
 static s8 cstrs8(char *z)
@@ -172,6 +173,7 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
 
     mfile *f = mfs_find(ctx, path);
     b32 created = 0;
+    ctx->missing = !f;
     if (mode & OS_CREATE) {
         if (f) {
             return OS_EEXIST;
@@ -223,6 +225,11 @@ static b32 os_isatty(os *ctx, i32 fd)
 {
     TEST(fd>=0 && fd<3);
     return ctx->tty[fd];
+}
+
+static b32 os_missing(os *ctx)
+{
+    return ctx->missing;
 }
 
 static void os_copymeta(os *ctx, i32 from, i32 to)
@@ -2258,6 +2265,53 @@ static void test_cli(os *ctx, arena a)
     TEST(stderr_has(ctx, "s.TAZ: cannot open"));
     TEST(run(ctx, a, "-q s.TAZ") == EXIT_ERR);
     TEST(stderr_has(ctx, "s.TAZ: cannot open"));
+
+    // Decompressing or testing a missing name without a suffix tries it
+    // with suffixes in turn, as GNU gzip does: zcat nf reads nf.gz
+    mfs_put(ctx, "nf.gz", gz.s, gz.len);
+    TEST(run(ctx, a, "-dc nf") == EXIT_OK);
+    TEST(equals(mfs_get(ctx, "<stdout>"), text, 50000));
+    TEST(run(ctx, a, "-t nf") == EXIT_OK);
+    TEST(run_as(ctx, a, "zcat", "nf") == EXIT_OK);
+    TEST(equals(mfs_get(ctx, "<stdout>"), text, 50000));
+    TEST(run(ctx, a, "-d nf") == EXIT_OK);
+    TEST(equals(mfs_get(ctx, "nf"), text, 50000) && !has(ctx, "nf.gz"));
+    TEST(run(ctx, a, "-d nf") == EXIT_WARN);  // now it exists
+    TEST(stderr_has(ctx, "nf: unknown suffix"));
+    mfs_put(ctx, "nf.gz", gz.s, gz.len);
+    TEST(run(ctx, a, "nf") == EXIT_WARN);  // compressing: as named
+    TEST(stderr_has(ctx, "nf.gz: already exists"));
+    os_remove(ctx, S("nf"), a);
+    TEST(run(ctx, a, "nf") == EXIT_ERR);
+    TEST(stderr_has(ctx, "nf: cannot open"));
+    os_remove(ctx, S("nf.gz"), a);
+    static char *const others[] = {"nf.z", "nf-z", "nf.Z"};
+    for (i32 i = 0; i < countof(others); i++) {
+        mfs_put(ctx, others[i], gz.s, gz.len);
+        TEST(run(ctx, a, "-d nf") == EXIT_OK);
+        TEST(equals(mfs_get(ctx, "nf"), text, 50000) && !has(ctx, others[i]));
+        os_remove(ctx, S("nf"), a);
+    }
+    mfs_put(ctx, "nf.gz", gz.s, gz.len);  // first in turn
+    mfs_put(ctx, "nf.z", (u8 *)"junk", 4);
+    TEST(run(ctx, a, "-dc nf") == EXIT_OK);
+    os_remove(ctx, S("nf.gz"), a);
+    os_remove(ctx, S("nf.z"), a);
+    static char *const untried[] = {"nf_z", "nf-gz", "nf.tgz", "nf.gz.gz"};
+    for (i32 i = 0; i < countof(untried); i++) {
+        mfs_put(ctx, untried[i], gz.s, gz.len);
+        TEST(run(ctx, a, "-dqc nf") == EXIT_ERR);  // an error, not quiet
+        TEST(stderr_has(ctx, "nf.gz: cannot open"));
+        os_remove(ctx, cstrs8(untried[i]), a);
+    }
+    mfs_put(ctx, "nf.gz.gz", gz.s, gz.len);  // nor with a suffix already
+    TEST(run(ctx, a, "-dc nf.gz") == EXIT_ERR);
+    TEST(stderr_has(ctx, "nf.gz: cannot open"));
+    os_remove(ctx, S("nf.gz.gz"), a);
+    mfs_create(ctx, S("nf.gz"))->isdir = 1;
+    TEST(run(ctx, a, "-dc nf") == EXIT_WARN);
+    TEST(stderr_has(ctx, "nf.gz: is a directory"));
+    os_remove(ctx, S("nf.gz"), a);
 
     // A suffix alone has no stem, even after a directory
     static char *const stemless[] = {".gz", "d/.gz", "d\\.z"};

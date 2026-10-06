@@ -53,6 +53,12 @@ static b32 os_isatty(os *ctx, i32 fd)
     __builtin_trap();
 }
 
+static b32 os_missing(os *ctx)
+{
+    (void)ctx;
+    __builtin_trap();
+}
+
 static void os_copymeta(os *ctx, i32 from, i32 to)
 {
     (void)ctx; (void)from; (void)to;
