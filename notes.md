@@ -439,9 +439,10 @@ neither inflate nor the gzip container.
   does of a local header that disagrees with the central one in its
   version needed, flags, CRC (unless a descriptor gives it), or name
   ("Local Entry CRC does not match CD: a.txt"). Their descriptor flag
-  is cleared, except for traditionally encrypted entries, whose check
-  byte depends on it: those keep it, and a data descriptor after their
-  data. They keep their extra fields, even with `-X`, which as in
+  is cleared, except, as in Info-ZIP, for encrypted entries (flag bit 0,
+  as traditional encryption's check byte depends on it, though AES's
+  does not): those keep it, and a data descriptor after their data.
+  They keep their extra fields, even with `-X`, which as in
   Info-ZIP applies only to entries written (some fields are needed to
   extract, such as AES's), except Zip64 fields, made anew; one whose
   fields leave no room for a Zip64 field it now needs is an error (3),

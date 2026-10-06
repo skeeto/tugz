@@ -1181,9 +1181,10 @@ sys.exit(b"PK\7\10" in open(sys.argv[1], "rb").read())' dd.zip ||
     [ "$(unzip -z dd.zip | sed 1d)" = "archive note" ] ||
         fail "archive comment after -d: $(unzip -z dd.zip)"
 
-    # Traditionally encrypted entries with descriptors keep them, as the
-    # check byte of their encryption header is then the time's, not the
-    # CRC's (zip cannot encrypt, so this one is made here)
+    # Encrypted entries with descriptors keep them, as in Info-ZIP, since
+    # with traditional encryption the check byte of the header is then
+    # the time's, not the CRC's (zip cannot encrypt, so this one is made
+    # here)
     $PY -c 'import struct, sys, zlib
 def crc(k, b):  # the CRC-32 step of the cipher
     return zlib.crc32(bytes([b]), k ^ 0xffffffff) ^ 0xffffffff

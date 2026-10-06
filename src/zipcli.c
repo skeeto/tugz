@@ -2318,8 +2318,10 @@ static i32 copy_entry(zip *z, zarchive *ar, zwork *k, zentry *e,
                     scratch);
     }
 
-    // Sizes are now known, so a descriptor is unnecessary, except that
-    // traditional encryption checks against the time when it is present.
+    // Sizes are now known, so a descriptor is unnecessary, but as in
+    // Info-ZIP, any encrypted entry (flag bit 0) keeps it, as traditional
+    // encryption checks against the time when it is present (other kinds,
+    // such as AES, keep it harmlessly).
     u16  both = ZIP_FLAG_ENCRYPTED | ZIP_FLAG_DESCRIPTOR;
     b32  desc = (e->flags & both) == both;
     if (!desc) {
