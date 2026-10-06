@@ -378,14 +378,16 @@ neither inflate nor the gzip container.
   outputs, that is inherited from the directory (copying it would take
   advapi32).
 - Merging: the central directory is parsed with every field bounds
-  checked; copied entries get regenerated local headers and raw data
-  copies. Their descriptor flag is cleared, except for traditionally
-  encrypted entries, whose check byte depends on it: those keep it, and
-  a data descriptor after their data. They keep their extra fields, even
-  with `-X`, which as in Info-ZIP applies only to entries written (some
-  fields are needed to extract, such as AES's), except Zip64 fields,
-  made anew; one whose fields leave no room for a Zip64 field it now
-  needs is an error (3), not a wrapped length. Saturated sizes without a
+  checked, and as in Info-ZIP, an entry without a name makes it invalid
+  (3, after "zero-length name for entry #1"); copied entries get
+  regenerated local headers and raw data copies. Their descriptor flag
+  is cleared, except for traditionally encrypted entries, whose check
+  byte depends on it: those keep it, and a data descriptor after their
+  data. They keep their extra fields, even with `-X`, which as in
+  Info-ZIP applies only to entries written (some fields are needed to
+  extract, such as AES's), except Zip64 fields, made anew; one whose
+  fields leave no room for a Zip64 field it now needs is an error (3),
+  not a wrapped length. Saturated sizes without a
   Zip64 extra are literal, as Info-ZIP, which uses Zip64 only beyond
   them, writes a file of exactly 4 GiB - 1 bytes, and as it, UnZip, and
   Python read it; such an entry is copied with Zip64. So are they beside

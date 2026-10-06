@@ -893,6 +893,24 @@ open(sys.argv[1], "wb").write(loc + cen + end)' nofit.zip
     grep -q 'structure invalid (big: no room' out || fail "no room: $(cat out)"
     cmp -s nofit.zip nofit0.zip || fail "a refused copy changed the archive"
 
+    # As in Info-ZIP, an entry without a name makes the archive invalid
+    $PY -c 'import struct, sys
+loc = cen = b""
+for n in b"", b"ok.txt":
+    o = len(loc)
+    loc += struct.pack("<IHHHHHIIIHH", 0x04034b50, 10, 0, 0, 0, 0x5021, 0,
+                       0, 0, len(n), 0) + n
+    cen += struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 0x31e, 10, 0, 0, 0,
+                       0x5021, 0, 0, 0, len(n), 0, 0, 0, 0, 0x81a40000, o) + n
+end = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 2, 2, len(cen), len(loc), 0)
+open(sys.argv[1], "wb").write(loc + cen + end)' noname.zip
+    cp noname.zip noname0.zip
+    "$ZIP" noname.zip tree/a.txt >out 2>&1 && fail "unnamed entry accepted"
+    printf '%s\n' 'zip warning: zero-length name for entry #1' '' \
+        'zip error: Zip file structure invalid (noname.zip)' >want
+    cmp -s out want || fail "unnamed entry: $(cat out)"
+    cmp -s noname.zip noname0.zip || fail "an unnamed entry changed the archive"
+
     # Archives made by other tools: entries a streaming writer gave data
     # descriptors lose them when copied, their sizes now known, and the
     # comments of entries and of the archive are kept

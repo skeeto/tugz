@@ -1647,6 +1647,13 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
         }
         zentry *e = ar->entries + i;
         len = zip_parse_header(h, len, ar->end.cdoff, e);
+        if (len && !e->name.len) {
+            // Refused, as by Info-ZIP, rather than kept for readers that
+            // cannot name it
+            warn(z, S("zero-length name for entry #"), znum(&scratch, i+1),
+                 scratch);
+            len = 0;
+        }
         if (!len) {
             return fail(z, ZE_FORM, S("Zip file structure invalid"),
                         z->archive, scratch);
