@@ -315,14 +315,30 @@ if chflags uchg stuck 2>/dev/null; then
 fi
 
 # A read-only input is removed all the same, as unlinking ignores the
-# mode, as in GNU gzip (on Windows, chmod sets the read-only attribute)
+# mode, and its output is read-only too, as in GNU gzip (on Windows,
+# chmod sets the read-only attribute, and ls shows it so)
 printf 'read-only\n' >roin
 chmod 444 roin
 "$GZIP" roin || fail "read-only input: status $?"
 [ ! -e roin ] && [ -e roin.gz ] || fail "read-only input kept"
-chmod 444 roin.gz
+[ "$(ls -l roin.gz | cut -c1-10)" = "-r--r--r--" ] ||
+    fail "read-only input: output $(ls -l roin.gz | cut -c1-10)"
 "$GZIP" -d roin.gz || fail "read-only input to -d: status $?"
 [ -e roin ] && [ ! -e roin.gz ] || fail "read-only input to -d kept"
+[ "$(ls -l roin | cut -c1-10)" = "-r--r--r--" ] ||
+    fail "read-only input to -d: output $(ls -l roin | cut -c1-10)"
+
+# Windows: likewise the hidden, system, and not-indexed attributes, as
+# zip keeps a replaced archive's, with the archive bit set
+if [ -n "$windows" ]; then
+    printf attrs >attrs
+    attrib +r +h +s +i -a attrs
+    "$GZIP" attrs || fail "attributes: status $?"
+    got=$(powershell -NoProfile -NonInteractive -Command \
+          "(Get-Item -Force attrs.gz).Attributes" | tr -d '\r')
+    [ "$got" = "ReadOnly, Hidden, System, Archive, NotContentIndexed" ] ||
+        fail "attributes: $got"
+fi
 
 # FIFOs are never replaced, and checking one must not block
 if command -v mkfifo >/dev/null && mkfifo fifo 2>/dev/null; then

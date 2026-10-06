@@ -83,14 +83,26 @@ static osmeta *os_getmeta(os *ctx, i32 fd, arena *a)
     return ok ? m : 0;
 }
 
-// Windows has no meaningful equivalent of mode bits here: new files
-// inherit their directory's access control, as they would from GNU gzip.
-// Copy the timestamps.
+#define FILE_ATTRIBUTE_HIDDEN      0x02u
+#define FILE_ATTRIBUTE_SYSTEM      0x04u
+#define FILE_ATTRIBUTE_ARCHIVE     0x20u
+#define FILE_ATTRIBUTE_NOT_INDEXED 0x2000u
+
+// Copy the timestamps, and the attributes that describe a file as the
+// mode does on POSIX: read-only, the nearest thing to a missing write
+// bit, and as zip keeps a replaced archive's, hidden, system, and not
+// indexed, with the archive bit set, as on any new file. Access control
+// is inherited from the directory, as new files' would be from GNU gzip.
 static b32 os_setmeta(os *ctx, i32 fd, osmeta *m)
 {
+    u32 kept = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN |
+               FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_NOT_INDEXED;
     basic_info set = {0};
     set.accessed = m->info.accessed;
     set.written  = m->info.written;
+    if (m->info.attributes & kept) {
+        set.attributes = (m->info.attributes & kept) | FILE_ATTRIBUTE_ARCHIVE;
+    }
     return SetFileInformationByHandle(ctx->handles[fd], FileBasicInfo,
                                       &set, sizeof(set));
 }
