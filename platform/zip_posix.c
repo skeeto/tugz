@@ -239,8 +239,8 @@ static i32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
     (void)ctx;
     while (len) {
         iz r = pread(fd, buf, (uz)MIN(len, 1<<30), (off_t)off);
-        if (r < 0 && errno == EINTR) {
-            continue;
+        if (r<0 && (errno==EINTR || (errno==EAGAIN && wait_for_input(fd)))) {
+            continue;  // opened non-blocking (OS_REGULAR), as os_read waits
         } else if (r <= 0) {
             return r<0 ? -1 : 0;
         }

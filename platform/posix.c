@@ -139,9 +139,12 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
     }
 
     // Opening a FIFO would block until it has a writer, so check the type
-    // without blocking when only regular files are wanted. Nor may opening
-    // a terminal make it the process's controlling one (Linux, System V),
-    // as GNU gzip opens its inputs.
+    // without blocking when only regular files are wanted. The flag then
+    // stays: reads of regular files ignore it, but for the few that heed
+    // it (Linux's /proc/kmsg, FUSE), finding no input yet clears it, as for
+    // a descriptor inherited non-blocking. Nor may opening a terminal make
+    // it the process's controlling one (Linux, System V), as GNU gzip
+    // opens its inputs.
     int flags = O_RDONLY | O_NOCTTY;
     flags |= mode & OS_NOFOLLOW ? O_NOFOLLOW : 0;
     flags |= mode & OS_REGULAR  ? O_NONBLOCK : 0;
@@ -169,8 +172,6 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
         err = OS_ENOTREG;
     } else if ((mode & OS_ONELINK) && st.st_nlink>1) {
         err = OS_ELINKS;
-    } else if (flags & O_NONBLOCK) {
-        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK);
     }
     if (err) {
         close(fd);
@@ -191,6 +192,21 @@ static b32 os_close(os *ctx, i32 fd)
     return ok;
 }
 
+// After a read found no input yet (EAGAIN), whether the descriptor was
+// non-blocking, as a pipe or terminal another program left so, and now
+// waits for input, as GNU gzip makes such a one. If not, errno is still
+// EAGAIN.
+static b32 wait_for_input(int fd)
+{
+    int flags = fcntl(fd, F_GETFL);
+    if (flags<0 || !(flags & O_NONBLOCK) ||
+        fcntl(fd, F_SETFL, flags & ~O_NONBLOCK)) {
+        errno = EAGAIN;
+        return 0;
+    }
+    return 1;
+}
+
 static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
 {
     (void)ctx;
@@ -199,12 +215,7 @@ static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
         if (r >= 0) {
             return r;
         } else if (errno == EAGAIN) {
-            // Inherited non-blocking, as a pipe or terminal another program
-            // left so: wait for input from now on, as GNU gzip does
-            int flags = fcntl(fd, F_GETFL);
-            if (flags<0 || !(flags & O_NONBLOCK) ||
-                fcntl(fd, F_SETFL, flags & ~O_NONBLOCK)) {
-                errno = EAGAIN;
+            if (!wait_for_input(fd)) {
                 return -1;
             }
         } else if (errno != EINTR) {
