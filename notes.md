@@ -244,12 +244,13 @@ neither inflate nor the gzip container.
   envargs does (whitespace; on POSIX, double quotes group, keeping a
   backslash before an inner quote). A lone `-v` (after those) or
   `--version` prints the version, `-L` the license (the Unlicense), `-h`
-  the usage; `-v` with other arguments (verbose) does nothing, nor does
-  `-p` (store paths, the default). With no arguments and no terminal on
-  standard output, or no archive name, Info-ZIP streams to standard
-  output; that is rejected as streaming. A terminal gets the usage, or
-  Info-ZIP's "cannot write zip file to terminal". `-d` warns, as
-  Info-ZIP does, that `-r` and `-0` are ignored.
+  (or Info-ZIP's `-H` and `-?`) the usage; `-v` with other arguments
+  (verbose) does nothing, nor does `-p` (store paths, the default). With
+  no arguments and no terminal on standard output, or no archive name,
+  Info-ZIP streams to standard output; that is rejected as streaming. A
+  terminal gets the usage, or Info-ZIP's "cannot write zip file to
+  terminal". `-d` warns, as Info-ZIP does, that `-r` and `-0` are
+  ignored.
 - Names: as Info-ZIP's ex2in makes them, `/` and `./` prefixes are
   dropped and `../` kept, and on POSIX too a leading `//host/share/` is
   dropped (`zip t.zip //h/s/f` stores `f`). A directory is named with

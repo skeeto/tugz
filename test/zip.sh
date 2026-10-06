@@ -235,6 +235,12 @@ expect_status 16 "$ZIP" -qmm c8.zip tree/a.txt
 grep -q '(-mm not supported, Must_Match is -MM)$' err || fail "-mm: $(cat err)"
 "$ZIP" -h2 >out
 grep -q usage out || fail "-h2: $(cat out)"
+for opt in -H '-?'; do  # Info-ZIP's aliases for -h
+    "$ZIP" "$opt" c8.zip tree/a.txt >out || fail "$opt failed"
+    grep -q usage out || fail "$opt: $(cat out)"
+done
+"$ZIP" -H- 2>err && fail "-H- succeeded"
+grep -q "(option 'H' (help) not negatable)$" err || fail "-H-: $(cat err)"
 "$ZIP" -qjj c8.zip tree/a.txt
 [ "$(names c8.zip)" = a.txt ] || fail "-jj: $(names c8.zip)"
 

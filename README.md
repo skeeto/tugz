@@ -112,7 +112,7 @@ releases, such as `zip -qX9r release-1.2.3.zip build/`:
 | `-FS` | filesync: update changed entries, delete missing ones |
 | `-d` | delete entries matching patterns |
 | `-nw` | no wildcards, except `?` (as in Info-ZIP) |
-| `-v`, `-L`, `-h` | version (alone, or `--version`); license; help |
+| `-v`, `-L`, `-h` | version (alone, or `--version`); license; help (also `-H`, `-?`) |
 
 Long options are Info-ZIP's (`--recurse-paths`, `--strip-extra`, ...)
 and, as there, may be abbreviated. Only `-X` may be negated (`-X-`).

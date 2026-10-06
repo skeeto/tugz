@@ -607,6 +607,8 @@ static zoption const zip_options[] = {
                S8("add/delete entries to make archive match OS"),       0},
     {S8("f"),  S8("freshen"),    S8("freshen existing archive entries"), 0},
     {S8("h"),  S8("help"),           S8("help"),                        0},
+    {S8("H"),  S8(""),               S8("help"),                        0},
+    {S8("?"),  S8(""),               S8("help"),                        0},
     {S8("h2"), S8("more-help"),      S8("extended help"),               0},
     {S8("i"),  S8("include"),
                S8("include only files matching patterns"),       OPT_LIST},
@@ -753,7 +755,8 @@ static i32 apply_option(zip *z, zoption const *o, s8 opt, b32 negate,
     if (key.len==1 && key.s[0]>='0' && key.s[0]<='9') {
         z->level = key.s[0] - '0';
         return 0;
-    } else if (zequals(key, S("h")) || zequals(key, S("h2"))) {
+    } else if (zequals(key, S("h")) || zequals(key, S("H")) ||
+               zequals(key, S("?")) || zequals(key, S("h2"))) {
         return usage(z, 0) - 1;
     } else if (zequals(key, S("version"))) {
         version(z);
