@@ -302,13 +302,24 @@ static b32 zip_end_saturated(zend const *e)
            e->cdsize==ZIP_MAX32 || e->cdoff==ZIP_MAX32;
 }
 
-// Validate the end of central directory record on its own.
+// Whether, by the end record, the central directory ends at it, so that
+// there is no room for Zip64 records between, and bytes resembling them
+// are by chance (the end of the last entry's comment).
+static b32 zip_end_reached(zend const *e)
+{
+    return e->cdoff+e->cdsize == e->endpos;
+}
+
+// Validate the end of central directory record on its own. As Info-ZIP
+// does, a split archive is known by its disk numbers, not by a count of
+// entries on this disk that differs from the total, which, on a single
+// disk, some writers get wrong (where Info-ZIP and UnZip read it).
 static i32 zip_check_end32(zend *e)
 {
     e->end64 = -1;
-    if (e->disk || e->cddisk || e->ndisk!=e->count) {
+    if (e->disk || e->cddisk) {
         return ZIP_EMULTI;
-    } else if (e->cdoff+e->cdsize != e->endpos) {
+    } else if (!zip_end_reached(e)) {
         return e->cdoff+e->cdsize<e->endpos ? ZIP_EPREFIX : ZIP_EFORMAT;
     }
     return e->count<=e->cdsize/ZIP_CENTRAL_LEN ? ZIP_OK : ZIP_EFORMAT;
@@ -320,7 +331,8 @@ static i32 zip_check_end32(zend *e)
 //
 // Bytes resembling a Zip64 locator may precede the end record by chance,
 // such as in an entry comment, so a Zip64 record is relied upon only if
-// it checks out or the end record's fields call for one.
+// it checks out or the end record's fields call for one, or leave room
+// for one: then its own faults are reported, not the end record's.
 static i32 zip_find_end(u8 *tail, iz n, i64 size, zend *e)
 {
     i64 base = size - n;
@@ -345,16 +357,17 @@ static i32 zip_find_end(u8 *tail, iz n, i64 size, zend *e)
         e->end64   = -1;
 
         if (i>=ZIP_LOC64_LEN && get32(p-ZIP_LOC64_LEN)==ZIP_LOC64_SIG) {
-            u8 *loc = p - ZIP_LOC64_LEN;
-            u64 off = get64(loc+8);
-            b32 ok  = !get32(loc+4) && get32(loc+16)==1 &&
-                      e->endpos>=ZIP_LOC64_LEN+ZIP_END64_LEN &&
-                      off<=(u64)(e->endpos - ZIP_LOC64_LEN - ZIP_END64_LEN);
+            // On another disk, or one of other than one disk: split
+            u8 *loc   = p - ZIP_LOC64_LEN;
+            u64 off   = get64(loc+8);
+            b32 split = get32(loc+4) || get32(loc+16)!=1;
+            b32 ok    = !split && e->endpos>=ZIP_LOC64_LEN+ZIP_END64_LEN &&
+                        off<=(u64)(e->endpos-ZIP_LOC64_LEN-ZIP_END64_LEN);
             if (ok) {
                 e->end64 = (i64)off;
                 return ZIP_OK;
-            } else if (zip_end_saturated(e)) {
-                return get32(loc+16)!=1 ? ZIP_EMULTI : ZIP_EFORMAT;
+            } else if (zip_end_saturated(e) || !zip_end_reached(e)) {
+                return split ? ZIP_EMULTI : ZIP_EFORMAT;
             }
         }
         return zip_check_end32(e);
@@ -368,23 +381,23 @@ static i32 zip_check_end64(u8 const *p, zend *e)
         return ZIP_EFORMAT;
     }
     u64 recsize = get64(p+4);
-    u64 count   = get64(p+24);
     u64 total   = get64(p+32);
     u64 cdsize  = get64(p+40);
     u64 cdoff   = get64(p+48);
-    if (get32(p+16) || get32(p+20) || count!=total) {
+    if (get32(p+20)) {
+        // As in Info-ZIP, only the disk with the central directory tells,
+        // not this disk's number or its count of entries
         return ZIP_EMULTI;
     }
 
-    // The record must sit just before the locator, and the central
-    // directory just before it.
+    // The record must sit just before the locator, by its size, and the
+    // central directory just before it. Data prepended without adjusting
+    // offsets would show here only if the locator had been adjusted: if
+    // not, the locator points short of the record, at no record.
     u64 limit = (u64)e->endpos;
-    if (recsize<ZIP_END64_LEN-12 || recsize>limit) {
+    if (recsize<ZIP_END64_LEN-12 || recsize>limit ||
+        e->endpos-ZIP_LOC64_LEN-12-(i64)recsize != e->end64) {
         return ZIP_EFORMAT;
-    }
-    i64 actual = e->endpos - ZIP_LOC64_LEN - 12 - (i64)recsize;
-    if (actual != e->end64) {
-        return actual > e->end64 ? ZIP_EPREFIX : ZIP_EFORMAT;
     }
     if (cdsize>limit || cdoff>limit || cdoff+cdsize!=(u64)e->end64) {
         b32 prefix = cdoff+cdsize < (u64)e->end64;
@@ -400,11 +413,13 @@ static i32 zip_check_end64(u8 const *p, zend *e)
 }
 
 // Parse the Zip64 end record, ZIP_END64_LEN bytes at e->end64, falling
-// back to the end record alone when that suffices.
+// back to the end record alone when that suffices: when its fields do
+// not defer to Zip64 records, and leave no room for them.
 static i32 zip_parse_end64(u8 const *p, zend *e)
 {
-    i32 r = zip_check_end64(p, e);
-    return r==ZIP_OK || zip_end_saturated(e) ? r : zip_check_end32(e);
+    i32 r   = zip_check_end64(p, e);
+    b32 own = r==ZIP_OK || zip_end_saturated(e) || !zip_end_reached(e);
+    return own ? r : zip_check_end32(e);
 }
 
 // Copy a kept entry's extra fields, dropping only Zip64, which is

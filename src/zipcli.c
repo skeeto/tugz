@@ -1599,8 +1599,12 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
         return fail(z, ZE_FORM, S("Split archives not supported"),
                     z->archive, scratch);
     case ZIP_EPREFIX:
-        return fail(z, ZE_FORM, S("Data before the archive (self-extractor)"
-                    " not supported"), z->archive, scratch);
+        // As a stub prepended to an archive leaves them, which Info-ZIP
+        // finds only on copying an entry ("Did not find entry for")
+        warn(z, S("offsets do not account for data before the archive"),
+             S(""), scratch);
+        return fail(z, ZE_FORM, S("Zip file structure invalid"), z->archive,
+                    scratch);
     }
 
     // The central directory is read through the window, whole if it

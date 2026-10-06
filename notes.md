@@ -400,14 +400,21 @@ neither inflate nor the gzip container.
   Python zipapp's `#!` line) is copied first, as Info-ZIP copies it, so
   that offsets accounting for it stay absolute and the file still runs.
   Offsets that do not account for a preamble are refused (3), as in
-  Info-ZIP, which needs `-A` to fix them. With no entries, the preamble
-  is what precedes the central directory, so a file added to an emptied
-  self-extractor keeps its stub. Info-ZIP's own emptied self-extractor,
-  whose end record gives offset 0, is refused as unadjusted. The Zip64
-  end record gives the program's version made by, as Info-ZIP's does. A
-  Zip64 end record is trusted only if it checks out or the plain end
-  record calls for it, since bytes resembling a Zip64 locator may
-  precede the end record by chance (found by fuzzing). Only a missing
+  Info-ZIP, which needs `-A` to fix them, with a warning saying so. With
+  no entries, the preamble is what precedes the central directory, so a
+  file added to an emptied self-extractor keeps its stub. Info-ZIP's own
+  emptied self-extractor, whose end record gives offset 0, is refused as
+  unadjusted. The Zip64 end record gives the program's version made by,
+  as Info-ZIP's does. A Zip64 end record is trusted only if it checks
+  out, or the plain end record calls for it or leaves room for it (its
+  central directory ending short of it, as some writers make small
+  archives), since bytes resembling a Zip64 locator may precede the end
+  record by chance (found by fuzzing); where there is room, a fault in
+  the Zip64 records is theirs, not taken for data before the archive.
+  As in Info-ZIP, an archive is split by its disk numbers (the end
+  record's, the locator's, and the Zip64 record's central directory
+  disk), not by counts of entries on this disk, which writers can get
+  wrong on a single disk, nor by the Zip64 record's own. Only a missing
   archive is new: anything else at its path must be a zip file, so an
   empty file, a directory, a FIFO, or a device fails with 3 before any
   work, as Info-ZIP fails (it waits on a FIFO, and cannot open a socket,
@@ -615,7 +622,19 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   at an entry's header, and copies a cut-off entry's data without error.
   Saturated sizes beside a Zip64 extra that holds only the offset are
   read as Info-ZIP means them, not as it and UnZip read them (see
-  Merging).
+  Merging). Offsets that do not account for data before the archive are
+  refused before any work, with a warning saying so, where Info-ZIP
+  fails only on copying an entry (warning that it "did not find" it),
+  so it updates one whose every entry it replaces or deletes. The end
+  records must lie exactly where they place each other: the central
+  directory ending where the Zip64 end record, or failing one the end
+  record, begins, and the Zip64 end record, by its size, ending where
+  its locator begins, at the offset that gives. Info-ZIP, which reads
+  from the directory's offset to the next record, and compensates for a
+  locator that misses, also updates archives with bytes between these,
+  or a wrong Zip64 record size, directory size, or locator offset. No
+  writer is known to make them, and tugz refuses them (3), as layouts
+  that do not add up are how unadjusted data before the archive shows.
 - Replacing the archive: a hard-linked archive is replaced by a new
   file, which its other names do not share (Info-ZIP copies into it). A
   new archive replaces nothing: a file made at its path while zip works

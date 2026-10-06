@@ -621,7 +621,8 @@ static void test_oem(void)
 }
 
 // Zip64 end records are relied upon only when they check out, or when
-// the end record defers to them; otherwise the end record stands alone.
+// the end record defers to them or leaves room for them; otherwise the
+// end record stands alone.
 static void test_end_records(arena a)
 {
     // An empty archive, its end record at the very start of the tail,
@@ -663,6 +664,15 @@ static void test_end_records(arena a)
     TEST(zip_parse_end64(buf+z.end64, &z) == ZIP_OK);
     TEST(z.end64 == -1);
     TEST(z.count==1 && z.cdoff==cdoff && z.cdsize==cdsize);
+
+    // A count of entries on this disk that differs from the total, on a
+    // single disk, as some writers make, as Info-ZIP reads it
+    put16(end+8, 0);
+    z = (zend){0};
+    TEST(zip_find_end(buf, total, total, &z) == ZIP_OK);
+    TEST(zip_parse_end64(buf+z.end64, &z) == ZIP_OK);
+    TEST(z.count == 1);
+    put16(end+8, 1);
 
     // Locators that cannot be right are ignored outright
     put64(loc+8, (u64)1 << 40);
@@ -716,11 +726,23 @@ static void test_end_records(arena a)
     put64(rec+24, (u64)n);
     put64(rec+32, (u64)n);
 
-    // Data prepended without adjusting offsets: the record must abut the
-    // locator, so by its size it lies past the locator's offset
+    // Nor do counts of entries on this disk, nor this disk's number, tell
+    // of a split archive, as in Info-ZIP: only disks with records do
+    put64(rec+24, 1);  // entries on this disk
+    put32(rec+16, 1);  // this disk
+    TEST(zip_find_end(tail, countof(tail), size, &z) == ZIP_OK);
+    TEST(zip_parse_end64(rec, &z) == ZIP_OK);
+    TEST(z.count == n);
+    put64(rec+24, (u64)n);
+    put32(rec+16, 0);
+
+    // Data prepended without adjusting offsets: the locator points short
+    // of the record, at whatever is there, such as central headers
+    u8 cd[ZIP_END64_LEN] = {0};
+    put32(cd, ZIP_CENTRAL_SIG);
     TEST(zip_find_end(tail, countof(tail), size+100, &z) == ZIP_OK);
     TEST(z.end64 == 1000+big);
-    TEST(zip_parse_end64(rec, &z) == ZIP_EPREFIX);
+    TEST(zip_parse_end64(cd, &z) == ZIP_EFORMAT);
 
     // Only the locator adjusted: the central directory ends short of the
     // record
@@ -728,6 +750,53 @@ static void test_end_records(arena a)
     TEST(zip_find_end(tail, countof(tail), size+100, &z) == ZIP_OK);
     TEST(z.end64 == 1000+big+100);
     TEST(zip_parse_end64(rec, &z) == ZIP_EPREFIX);
+    put64(loc64+8, (u64)(1000 + big));
+
+    // Bytes between the record and its locator: by its size, the record
+    // falls short of the locator, which is no prepended data
+    u8 gap[countof(tail) + 8];
+    bytecopy(gap, rec, ZIP_END64_LEN);
+    bytecopy(gap+ZIP_END64_LEN, "JUNKJUNK", 8);
+    bytecopy(gap+ZIP_END64_LEN+8, loc64, countof(tail)-ZIP_END64_LEN);
+    TEST(zip_find_end(gap, countof(gap), size+8, &z) == ZIP_OK);
+    TEST(z.end64 == 1000+big);
+    TEST(zip_parse_end64(gap, &z) == ZIP_EFORMAT);
+
+    // Zip64 records beside an end record of real values, as some writers
+    // make for small archives: their faults are theirs, not taken for
+    // data before the archive, as the end record alone would be, its
+    // central directory ending before them
+    i64 small = 1000 + 2*ZIP_CENTRAL_LEN + countof(tail);
+    u8 *end32 = loc64 + ZIP_LOC64_LEN;
+    zip_end(tail, ZIP_MAX16, 2*ZIP_CENTRAL_LEN, 1000, (s8){0}, 0x031e);
+    put64(rec+24, 2);
+    put64(rec+32, 2);
+    put16(end32+8, 2);
+    put16(end32+10, 2);
+    TEST(zip_find_end(tail, countof(tail), small, &z) == ZIP_OK);
+    TEST(zip_parse_end64(rec, &z) == ZIP_OK);
+    TEST(z.count==2 && z.cdoff==1000 && z.end64==1000+2*ZIP_CENTRAL_LEN);
+    put32(loc64+4, 1);  // the record on disk 1
+    TEST(zip_find_end(tail, countof(tail), small, &z) == ZIP_EMULTI);
+    put32(loc64+4, 0);
+    put32(loc64+16, 2);  // total disks
+    TEST(zip_find_end(tail, countof(tail), small, &z) == ZIP_EMULTI);
+    put32(loc64+16, 0);
+    TEST(zip_find_end(tail, countof(tail), small, &z) == ZIP_EMULTI);
+    put32(loc64+16, 1);
+    put64(loc64+8, (u64)small);  // past the end
+    TEST(zip_find_end(tail, countof(tail), small, &z) == ZIP_EFORMAT);
+    put64(loc64+8, 1000 + 2*ZIP_CENTRAL_LEN);
+    put64(rec+48, 1001);  // central directory offset
+    TEST(zip_find_end(tail, countof(tail), small, &z) == ZIP_OK);
+    TEST(zip_parse_end64(rec, &z) == ZIP_EFORMAT);
+    put64(rec+48, 999);
+    TEST(zip_find_end(tail, countof(tail), small, &z) == ZIP_OK);
+    TEST(zip_parse_end64(rec, &z) == ZIP_EPREFIX);  // by the record
+    put64(rec+48, 1000);
+    put32(rec+20, 1);  // disk with the central directory
+    TEST(zip_find_end(tail, countof(tail), small, &z) == ZIP_OK);
+    TEST(zip_parse_end64(rec, &z) == ZIP_EMULTI);
 }
 
 // Zip64 extra fields in central headers: one 8-byte value for each

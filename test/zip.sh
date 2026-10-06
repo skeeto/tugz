@@ -1080,8 +1080,11 @@ fi
 
 # Data before the first entry that offsets account for, such as a
 # self-extractor's stub after zip -A, is kept, as in Info-ZIP, and the
-# offsets stay absolute; offsets that do not account for it are refused.
-# Here the stub precedes an empty archive's central directory (offset 28).
+# offsets stay absolute; offsets that do not account for it are refused,
+# as by Info-ZIP, and with a warning saying so. Departure: before any
+# work, even when no entry would be copied (Info-ZIP fails on copying
+# one, warning that it "did not find" it). Here the stub precedes an
+# empty archive's central directory (offset 28).
 printf '#!/bin/sh\necho stub; exit 0\n' >stub
 printf one >sx1.txt
 printf two >sx2.txt
@@ -1089,6 +1092,11 @@ printf two >sx2.txt
 cat stub plain.zip >sfx0.zip
 cp sfx0.zip sfx0.orig
 expect_status 3 "$ZIP" sfx0.zip sx2.txt
+expect_status 3 "$ZIP" -d sfx0.zip sx1.txt
+"$ZIP" sfx0.zip sx2.txt >out 2>&1 && fail "unadjusted stub accepted"
+printf '%s\n' 'zip warning: offsets do not account for data before the archive' \
+    '' 'zip error: Zip file structure invalid (sfx0.zip)' >want
+cmp -s out want || fail "unadjusted stub: $(cat out)"
 cmp -s sfx0.zip sfx0.orig || fail "a refused stub changed the archive"
 { cat stub; printf 'PK\005\006\0\0\0\0\0\0\0\0\0\0\0\0\034\0\0\0\0\0'; } >sfx.zip
 "$ZIP" -q sfx.zip sx1.txt
@@ -1114,6 +1122,48 @@ if [ -n "$PY" ]; then
     verify app.pyz
     [ "$(head -c 2 app.pyz)" = '#!' ] || fail "zipapp's #! line lost"
     [ "$($PY app.pyz)" = 'hello from app' ] || fail "zipapp does not run"
+fi
+
+# End records as other writers make them: a count of entries on this
+# disk that differs from the total (on one disk) is no split archive, as
+# in Info-ZIP; a small archive may have Zip64 records beside an end
+# record of real values, and a fault in those is its own, not data
+# before the archive
+if [ -n "$PY" ]; then
+    $PY -c 'import struct, sys, zlib
+loc = cen = b""
+for n, d in (b"e/a.txt", b"alpha"), (b"e/b.txt", b"bravo"):
+    c, o = zlib.crc32(d), len(loc)
+    loc += struct.pack("<IHHHHHIIIHH", 0x04034b50, 10, 0, 0, 0, 0x5021, c,
+                       len(d), len(d), len(n), 0) + n + d
+    cen += struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 0x31e, 10, 0, 0, 0,
+                       0x5021, c, len(d), len(d), len(n), 0, 0, 0, 0,
+                       0x81a40000, o) + n
+def write(name, ndisk=2, total=1, cdoff=len(loc), z64=True):
+    out = loc + cen
+    if z64:
+        rec = struct.pack("<IQHHIIQQQQ", 0x06064b50, 44, 0x31e, 45, 0, 0, 2,
+                          2, len(cen), cdoff)
+        out += rec + struct.pack("<IIQI", 0x07064b50, 0, len(out), total)
+    out += struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, ndisk, 2, len(cen),
+                       len(loc), 0)
+    open(name, "wb").write(out)
+write("nd0.zip", ndisk=0, z64=False)
+write("r64.zip")
+write("r64split.zip", total=2)
+write("r64bad.zip", cdoff=len(loc)+1)'
+    for f in nd0 r64; do
+        "$ZIP" -q $f.zip tree/a.txt || fail "end records of $f.zip"
+        verify $f.zip
+        [ "$(names $f.zip | tr '\n' ' ')" = "e/a.txt e/b.txt tree/a.txt " ] ||
+            fail "end records of $f.zip: $(names $f.zip)"
+    done
+    "$ZIP" r64split.zip tree/a.txt >out 2>&1 && fail "split Zip64 accepted"
+    printf '\nzip error: Split archives not supported (r64split.zip)\n' >want
+    cmp -s out want || fail "split Zip64: $(cat out)"
+    "$ZIP" r64bad.zip tree/a.txt >out 2>&1 && fail "bad Zip64 accepted"
+    printf '\nzip error: Zip file structure invalid (r64bad.zip)\n' >want
+    cmp -s out want || fail "bad Zip64: $(cat out)"
 fi
 
 # Errors and warnings
