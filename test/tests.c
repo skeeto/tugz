@@ -40,9 +40,12 @@ typedef struct {
     b32 issymlink;  // followed unless OS_NOFOLLOW
     b32 isspecial;  // e.g. FIFO or device
     i32 nlinks;     // extra hard links
-    u32 mode;       // metadata copied by os_copymeta
+    u32 mode;       // metadata copied by os_getmeta and os_setmeta
     i64 mtime;
+    i64 atime;      // set to ATIME_NOW by reading
 } mfile;
+
+enum { ATIME_NOW = 1000000 };
 
 enum { MAX_FILES = 64, MAX_FDS = 16 };
 
@@ -64,6 +67,8 @@ struct os {
     iz  reads;       // calls to os_read
     iz  writes;      // calls to os_write, other than for stderr
     b32 failcreate;  // creating files fails
+    b32 failstat;    // getting metadata fails
+    b32 failmeta;    // setting metadata fails
     b32 failclose;   // closing created files fails
     b32 failremove;  // removing files fails
     b32 tty[3];      // standard descriptors attached to a terminal
@@ -119,7 +124,7 @@ static mfile *mfs_create(os *ctx, s8 name)
     f->isdir = f->issymlink = f->isspecial = 0;
     f->nlinks = 0;
     f->mode = 0600;  // as created by a platform layer
-    f->mtime = 0;
+    f->mtime = f->atime = 0;
     return f;
 }
 
@@ -165,6 +170,7 @@ static void mfs_reset(os *ctx)
     ctx->readlimit = ctx->failreadat = 0;
     ctx->failread = ctx->failwrite = ctx->failclose = ctx->failremove = 0;
     ctx->brokenpipe = ctx->failcreate = ctx->noreason = 0;
+    ctx->failstat = ctx->failmeta = 0;
     ctx->tty[0] = ctx->tty[1] = ctx->tty[2] = 0;
     static char *std[] = {"<stdin>", "<stdout>", "<stderr>"};
     for (i32 i = 0; i < 3; i++) {
@@ -260,13 +266,39 @@ static b32 os_pipeclosed(os *ctx)
     return ctx->pipeclosed;
 }
 
-static void os_copymeta(os *ctx, i32 from, i32 to)
+struct osmeta {
+    u32 mode;
+    i64 mtime;
+    i64 atime;
+};
+
+static osmeta *os_getmeta(os *ctx, i32 fd, arena *a)
 {
-    TEST(ctx->fds[from].open && ctx->fds[to].open && ctx->fds[to].created);
-    mfile *src = ctx->files + ctx->fds[from].file;
-    mfile *dst = ctx->files + ctx->fds[to].file;
-    dst->mode  = src->mode;
-    dst->mtime = src->mtime;
+    TEST(fd>2 && fd<MAX_FDS && ctx->fds[fd].open);
+    if (ctx->failstat) {
+        ctx->error = "Input/output error";
+        return 0;
+    }
+    mfile  *f = ctx->files + ctx->fds[fd].file;
+    osmeta *m = new(a, 1, osmeta);
+    m->mode  = f->mode;
+    m->mtime = f->mtime;
+    m->atime = f->atime;
+    return m;
+}
+
+static b32 os_setmeta(os *ctx, i32 fd, osmeta *m)
+{
+    TEST(fd>2 && fd<MAX_FDS && ctx->fds[fd].open && ctx->fds[fd].created);
+    if (ctx->failmeta) {
+        ctx->error = "Operation not permitted";
+        return 0;
+    }
+    mfile *f = ctx->files + ctx->fds[fd].file;
+    f->mode  = m->mode;
+    f->mtime = m->mtime;
+    f->atime = m->atime;
+    return 1;
 }
 
 static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
@@ -291,6 +323,7 @@ static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
         memcpy(buf, f->data + ctx->fds[fd].off, (uz)n);
     }
     ctx->fds[fd].off += n;
+    f->atime = ATIME_NOW;
     return n;
 }
 
@@ -2598,21 +2631,48 @@ static void test_cli_safety(os *ctx, arena a)
     u8 *text = randbytes(20000, 2);
     s8 out;
 
-    // Metadata follows the data in both directions
+    // Metadata follows the data in both directions, with the access time
+    // the input had before it was read, as in GNU gzip
     mfs_reset(ctx);
     mfile *f = mfs_create(ctx, S("m"));
     mfs_append(f, text, 20000);
     f->mode = 0640;
     f->mtime = 1234567890;
+    f->atime = 1234;
     TEST(run(ctx, a, "m") == EXIT_OK);
     f = mfs_find(ctx, S("m.gz"));
-    TEST(f && f->mode==0640 && f->mtime==1234567890);
+    TEST(f && f->mode==0640 && f->mtime==1234567890 && f->atime==1234);
     f->mode = 0604;
     f->mtime = 42;
+    f->atime = 43;
     TEST(run(ctx, a, "-d m.gz") == EXIT_OK);
     f = mfs_find(ctx, S("m"));
-    TEST(f && f->mode==0604 && f->mtime==42);
+    TEST(f && f->mode==0604 && f->mtime==42 && f->atime==43);
     TEST(equals(mfs_get(ctx, "m"), text, 20000));
+
+    // As there, failing to set them loses no data, so the output is kept
+    // and the input removed, with a warning naming the output
+    ctx->failmeta = 1;
+    TEST(run(ctx, a, "m") == EXIT_WARN);
+    TEST(stderr_has(ctx, "gzip: m.gz: Operation not permitted\n"));
+    TEST(!has(ctx, "m") && has(ctx, "m.gz"));
+    TEST(run(ctx, a, "-dq m.gz") == EXIT_WARN);
+    TEST(!mfs_get(ctx, "<stderr>").len);
+    TEST(equals(mfs_get(ctx, "m"), text, 20000) && !has(ctx, "m.gz"));
+    ctx->noreason = 1;
+    TEST(run(ctx, a, "-k m") == EXIT_WARN);
+    TEST(stderr_has(ctx, "gzip: m.gz: cannot set metadata\n"));
+    ctx->noreason = 0;
+    ctx->failmeta = 0;
+    os_remove(ctx, S("m.gz"), a);
+
+    // ...but failing to get them is an error, before any output
+    ctx->failstat = 1;
+    TEST(run(ctx, a, "-q m") == EXIT_ERR);
+    TEST(stderr_has(ctx, "gzip: m: Input/output error\n"));
+    TEST(has(ctx, "m") && !has(ctx, "m.gz"));
+    TEST(run(ctx, a, "-c m") == EXIT_OK);  // not needed
+    ctx->failstat = 0;
 
     // Symbolic links are skipped in place unless forced
     f = mfs_create(ctx, S("lnk"));

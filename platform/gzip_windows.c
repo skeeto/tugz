@@ -71,20 +71,28 @@ static b32 os_pipeclosed(os *ctx)
     return err==ERROR_NO_DATA || err==ERROR_BROKEN_PIPE;
 }
 
+struct osmeta {
+    basic_info info;
+};
+
+static osmeta *os_getmeta(os *ctx, i32 fd, arena *a)
+{
+    osmeta *m = new(a, 1, osmeta);
+    b32 ok = GetFileInformationByHandleEx(ctx->handles[fd], FileBasicInfo,
+                                          &m->info, sizeof(m->info));
+    return ok ? m : 0;
+}
+
 // Windows has no meaningful equivalent of mode bits here: new files
 // inherit their directory's access control, as they would from GNU gzip.
 // Copy the timestamps.
-static void os_copymeta(os *ctx, i32 from, i32 to)
+static b32 os_setmeta(os *ctx, i32 fd, osmeta *m)
 {
-    basic_info info = {0};
-    if (GetFileInformationByHandleEx(ctx->handles[from], FileBasicInfo,
-                                     &info, sizeof(info))) {
-        basic_info set = {0};
-        set.accessed = info.accessed;
-        set.written  = info.written;
-        SetFileInformationByHandle(ctx->handles[to], FileBasicInfo,
-                                   &set, sizeof(set));
-    }
+    basic_info set = {0};
+    set.accessed = m->info.accessed;
+    set.written  = m->info.written;
+    return SetFileInformationByHandle(ctx->handles[fd], FileBasicInfo,
+                                      &set, sizeof(set));
 }
 
 void mainCRTStartup(void)

@@ -266,6 +266,17 @@ want=$(mtime fresh)
 "$GZIP" -d fresh.gz
 [ "$(mtime fresh)" = "$want" ] || fail "mtime lost on decompress"
 
+# ...and the access time an input had before it was read, as in GNU gzip
+atime() { stat -c %X "$1" 2>/dev/null || stat -f %a "$1"; }
+printf 'aged\n' >aged
+if touch -a -t 200102030405 aged 2>/dev/null; then
+    want=$(atime aged)
+    "$GZIP" aged
+    [ "$(atime aged.gz)" = "$want" ] || fail "atime $(atime aged.gz) != $want"
+    "$GZIP" -d aged.gz
+    [ "$(atime aged)" = "$want" ] || fail "atime lost on decompress"
+fi
+
 # Symbolic links are refused in place unless forced, an error as in GNU gzip
 printf 'target\n' >target
 if ln -s target slink 2>/dev/null; then

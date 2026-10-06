@@ -39,27 +39,38 @@ static b32 os_pipeclosed(os *ctx)
     return errno == EPIPE;
 }
 
-static void os_copymeta(os *ctx, i32 from, i32 to)
+struct osmeta {
+    struct stat st;
+};
+
+static osmeta *os_getmeta(os *ctx, i32 fd, arena *a)
 {
     (void)ctx;
-    struct stat st;
-    if (fstat(from, &st)) {
-        return;
-    }
+    osmeta *m = new(a, 1, osmeta);
+    return fstat(fd, &m->st) ? 0 : m;
+}
+
+static b32 os_setmeta(os *ctx, i32 fd, osmeta *m)
+{
+    (void)ctx;
 
     // Ownership first, since changing it may clear set-ID bits. Without
     // the original owner, keep no set-ID bits at all.
-    mode_t mode = st.st_mode & 07777;
-    if (fchown(to, st.st_uid, st.st_gid)) {
+    mode_t mode = m->st.st_mode & 07777;
+    if (fchown(fd, m->st.st_uid, m->st.st_gid)) {
         mode &= ~(mode_t)(S_ISUID|S_ISGID);
-        if (fchown(to, (uid_t)-1, st.st_gid)) {
+        if (fchown(fd, (uid_t)-1, m->st.st_gid)) {
             mode &= ~(mode_t)S_ISGID;
         }
     }
-    fchmod(to, mode);
+    int err = fchmod(fd, mode) ? errno : 0;
 
-    struct timespec times[2] = {st.st_atim, st.st_mtim};
-    futimens(to, times);
+    struct timespec times[2] = {m->st.st_atim, m->st.st_mtim};
+    if (futimens(fd, times) && !err) {
+        err = errno;
+    }
+    errno = err;
+    return !err;
 }
 
 int main(int argc, char **argv)

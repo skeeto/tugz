@@ -70,9 +70,15 @@ static b32 os_pipeclosed(os *ctx)
     __builtin_trap();
 }
 
-static void os_copymeta(os *ctx, i32 from, i32 to)
+static osmeta *os_getmeta(os *ctx, i32 fd, arena *a)
 {
-    (void)ctx; (void)from; (void)to;
+    (void)ctx; (void)fd; (void)a;
+    __builtin_trap();
+}
+
+static b32 os_setmeta(os *ctx, i32 fd, osmeta *m)
+{
+    (void)ctx; (void)fd; (void)m;
     __builtin_trap();
 }
 

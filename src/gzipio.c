@@ -8,9 +8,16 @@ static b32  os_missing(os *);
 static s8   os_error(os *);
 // Whether the os_write that just failed found a pipe with no reader.
 static b32  os_pipeclosed(os *);
-// Best effort: give an open output file the input file's permissions,
-// ownership, and timestamps, as far as the platform supports.
-static void os_copymeta(os *, i32 from, i32 to);
+// An open file's permissions, ownership, and timestamps, as far as the
+// platform keeps them.
+typedef struct osmeta osmeta;
+// An input's metadata, taken before reading changes its access time, or
+// null if it cannot be read (os_error says why).
+static osmeta *os_getmeta(os *, i32 fd, arena *);
+// Give an open output file metadata, its ownership only where permitted.
+// Returns false if its permissions or timestamps could not be set (with
+// os_error saying why), though as much as could be is set.
+static b32  os_setmeta(os *, i32 fd, osmeta *);
 
 static void os_oom(os *ctx)
 {

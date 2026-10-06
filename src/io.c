@@ -15,7 +15,7 @@ enum {
     OS_ONELINK  = 1 << 2,  // refuse files with multiple hard links
 
     // Create a file for writing. On POSIX it is created owner-only, for
-    // the program to give it permissions later (gzip's os_copymeta, zip's
+    // the program to give it permissions later (gzip's os_setmeta, zip's
     // os_commit), or with the defaults for a new file (umask, inherited
     // ACL) given OS_DEFPERMS; on Windows it is opened exclusively and
     // inherits access control either way. It is discarded when closed,

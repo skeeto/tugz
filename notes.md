@@ -920,8 +920,13 @@ Fuzzers:
   input afterward is a warning, as in GNU gzip, leaving both files.
 - Output files are created owner-only, then given the input's mode,
   ownership (when permitted; set-ID bits dropped otherwise), and
-  timestamps at full resolution. On Windows, timestamps are copied and
-  access control is inherited from the directory, as with GNU gzip.
+  timestamps at full resolution, all as the input had them when opened,
+  as in GNU gzip, before reading changed its access time. On Windows,
+  timestamps are copied and access control is inherited from the
+  directory, as with GNU gzip. Also as there, failing to set the mode
+  or times is a warning (2) naming the output, which is kept and its
+  input removed, while failing to keep the ownership is silent, and
+  failing to read an input's metadata is an error (1).
 - Outputs are discarded unless explicitly kept after success
   (`os_keep`): on failure, on a failed close (which may mean lost data),
   and on interruption. POSIX uses a handler for SIGHUP, SIGINT,

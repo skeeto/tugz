@@ -322,6 +322,15 @@ static i32 process_file(options *o, s8 path, arena scratch)
         outpath = s8concat(&scratch, path, S(".gz"));
     }
 
+    // Take the input's metadata now, as GNU gzip does, before reading
+    // changes its access time
+    osmeta *meta = os_getmeta(ctx, in, &scratch);
+    if (!meta) {
+        message(scratch, path, reason(ctx, S("cannot read metadata")));
+        os_close(ctx, in);
+        return EXIT_ERR;
+    }
+
     // As in GNU gzip, read the header before creating the output, so that
     // input that is not gzip is the error, and never replaces a file
     reader *r = 0;
@@ -356,7 +365,13 @@ static i32 process_file(options *o, s8 path, arena scratch)
         os_close(ctx, in);
         return code;
     }
-    os_copymeta(ctx, in, out);
+
+    // Failing to give the output the input's permissions or times loses
+    // no data, so as in GNU gzip it is only a warning
+    if (!os_setmeta(ctx, out, meta)) {
+        s8 why = reason(ctx, S("cannot set metadata"));
+        code = exit_combine(code, warn(o, outpath, why, scratch));
+    }
     os_keep(ctx, out);
 
     // A failed close may mean lost data, so the input must survive it
