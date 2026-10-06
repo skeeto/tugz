@@ -340,6 +340,20 @@ if [ -n "$windows" ]; then
     win=$(printf %s "$here" | tr / '\\')
     expect_status 0 "$GZIP" -c "\\\\?\\$win\\one"
     expect_status 1 "$GZIP" -c "\\\\?\\$win\\names\\..\\one"
+    # ...keeping trailing dots and spaces, even in \\.\ paths, which
+    # Win32 would parse again, stripping them
+    mkdir dots
+    printf plain >dots/name
+    powershell -NoProfile -NonInteractive -Command "
+        Set-Content -NoNewline -LiteralPath '\\\\?\\$win\\dots\\name.' -Value dot
+        Set-Content -NoNewline -LiteralPath '\\\\?\\$win\\dots\\sp ' -Value sp"
+    for p in "//./$here/dots/" "\\\\.\\$win\\dots\\" "//?/$here/dots/"; do
+        [ "$("$GZIP" -c "${p}name." | "$GZIP" -dc)" = dot ] &&
+            [ "$("$GZIP" -c "${p}sp " | "$GZIP" -dc)" = sp ] ||
+            fail "-c ${p}name. or sp"
+    done
+    powershell -NoProfile -NonInteractive -Command "
+        Remove-Item -LiteralPath '\\\\?\\$win\\dots' -Recurse -Force"
     # ...but one missing its device, server, or share names nothing
     for p in "//?/" "//./" "//?/UNC/localhost/" "\\\\localhost\\" "//"; do
         expect_status 1 "$GZIP" -c "$p"

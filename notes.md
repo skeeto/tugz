@@ -1035,16 +1035,19 @@ Fuzzers:
   Win32 parsing, so paths are first resolved as Win32 would: against the
   current directory (UNC or not), a drive's, or the root, dropping `.`,
   `..`, and doubled separators. Trailing dots and spaces are kept, so
-  names from a listing round trip. A path written exactly `\\?\`
-  passes through, as in Win32, but other device paths (`//?/`, `\\.\`)
-  are resolved too, as Win32 resolves them, except that `..` stops at
-  their volume or share. The empty path names no file, nor does a root
-  missing its server, share, or device (`\\server\`, `//?/`). A bare
-  DOS device name (`NUL`, `CON`, `COM1`, as `GetFullPathNameW` judges
-  it) is the device, as in other Windows programs: zip skips it as a
-  special file, `gzip -c NUL` reads nothing, and no output goes to one.
-  With a directory, such a name is a file, so that names from a
-  listing, made on other systems, still round trip.
+  names from a listing round trip. A path written exactly `\\?\` passes
+  through, as in Win32, but other device paths (`//?/`, `\\.\`) are
+  resolved too, as Win32 resolves them, except that `..` stops at their
+  volume or share, and dots and spaces stay. A resolved `\\.\` path
+  becomes `\\?\`, which names the same devices, since Win32 would parse
+  it again, stripping those and limiting it to MAX_PATH (so that
+  `//./C:/d/name.` would read `name`). The empty path names no file, nor
+  does a root missing its server, share, or device (`\\server\`,
+  `//?/`). A bare DOS device name (`NUL`, `CON`, `COM1`, as
+  `GetFullPathNameW` judges it) is the device, as in other Windows
+  programs: zip skips it as a special file, `gzip -c NUL` reads nothing,
+  and no output goes to one. With a directory, such a name is a file, so
+  that names from a listing, made on other systems, still round trip.
 - Output to a Windows console is converted from UTF-8 (WTF-8, for file
   names) to UTF-16 for `WriteConsoleW`, since `WriteFile` would take the
   bytes in the console code page. A sequence split between writes is

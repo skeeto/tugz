@@ -298,11 +298,12 @@ static c16 *dosdevice(arena *a, s16 p)
 // root), dropping "." and ".." components and doubled separators. Unlike
 // Win32, keep trailing dots and spaces, so that names from a directory
 // listing round trip, and stop ".." at a device path's volume or share.
-// A path written exactly \\?\ passes through, as Win32 passes it, and a
-// bare DOS device name (NUL) becomes its device as in any Windows
-// program. Within a directory such names stay files, as they are in a
-// listing, since other systems make them. Returns null for a path that
-// names no file: an empty one, or one with an incomplete root.
+// A \\.\ path, which Win32 would parse again, becomes \\?\, which names
+// the same devices. A path written exactly \\?\ passes through, as Win32
+// passes it, and a bare DOS device name (NUL) becomes its device as in
+// any Windows program. Within a directory such names stay files, as they
+// are in a listing, since other systems make them. Returns null for a
+// path that names no file: an empty one, or one with an incomplete root.
 static c16 *winpath(arena *a, s8 path)
 {
     s16 p = fromwtf8(a, path);
@@ -363,6 +364,7 @@ static c16 *winpath(arena *a, s8 path)
     c16 *r = new(a, pre.len+p.len+2, c16);
     bytecopy(r, pre.s, pre.len*(iz)sizeof(c16));
     bytecopy(r+pre.len, p.s+skip, (root-skip)*(iz)sizeof(c16));
+    r[2] = '?';  // \\.\ too
     iz top = pre.len + root - skip;
 
     iz n = top;

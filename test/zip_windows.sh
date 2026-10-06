@@ -361,6 +361,20 @@ printf '%s/tree/sub/../one\n%s/tree/./b.txt\n%s/tree/a.txt\n%s/tree/empty\n' \
 cmp -s got want.txt || fail "device paths: $(cat got)"
 expect_status 12 "$ZIP" p10.zip "\\\\?\\$win\\tree\\sub\\..\\one"
 
+# ...keeping trailing dots and spaces, even in \\.\ paths, which Win32
+# would parse again, stripping them
+mkdir dots
+printf plain >dots/name
+ps "Set-Content -NoNewline -LiteralPath '\\\\?\\$win\\dots\\name.' -Value dot
+    Set-Content -NoNewline -LiteralPath '\\\\?\\$win\\dots\\sp ' -Value sp"
+for p in "//./$here/dots" "\\\\.\\$win\\dots" dots; do
+    rm -f dots.zip
+    "$ZIP" -qr dots.zip "$p" || fail "zip -r $p"
+    [ "$("$TAR" -xOf dots.zip '*/name.')$("$TAR" -xOf dots.zip '*/sp ')" = \
+      dotsp ] || fail "zip -r $p: $(list dots.zip)"
+done
+ps "Remove-Item -LiteralPath '\\\\?\\$win\\dots' -Recurse -Force"
+
 # ...but one missing its device, server, or share names nothing
 expect_status 12 "$ZIP" p11.zip "//?/" "//./" "//?/UNC/localhost/" \
     "\\\\localhost\\" "//localhost//tree/one" "//"
@@ -527,6 +541,9 @@ ps "\$p = '\\\\?\\' + (Resolve-Path .).Path + '\\deep\\$long' -replace '/', '\\'
     Set-Content -LiteralPath (\$p + '\\file.txt') -Value deep -NoNewline"
 "$ZIP" -qr deep.zip deep
 list deep.zip | grep -q "deep/$long/file.txt" || fail "long path"
+"$ZIP" -q deep2.zip "//./$here/deep/$long/file.txt" || fail "long //./ path"
+"$ZIP" -q "//./$here/deep/$long/deep3.zip" deep2.zip ||
+    fail "long //./ archive path"
 ps "Remove-Item -LiteralPath ('\\\\?\\' + (Resolve-Path deep).Path) -Recurse -Force"
 
 # Merging replaces the archive in place
