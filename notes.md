@@ -116,26 +116,27 @@ CPU models with and without PCLMUL.
   tokens are written before use, and chains lead only to links that
   insertions wrote. A slide rebases every link, written or not, so it
   neither branches on one nor passes one to a call, either of which
-  MemorySanitizer reports (as it did at -O0). Forgetting
-  history (a FULL flush, or `deflate_reset` before a new stream) must
-  empty the heads. After at most 1024 inserted positions, it rehashes
-  them and clears their slots. After more, rather than clear 512 KiB, it
+  MemorySanitizer reports (as it did at -O0). Forgetting history (a
+  FULL flush, or `deflate_reset` before a new stream) must empty the
+  heads. After at most 1024 inserted positions, it rehashes them and
+  clears their slots. After more, rather than clear 512 KiB, it
   advances a stamp: each hash table entry is its position plus one plus
-  the stamp, which moves in steps of 2^21, beyond any window position,
-  and `find_match` measures distances from p's own entry, so an older
-  entry lies more than a window back and ends a chain as an empty one
+  the stamp, which moves in steps of 2^21, more than any window position
+  plus a window, and `find_match` measures distances from p's own
+  entry, so an older entry lies more than a window back, even after a
+  reset restarts positions at zero, and ends a chain as an empty one
   does. Slides zero such entries, and after 2,047 advances the heads are
   zeroed and the stamp starts over. A reset or FULL flush thus costs at
-  most a 1024-position rehash (and once in 2,048, the clearing).
-  Sampling for 3-byte matching keeps its own 8 KiB bitmap, since the
-  3-byte heads it borrowed may now hold forgotten entries. zip resets
-  one deflator per entry, gzip one encoder per file, and the library
-  exposes this as `tugz_deflate_reset`; a fresh deflator still zeroes
-  512 KiB. The reset
-  also sets the level, which only selects parameters and the zlib
-  header, so `tugz_deflate_size` takes only the format. Per 100-byte
-  gzip stream (M4 Max / Pi 4): deflate 11.4 / 78 us after init, 2.5 /
-  21 us after reset.
+  most a 1024-position rehash, and one in 2,048 of those after a longer
+  history costs the clearing. Sampling for 3-byte matching keeps its
+  own 8 KiB bitmap, since the 3-byte heads it borrowed may now hold
+  forgotten entries. zip resets one deflator per entry, gzip one encoder
+  per file, and the library exposes this as `tugz_deflate_reset`; a
+  fresh deflator still zeroes 512 KiB. The reset also sets the level,
+  which only selects parameters and the zlib header, so
+  `tugz_deflate_size` takes only the format. Per 100-byte gzip stream
+  (M4 Max / Pi 4): deflate 11.4 / 78 us after init, 2.5 / 21 us after
+  reset.
 - An inflator starts uncleared: the fixed codes' decoding tables are
   constants (2 KiB, which `test_tables` checks against `htable_build`),
   and every other field is written before it is read, so init sets only

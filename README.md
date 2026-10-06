@@ -52,10 +52,11 @@ many streams, reset a state rather than initialize it again:
 `tugz_deflate_reset` (which also sets the level) takes time in
 proportion to at most the first 1 KiB of the previous stream's input,
 rather than init's clearing of 512 KiB, so 100-byte streams compress
-about 4x faster. Inflate init and
+about 4x faster. One in 2,048 of the resets and FULL flushes that
+follow a longer history still clears as init does. Inflate init and
 `tugz_inflate_reset` both take a small constant time. Build
-`platform/libtugz.c` as an object (`make libtugz.o`), or use `make tugz.c` for a
-single-file amalgamation with the header inlined.
+`platform/libtugz.c` as an object (`make libtugz.o`), or use
+`make tugz.c` for a single-file amalgamation with the header inlined.
 
 ## Usage
 

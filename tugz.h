@@ -17,12 +17,13 @@
 //
 // To compress many streams, reset one state rather than init it again:
 // init clears about 512 KiB and builds tables, while a reset takes time
-// in proportion to the previous stream's input up to about 1 KiB of it
-// (but for one reset in 2,048, which clears). For 100-byte streams this
-// makes deflate about 4x faster. Inflate init and reset both take a small constant
-// time. A reset may come at any point in a stream and keeps the format.
-// The deflate reset sets the level, so a deflate state's size depends
-// only on its format.
+// in proportion to the previous stream's input up to about 1 KiB of it.
+// One in 2,048 of the resets and FULL flushes that follow a longer
+// history clears 512 KiB instead. For 100-byte streams this makes
+// deflate about 4x faster. Inflate init and reset both take a small
+// constant time. A reset may come at any point in a stream and keeps
+// the format. The deflate reset sets the level, so a deflate state's
+// size depends only on its format.
 //
 // Inflate returns TUGZ_DONE at the end of the stream (for gzip, the end
 // of each member), with b.in pointing just past its last byte. Calling
