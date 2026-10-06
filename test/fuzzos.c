@@ -208,7 +208,9 @@ static i32 fuzz_decode(fuzzenv *env, i32 format, u8 const *in, iz len,
 
 // Encode in memory, feeding input and taking output in pieces (0 for
 // unlimited). A nonzero seed splits input into segments, each ending in
-// a flush chosen from NONE, SYNC, or FULL. Returns a malloc'd buffer.
+// a flush chosen from NONE, SYNC, or FULL, and sometimes moves on to the
+// next segment before the flush completes, which must not change the
+// output. Returns a malloc'd buffer.
 static s8 fuzz_encode(fuzzenv *env, i32 format, i32 level, u8 const *in,
                       iz len, iz inpiece, iz outpiece, u32 seed)
 {
@@ -220,11 +222,13 @@ static s8 fuzz_encode(fuzzenv *env, i32 format, i32 level, u8 const *in,
     for (b32 last = 0; !last;) {
         iz end = len;
         i32 flush = DEF_FINISH;
+        b32 early = 0;
         if (seed) {
             seed = seed*1103515245 + 12345;
             end = MIN(len, off + 1 + (iz)(seed>>16)%2048);
             static i32 const modes[] = {DEF_NONE, DEF_NONE, DEF_SYNC, DEF_FULL};
             flush = end<len ? modes[(seed>>8)%4] : DEF_FINISH;
+            early = seed>>30 & 1;
         }
         last = end == len;
         for (;;) {
@@ -240,6 +244,9 @@ static s8 fuzz_encode(fuzzenv *env, i32 format, i32 level, u8 const *in,
             CHECK(r.len < cap);
             if (status == GZ_NEEDOUT) {
                 CHECK(!b.outlen);
+                if (early && off==end && !last) {
+                    break;  // the flush is due, and completes in later calls
+                }
                 continue;
             } else if (status == GZ_NEEDIN) {
                 CHECK(!b.inlen);

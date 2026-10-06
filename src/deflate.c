@@ -103,8 +103,8 @@ typedef struct {
     iz  olen;
     iz  ooff;
     b32 blkready; // a block is complete and should be emitted
-    b32 flushing; // a flush has been emitted, awaiting drain
-    b32 finished;
+    i32 flushing; // flush due once a call's input is in, or DEF_NONE
+    b32 flushed;  // flushing's output is staged, awaiting drain
 
     u8 *win;
     iz  win_len;
@@ -1011,7 +1011,8 @@ static void deflate_reset(deflator *d)
 {
     forget(d);
     d->olen       = d->ooff = 0;
-    d->blkready   = d->flushing = d->finished = 0;
+    d->blkready   = d->flushed = 0;
+    d->flushing   = DEF_NONE;
     d->win_len    = 0;
     d->base       = 0;
     d->pos        = d->ins = 0;
@@ -1123,7 +1124,6 @@ static void def_flush(deflator *d, i32 flush)
     case DEF_FINISH:
         flush_block(d, 1);
         bw_align(d);
-        d->finished = 1;
         break;
     case DEF_SYNC:
     case DEF_FULL:
@@ -1144,18 +1144,36 @@ static void def_flush(deflator *d, i32 flush)
 // is complete, and all output is delivered. Returns GZ_NEEDOUT when the
 // output buffer is full.
 //
+// A flush falls due once its call has consumed all input, and later
+// calls complete it before anything else. A call that repeats a SYNC or
+// FULL flush with no input then returns, while another goes on with its
+// own input and mode. After DEF_FINISH falls due, only repeats are valid.
+//
 // Output may also be taken without copying through deflate_pending and
 // deflate_consume, in which case b->out may be empty.
 static i32 deflate_stream(deflator *d, zbuf *b, i32 flush)
 {
+    if (d->flushing==DEF_FINISH && (b->inlen || flush!=DEF_FINISH)) {
+        return GZ_EUSAGE;
+    }
+
     for (;;) {
         def_drain(d, b);
-        if (d->flushing || d->finished) {
+        if (d->flushed) {
             if (d->ooff < d->olen) {
                 return GZ_NEEDOUT;
+            } else if (d->flushing == DEF_FINISH) {
+                return GZ_OK;
             }
-            d->flushing = 0;
-            return GZ_OK;
+            b32 repeat = flush==d->flushing && !b->inlen;
+            d->flushing = DEF_NONE;
+            d->flushed = 0;
+            if (repeat) {
+                return GZ_OK;
+            }
+        }
+        if (!d->flushing && !b->inlen) {
+            d->flushing = flush;
         }
 
         if (d->blkready) {
@@ -1172,23 +1190,23 @@ static i32 deflate_stream(deflator *d, zbuf *b, i32 flush)
                 }
                 slide(d);
             }
+        } else if (d->flushing) {
+            parse(d, d->win_len);
+            if (!d->blkready) {
+                if (!def_room(d)) {
+                    return GZ_NEEDOUT;
+                }
+                def_flush(d, d->flushing);
+                d->flushed = 1;
+            }
         } else if (b->inlen) {
             iz n = MIN(b->inlen, WIN_CAP - d->win_len);
             bytecopy(d->win + d->win_len, b->in, n);
             d->win_len += n;
             b->in += n;
             b->inlen -= n;
-        } else if (flush == DEF_NONE) {
-            return GZ_NEEDIN;
         } else {
-            parse(d, d->win_len);
-            if (!d->blkready) {
-                if (!def_room(d)) {
-                    return GZ_NEEDOUT;
-                }
-                def_flush(d, flush);
-                d->flushing = 1;
-            }
+            return GZ_NEEDIN;
         }
     }
 }

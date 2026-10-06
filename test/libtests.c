@@ -619,6 +619,137 @@ static void test_flush(void)
     free(text);
 }
 
+// Compress p in steps, step i taking input up to ends[i] with modes[i]
+// (the last TUGZ_FINISH), and output in pieces (0 for unlimited). With
+// early, a step moves on once its input is consumed rather than waiting
+// for its flush to return TUGZ_DONE, counting in early[1] the SYNC and
+// FULL flushes left with output staged, and in early[0] those not yet
+// staged at all.
+static buf tcompress_steps(int format, u8 const *p, iz const *ends,
+                           int const *modes, i32 nsteps, iz outpiece,
+                           i32 *early)
+{
+    tugz_deflator *d;
+    void *mem = mem_deflator(format, 6, &d);
+    deflator *def = d->e->def;
+    iz cap = ends[nsteps-1] + (1<<16);
+    buf r = {malloc((uz)cap), 0};
+    iz off = 0;
+    for (i32 i = 0; i < nsteps; i++) {
+        for (;;) {
+            tugz_buf b = {p+off, ends[i]-off, r.s+r.len, cap-r.len};
+            b.outlen = outpiece ? MIN(outpiece, b.outlen) : b.outlen;
+            iz inlen = b.inlen;
+            int status = tugz_deflate(d, &b, modes[i]);
+            off += inlen - b.inlen;
+            r.len = b.out - r.s;
+            TEST(r.len < cap);
+            if (status == TUGZ_NEED_OUTPUT) {
+                TEST(!b.outlen);
+                if (early && off==ends[i] && modes[i]!=TUGZ_FINISH) {
+                    if (modes[i] != TUGZ_NONE) {
+                        TEST(def->flushing == modes[i]);
+                        early[def->flushed]++;
+                    }
+                    break;
+                }
+                continue;
+            }
+            TEST(off == ends[i]);
+            TEST(status == (modes[i]==TUGZ_NONE ? TUGZ_NEED_INPUT
+                                                : TUGZ_DONE));
+            break;
+        }
+    }
+    free(mem);
+    return r;
+}
+
+// A SYNC or FULL flush falls due once its call has consumed all input,
+// and completes whatever the mode of later calls, which then go on as
+// asked: a caller may move on without waiting for TUGZ_DONE, as to
+// TUGZ_FINISH at the end of input, and the stream comes out as if it had
+// waited. Tiny output buffers leave the flush's output staged; larger
+// earlier output fills staging so that the flush is not yet staged.
+static void test_flush_switch(void)
+{
+    iz n = 6000;
+    u8 *text = textbytes(n, 18);
+    iz m = 400000;
+    u8 *mixed = randbytes(m, 19);
+    u8 *more = textbytes(m/4, 20);
+    memcpy(mixed + m - m/4, more, (uz)(m/4));
+    free(more);
+
+    i32 early[2] = {0};
+    for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
+        for (int fmode = TUGZ_SYNC; fmode <= TUGZ_FULL; fmode++) {
+            for (int next = TUGZ_NONE; next <= TUGZ_FINISH; next++) {
+                for (i32 k = 0; k < 4; k++) {
+                    static iz const outpieces[] = {1, 7, 64, 4096};
+                    u8 *p = k<3 ? text : mixed;
+                    iz len = k<3 ? n : m;
+                    iz ends[] = {k<3 ? len/2 : len - len/4, len, len};
+                    int modes[] = {fmode, next, TUGZ_FINISH};
+                    i32 nsteps = next==TUGZ_FINISH ? 2 : 3;
+                    buf ref = tcompress_steps(format, p, ends, modes, nsteps,
+                                              0, 0);
+                    b32 ok;
+                    buf z = zlib_inflate(zlib_wbits(format), ref.s, ref.len,
+                                         &ok);
+                    TEST(ok && same(z, p, len));
+                    free(z.s);
+
+                    buf c = tcompress_steps(format, p, ends, modes, nsteps,
+                                            outpieces[k], early);
+                    TEST(same(c, ref.s, ref.len));
+                    result r = tdecompress(format, c.s, c.len, 0, 0);
+                    TEST(r.status==TUGZ_DONE && same(r.out, p, len));
+                    free(r.out.s);
+                    free(c.s);
+                    free(ref.s);
+                }
+            }
+        }
+    }
+    TEST(early[0] && early[1]);
+
+    // Once TUGZ_FINISH falls due, other calls are rejected and change
+    // nothing
+    for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
+        buf ref = tcompress(format, 6, text, n, 0, 0, 0, 0);
+        tugz_deflator *d;
+        void *mem = mem_deflator(format, 6, &d);
+        iz cap = ref.len + 100;
+        u8 *z = malloc((uz)cap);
+        tugz_buf b = {text, n, z, 5};
+        TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_NEED_OUTPUT);
+        TEST(!b.inlen && b.out==z+5);
+        for (int mode = TUGZ_NONE; mode <= TUGZ_FULL; mode++) {
+            b.outlen = 5;
+            TEST(tugz_deflate(d, &b, mode) == TUGZ_EUSAGE);
+        }
+        b.in = text;
+        b.inlen = 1;
+        TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_EUSAGE);
+        TEST(b.inlen==1 && b.out==z+5);
+        b.inlen = 0;
+        int status;
+        do {
+            b.outlen = MIN(5, cap - (b.out - z));
+            TEST(b.outlen);
+            status = tugz_deflate(d, &b, TUGZ_FINISH);
+        } while (status == TUGZ_NEED_OUTPUT);
+        TEST(status == TUGZ_DONE);
+        TEST(b.out-z==ref.len && !memcmp(z, ref.s, (uz)ref.len));
+        free(z);
+        free(mem);
+        free(ref.s);
+    }
+    free(mixed);
+    free(text);
+}
+
 // Large inputs cross window slides and many blocks in both directions,
 // and deflate's staged output never exceeds its bound.
 static void test_large(void)
@@ -1004,6 +1135,7 @@ int main(void)
     test_stream_end();
     test_splits();
     test_flush();
+    test_flush_switch();
     test_roundtrip();
     test_large();
     test_reset();

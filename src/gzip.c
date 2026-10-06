@@ -329,14 +329,10 @@ static encoder *encoder_new(arena *a, i32 format, i32 level)
     return e;
 }
 
-// Compress from b->in into b->out with a DEF_* flush mode. Returns as
-// deflate_stream, and after a finish only accepts further finishes.
+// Compress from b->in into b->out with a DEF_* flush mode, appending the
+// trailer once the raw stream has finished. Returns as deflate_stream.
 static i32 encoder_run(encoder *e, zbuf *b, i32 flush)
 {
-    if (e->done && (b->inlen || flush!=DEF_FINISH)) {
-        return GZ_EUSAGE;
-    }
-
     u8 const *in = b->in;
     i32 r = deflate_stream(e->def, b, flush);
     if (e->format != FMT_RAW) {
@@ -344,7 +340,7 @@ static i32 encoder_run(encoder *e, zbuf *b, i32 flush)
     }
     e->total += (u64)(b->in - in);
 
-    if (r==GZ_OK && flush==DEF_FINISH && !e->done) {
+    if (r==GZ_OK && e->def->flushing==DEF_FINISH && !e->done) {
         u8 trailer[8];
         switch (e->format) {
         case FMT_GZIP:

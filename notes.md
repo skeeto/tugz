@@ -106,6 +106,12 @@ CPU models with and without PCLMUL.
   hash chains so no match reaches behind the flush. zlib headers match
   zlib's byte for byte (FLEVEL). gzip decoding stops after each member;
   the program's driver applies the GNU trailing-data policy.
+- A flush falls due once its call has consumed all input, and later
+  calls complete it before anything else, whatever their mode. A caller
+  may thus move on before `TUGZ_DONE`, as to FINISH at the end of input,
+  and get the stream it would have had by waiting (zlib's documentation
+  requires repeating the mode). Once FINISH is due, other calls get
+  `TUGZ_EUSAGE`.
 - Of the deflator's large tables only the hash heads start zeroed:
   tokens and chain links are always written before use. Forgetting
   history (a FULL flush, or `deflate_reset` before a new stream) must
