@@ -894,6 +894,11 @@ for n, d in ("f", "one"), ("g", "g"), ("f", "two"):
     dups -u d.zip f
     [ "$(cat got)" = "f new g g f two " ] ||
         fail "a path over duplicates: $(cat got)"
+    # A -d name not on disk deletes every entry of that name, as a pattern
+    # (which a name without wildcards is, though looked up by name)
+    rm dups/f
+    dups -d d.zip f
+    [ "$(cat got)" = "g g " ] || fail "-d of duplicates: $(cat got)"
 fi
 
 # Delete

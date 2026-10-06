@@ -2561,6 +2561,7 @@ typedef struct {
     u32      *slots;  // 2*index + 1, plus 1 if by Unicode name; 0 if empty
     i32       exp;
     i32       fold;
+    b32       dups;   // some names found no slot of their own
 } zindex;
 
 static u64 zindex_hash(zindex *t, s8 name)
@@ -2642,10 +2643,41 @@ static zindex zindex_new(zip *z, zarchive *ar, arena *a)
             u32 *slot = zindex_slot(&t, name);
             if (!*slot) {
                 *slot = (u32)(2*i + 1 + pass);
+            } else if ((iz)((*slot - 1) >> 1) != i) {
+                t.dups = 1;
             }
         }
     }
     return t;
+}
+
+// The entries a pattern can match, so that a name without wildcards,
+// as when deleting files gone from disk, is looked up, not matched with
+// every entry: those found by it, and on Windows, as DOS rules match "f"
+// to "f.", by it less a final period. But if some names share a slot,
+// as entries of one name, or by case or Unicode names, they could hide
+// a match. Returns how many, or -1 if every entry must be tried.
+static iz candidates(zip *z, zindex *t, s8 pattern, iz found[2])
+{
+    if (!pattern.s || t->dups) {
+        return -1;
+    }
+    for (iz i = 0; i < pattern.len; i++) {
+        u8 c = pattern.s[i];
+        if (c=='*' || c=='?' || c=='[' || c=='\\') {
+            return -1;
+        }
+    }
+    iz n = 0;
+    iz v = zindex_find(t, pattern);
+    found[n] = v;
+    n += v >= 0;
+    if (z->windows && pattern.len && pattern.s[pattern.len-1]=='.') {
+        v = zindex_find(t, (s8){pattern.s, pattern.len-1});
+        found[n] = v;
+        n += v >= 0;
+    }
+    return n;
 }
 
 // Whether a pattern matches an entry's name for Info-ZIP's port, or its
@@ -2662,10 +2694,14 @@ static b32 pattern_hit(zip *z, s8 pattern, zarchive *ar, iz i)
 // Mark the entries matching a -d pattern that pass -i and -x, which
 // Info-ZIP applies to deletions too. Returns whether any entry matched,
 // marked or not.
-static b32 mark_deletes(zip *z, zarchive *ar, iz n, s8 pattern, b32 *hit)
+static b32 mark_deletes(zip *z, zarchive *ar, iz n, zindex *old, s8 pattern,
+                        b32 *hit)
 {
     b32 any = 0;
-    for (iz i = 0; i < n; i++) {
+    iz  found[2];
+    iz  m   = candidates(z, old, pattern, found);
+    for (iz k = 0; k < (m<0 ? n : m); k++) {
+        iz i = m<0 ? k : found[k];
         if (pattern_hit(z, pattern, ar, i)) {
             hit[i] |= included(z, port_name(z, ar, i));
             any = 1;
@@ -2800,7 +2836,10 @@ static b32 scan_entries(zip *z, zarchive *ar, iz n, zindex *old, s8 pattern,
 {
     b32 any     = 0;
     s8  checked = {0};  // directories known to be no links
-    for (iz i = 0; i < n; i++) {
+    iz  found[2];
+    iz  m       = candidates(z, old, pattern, found);
+    for (iz k = 0; k < (m<0 ? n : m); k++) {
+        iz i = m<0 ? k : found[k];
         if (pattern.s && !pattern_hit(z, pattern, ar, i)) {
             continue;
         }
@@ -3014,7 +3053,7 @@ static i32 zip_main(zipconfig *conf)
                 mark_named(z, &old, arg, &info, hit, scratch);
             } else {
                 s8 pattern = zip_name(&scratch, arg, z->windows);
-                if (!mark_deletes(z, &arc, nold, pattern, hit)) {
+                if (!mark_deletes(z, &arc, nold, &old, pattern, hit)) {
                     warn(z, S("name not matched: "), arg, scratch);
                 }
             }

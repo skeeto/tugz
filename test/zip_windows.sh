@@ -241,6 +241,17 @@ cmp -s got want.txt || fail "-x with backslashes and case: $(cat got)"
 "$ZIP" -qd x2.zip 'tree\one' '.\tree\a.*'
 [ "$(list x2.zip)" = tree/b.txt ] || fail "-d with backslashes: $(list x2.zip)"
 expect_status 12 "$ZIP" -d x2.zip 'TREE/*'
+# ...and a -d name without wildcards, though looked up by name, matches
+# the same way: by DOS rules ("gone." names gone), but in case exactly
+printf g >gone
+printf g >Gone2
+"$ZIP" -q x3.zip gone Gone2 tree/b.txt
+rm gone Gone2
+expect_status 12 "$ZIP" -d x3.zip gone2
+"$ZIP" -qd x3.zip gone.
+list x3.zip >got
+printf 'Gone2\ntree/b.txt\n' >want.txt
+cmp -s got want.txt || fail "-d of names not on disk: $(cat got)"
 
 # A file replaces an entry whose name differs only in case, which keeps
 # its name, as in Info-ZIP
