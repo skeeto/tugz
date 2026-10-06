@@ -167,7 +167,8 @@ neither inflate nor the gzip container.
   (including the level bits: 0x4 for -1/-2, 0x2 for -8/-9, set whenever
   compression was attempted), method, external attributes, local and
   central `UT`/`ux` extra fields, times, and CRCs are byte-identical,
-  but for the method of an incompressible file over 32 KiB (see the
+  but for the method of an incompressible file over 32 KiB, and for
+  Zip64, the end records and the order of extra fields (see the
   departures).
   Symbolic links (`-y`) are always stored, never compressed, as in
   Info-ZIP. So, below `-9`, are files whose names end in a suffix of
@@ -594,7 +595,14 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   through links within it, a loop, is added but not entered, with a
   warning ("skipping directory loop"), where Info-ZIP follows the links
   until the system refuses the path (`ELOOP`), adding the loop's
-  entries again at every level.
+  entries again at every level. Zip64 end records are written when the
+  count, size, or offset of the central directory needs them, as
+  APPNOTE has it, so for exactly 65,535 entries too, as readers take
+  0xffff to defer to them (and likewise a size or offset of 0xffffffff),
+  though not merely because an entry is Zip64; Info-ZIP writes them for
+  more than 65,535 entries, or when any entry is Zip64. And an entry's
+  Zip64 extra field comes before its others, where Info-ZIP's comes
+  last. Both forms are read alike.
 - Names and selection: doubled slashes collapse, in patterns too, so
   that `d/a d//a` is one path rather than two entries, and `.//a` names
   `a`, where Info-ZIP stores `/a`. Different paths giving one name are
