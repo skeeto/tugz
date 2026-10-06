@@ -36,10 +36,11 @@
 #define OBS_BATCH     512   // observations between block split checks
 #define MIN_BLOCK     10000 // minimum block size in bytes for splitting
 #define FORGET_REHASH 1024  // longest history to clear by rehashing
-#define STAMP_STEP    (1u << 21)  // stamps' unit, above any position
+#define STAMP_STEP    (1u << 21)  // stamps' unit; see forget
 #define STAMP_LAST    (0u - STAMP_STEP)
 
-_Static_assert(WIN_CAP < STAMP_STEP, "a stamp step exceeds positions");
+_Static_assert(WIN_CAP + DEF_WSIZE <= STAMP_STEP,
+               "a stamp step puts older entries beyond any match");
 _Static_assert(STAMP_STEP%DEF_WSIZE == 0, "stamps keep chain slots");
 
 // Flush modes, matching the library's
@@ -977,9 +978,11 @@ static void slide(deflator *d)
 // empties the heads of positions it discards), so after a short history
 // it is cheapest to rehash them and clear only their slots. Otherwise,
 // rather than clear 512 KiB, advance the stamp added to new entries by
-// more than any position: measured from a new entry, as find_match does,
-// every older one then lies farther back than any match reaches, as good
-// as empty. When the stamps run out, after 2,047 advances, the heads are
+// more than any position plus a window: measured from a new entry, as
+// find_match does, every older one then lies farther back than any match
+// reaches, as good as empty, even once a reset restarts positions at
+// zero. (A slide also empties older entries, all being at or below its
+// limit.) When the stamps run out, after 2,047 advances, the heads are
 // cleared after all.
 static void forget(deflator *d)
 {
