@@ -1662,12 +1662,20 @@ EOF
     # failure (10) when replacing an archive, else it names the archive
     mkdir ro
     "$ZIP" -q ro/x.zip tree/a.txt
+    cp ro/x.zip rodir.orig
     chmod 555 ro
     expect_status 10 "$ZIP" ro/x.zip tree/b.txt
     "$ZIP" ro/new.zip tree/b.txt 2>err && fail "archive in read-only directory"
     printf '%s\n' 'zip I/O error: Permission denied' \
         'zip error: Could not create output file (ro/new.zip)' >want
     cmp -s err want || fail "read-only directory: $(cat err)"
+    # Departure: so does a link to it from a directory that allows them,
+    # as the archive is replaced where links lead (Info-ZIP copies into
+    # it, its temporary file beside the link)
+    if ln -s ro/x.zip rol.zip 2>/dev/null; then
+        expect_status 10 "$ZIP" rol.zip tree/b.txt
+    fi
+    cmp -s ro/x.zip rodir.orig || fail "archive in read-only directory changed"
     chmod 755 ro
 
     # A read-only archive is refused (15) and left alone, as Info-ZIP
@@ -1882,20 +1890,46 @@ else
 fi
 
 # Departure: a new archive replaces nothing, so that one made at its path
-# meanwhile is kept, and zip fails (10) rather than lose what it never
-# read (Info-ZIP replaces it)
+# meanwhile is kept, and zip fails to replace it (15) rather than lose
+# what it never read (Info-ZIP replaces it)
 rm -f rz/new.zip
 if bgzip rz -q rz/new.zip race/a_big; then
     "$ZIP" -q rz/new.zip tree/a.txt
     kill -CONT $pid
     wait $bg
-    [ "$(cat bg.status)" = 10 ] && [ "$(names rz/new.zip)" = tree/a.txt ] &&
-        grep -q 'Temporary file failure (rz/new.zip)' bg.err ||
+    w='Could not create output file (was replacing the original zip file)'
+    [ "$(cat bg.status)" = 15 ] && [ "$(names rz/new.zip)" = tree/a.txt ] &&
+        grep -qF "$w" bg.err ||
         fail "archive made meanwhile: $(cat bg.status) $(names rz/new.zip)" \
              "$(cat bg.err)"
 else
     wait $bg
     echo "zip.sh: zip finished before an archive could be made meanwhile" >&2
+fi
+
+# An archive that cannot be replaced, once its temporary file is written,
+# fails as in Info-ZIP (15), and is left as it was. Here its directory
+# refuses the rename, and also removing the temporary file, which is
+# then left, as Info-ZIP leaves it, with its warning.
+cp race.orig rz/race.zip
+if [ "$(id -u)" != 0 ] && bgzip rz rz/race.zip race/a_big; then
+    chmod 555 rz
+    kill -CONT $pid
+    wait $bg
+    chmod 755 rz
+    left=$(cd rz && echo zi[0-9]*)
+    cat >want <<EOF
+zip warning: new zip file left as: rz/$left
+zip I/O error: Permission denied
+zip error: Could not create output file (was replacing the original zip file)
+EOF
+    [ "$(cat bg.status)" = 15 ] && cmp -s bg.err want ||
+        fail "failed replacement: $(cat bg.status) $(cat bg.err)"
+    cmp -s rz/race.zip race.orig || fail "failed replacement changed it"
+    rm rz/zi[0-9]*
+elif [ "$(id -u)" != 0 ]; then
+    wait $bg
+    echo "zip.sh: zip finished before its replacement could fail" >&2
 fi
 
 # A file swapped since the scan is not read: under -y, for a link, or a

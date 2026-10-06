@@ -494,20 +494,26 @@ static b32 os_truncate(os *ctx, i32 fd, i64 len)
 // (network, quotas) may surface only then: closing, the POSIX layer's
 // check, comes after the rename. Once renamed, the archive is replaced,
 // and closing, after the flush, can lose nothing.
-static b32 os_commit(os *ctx, i32 fd, s8 path, b32 replace, arena scratch)
+static i32 os_commit(os *ctx, i32 fd, s8 temp, s8 path, b32 replace,
+                     arena scratch)
 {
     iptr h = ctx->handles[fd];
-    c16 *wpath = winpath(&scratch, path);
-    b32  ok    = wpath && FlushFileBuffers(h);
-    if (wpath && !ok) {
+    if (!FlushFileBuffers(h)) {
         // A file system that cannot flush (some network and virtual ones)
         // defers nothing
         u32 err = GetLastError();
-        ok = err==ERROR_INVALID_FUNCTION || err==ERROR_NOT_SUPPORTED;
+        if (err!=ERROR_INVALID_FUNCTION && err!=ERROR_NOT_SUPPORTED) {
+            os_close(ctx, fd);  // still delete-pending
+            SetLastError(err);
+            return COMMIT_ECLOSE;
+        }
     }
-    if (!ok) {
+    c16 *wpath = winpath(&scratch, path);
+    c16 *wtemp = winpath(&scratch, temp);
+    if (!wpath || !wtemp) {
         os_close(ctx, fd);
-        return 0;
+        SetLastError(ERROR_INVALID_NAME);
+        return COMMIT_EREPLACE;
     }
 
     // Keep a replaced archive's attributes, as POSIX keeps its mode:
@@ -534,8 +540,10 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, b32 replace, arena scratch)
 
     u8 keep = 0;
     if (!SetFileInformationByHandle(h, FileDispositionInfo, &keep, 1)) {
-        os_close(ctx, fd);
-        return 0;
+        u32 err = GetLastError();
+        os_close(ctx, fd);  // still delete-pending
+        SetLastError(err);
+        return COMMIT_EREPLACE;
     }
     if (!SetFileInformationByHandle(h, FileRenameInfoEx, ri, (u32)size)) {
         // Older Windows, or a file system without POSIX semantics
@@ -544,15 +552,23 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, b32 replace, arena scratch)
         release_guard(ctx);
         ri->flags = !!replace;  // ReplaceIfExists
         if (!SetFileInformationByHandle(h, FileRenameInfo, ri, (u32)size)) {
-            u8 discard = 1;
-            SetFileInformationByHandle(h, FileDispositionInfo, &discard, 1);
+            // Discard it again, else, as when a network session has been
+            // lost with the handle, delete it by name once closed
+            u32 err     = GetLastError();
+            u8  discard = 1;
+            b32 marked  = SetFileInformationByHandle(h, FileDispositionInfo,
+                                                     &discard, 1);
             os_close(ctx, fd);
-            return 0;
+            if (!marked) {
+                DeleteFileW(wtemp);
+            }
+            SetLastError(err);
+            return COMMIT_EREPLACE;
         }
     }
     release_guard(ctx);
     os_close(ctx, fd);
-    return 1;
+    return COMMIT_OK;
 }
 
 static b32 os_isatty(os *ctx, i32 fd)

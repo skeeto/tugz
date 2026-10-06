@@ -281,17 +281,22 @@ static b32 place(char *src, char *dst)
     return errno!=EEXIST && !rename(src, dst);
 }
 
-static b32 os_commit(os *ctx, i32 fd, s8 path, b32 replace, arena scratch)
+static i32 os_commit(os *ctx, i32 fd, s8 temp, s8 path, b32 replace,
+                     arena scratch)
 {
+    (void)temp;  // pending_output
     char *dst = tocstr(&scratch, path);
     struct stat st;
     if (!stat(dst, &st)) {
         fchmod(fd, st.st_mode & 0777);
-    } else if (!ctx->defperms) {
+    } else if (!ctx->defperms && os_missing(ctx)) {
         // The archive existed at startup, so the temp file is owner-only,
         // but it has since gone and this becomes a new file. Give it the
         // usual 0666 less the umask. Unlike OS_DEFPERMS, this ignores a
         // default ACL, and the target may still change before the rename.
+        // Should the archive be there but not examined (an I/O error),
+        // its mode is unknown, and owner-only is the safe guess, as in
+        // Info-ZIP, which then leaves its temporary file's mode too.
         mode_t mask = umask(0);
         umask(mask);
         fchmod(fd, 0666 & ~mask);
@@ -305,6 +310,7 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, b32 replace, arena scratch)
     // crash and the rare device error that nothing else reports.
     b32 ok = !close(fd) || errno==EINTR;
     ctx->outfd = -1;
+    i32 r = ok ? COMMIT_OK : COMMIT_ECLOSE;
 
     sigset_t old = block_signals();
     if (ok && replace) {
@@ -312,9 +318,12 @@ static b32 os_commit(os *ctx, i32 fd, s8 path, b32 replace, arena scratch)
     } else if (ok) {
         ok = place(pending_output, dst);
     }
+    r = r ? r : ok ? COMMIT_OK : COMMIT_EREPLACE;
+    int err = errno;  // why, rather than why the discarding failed
     release_output(ok);
     restore_signals(old);
-    return ok;
+    errno = err;
+    return r;
 }
 
 static b32 os_isatty(os *ctx, i32 fd)

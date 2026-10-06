@@ -9,11 +9,11 @@ enum {
     ZE_EOF   = 2,   // unexpected end of zip file, as one that has shrunk
     ZE_FORM  = 3,   // zip file structure invalid
     ZE_MEM   = 4,
-    ZE_TEMP  = 10,  // temporary file failure, as in replacing the archive
+    ZE_TEMP  = 10,  // temporary file failure, as in creating or closing it
     ZE_READ  = 11,  // could not read the existing archive
     ZE_NONE  = 12,  // nothing to do
     ZE_WRITE = 14,
-    ZE_CREAT = 15,
+    ZE_CREAT = 15,  // could not create the archive, or replace it
     ZE_PARMS = 16,
     ZE_OPEN  = 18,  // some input files could not be read
 };
@@ -78,22 +78,27 @@ static s8   os_resolve(os *, s8 path, arena *perm, arena scratch);
 // that no other process holds it open in a way that refuses the rename,
 // which it then prevents until os_commit.
 static b32  os_writable(os *, s8 path, arena scratch);
-// Close a created file and move it over path, keeping it. With replace,
-// a file there is replaced by this new one, so its other hard links keep
-// the old. Without, a file that has appeared there since fails it rather
-// than be replaced (on POSIX, where the file system has hard links, as
-// it is linked there; FAT and some network file systems have none, and
-// there it is renamed). A deferred write error fails it before anything
-// is replaced: on POSIX, one that closing reports (there is no fsync, as
-// in Info-ZIP); on Windows, which renames before closing, one that
-// flushing reports. On POSIX it takes the replaced file's mode, though
-// not its owner, group, or ACL; without one it has a new file's
-// permissions (0666 less the umask, and a default ACL if created with
-// OS_DEFPERMS). On Windows it takes the replaced file's hidden, system,
-// and not-indexed attributes, but like any new file gets its access
-// control from the directory. The descriptor is closed even on failure,
-// which discards the file.
-static b32  os_commit(os *, i32 fd, s8 path, b32 replace, arena scratch);
+// Close a created file, temp, and move it over path, keeping it. With
+// replace, a file there is replaced by this new one, so its other hard
+// links keep the old. Without, a file that has appeared there since
+// fails it rather than be replaced (on POSIX, where the file system has
+// hard links, as it is linked there; FAT and some network file systems
+// have none, and there it is renamed). A deferred write error fails it
+// before anything is replaced: on POSIX, one that closing reports (there
+// is no fsync, as in Info-ZIP); on Windows, which renames before closing,
+// one that flushing reports. On POSIX it takes the replaced file's mode,
+// though not its owner, group, or ACL, and stays owner-only if that
+// cannot be examined; without one it has a new file's permissions (0666
+// less the umask, and a default ACL if created with OS_DEFPERMS). On
+// Windows it takes the replaced file's hidden, system, and not-indexed
+// attributes, but like any new file gets its access control from the
+// directory. Returns COMMIT_OK, or the step that failed, as os_error then
+// tells why: COMMIT_ECLOSE, the deferred write error, or COMMIT_EREPLACE,
+// the move. The descriptor is closed even on failure, which discards the
+// file, unless whatever refused the move refuses removing it too.
+enum { COMMIT_OK, COMMIT_ECLOSE, COMMIT_EREPLACE };
+static i32  os_commit(os *, i32 fd, s8 temp, s8 path, b32 replace,
+                      arena scratch);
 // Broken-down local time {year, month, day, hour, minute, second}.
 static void os_localtime(os *, i64 t, i32 tm[6]);
 // Whether a standard descriptor is a terminal (console).
@@ -2422,8 +2427,9 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     arena room = scratch;
     newbytes(&room, 1<<20);
 
-    // As in Info-ZIP, failing to replace an archive is a temporary file
-    // failure, naming that file, and to create one is about the archive
+    // As in Info-ZIP, a temporary file that cannot be created to replace
+    // an archive is a temporary file failure, naming that file, and for a
+    // new archive, which Info-ZIP writes in place, a failure to create it
     s8  temp = {0};
     i32 fd   = create_temp(z, &temp, scratch);
     if (fd<0 && ar) {
@@ -2555,13 +2561,23 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     }
     // A new archive replaces nothing: should a file have appeared at its
     // path meanwhile, that is not for zip to lose
-    if (!os_commit(z->ctx, fd, z->target, z->arcexists, scratch)) {
-        // Info-ZIP's status when closing or renaming its temporary file
-        // fails, which a deferred write error also is
-        return fail(z, ZE_TEMP, S("Temporary file failure"), z->archive,
-                    scratch);
+    switch (os_commit(z->ctx, fd, temp, z->target, z->arcexists, scratch)) {
+    case COMMIT_OK:
+        return 0;
+    case COMMIT_ECLOSE:
+        // A deferred write error, which Info-ZIP finds on closing its
+        // temporary file
+        return fail(z, ZE_TEMP, S("Temporary file failure"), temp, scratch);
     }
-    return 0;
+    // Not replaced, as Info-ZIP reports it, which keeps its temporary
+    // file and warns so, where zip removes it, warning only if it cannot
+    s8      why  = os_error(z->ctx);
+    os_info info = {0};
+    if (os_stat(z->ctx, temp, 0, &info, scratch)) {
+        warn(z, S("new zip file left as: "), temp, scratch);
+    }
+    return fail_why(z, ZE_CREAT, why, S("Could not create output file"),
+                    S("was replacing the original zip file"), scratch);
 }
 
 static b32 has_extension(zip *z, s8 path)

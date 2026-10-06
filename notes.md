@@ -187,9 +187,10 @@ neither inflate nor the gzip container.
   compress them; `-n` itself is rejected.
   Messages, warnings, and exit statuses (12 nothing to do, silently for
   `-u` and `-f`; 16 usage; 18 unreadable files; 3 bad archive; 10
-  temporary file failure, including failing to replace the archive;
-  15 for an archive that cannot be created) follow Info-ZIP, but for
-  the departures below. As there, an I/O error (10, 11, 14, 15, 18)
+  temporary file failure, in creating it or, as a deferred write error,
+  closing it; 15 for an archive that cannot be created or replaced,
+  "was replacing the original zip file") follow Info-ZIP, but for the
+  departures below. As there, an I/O error (10, 11, 14, 15, 18)
   first gives the system's reason, worded by `strerror` ("zip I/O
   error: Permission denied"), when there is one; on Windows, for the
   common errors, worded as its C runtime would (unverified against
@@ -419,10 +420,11 @@ neither inflate nor the gzip container.
   otherwise a drive or share path is given without `\\?\`. A link that
   cannot be followed cannot be written (15, as in Info-ZIP). The new
   archive keeps the old one's mode on POSIX (not its owner, group, or
-  ACL), and on Windows its hidden, system, and not-indexed attributes,
-  with the archive bit set, but not its access control: as for gzip's
-  outputs, that is inherited from the directory (copying it would take
-  advapi32).
+  ACL), or stays owner-only, as Info-ZIP's would, should examining the
+  old one then fail for any reason but its absence; and on Windows its
+  hidden, system, and not-indexed attributes, with the archive bit set,
+  but not its access control: as for gzip's outputs, that is inherited
+  from the directory (copying it would take advapi32).
 - Merging: the central directory is parsed with every field bounds
   checked, and as in Info-ZIP, an entry without a name makes it invalid
   (3, after "zero-length name for entry #1"); copied entries get
@@ -730,13 +732,22 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   writer is known to make them, and tugz refuses them (3), as layouts
   that do not add up are how unadjusted data before the archive shows.
 - Replacing the archive: a hard-linked archive is replaced by a new
-  file, which its other names do not share (Info-ZIP copies into it). A
-  new archive replaces nothing: a file made at its path while zip works
-  is kept, and zip fails (10, "Temporary file failure"), where Info-ZIP
-  replaces it. A dangling link at its path gets its target created and
-  survives (Info-ZIP leaves an empty file there and replaces the link
-  with the archive). On Windows the new archive is flushed to the device
-  before the rename (see Writing), which Info-ZIP never does.
+  file, which its other names do not share (Info-ZIP copies into it).
+  The temporary file goes beside the file that links at the archive path
+  lead to, to be renamed over it, so an archive in a directory that
+  refuses new files cannot be updated through a link from one that
+  allows them (10, "Temporary file failure"), where Info-ZIP writes its
+  temporary file beside the link and copies it into the archive, which a
+  failure partway through would leave damaged. A new archive replaces
+  nothing: a file made at its path while zip works is kept, and zip
+  fails to replace it (15), where Info-ZIP replaces it. When the archive
+  cannot be replaced, the temporary file is removed, where Info-ZIP
+  keeps it ("new zip file left as"), as zip does, with that warning,
+  only if removing it fails too. A dangling link at its path gets its
+  target created and survives (Info-ZIP leaves an empty file there and
+  replaces the link with the archive). On Windows the new archive is
+  flushed to the device before the rename (see Writing), which Info-ZIP
+  never does.
 
 ## Workflow
 
