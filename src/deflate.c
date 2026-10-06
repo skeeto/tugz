@@ -1141,8 +1141,10 @@ static void def_flush(deflator *d, i32 flush)
 // Compress from b->in into b->out, advancing both. With DEF_NONE,
 // returns GZ_NEEDIN once all input is consumed, though output may remain
 // staged. Otherwise returns GZ_OK once all input is consumed, the flush
-// is complete, and all output is delivered. Returns GZ_NEEDOUT when the
-// output buffer is full.
+// is complete, and all output is delivered. In any mode, returns
+// GZ_NEEDOUT, perhaps with input left, when the output buffer is full
+// and either staging lacks room for the next emission step or a flush's
+// output remains.
 //
 // A flush falls due once its call has consumed all input, and later
 // calls complete it before anything else. A call that repeats a SYNC or

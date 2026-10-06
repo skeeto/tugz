@@ -750,6 +750,43 @@ static void test_flush_switch(void)
     free(text);
 }
 
+// Staging is bounded, so TUGZ_NONE may stop short of consuming all input
+// and return TUGZ_NEED_OUTPUT with the output buffer full. A caller that
+// supplies output space and calls again with the rest gets the stream of
+// one call with ample output.
+static void test_none_staging(void)
+{
+    iz n = (iz)2 << 20;
+    u8 *noise = randbytes(n, 21);
+    buf ref = tcompress(TUGZ_GZIP, 1, noise, n, 0, 0, 0, 0);
+    tugz_deflator *d;
+    void *mem = mem_deflator(TUGZ_GZIP, 1, &d);
+    iz cap = ref.len + 100;
+    u8 *z = malloc((uz)cap);
+    tugz_buf b = {noise, n, z, 0};
+    TEST(tugz_deflate(d, &b, TUGZ_NONE) == TUGZ_NEED_OUTPUT);
+    TEST(b.inlen>0 && b.out==z);
+    for (int flush = TUGZ_NONE;; flush = TUGZ_FINISH) {
+        int status;
+        do {
+            b.outlen = MIN(1<<16, cap - (b.out - z));
+            TEST(b.outlen);
+            status = tugz_deflate(d, &b, flush);
+            TEST(status==TUGZ_NEED_OUTPUT ? !b.outlen : !b.inlen);
+        } while (status == TUGZ_NEED_OUTPUT);
+        if (flush == TUGZ_FINISH) {
+            TEST(status == TUGZ_DONE);
+            break;
+        }
+        TEST(status == TUGZ_NEED_INPUT);
+    }
+    TEST(b.out-z==ref.len && !memcmp(z, ref.s, (uz)ref.len));
+    free(z);
+    free(mem);
+    free(ref.s);
+    free(noise);
+}
+
 // Large inputs cross window slides and many blocks in both directions,
 // and deflate's staged output never exceeds its bound.
 static void test_large(void)
@@ -1136,6 +1173,7 @@ int main(void)
     test_splits();
     test_flush();
     test_flush_switch();
+    test_none_staging();
     test_roundtrip();
     test_large();
     test_reset();

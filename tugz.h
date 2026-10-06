@@ -31,8 +31,10 @@
 // consumed: supply more, or if there is no more, the stream is truncated.
 // TUGZ_NEED_OUTPUT means the output buffer is full. Errors are sticky.
 //
-// Deflate with TUGZ_NONE consumes all input, returning TUGZ_NEED_INPUT;
-// output may remain staged internally until the output buffer has room.
+// Deflate with TUGZ_NONE returns TUGZ_NEED_INPUT once it has consumed all
+// input, though output may remain staged internally. Staging is bounded,
+// so with the output buffer full it may instead return TUGZ_NEED_OUTPUT
+// with input left: supply output space and call again with the rest.
 // With TUGZ_SYNC (byte-align and emit everything so far), TUGZ_FULL (also
 // forget history, so decoding can restart there), or TUGZ_FINISH, call
 // until it returns TUGZ_DONE, supplying output space whenever it returns
