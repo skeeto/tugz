@@ -100,6 +100,19 @@ expect_status 1 "$GZIP" -t trunc.gz
 expect_status 1 "$GZIP" -dc random
 expect_status 0 "$GZIP" -t c.gz
 
+# As in GNU gzip, zero bytes after a member are padding, while a lone
+# byte other than zero may begin one, which is then truncated
+{ cat m1.gz; head -c 1000 /dev/zero; } >pad.gz
+expect_status 0 "$GZIP" -t pad.gz
+"$GZIP" -dc pad.gz | cmp -s - one || fail "zero padding"
+{ cat m1.gz; head -c 10 /dev/zero; printf x; } >padx.gz
+expect_status 2 "$GZIP" -t padx.gz
+{ cat m1.gz; printf '\037'; } >cut.gz
+expect_status 1 "$GZIP" -t cut.gz
+cp cut.gz cut1.gz
+expect_status 1 "$GZIP" -d cut1.gz
+[ -e cut1.gz ] && [ ! -e cut1 ] || fail "cleanup after a cut member"
+
 # Corrupt output is removed, input kept
 cp trunc.gz bad.gz
 expect_status 1 "$GZIP" -d bad.gz

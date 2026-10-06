@@ -1847,15 +1847,21 @@ static void test_container(os *ctx, arena a)
     free(mix.s);
     free(none.s);
 
-    // Trailing data
+    // Trailing data, as GNU gzip takes it: zero bytes are padding, and a
+    // lone byte may begin the magic of a truncated member
     static struct {
         u8  tail[4];
         i32 len;
         i32 want;
     } const tails[] = {
-        {{0, 0, 0, 0},       4, GZ_TRAILING},
+        {{0, 0, 0, 0},       4, GZ_OK},
+        {{0},                1, GZ_OK},
+        {{0, 0, 'x'},        3, GZ_TRAILING},
+        {{0, 0x1f, 0x8b},    3, GZ_TRAILING},
+        {{'x', 0, 0},        3, GZ_TRAILING},
         {{'x', 'y'},         2, GZ_TRAILING},
-        {{0x1f},             1, GZ_TRAILING},
+        {{'x'},              1, GZ_ETRUNC},
+        {{0x1f},             1, GZ_ETRUNC},
         {{0x1f, 0x8b},       2, GZ_ETRUNC},
         {{0x1f, 0x8b, 8, 0}, 4, GZ_ETRUNC},
         {{0x1f, 0x8c, 8, 0}, 4, GZ_TRAILING},
@@ -1863,17 +1869,36 @@ static void test_container(os *ctx, arena a)
     for (i32 i = 0; i < countof(tails); i++) {
         s8 t = cat(gzbytes(member.s, member.len), tails[i].tail, tails[i].len);
         TEST(do_gunzip(ctx, a, t.s, t.len, &out) == tails[i].want);
-        if (tails[i].want == GZ_TRAILING) {
+        if (tails[i].want==GZ_OK || tails[i].want==GZ_TRAILING) {
             TEST(equals(out, payload, 5));
         }
         free(out.s);
         free(t.s);
     }
 
-    // Not gzip
+    // Padding longer than a read, and padding then garbage past a read
+    iz padlen = IO_RDBUF + 100;
+    s8 pad = gzbytes(member.s, member.len);
+    pad.s = realloc(pad.s, (uz)(pad.len + padlen + 1));
+    memset(pad.s+pad.len, 0, (uz)padlen+1);
+    TEST(do_gunzip(ctx, a, pad.s, pad.len+padlen, &out) == GZ_OK);
+    TEST(equals(out, payload, 5));
+    free(out.s);
+    pad.s[pad.len+padlen] = 'x';
+    TEST(do_gunzip(ctx, a, pad.s, pad.len+padlen+1, &out) == GZ_TRAILING);
+    free(out.s);
+    free(pad.s);
+
+    // Not gzip, or truncated where the magic may begin
     TEST(do_gunzip(ctx, a, (u8 *)"hello", 5, &out) == GZ_ENOTGZ);
     free(out.s);
-    TEST(do_gunzip(ctx, a, (u8 *)"\x1f", 1, &out) == GZ_ENOTGZ);
+    TEST(do_gunzip(ctx, a, (u8 *)"\0\0", 2, &out) == GZ_ENOTGZ);
+    free(out.s);
+    TEST(do_gunzip(ctx, a, (u8 *)"\0", 1, &out) == GZ_ENOTGZ);
+    free(out.s);
+    TEST(do_gunzip(ctx, a, (u8 *)"\x1f", 1, &out) == GZ_ETRUNC);
+    free(out.s);
+    TEST(do_gunzip(ctx, a, (u8 *)"h", 1, &out) == GZ_ETRUNC);
     free(out.s);
     TEST(do_gunzip(ctx, a, 0, 0, &out) == GZ_ETRUNC);
     free(out.s);

@@ -90,13 +90,39 @@ static decoder *stream_decoder(arena *perm, i32 format)
     return decoder_new(&a, format);
 }
 
+// Settle input that is not a gzip member, of which the decoder took the
+// first bytes (fewer than two at the end of the input), following GNU
+// gzip. A lone byte may have begun the magic, so it is a truncation
+// unless zero. After a member, zero bytes to the end are padding (as on
+// tape), and other data is ignored with a warning.
+static i32 not_gzip(decoder *z, reader *r, b32 first)
+{
+    s8 head = {z->buf, z->len};
+    if (head.len<2 && (!head.len || head.s[0])) {
+        return GZ_ETRUNC;
+    } else if (first) {
+        return GZ_ENOTGZ;
+    }
+
+    b32 zeros = !head.s[0] && (head.len<2 || !head.s[1]);
+    while (zeros && reader_fill(r)) {
+        for (; zeros && r->off<r->len; r->off++) {
+            zeros = !r->buf[r->off];
+        }
+    }
+    if (!zeros) {
+        return GZ_TRAILING;
+    }
+    return r->err ? GZ_EREAD : GZ_OK;
+}
+
 // Decompress a stream in the decoder's format, or for gzip all members,
 // from a descriptor into a descriptor, first resetting the decoder, so
 // that one serves every file. A negative output descriptor only verifies.
 //
 // Following GNU gzip, data after the last gzip member is ignored with a
-// warning (GZ_TRAILING) unless it starts with the gzip magic, in which
-// case it must be a valid member.
+// warning (GZ_TRAILING), unless it is only zero bytes, which is fine, or
+// starts with the gzip magic, in which case it must be a valid member.
 static i32 stream_decompress(decoder *z, i32 in, i32 out, arena scratch)
 {
     decoder_reset(z);
@@ -118,20 +144,14 @@ static i32 stream_decompress(decoder *z, i32 in, i32 out, arena scratch)
             }
         }
 
-        if (status == GZ_NEEDIN) {
-            // Input ended inside a stream or member
-            if (r->err) {
-                status = GZ_EREAD;
-            } else if (format != FMT_GZIP) {
-                status = GZ_ETRUNC;
-            } else if (!first && z->hpos<2) {
-                status = z->hpos ? GZ_TRAILING : GZ_OK;
-            } else {
-                status = first && z->hpos==1 ? GZ_ENOTGZ : GZ_ETRUNC;
-            }
+        // Two bytes without the gzip magic, or fewer at the end of input
+        b32 ended = status==GZ_NEEDIN && !r->err;
+        if (format==FMT_GZIP && (status==GZ_ENOTGZ || (ended && z->hpos<2))) {
+            status = not_gzip(z, r, first);
             break;
-        } else if (status==GZ_ENOTGZ && !first) {
-            status = GZ_TRAILING;
+        } else if (status == GZ_NEEDIN) {
+            // Input ended inside a stream or member
+            status = r->err ? GZ_EREAD : GZ_ETRUNC;
             break;
         } else if (status!=GZ_OK || format!=FMT_GZIP) {
             break;

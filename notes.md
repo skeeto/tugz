@@ -799,9 +799,12 @@ Fuzzers:
 - Decoder strictness matches zlib exactly: incomplete codes rejected except
   a lone 1-bit code; an empty distance code is an error only when used;
   reserved header flags rejected; FHCRC verified.
-- Concatenated members decode in sequence. Data after the last member is
-  ignored with a warning (exit 2) unless it starts with the gzip magic, in
-  which case it must be a valid member. Matches GNU gzip.
+- Concatenated members decode in sequence. As in GNU gzip, data after
+  the last member is ignored with a warning (exit 2), unless it is only
+  zero bytes (padding, as on tape), which is fine, or starts with the
+  gzip magic, in which case it must be a valid member. GNU gzip reads
+  the magic as a pair, so a lone byte at the end, other than zero, is a
+  truncated member (exit 1).
 - gzip's exit status: 0 success, 1 error, 2 warning; errors take
   precedence. (zip's follow Info-ZIP: see its section.)
 - As in GNU gzip, the program name sets the default mode: names starting

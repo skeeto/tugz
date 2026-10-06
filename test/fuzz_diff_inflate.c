@@ -1,7 +1,8 @@
 // libFuzzer differential harness: our decoders versus zlib
 // Raw DEFLATE: both must agree exactly on accept/reject and on output.
 // gzip: our decoder versus a zlib multi-member loop that applies the GNU
-// gzip trailing-data policy (non-magic trailing bytes are a warning).
+// gzip trailing-data policy (non-magic trailing bytes are a warning,
+// unless all zero; a lone non-zero byte is a truncation).
 // Streaming: the first byte selects a format and input/output piece
 // sizes for the rest. Our streaming decoder must then agree with zlib on
 // success, on truncation versus error, on output, and on exactly where
@@ -42,8 +43,12 @@ static i32 zlib_gzip(u8 const *in, iz len, iz *outlen, b32 *trailing)
     for (iz off = 0;; ) {
         iz rem = len - off;
         if (off) {
-            if (rem<2 || in[off]!=0x1f || in[off+1]!=0x8b) {
-                *trailing = rem > 0;
+            if (rem==1 && in[off]) {
+                break;  // perhaps the start of the magic: truncated
+            } else if (rem<2 || in[off]!=0x1f || in[off+1]!=0x8b) {
+                iz zeros = 0;
+                for (; zeros<rem && !in[off+zeros]; zeros++) {}
+                *trailing = zeros < rem;  // zero bytes are padding
                 result = 1;
                 break;
             }
