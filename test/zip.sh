@@ -1927,6 +1927,16 @@ done
 chmod 640 perm.zip
 (umask 022 && "$ZIP" -q perm.zip tree/b.txt)
 [ "$(ls -l perm.zip | cut -c1-10)" = "-rw-r-----" ] || fail "replaced mode"
+# Its set-UID and sticky bits too, as in Info-ZIP, with its owner and
+# group unchanged (set-GID may not be the user's to set)
+for m in 4755 1755; do
+    chmod $m perm.zip 2>/dev/null || continue  # BSD: no sticky files
+    want=$(ls -l perm.zip | cut -c1-10)
+    "$ZIP" -q perm.zip tree/a.txt
+    [ "$(ls -l perm.zip | cut -c1-10)" = "$want" ] ||
+        fail "replaced mode $m: $(ls -l perm.zip)"
+done
+chmod 644 perm.zip
 
 # With standard output closed, progress lines stay out of the archive
 "$ZIP" -r closed.zip tree >&-

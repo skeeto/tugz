@@ -410,28 +410,29 @@ neither inflate nor the gzip container.
   existing name and the next is tried, up to 64 in a row: a directory
   that refuses even the check (no traverse rights) makes every name look
   taken.
-- Replacing: the archive replaced is the file that any symbolic links
-  at its path lead to, so that they survive an atomic update, as
-  Info-ZIP updates archives through them (by copying into the file). On
-  POSIX the links are read one at a time, so that a dangling one leads
-  where it points, but only links the system would follow are: not a
-  loop, nor one that Linux's `protected_symlinks` refuses. On Windows,
-  links and junctions are resolved by opening the file and asking for
-  its final path, or for a dangling link, by creating the file,
-  discarded at once. That path names the volume by drive letter where
-  the system can, else by GUID (`\\?\Volume{...}`, as for a volume
-  mounted nowhere), else by device (`\\?\GLOBALROOT\Device\...`, for
-  one the mount manager does not know). Messages name the temporary
-  file beside the target, so a target within the directory where the
-  archive was named is named from there, as the user named it, and
-  otherwise a drive or share path is given without `\\?\`. A link that
-  cannot be followed cannot be written (15, as in Info-ZIP). The new
-  archive keeps the old one's mode on POSIX (not its owner, group, or
-  ACL), or stays owner-only, as Info-ZIP's would, should examining the
-  old one then fail for any reason but its absence; and on Windows its
-  hidden, system, and not-indexed attributes, with the archive bit set,
-  but not its access control: as for gzip's outputs, that is inherited
-  from the directory (copying it would take advapi32).
+- Replacing: the archive replaced is the file that any symbolic links at
+  its path lead to, so that they survive an atomic update, as Info-ZIP
+  updates archives through them (by copying into the file). On POSIX the
+  links are read one at a time, so that a dangling one leads where it
+  points, but only links the system would follow are: not a loop, nor
+  one that Linux's `protected_symlinks` refuses. On Windows, links and
+  junctions are resolved by opening the file and asking for its final
+  path, or for a dangling link, by creating the file, discarded at once.
+  That path names the volume by drive letter where the system can, else
+  by GUID (`\\?\Volume{...}`, as for a volume mounted nowhere), else by
+  device (`\\?\GLOBALROOT\Device\...`, for one the mount manager does
+  not know). Messages name the temporary file beside the target, so a
+  target within the directory where the archive was named is named from
+  there, as the user named it, and otherwise a drive or share path is
+  given without `\\?\`. A link that cannot be followed cannot be written
+  (15, as in Info-ZIP). The new archive keeps the old one's mode on
+  POSIX (not its owner, group, or ACL, so its set-ID and sticky bits
+  only if the owner and group are the same anyway, where Info-ZIP keeps
+  them regardless), or stays owner-only, as Info-ZIP's would, should
+  examining the old one then fail for any reason but its absence; and on
+  Windows its hidden, system, and not-indexed attributes, with the
+  archive bit set, but not its access control: as for gzip's outputs,
+  that is inherited from the directory (copying it would take advapi32).
 - Merging: the central directory is parsed with every field bounds
   checked, and as in Info-ZIP, an entry without a name makes it invalid
   (3, after "zero-length name for entry #1"); copied entries get
@@ -772,7 +773,9 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   target created and survives (Info-ZIP leaves an empty file there and
   replaces the link with the archive). On Windows the new archive is
   flushed to the device before the rename (see Writing), which Info-ZIP
-  never does.
+  never does. The old archive's set-ID and sticky bits are kept only if
+  the new one has its owner and group, where Info-ZIP keeps them for a
+  new owner or group.
 
 ## Workflow
 

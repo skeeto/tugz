@@ -288,7 +288,19 @@ static i32 os_commit(os *ctx, i32 fd, s8 temp, s8 path, b32 replace,
     char *dst = tocstr(&scratch, path);
     struct stat st;
     if (!stat(dst, &st)) {
-        fchmod(fd, st.st_mode & 0777);
+        // Set-ID and sticky bits too, as Info-ZIP keeps them, but only
+        // while the owner and group are the old ones: otherwise set-ID
+        // bits would run the program as someone the old file did not.
+        // Should the system refuse them (BSD's sticky files), the rest.
+        mode_t mode = st.st_mode & 0777;
+        struct stat self;
+        if (!fstat(fd, &self) && self.st_uid==st.st_uid &&
+                self.st_gid==st.st_gid) {
+            mode = st.st_mode & 07777;
+        }
+        if (fchmod(fd, mode)) {
+            fchmod(fd, mode & 0777);
+        }
     } else if (!ctx->defperms && os_missing(ctx)) {
         // The archive existed at startup, so the temp file is owner-only,
         // but it has since gone and this becomes a new file. Give it the
