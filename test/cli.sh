@@ -159,6 +159,23 @@ cp plain pl.gz
 expect_status 1 "$GZIP" -df pl.gz
 [ -e pl.gz ] && [ ! -e pl ] || fail "-df in place"
 
+# ...and as there, the header is read before the output is created, so
+# an existing output survives input that is not gzip, even forced
+printf 'keep me\n' >keep
+for h in '' '\037' '\037\213' '\037\213\007\000\000\000\000\000\000\003'; do
+    printf "$h" >hd.gz
+    cp hd.gz hd.want
+    for opts in -df -d; do
+        cp keep hd
+        expect_status 1 "$GZIP" $opts hd.gz
+        cmp -s hd keep && cmp -s hd.gz hd.want || fail "$opts over hd: '$h'"
+    done
+done
+cp plain hd.gz
+cp keep hd
+expect_status 1 "$GZIP" -df hd.gz
+cmp -s hd keep && cmp -s hd.gz plain || fail "-df over hd: plain"
+
 # Corrupt output is removed, input kept
 cp trunc.gz bad.gz
 expect_status 1 "$GZIP" -d bad.gz

@@ -166,13 +166,12 @@ static i32 warn(options *o, s8 name, s8 msg, arena scratch)
     return EXIT_WARN;
 }
 
-// As in GNU gzip, forced decompression to standard output copies data
-// that is not gzip through unchanged (zcat -f), and a forced test passes
-// it. In place, it is still an error.
-static i32 transform(options *o, i32 in, i32 out, b32 in_place,
-                     arena scratch)
+// Transform a file to standard output, or test it. As in GNU gzip,
+// forced decompression to standard output copies data that is not gzip
+// through unchanged (zcat -f), and a forced test passes it.
+static i32 transform(options *o, i32 in, i32 out, arena scratch)
 {
-    b32 copy = o->force && !in_place;
+    b32 copy = o->force;
     if (o->test) {
         return stream_decompress(o->dec, in, -1, copy, scratch);
     } else if (o->decompress) {
@@ -241,7 +240,7 @@ static i32 process_file(options *o, s8 path, arena scratch)
         if (r >= 0) {
             return r;
         }
-        i32 status = transform(o, 0, 1, 0, scratch);
+        i32 status = transform(o, 0, 1, scratch);
         return report(o, S("stdin"), status, scratch);
     }
 
@@ -272,7 +271,7 @@ static i32 process_file(options *o, s8 path, arena scratch)
     }
 
     if (!in_place) {
-        i32 status = transform(o, in, 1, 0, scratch);
+        i32 status = transform(o, in, 1, scratch);
         os_close(ctx, in);
         return report(o, path, status, scratch);
     }
@@ -301,6 +300,18 @@ static i32 process_file(options *o, s8 path, arena scratch)
         outpath = s8concat(&scratch, path, S(".gz"));
     }
 
+    // As in GNU gzip, read the header before creating the output, so that
+    // input that is not gzip is the error, and never replaces a file
+    reader *r = 0;
+    if (o->decompress) {
+        r = stream_reader(&scratch, in);
+        if (!stream_header(o->dec, r)) {
+            i32 status = stream_decode(o->dec, r, -1, 0);
+            os_close(ctx, in);
+            return report(o, path, status, scratch);
+        }
+    }
+
     i32 out = os_open(ctx, outpath, o->force ? OS_FORCE : OS_CREATE, scratch);
     if (out == OS_EEXIST) {
         os_close(ctx, in);
@@ -312,8 +323,10 @@ static i32 process_file(options *o, s8 path, arena scratch)
     }
 
     // The output is discarded on close unless explicitly kept, so that
-    // failures and interruptions never leave a partial file behind.
-    i32 status = transform(o, in, out, 1, scratch);
+    // failures and interruptions never leave a partial file behind. In
+    // place, data that is not gzip is an error even when forced.
+    i32 status = r ? stream_decode(o->dec, r, out, 0)
+                   : gzip_compress(o->enc, in, out, o->level, scratch);
     b32 ok = status==GZ_OK || status==GZ_TRAILING;
     if (ok) {
         os_copymeta(ctx, in, out);

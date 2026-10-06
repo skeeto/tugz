@@ -131,21 +131,42 @@ static i32 pass_through(decoder *z, reader *r, i32 out, b32 *werr)
     return r->err ? GZ_EREAD : GZ_OK;
 }
 
+// A reader for stream_header and stream_decode.
+static reader *stream_reader(arena *scratch, i32 in)
+{
+    return newreader(scratch, in, IO_RDBUF);
+}
+
+// Reset the decoder and read only the header of the stream, or of the
+// first gzip member, so that a caller can learn that the input is in the
+// format before creating an output, as GNU gzip reads the header before
+// creating one. Returns whether the body is next. Either way,
+// stream_decode continues, and if not, settles the status.
+static b32 stream_header(decoder *z, reader *r)
+{
+    decoder_reset(z);
+    i32 status = GZ_NEEDIN;
+    while (status==GZ_NEEDIN && reader_fill(r)) {
+        zbuf b = {r->buf+r->off, r->len-r->off, 0, 0};
+        status = decoder_header(z, &b);
+        r->off = r->len - b.inlen;
+    }
+    return status == GZ_OK;
+}
+
 // Decompress a stream in the decoder's format, or for gzip all members,
-// from a descriptor into a descriptor, first resetting the decoder, so
-// that one serves every file. A negative output descriptor only verifies.
+// from a reader into a descriptor, continuing from a decoder that is
+// reset (decoder_reset), and perhaps past the header (stream_header).
+// One decoder so serves every file. A negative output only verifies.
 //
 // Following GNU gzip, data after the last gzip member is ignored with a
 // warning (GZ_TRAILING), unless it is only zero bytes, which is fine, or
 // starts with the gzip magic, in which case it must be a valid member.
 // With copy, as for GNU's gzip -cdf (zcat -f), data that is not gzip,
 // from the start or after a member, is instead copied unchanged.
-static i32 stream_decompress(decoder *z, i32 in, i32 out, b32 copy,
-                             arena scratch)
+static i32 stream_decode(decoder *z, reader *r, i32 out, b32 copy)
 {
-    decoder_reset(z);
     i32 format = z->format;
-    reader *r = newreader(&scratch, in, IO_RDBUF);
     b32 werr = 0;
     i32 status;
     for (b32 first = 1;; first = 0) {
@@ -184,4 +205,13 @@ static i32 stream_decompress(decoder *z, i32 in, i32 out, b32 copy,
         status = GZ_EWRITE;
     }
     return status;
+}
+
+// Decompress from a descriptor, as stream_decode, first resetting the
+// decoder.
+static i32 stream_decompress(decoder *z, i32 in, i32 out, b32 copy,
+                             arena scratch)
+{
+    decoder_reset(z);
+    return stream_decode(z, stream_reader(&scratch, in), out, copy);
 }

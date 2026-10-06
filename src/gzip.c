@@ -212,6 +212,24 @@ static i32 trailer_check(decoder *z)
     return get32le(z->buf)==z->check ? GZ_OK : GZ_ECRC;
 }
 
+// Consume only header bytes from b->in, so that a caller can learn
+// whether a stream begins as it should before decoding any of it.
+// Returns GZ_OK once the body is next, GZ_NEEDIN, or an error, which is
+// sticky. decoder_run continues from there.
+static i32 decoder_header(decoder *z, zbuf *b)
+{
+    while (!z->err && z->state<DEC_BODY) {
+        if (!b->inlen) {
+            return GZ_NEEDIN;
+        }
+        u8 c = *b->in++;
+        b->inlen--;
+        z->err = z->format==FMT_ZLIB ? zlib_header_byte(z, c)
+                                     : gzip_header_byte(z, c);
+    }
+    return z->err;
+}
+
 // Decode from b->in into b->out, advancing both. Returns GZ_OK at the
 // end of the stream (or gzip member), with b->in just past it. Calling
 // again after a gzip member begins the next. Otherwise returns
@@ -261,19 +279,12 @@ static i32 decoder_run(decoder *z, zbuf *b)
             z->state = DEC_DONE;
         } break;
 
-        default:
-            while (z->state < DEC_BODY) {
-                if (!b->inlen) {
-                    return GZ_NEEDIN;
-                }
-                u8 c = *b->in++;
-                b->inlen--;
-                z->err = z->format==FMT_ZLIB ? zlib_header_byte(z, c)
-                                             : gzip_header_byte(z, c);
-                if (z->err) {
-                    return z->err;
-                }
+        default: {
+            i32 r = decoder_header(z, b);
+            if (r != GZ_OK) {
+                return r;
             }
+        } break;
         }
     }
 }

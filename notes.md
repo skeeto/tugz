@@ -916,6 +916,14 @@ Fuzzers:
   fail as before. Without `/dev/null` (some chroots and sandboxes), the
   program instead exits before opening anything, with a message and
   status 1 (gzip) or 10 (zip, a temporary file failure).
+- As in GNU gzip, decompressing in place reads the input's header before
+  creating the output, so input that is not gzip, or whose header is
+  bad or cut short, leaves an existing output alone even under `-f`,
+  and without `-f` that is the error (1), not the existing output (2).
+  As there, under `-f` a member found corrupt only after its header has
+  already replaced the output, which is then removed: keeping the old
+  file until success would take a temporary name and a rename, as zip
+  does, and on Windows, care for read-only and delete-pending targets.
 - `-f` replaces an existing output by unlinking it first, never writing
   through a link. On Windows a read-only output is replaced too, as
   unlinking ignores the mode on POSIX: the attribute is cleared just to

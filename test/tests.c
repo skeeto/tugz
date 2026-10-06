@@ -2399,6 +2399,48 @@ static void test_cli(os *ctx, arena a)
     TEST(stderr_has(ctx, "not in gzip format"));
     TEST(has(ctx, "p.gz") && !has(ctx, "p"));
 
+    // As in GNU gzip, the header is read before the output is created, so
+    // an existing output survives input that turns out not to be gzip,
+    // even forced, and without -f that is the error, not the output
+    static struct {
+        char *data;
+        iz    len;
+        char *why;
+    } const notgz[] = {
+        {"plain\n", 6, "not in gzip format"},
+        {"", 0, "unexpected end of file"},
+        {"\x1f", 1, "unexpected end of file"},
+        {"\x1f\x8b", 2, "unexpected end of file"},
+        {"\x1f\x8b\x08\x08\0\0\0\0\0\x03name", 14, "unexpected end of file"},
+        {"\x1f\x8b\x07\0\0\0\0\0\0\x03", 10, "unknown"},
+        {"\x1f\x8b\x08\x20\0\0\0\0\0\x03", 10, "flags"},
+        {"\x1f\x8b\x08\x02\0\0\0\0\0\x03\xff\xff", 12, "crc"},
+    };
+    for (i32 i = 0; i < countof(notgz); i++) {
+        static char *const cmds[] = {"-df p.gz", "-d p.gz", "-dfk p.gz"};
+        for (i32 c = 0; c < countof(cmds); c++) {
+            mfs_put(ctx, "p.gz", (u8 *)notgz[i].data, notgz[i].len);
+            mfs_put(ctx, "p", (u8 *)"keep me\n", 8);
+            TEST(run(ctx, a, cmds[c]) == EXIT_ERR);
+            TEST(stderr_has(ctx, notgz[i].why));
+            TEST(equals(mfs_get(ctx, "p"), (u8 *)"keep me\n", 8));
+            TEST(equals(mfs_get(ctx, "p.gz"), (u8 *)notgz[i].data,
+                        notgz[i].len));
+        }
+    }
+    // ...but a member corrupt after its header replaces it, as there
+    s8 cut = gzbytes(gz.s, gz.len);
+    cut.s[cut.len/2] ^= 0x55;
+    mfs_put(ctx, "p.gz", cut.s, cut.len);
+    TEST(run(ctx, a, "-d p.gz") == EXIT_WARN);
+    TEST(stderr_has(ctx, "already exists"));
+    TEST(equals(mfs_get(ctx, "p"), (u8 *)"keep me\n", 8));
+    TEST(run(ctx, a, "-df p.gz") == EXIT_ERR);
+    TEST(stderr_has(ctx, "invalid compressed data"));
+    TEST(has(ctx, "p.gz") && !has(ctx, "p"));
+    os_remove(ctx, S("p.gz"), a);
+    free(cut.s);
+
     // Standard input
     set_stdin(ctx, text, 50000);
     TEST(run(ctx, a, "") == EXIT_OK);
