@@ -330,18 +330,18 @@ neither inflate nor the gzip container.
   backslash matches nothing, a trailing `**` needs a byte, and after a
   `*` followed by no wildcards the rest is compared literally. `-nw`
   leaves `?` a wildcard. Filters see paths as before `-j`, and a `-d`
-  name on disk is taken literally, but under `-j`, as Info-ZIP names
-  it, by its last part (a directory then names nothing), so that
-  `zip -dj t.zip d/f` deletes the `f` that `zip -j t.zip d/f` added.
-  `-@` and `@file` lines are read as Info-ZIP's getnam does (any CR or
-  LF ends a line, a NUL ends a name), and `-@` names come before the
-  arguments. A directory, as an `@file` or as standard input, is an
-  empty list, as Info-ZIP's getc fails at once to read it on POSIX;
-  Windows' C runtime refuses to open one as an `@file`, so there that
-  fails (18) with the reason Info-ZIP's port gives, "Permission
-  denied". As in Info-ZIP, patterns with nothing to
-  select from, no paths (even from `-@`) unless `-u` or `-f` selects
-  entries, are a usage error, found before the archive is read.
+  name on disk is taken literally, but under `-j`, as Info-ZIP names it,
+  by its last part (a directory then names nothing), so that `zip -dj
+  t.zip d/f` deletes the `f` that `zip -j t.zip d/f` added. `-@` and
+  `@file` lines are read as Info-ZIP's getnam does (any CR or LF ends a
+  line, a NUL ends a name), and `-@` names come before the arguments. A
+  directory, as an `@file` or as standard input, is an empty list, as
+  Info-ZIP's getc fails at once to read it on POSIX; Windows' C runtime
+  refuses to open one as an `@file`, so there that fails (18) with the
+  reason Info-ZIP's port gives, "Permission denied". As in Info-ZIP,
+  patterns with nothing to select from, no paths (even from `-@`) unless
+  `-u` or `-f` selects entries, are a usage error, found before the
+  archive is read.
 - Writing: entries go to a temporary file beside the archive (created
   discard-on-close, like gzip's outputs), at explicit offsets so that a
   local header can be patched once sizes are known: new entries need no
