@@ -648,9 +648,9 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   reason but that nothing is there, such as an I/O error (Info-ZIP opens
   it regardless, and replaces one that it cannot open). A file that
   cannot be read to its end is left out, or its entry kept, with the
-  reason and "could not read input file" (18), where Info-ZIP stores
-  what it read, exiting 0, warning only that the file's size changed
-  (and when storing it, with the reason and that warning too).
+  reason and "could not read input file" (18), where Info-ZIP, when
+  deflating, stores what it read, exiting 0, warning only that the
+  file's size changed (under `-0`, on Linux, it fails to write, 14).
 - Messages: warnings and errors go to standard error, where Info-ZIP
   writes all but `perror`'s to standard output, and without the tab that
   starts most of its warnings. Advice on options that tugz rejects is
