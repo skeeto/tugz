@@ -543,7 +543,8 @@ static b32 remove_file(c16 *wpath)
 }
 
 // Created files are marked delete-pending immediately, so that the file
-// system removes them however the process ends, until os_keep.
+// system removes them however the process ends, until kept: by os_keep
+// (gzip), or by zip's os_commit, which clears it just before renaming.
 static i32 open_output(os *ctx, i32 fd, c16 *wpath, i32 mode)
 {
     if (mode & OS_FORCE) {

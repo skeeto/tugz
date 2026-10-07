@@ -2,7 +2,8 @@
 //
 // Builds the archive in a temporary file beside the target, then renames
 // it into place. Entries kept from an existing archive are copied without
-// recompressing. Exit statuses follow Info-ZIP.
+// recompressing. Exit statuses follow Info-ZIP, but for the departures
+// listed in notes.md ("Departures from Info-ZIP").
 
 enum {
     ZE_OK    = 0,
