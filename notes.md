@@ -201,12 +201,19 @@ The zip program shares the deflate core and `src/io.c`, adding a
 portable format layer (`src/zip.c`, no I/O, fuzzed), wildcard matching
 and directory listings (`src/wild.c`, `src/dir.c`), and a driver
 (`src/zipcli.c`, also tested and fuzzed over an in-memory platform
-layer, `test/zipos.c`) over a few more platform functions: `os_stat`,
+layer, `test/zipos.c`) over more platform functions, declared at the
+top of `src/zipcli.c` and `src/dir.c`: `os_stat`, `os_fstat`, and
+`os_missing` (whether a failed `os_stat` found nothing there),
 `os_listdir`, `os_readlink`, positioned `os_readat`/`os_writeat`,
-`os_truncate`, `os_commit` (atomic rename over the target, only once
-the file is closed, or on Windows flushed, without error),
-`os_localtime`, and `os_error` (the last failure's reason). It needs
-neither inflate nor the gzip container.
+`os_truncate`, `os_resolve` (the file that links at the archive's path
+lead to), `os_writable` (whether the archive may be replaced),
+`os_commit` (atomic rename over the target, only once the file is
+closed, or on Windows flushed, without error), `os_localtime`,
+`os_isatty`, `os_error` (the last failure's reason), and, needed only
+on Windows (POSIX stubs them), `os_fromcp` (a name in a code page),
+`os_fullpath` (a file's final path, to tell files apart without IDs),
+and `os_upcase` (a name in upper case, as the file system ignores
+case). It needs neither inflate nor the gzip container.
 
 - Scope: batch use by release scripts. Other options, everything
   interactive or legacy among them (encryption, comments, splits, SFX
