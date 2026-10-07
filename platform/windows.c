@@ -37,6 +37,7 @@ W32(b32)    GetNamedPipeHandleStateW(iptr, u32 *, u32 *, u32 *, u32 *, c16 *,
                                      u32);
 W32(iptr)   GetStdHandle(u32);
 W32(i32)    LCMapStringW(u32, u32, c16 const *, i32, c16 *, i32);
+W32(b32)    ReadConsoleW(iptr, c16 *, u32, u32 *, uptr);
 W32(b32)    ReadFile(iptr, void *, u32, u32 *, uptr);
 W32(b32)    SetFileInformationByHandle(iptr, i32, void *, u32);
 W32(b32)    SetNamedPipeHandleState(iptr, u32 *, u32 *, u32 *);
@@ -117,9 +118,12 @@ enum { MAX_HANDLES = 8 };
 
 struct os {
     iptr  handles[MAX_HANDLES];
-    u32   consoles;    // bit for each standard handle that is a console
-    u8    held[3][4];  // for each, an incomplete UTF-8 sequence written
+    u32   consoles;    // bit for each handle that is a console
+    u8    held[3][4];  // for each output, an incomplete UTF-8 sequence
     u8    nheld[3];
+    u8    rest[8];     // console input converted but not yet read
+    u8    nrest;
+    c16   high;        // a high surrogate read last, for its low one
     i32   unsure;      // creations refused in a row, each name maybe taken
     iptr  guard;       // zip's archive, held so that it can be replaced
     byte *lo;          // zip: the uncommitted middle of its memory
@@ -596,6 +600,12 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
         return err;
     }
     ctx->handles[fd] = h;
+
+    // A console opened by name (CON, CONIN$), a DOS device, is read as
+    // standard input is when it is one
+    u32 cmode = 0;
+    b32 dosdev = wpath[0]=='\\' && wpath[1]=='\\' && wpath[2]=='.';
+    ctx->consoles |= (dosdev && GetConsoleMode(h, &cmode) ? 1u : 0u) << fd;
     return fd;
 }
 
@@ -603,6 +613,7 @@ static b32 os_close(os *ctx, i32 fd)
 {
     b32 ok = CloseHandle(ctx->handles[fd]);
     ctx->handles[fd] = 0;
+    ctx->consoles &= ~(1u << fd);
     return ok;
 }
 
@@ -615,8 +626,56 @@ static b32 os_close(os *ctx, i32 fd)
                                       &keep, sizeof(keep));
 }
 
+// Read a console as UTF-16, converted to WTF-8, since ReadFile would
+// give the bytes in the console's input code page: write_console's
+// counterpart, so that names typed for zip -@ are UTF-8 like the rest.
+// As ReadFile does, a read that begins with Ctrl+Z, as a line does when
+// one ends input, is the end. A high surrogate at the end of a read waits
+// for the low one that may follow, and bytes that do not fit for the
+// next read.
+static iz read_console(os *ctx, i32 fd, u8 *buf, iz cap)
+{
+    if (ctx->nrest) {
+        iz n = MIN(cap, ctx->nrest);
+        bytecopy(buf, ctx->rest, n);
+        bytemove(ctx->rest, ctx->rest+n, ctx->nrest-n);
+        ctx->nrest -= (u8)n;
+        return n;
+    } else if (cap < countof(ctx->rest)) {
+        // Room for any code point and a surrogate held before it
+        iz n = read_console(ctx, fd, ctx->rest, countof(ctx->rest));
+        ctx->nrest = (u8)MAX(n, 0);
+        return n>0 ? read_console(ctx, fd, buf, cap) : n;
+    }
+
+    for (;;) {
+        c16 w[512];
+        iz  n = ctx->high ? 1 : 0;
+        w[0] = ctx->high;
+        ctx->high = 0;
+        u32 max = (u32)MIN(countof(w)-n, (cap - 3*n)/3);  // 3 bytes a unit
+        u32 got = 0;
+        if (!ReadConsoleW(ctx->handles[fd], w+n, max, &got, 0)) {
+            return -1;
+        } else if (!n && (!got || w[0]==0x1a)) {
+            return 0;
+        }
+        n += got;
+        if (got && w[n-1]>=0xd800 && w[n-1]<=0xdbff) {
+            ctx->high = w[--n];
+        }
+        iz len = wtf8_encode(buf, w, n);
+        if (len) {
+            return len;
+        }
+    }
+}
+
 static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
 {
+    if (ctx->consoles>>fd & 1) {
+        return read_console(ctx, fd, buf, cap);
+    }
     iptr h = ctx->handles[fd];
     for (;;) {
         u32 got = 0;

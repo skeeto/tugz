@@ -1176,8 +1176,16 @@ Fuzzers:
 - Output to a Windows console is converted from UTF-8 (WTF-8, for file
   names) to UTF-16 for `WriteConsoleW`, since `WriteFile` would take the
   bytes in the console code page. A sequence split between writes is
-  held until the next, or written as U+FFFD at exit. Pipes and files
-  get the bytes unchanged.
+  held until the next, or written as U+FFFD at exit. Input from one,
+  standard input or a console opened by name (`CON`), is read with
+  `ReadConsoleW` and converted the other way, since `ReadFile` would
+  give it in the console's input code page (437 on biron, where `é` is
+  0x82, and `а` a `?`, a wildcard to zip): names typed for zip's `-@`
+  are UTF-8 like the rest. As with `ReadFile`, a read that begins with
+  Ctrl+Z, a line that starts with it, ends the input. A high surrogate
+  at the end of a read waits for its low one. Pipes and files get the
+  bytes unchanged. Info-ZIP's port, by its sources, reads such names in
+  the console's code page as ANSI ones, so it misreads them too.
 - As in GNU gzip, when using standard input, compressed data is not
   written to, or read from, a terminal without `-f`. Named files with
   `-c` are not checked.

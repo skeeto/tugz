@@ -449,6 +449,167 @@ ps "Expand-Archive -Path at.zip -DestinationPath x4"
 ps "if (!(Test-Path -LiteralPath ('x4\tree\caf' + [char]0xe9 + '.txt'))) { exit 1 }" ||
     fail "-@ UTF-8 name"
 
+# ...and typed at a console, read as UTF-16, as output is written to
+# one, not in its code page (437 here, where e-acute is 0x82 and the
+# Cyrillic a is a ?, a wildcard). As with ReadFile, a line that starts
+# with Ctrl+Z ends the input. Typed into a pseudo console, where there is
+# one (Windows 10 1809 and later).
+cat >pty.cs <<'EOF'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+public static class Pty {
+    [StructLayout(LayoutKind.Sequential)]
+    struct Coord { public short x, y; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct StartupInfoEx {
+        public int cb;
+        public string reserved, desktop, title;
+        public int x, y, w, h, cols, rows, fill, flags;
+        public short show, reserved2;
+        public IntPtr reserved3, stdin, stdout, stderr, attributes;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct ProcessInfo {
+        public IntPtr process, thread;
+        public int pid, tid;
+    }
+    [DllImport("kernel32.dll")]
+    static extern bool CreatePipe(out IntPtr r, out IntPtr w, IntPtr sa, int n);
+    [DllImport("kernel32.dll")]
+    static extern int CreatePseudoConsole(Coord size, IntPtr input,
+                                          IntPtr output, int flags,
+                                          out IntPtr pc);
+    [DllImport("kernel32.dll")]
+    static extern void ClosePseudoConsole(IntPtr pc);
+    [DllImport("kernel32.dll")]
+    static extern bool InitializeProcThreadAttributeList(IntPtr list, int n,
+                                                         int flags,
+                                                         ref IntPtr size);
+    [DllImport("kernel32.dll")]
+    static extern bool UpdateProcThreadAttribute(IntPtr list, int flags,
+                                                 IntPtr attr, IntPtr value,
+                                                 IntPtr size, IntPtr prev,
+                                                 IntPtr retsize);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern bool CreateProcessW(string app, string cmd, IntPtr pa,
+                                      IntPtr ta, bool inherit, int flags,
+                                      IntPtr env, string dir,
+                                      ref StartupInfoEx si,
+                                      out ProcessInfo pi);
+    [DllImport("kernel32.dll")]
+    static extern bool ReadFile(IntPtr h, byte[] b, int n, out int done,
+                                IntPtr o);
+    [DllImport("kernel32.dll")]
+    static extern bool WriteFile(IntPtr h, byte[] b, int n, out int done,
+                                 IntPtr o);
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll")]
+    static extern int WaitForSingleObject(IntPtr h, int ms);
+    [DllImport("kernel32.dll")]
+    static extern bool TerminateProcess(IntPtr h, int code);
+    [DllImport("kernel32.dll")]
+    static extern bool GetExitCodeProcess(IntPtr h, out int code);
+    static IntPtr output;
+    static void Drain() {
+        byte[] b = new byte[4096];
+        int n;
+        while (ReadFile(output, b, b.Length, out n, IntPtr.Zero) && n > 0) {}
+    }
+    // Run a command in a new pseudo console, typing each string into it
+    // in turn ("\r" is Enter), and return its status: -1 if it ran past
+    // 20 seconds, or -2 without pseudo consoles.
+    public static int Run(string cmd, string[] typed) {
+        IntPtr inr, inw, outw, pc;
+        CreatePipe(out inr, out inw, IntPtr.Zero, 0);
+        CreatePipe(out output, out outw, IntPtr.Zero, 0);
+        Coord size = new Coord();
+        size.x = 120;
+        size.y = 30;
+        try {
+            if (CreatePseudoConsole(size, inr, outw, 0, out pc) != 0) {
+                return -2;
+            }
+        } catch (EntryPointNotFoundException) {
+            return -2;
+        }
+        Thread drain = new Thread(Drain);
+        drain.Start();
+        IntPtr len = IntPtr.Zero;
+        InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref len);
+        StartupInfoEx si = new StartupInfoEx();
+        si.cb = Marshal.SizeOf(si);
+        si.flags = 0x100;  // STARTF_USESTDHANDLES, null: the console's
+        si.attributes = Marshal.AllocHGlobal(len);
+        InitializeProcThreadAttributeList(si.attributes, 1, 0, ref len);
+        UpdateProcThreadAttribute(si.attributes, 0, (IntPtr)0x20016, pc,
+                                  (IntPtr)IntPtr.Size, IntPtr.Zero,
+                                  IntPtr.Zero);  // the pseudo console
+        ProcessInfo pi;
+        if (!CreateProcessW(null, cmd, IntPtr.Zero, IntPtr.Zero, false,
+                            0x80000, IntPtr.Zero, null, ref si, out pi)) {
+            return -3;
+        }
+        foreach (string s in typed) {
+            Thread.Sleep(300);
+            byte[] b = Encoding.UTF8.GetBytes(s);
+            int done;
+            WriteFile(inw, b, b.Length, out done, IntPtr.Zero);
+        }
+        int code = -1;
+        if (WaitForSingleObject(pi.process, 20000) == 0) {
+            GetExitCodeProcess(pi.process, out code);
+        } else {
+            TerminateProcess(pi.process, 1);
+            WaitForSingleObject(pi.process, -1);
+        }
+        ClosePseudoConsole(pc);
+        CloseHandle(outw);
+        drain.Join(5000);
+        return code;
+    }
+}
+EOF
+mkdir typed
+ps "Set-Content -LiteralPath ('typed\caf' + [char]0xe9 + '.txt') -Value e
+    Set-Content -LiteralPath ('typed\' + [char]0x430 + '.txt') -Value a
+    Set-Content -LiteralPath ('typed\' + [char]0xd83d + [char]0xde00) -Value s
+    Set-Content -LiteralPath typed\b.txt -Value b"
+st=$(ps "Add-Type -TypeDefinition (Get-Content -Raw pty.cs)
+         \$cr = [string][char]13
+         [Pty]::Run('\"$ZIP\" -q typed.zip -@', @(
+             ('typed\caf' + [char]0xe9 + '.txt' + \$cr),
+             ('typed\' + [char]0x430 + '.txt' + \$cr),
+             ('typed\' + [char]0xd83d + [char]0xde00 + \$cr),
+             ([string][char]26 + \$cr), ('typed\b.txt' + \$cr)))" |
+     tr -d '\r')
+entries() {  # archive: its names, as .NET decodes them, compared to want
+    ps "Add-Type -AssemblyName System.IO.Compression.FileSystem
+        \$z = [IO.Compression.ZipFile]::OpenRead((Resolve-Path '$1').Path)
+        \$n = (\$z.Entries | ForEach-Object { \$_.FullName }) -join ' '
+        \$z.Dispose()
+        if (\$n -eq ($2)) { 'ok' } else { \$n }" | tr -d '\r'
+}
+if [ "$st" != -2 ]; then
+    [ "$st" = 0 ] || fail "-@ typed at a console: $st"
+    got=$(entries typed.zip "'typed/caf' + [char]0xe9 + '.txt typed/' +
+                             [char]0x430 + '.txt typed/' +
+                             [char]0xd83d + [char]0xde00")
+    [ "$got" = ok ] || fail "-@ typed at a console: entries $got"
+
+    # So is the console opened by name, here for -i patterns
+    st=$(ps "Add-Type -TypeDefinition (Get-Content -Raw pty.cs)
+             \$cr = [string][char]13
+             [Pty]::Run('\"$ZIP\" -qr typed2.zip typed -i @CON', @(
+                 ('*caf' + [char]0xe9 + '*' + \$cr),
+                 ([string][char]26 + \$cr)))" | tr -d '\r')
+    [ "$st" = 0 ] || fail "-i @CON typed at a console: $st"
+    got=$(entries typed2.zip "'typed/caf' + [char]0xe9 + '.txt'")
+    [ "$got" = ok ] || fail "-i @CON typed at a console: entries $got"
+fi
+
 # Names in the OEM code page, flag bit 11 clear and no Unicode path
 # field, as Explorer's zip folder writes them, are decoded to match
 # files, as Info-ZIP's port does (0x82 is e-acute in code pages 437 and
