@@ -870,10 +870,42 @@ static void test_end_records(arena a)
     put64(rec+48, 999);
     TEST(zip_find_end(tail, countof(tail), small, &z) == ZIP_OK);
     TEST(zip_parse_end64(rec, &z) == ZIP_EPREFIX);  // by the record
+    TEST(z.count==2 && z.cdoff==999 && z.cdsize==2*ZIP_CENTRAL_LEN);
     put64(rec+48, 1000);
     put32(rec+20, 1);  // disk with the central directory
     TEST(zip_find_end(tail, countof(tail), small, &z) == ZIP_OK);
     TEST(zip_parse_end64(rec, &z) == ZIP_EMULTI);
+}
+
+// An entry's comment ends with bytes resembling Zip64 records, whose
+// central directory would leave data before the archive, but the end
+// record of real values reaches its own: it is used, as it was.
+static void test_end64_fallback(arena a)
+{
+    u8 two[ZIP_END64_LEN + ZIP_LOC64_LEN] = {0};
+    put32(two, ZIP_END64_SIG);
+    put64(two+4, ZIP_END64_LEN-12);
+    put64(two+40, 1);  // central directory size
+    put32(two+ZIP_END64_LEN, ZIP_LOC64_SIG);
+    put32(two+ZIP_END64_LEN+16, 1);
+    zentry e = {0};
+    e.name    = str("a.txt");
+    e.comment = (s8){two, countof(two)};
+    u8 *buf = new(&a, 512, u8);
+    u8 *p   = zip_local(buf, &e);
+    i64 cdoff = p - buf;
+    p = zip_central(p, &e);
+    i64 cdsize = p - buf - cdoff;
+    put64(p-ZIP_LOC64_LEN+8, (u64)(p-buf-ZIP_LOC64_LEN-ZIP_END64_LEN));
+    p = zip_end(p, 1, cdsize, cdoff, (s8){0}, 0x031e);
+    iz total = p - buf;
+    zend z = {0};
+    TEST(zip_find_end(buf, total, total, &z) == ZIP_OK);
+    TEST(z.end64 == total-ZIP_END_LEN-ZIP_LOC64_LEN-ZIP_END64_LEN);
+    zend copy = z;
+    TEST(zip_check_end64(buf+z.end64, &copy) == ZIP_EPREFIX);
+    TEST(zip_parse_end64(buf+z.end64, &z) == ZIP_OK);
+    TEST(z.end64==-1 && z.count==1 && z.cdoff==cdoff && z.cdsize==cdsize);
 }
 
 // Zip64 extra fields in central headers: one 8-byte value for each
@@ -1010,6 +1042,7 @@ int main(void)
     test_extras(a);
     test_oem();
     test_end_records(a);
+    test_end64_fallback(a);
     test_central64(a);
     test_fits();
     test_needed();

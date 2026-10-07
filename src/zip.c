@@ -410,6 +410,14 @@ static i32 zip_check_end64(u8 const *p, zend *e)
     }
     if (cdsize>limit || cdoff>limit || cdoff+cdsize!=(u64)e->end64) {
         b32 prefix = cdoff+cdsize < (u64)e->end64;
+        if (prefix && cdsize<=limit && cdoff<=limit) {
+            // Kept, as zip_check_end32 keeps them, so that a reader may
+            // shift the offsets by the data before the archive, as UnZip
+            // does: then the central directory ends at the record
+            e->count  = (i64)total;
+            e->cdsize = (i64)cdsize;
+            e->cdoff  = (i64)cdoff;
+        }
         return prefix ? ZIP_EPREFIX : ZIP_EFORMAT;
     }
     if (total > cdsize/ZIP_CENTRAL_LEN) {
@@ -426,9 +434,14 @@ static i32 zip_check_end64(u8 const *p, zend *e)
 // not defer to Zip64 records, and leave no room for them.
 static i32 zip_parse_end64(u8 const *p, zend *e)
 {
-    i32 r   = zip_check_end64(p, e);
-    b32 own = r==ZIP_OK || zip_end_saturated(e) || !zip_end_reached(e);
-    return own ? r : zip_check_end32(e);
+    zend end = *e;  // as the end record has it
+    i32  r   = zip_check_end64(p, e);
+    b32  own = r==ZIP_OK || zip_end_saturated(&end) || !zip_end_reached(&end);
+    if (!own) {
+        *e = end;
+        r  = zip_check_end32(e);
+    }
+    return r;
 }
 
 // Copy a kept entry's extra fields, dropping only Zip64, which is
