@@ -369,7 +369,7 @@ static i32 badopt(zip *z, s8 kind, s8 opt, arena scratch)
 }
 
 // Read an entire descriptor into memory, or return a null string.
-static s8 read_all(zip *z, i32 fd, arena *perm)
+static s8 read_all(os *ctx, i32 fd, arena *perm)
 {
     s8 r  = {0};
     iz cap = 0;
@@ -384,7 +384,7 @@ static s8 read_all(zip *z, i32 fd, arena *perm)
             r.s = buf;
             cap = ncap;
         }
-        iz n = os_read(z->ctx, fd, r.s+r.len, cap-r.len);
+        iz n = os_read(ctx, fd, r.s+r.len, cap-r.len);
         if (n < 0) {
             return (s8){0};
         } else if (!n) {
@@ -446,7 +446,7 @@ static i32 add_patterns(zip *z, s8s *list, s8 arg, arena scratch)
         i32 fd   = os_open(z->ctx, path, OS_READ, scratch);
         b32 dir  = fd == OS_EISDIR;
         s8  text = dir && !z->windows ? S("")
-                 : fd>=0 ? read_all(z, fd, &z->perm) : (s8){0};
+                 : fd>=0 ? read_all(z->ctx, fd, &z->perm) : (s8){0};
         s8  why  = text.s ? S("")
                  : dir    ? S("Permission denied")
                  : os_error(z->ctx);
@@ -830,20 +830,20 @@ static i32 parse_args(zip *z, s8 *args, i32 nargs, arena scratch)
 // the next one, and both are dropped. On POSIX, a backslash within it is
 // dropped too, and the byte after it kept, even a quote or a backslash.
 // Info-ZIP's Windows port keeps backslashes, its path separators.
-static s8s env_args(zip *z, s8 env)
+static s8s env_args(arena *perm, s8 env, b32 windows)
 {
     s8s r   = {0};
-    u8 *buf = newstr(&z->perm, env.len);  // for quoted words
+    u8 *buf = newstr(perm, env.len);  // for quoted words
     for (iz i = 0;;) {
         for (; i<env.len && zisspace(env.s[i]); i++) {}
         if (i == env.len) {
             return r;
         }
-        s8 *arg = push(&z->perm, &r);
+        s8 *arg = push(perm, &r);
         if (env.s[i] == '"') {
             *arg = (s8){buf, 0};
             for (i++; i<env.len && env.s[i]!='"'; i++) {
-                if (!z->windows && env.s[i]=='\\' && ++i==env.len) {
+                if (!windows && env.s[i]=='\\' && ++i==env.len) {
                     break;  // escaping nothing
                 }
                 arg->s[arg->len++] = env.s[i];
@@ -1493,7 +1493,26 @@ typedef struct {
     zend    end;
     zentry *entries;
     zunames unames;
+    i64     noname;  // the entry that ZAR_ENONAME refused
 } zarchive;
+
+// Results of reading an archive (zar_read, zar_local)
+enum {
+    ZAR_OK,
+    ZAR_EREAD,    // a read failed, as os_readat's -1
+    ZAR_EEOF,     // the file ended early, as os_readat's 0: it has shrunk
+    ZAR_ENOEND,   // no end of central directory record
+    ZAR_EFORMAT,  // zip file structure invalid
+    ZAR_EMULTI,   // split or spanned archive
+    ZAR_EPREFIX,  // offsets do not account for data before the archive
+    ZAR_ENONAME,  // an entry, noname, has a zero-length name
+};
+
+// The result of a failed read, os_readat's got.
+static i32 zar_failed(i32 got)
+{
+    return got<0 ? ZAR_EREAD : ZAR_EEOF;
+}
 
 // An entry's Unicode name, if it differs from its stored name, else a
 // null string.
@@ -1518,28 +1537,158 @@ static s8 entry_unicode(zarchive *ar, iz i)
 // else on Windows, as Info-ZIP's port reads them, from the OEM code page
 // for names made on DOS or Windows, and from the ANSI code page, the
 // port's own, for others, such as PKZIP for Windows makes, unless they
-// are UTF-8. Returns a null string if none. As Info-ZIP does, warns of a
-// field that does not check out.
-static s8 entry_uname(zip *z, zentry *e, arena *perm, arena scratch)
+// are UTF-8. Returns a null string if none. Where a field does not check
+// out, *stale is the name by which Info-ZIP warns of it, else null.
+static s8 zar_uname(os *ctx, zentry *e, b32 windows, i32 *crccpu, s8 *stale,
+                    arena *perm, arena scratch)
 {
+    *stale = (s8){0};
     if (e->flags & ZIP_FLAG_UTF8) {
         return (s8){0};
     }
-    u32 crc = crc32_update(0, e->name.s, e->name.len, &z->crccpu);
+    u32 crc = crc32_update(0, e->name.s, e->name.len, crccpu);
     s8  u   = zip_extra_upath(e->cextra, crc);
     if (!u.s || zip_utf8(u)<0) {
         i32 utf8 = zip_utf8(e->name);
         b32 oem  = zip_oem_name(e);
-        b32 cp   = z->windows && (oem ? utf8 : utf8<0);
-        u = cp ? os_fromcp(z->ctx, e->name, oem, perm, scratch) : (s8){0};
+        b32 cp   = windows && (oem ? utf8 : utf8<0);
+        u = cp ? os_fromcp(ctx, e->name, oem, perm, scratch) : (s8){0};
     }
     if (zip_extra_upath_stale(e->cextra, crc)) {
-        s8 name = u.len ? u : e->name;  // Info-ZIP gives "(null)"
-        warn(z, S("Unicode does not match path - ignoring Unicode: "), name,
-             scratch);
+        *stale = u.len ? u : e->name;  // Info-ZIP gives "(null)"
     }
     b32 bad = zip_has(u, 0) || zip_has(e->name, 0);
     return !u.len || bad || zequals(u, e->name) ? (s8){0} : u;
+}
+
+// An entry's Unicode name, as zar_uname finds it, warning as Info-ZIP
+// does of a field that does not check out.
+static s8 entry_uname(zip *z, zentry *e, arena *perm, arena scratch)
+{
+    s8 stale = {0};
+    s8 u     = zar_uname(z->ctx, e, z->windows, &z->crccpu, &stale, perm,
+                         scratch);
+    if (stale.s) {
+        warn(z, S("Unicode does not match path - ignoring Unicode: "),
+             stale, scratch);
+    }
+    return u;
+}
+
+// Read the central directory of the archive open at fd, size bytes as
+// examined, through a window in perm, keeping its end records and its
+// entries, all in perm, as all else is claimed, before any output. Its
+// entries' Unicode names are left to the caller (zar_uname). Returns a
+// ZAR code.
+static i32 zar_read(zarchive *ar, os *ctx, i32 fd, i64 size, arena *perm,
+                    arena scratch)
+{
+    zin *in = &ar->in;
+    in->ctx   = ctx;
+    in->fd    = fd;
+    in->limit = size;
+    in->cap   = ZIN_CAP;
+    in->buf   = newbytes(perm, in->cap);  // like all else, before output
+    in->ahead = ZIN_PAGE;
+
+    // The end records are among the final bytes, read into the window,
+    // which for a small archive then holds its central directory too
+    iz  n    = (iz)MIN(size, ZIP_END_LEN + ZIP_MAX16 + ZIP_LOC64_LEN);
+    u8 *tail = 0;
+    i32 got  = zin_get(in, size-n, n, &tail);
+    if (got <= 0) {
+        return zar_failed(got);
+    }
+    i32 r = zip_find_end(tail, n, size, &ar->end);
+    ar->end.comment = JOIN(perm, ar->end.comment);  // the window moves
+    if (r==ZIP_OK && ar->end.end64>=0) {
+        u8 *rec = 0;
+        got = zin_get(in, ar->end.end64, ZIP_END64_LEN, &rec);
+        if (got <= 0) {
+            return zar_failed(got);
+        }
+        r = zip_parse_end64(rec, &ar->end);
+    }
+    switch (r) {
+    case ZIP_OK:
+        break;
+    case ZIP_ENOEND:
+        return ZAR_ENOEND;
+    case ZIP_EFORMAT:
+        return ZAR_EFORMAT;
+    case ZIP_EMULTI:
+        return ZAR_EMULTI;
+    case ZIP_EPREFIX:
+        return ZAR_EPREFIX;
+    }
+
+    // The central directory is read through the window, whole if it
+    // fits, else a window at a time, and parsed a header at a time,
+    // keeping only the names, extra fields (without Zip64), and comments,
+    // packed, rather than the whole directory.
+    i64 count = ar->end.count;
+    i64 off   = ar->end.cdoff;
+    i64 cdend = off + ar->end.cdsize;
+    u8 *h     = 0;
+    got = zin_get(in, off, (iz)MIN(cdend-off, in->cap), &h);
+    if (got <= 0) {
+        return zar_failed(got);
+    }
+    in->ahead = in->cap;
+
+    // Memory for the entries is claimed only for a directory that begins
+    // with a header, as a file that only ends like an archive (sparse, or
+    // damaged) does not, and is then not touched until each is parsed
+    b32 head = cdend-off>=ZIP_CENTRAL_LEN && zip_central_varlen(h)>=0;
+    if (count > ar->end.cdsize/ZIP_CENTRAL_LEN || (count && !head)) {
+        return ZAR_EFORMAT;
+    } else if ((u64)count > (uz)-1>>1) {
+        os_oom(ctx);  // larger than the address space (32-bit hosts)
+    }
+    iz each = sizeof(zentry);
+    ar->entries = alloc(perm, (iz)count, each, _Alignof(zentry), 0);
+    for (i64 i = 0; i < count; i++) {
+        // Its fixed part tells its length, at most 192 KiB
+        iz len = (iz)MIN(cdend-off, ZIP_CENTRAL_LEN);
+        got = zin_get(in, off, len, &h);
+        if (got>0 && len==ZIP_CENTRAL_LEN) {
+            iz var = zip_central_varlen(h);
+            len += (iz)MIN(MAX(var, 0), cdend-off-len);
+            got = zin_get(in, off, len, &h);
+        }
+        if (got <= 0) {
+            return zar_failed(got);
+        }
+        zentry *e = ar->entries + i;
+        len = zip_parse_header(h, len, ar->end.cdoff, e);
+        if (len && !e->name.len) {
+            // Refused, as by Info-ZIP, rather than kept for readers that
+            // cannot name it
+            ar->noname = i;
+            return ZAR_ENONAME;
+        }
+        if (!len) {
+            return ZAR_EFORMAT;
+        }
+        arena tmp = scratch;
+        e->name    = JOIN(perm, e->name);
+        e->cextra  = JOIN(perm, zip_filter_extra(&tmp, e->cextra));
+        e->comment = JOIN(perm, e->comment);
+        off += len;
+    }
+    if (off != cdend) {
+        return ZAR_EFORMAT;
+    }
+    in->limit = ar->end.cdoff;  // nothing past the entries is read again
+
+    // Offsets may account for data before the first entry, such as a
+    // self-extractor's stub after zip -A, or a zipapp's #! line, which
+    // Info-ZIP keeps. Without entries, it precedes the central directory.
+    ar->beg = ar->end.cdoff;
+    for (i64 i = 0; i < ar->end.count; i++) {
+        ar->beg = MIN(ar->beg, ar->entries[i].offset);
+    }
+    return ZAR_OK;
 }
 
 static i32 not_zip(zip *z, arena scratch)
@@ -1576,135 +1725,48 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
         return not_zip(z, scratch);
     }
 
-    zin *in = &ar->in;
-    in->ctx = z->ctx;
-    in->fd  = os_open(z->ctx, z->target, OS_READ|OS_REGULAR, scratch);
-    if (in->fd < 0) {
+    i32 fd = os_open(z->ctx, z->target, OS_READ|OS_REGULAR, scratch);
+    if (fd < 0) {
         // One that cannot be written either is, as in Info-ZIP, taken
         // for a missing archive, which then cannot be written
-        s8 why = in->fd==OS_ERR ? os_error(z->ctx) : S("");
+        s8 why = fd==OS_ERR ? os_error(z->ctx) : S("");
         if (!os_writable(z->ctx, z->target, scratch)) {
             return -1;
         }
         return fail_why(z, ZE_READ, why, S("Could not open archive"),
                         z->archive, scratch);
     }
-    in->limit = z->arcinfo.size;
-    in->cap   = ZIN_CAP;
-    in->buf   = newbytes(&z->perm, in->cap);  // like all else, before output
-    in->ahead = ZIN_PAGE;
 
-    // The end records are among the final bytes, read into the window,
-    // which for a small archive then holds its central directory too
-    i64 size = z->arcinfo.size;
-    iz  n    = (iz)MIN(size, ZIP_END_LEN + ZIP_MAX16 + ZIP_LOC64_LEN);
-    u8 *tail = 0;
-    i32 got  = zin_get(in, size-n, n, &tail);
-    if (got <= 0) {
-        return read_failed(z, got, (s8){0}, scratch);
-    }
-    i32 r = zip_find_end(tail, n, size, &ar->end);
-    ar->end.comment = JOIN(&z->perm, ar->end.comment);  // the window moves
-    if (r==ZIP_OK && ar->end.end64>=0) {
-        u8 *rec = 0;
-        got = zin_get(in, ar->end.end64, ZIP_END64_LEN, &rec);
-        if (got <= 0) {
-            return read_failed(z, got, (s8){0}, scratch);
-        }
-        r = zip_parse_end64(rec, &ar->end);
-    }
-    switch (r) {
-    case ZIP_OK:
+    switch (zar_read(ar, z->ctx, fd, z->arcinfo.size, &z->perm, scratch)) {
+    case ZAR_OK:
         break;
-    case ZIP_ENOEND:
+    case ZAR_EREAD:
+        return read_failed(z, -1, (s8){0}, scratch);
+    case ZAR_EEOF:
+        return read_failed(z, 0, (s8){0}, scratch);
+    case ZAR_ENOEND:
         return not_zip(z, scratch);
-    case ZIP_EFORMAT:
+    case ZAR_EFORMAT:
         return fail(z, ZE_FORM, S("Zip file structure invalid"), z->archive,
                     scratch);
-    case ZIP_EMULTI:
+    case ZAR_EMULTI:
         return fail(z, ZE_FORM, S("Split archives not supported"),
                     z->archive, scratch);
-    case ZIP_EPREFIX:
+    case ZAR_EPREFIX:
         // As a stub prepended to an archive leaves them, which Info-ZIP
         // finds only on copying an entry ("Did not find entry for")
         warn(z, S("offsets do not account for data before the archive"),
              S(""), scratch);
         return fail(z, ZE_FORM, S("Zip file structure invalid"), z->archive,
                     scratch);
-    }
-
-    // The central directory is read through the window, whole if it
-    // fits, else a window at a time, and parsed a header at a time,
-    // keeping only the names, extra fields (without Zip64), and comments,
-    // packed, rather than the whole directory.
-    i64 count = ar->end.count;
-    i64 off   = ar->end.cdoff;
-    i64 cdend = off + ar->end.cdsize;
-    u8 *h     = 0;
-    got = zin_get(in, off, (iz)MIN(cdend-off, in->cap), &h);
-    if (got <= 0) {
-        return read_failed(z, got, (s8){0}, scratch);
-    }
-    in->ahead = in->cap;
-
-    // Memory for the entries is claimed only for a directory that begins
-    // with a header, as a file that only ends like an archive (sparse, or
-    // damaged) does not, and is then not touched until each is parsed
-    b32 head = cdend-off>=ZIP_CENTRAL_LEN && zip_central_varlen(h)>=0;
-    if (count > ar->end.cdsize/ZIP_CENTRAL_LEN || (count && !head)) {
-        return fail(z, ZE_FORM, S("Zip file structure invalid"), z->archive,
-                    scratch);
-    } else if ((u64)count > (uz)-1>>1) {
-        os_oom(z->ctx);  // larger than the address space (32-bit hosts)
-    }
-    iz each = sizeof(zentry);
-    ar->entries = alloc(&z->perm, (iz)count, each, _Alignof(zentry), 0);
-    for (i64 i = 0; i < count; i++) {
-        // Its fixed part tells its length, at most 192 KiB
-        iz len = (iz)MIN(cdend-off, ZIP_CENTRAL_LEN);
-        got = zin_get(in, off, len, &h);
-        if (got>0 && len==ZIP_CENTRAL_LEN) {
-            iz var = zip_central_varlen(h);
-            len += (iz)MIN(MAX(var, 0), cdend-off-len);
-            got = zin_get(in, off, len, &h);
-        }
-        if (got <= 0) {
-            return read_failed(z, got, (s8){0}, scratch);
-        }
-        zentry *e = ar->entries + i;
-        len = zip_parse_header(h, len, ar->end.cdoff, e);
-        if (len && !e->name.len) {
-            // Refused, as by Info-ZIP, rather than kept for readers that
-            // cannot name it
-            warn(z, S("zero-length name for entry #"), znum(&scratch, i+1),
-                 scratch);
-            len = 0;
-        }
-        if (!len) {
-            return fail(z, ZE_FORM, S("Zip file structure invalid"),
-                        z->archive, scratch);
-        }
-        arena tmp = scratch;
-        e->name    = JOIN(&z->perm, e->name);
-        e->cextra  = JOIN(&z->perm, zip_filter_extra(&tmp, e->cextra));
-        e->comment = JOIN(&z->perm, e->comment);
-        off += len;
-    }
-    if (off != cdend) {
+    case ZAR_ENONAME:
+        warn(z, S("zero-length name for entry #"),
+             znum(&scratch, ar->noname+1), scratch);
         return fail(z, ZE_FORM, S("Zip file structure invalid"), z->archive,
                     scratch);
     }
-    in->limit = ar->end.cdoff;  // nothing past the entries is read again
 
-    // Offsets may account for data before the first entry, such as a
-    // self-extractor's stub after zip -A, or a zipapp's #! line, which
-    // Info-ZIP keeps. Without entries, it precedes the central directory.
-    ar->beg = ar->end.cdoff;
     for (i64 i = 0; i < ar->end.count; i++) {
-        ar->beg = MIN(ar->beg, ar->entries[i].offset);
-    }
-
-    for (i64 i = 0; i < count; i++) {
         s8 u = entry_uname(z, ar->entries+i, &z->perm, scratch);
         if (u.s) {
             *push(&z->perm, &ar->unames) = (zuname){(iz)i, u};
@@ -1718,6 +1780,43 @@ static s8 shown_name(zarchive *ar, zentry *e)
 {
     s8 u = entry_unicode(ar, e - ar->entries);
     return u.s ? u : e->name;
+}
+
+// An entry's local header, as zar_local finds it.
+typedef struct {
+    u8  fixed[ZIP_LOCAL_LEN];
+    s8  name;   // in the window, valid until its next use
+    s8  extra;  // likewise
+    i64 data;   // offset of the entry's data
+} zlocal;
+
+// Find an entry's local header and its data, which must lie, at the
+// entry's compressed size, before the central directory. Returns a ZAR
+// code: ZAR_EFORMAT for data out of bounds.
+static i32 zar_local(zarchive *ar, zentry *e, zlocal *l)
+{
+    zin *r     = &ar->in;
+    u8  *fixed = 0;
+    i32  got   = zin_get(r, e->offset, ZIP_LOCAL_LEN, &fixed);
+    if (got <= 0) {
+        return zar_failed(got);
+    }
+    bytecopy(l->fixed, fixed, ZIP_LOCAL_LEN);  // before the window moves
+    iz  varlen = zip_local_varlen(l->fixed);
+    iz  nlen   = get16(l->fixed+26);
+    i64 data   = e->offset + ZIP_LOCAL_LEN + varlen;
+    if (varlen<0 || data>ar->end.cdoff || e->csize>ar->end.cdoff-data) {
+        return ZAR_EFORMAT;
+    }
+    u8 *var = 0;
+    got = zin_get(r, e->offset+ZIP_LOCAL_LEN, varlen, &var);
+    if (got <= 0) {
+        return zar_failed(got);
+    }
+    l->name  = (s8){var, nlen};
+    l->extra = (s8){var+nlen, varlen-nlen};
+    l->data  = data;
+    return ZAR_OK;
 }
 
 // Output: buffered positioned writes into the temporary file
@@ -2158,34 +2257,26 @@ static void check_local(zip *z, u8 const *loc, s8 lname, zentry *e, s8 name,
 static i32 copy_entry(zip *z, zarchive *ar, zwork *k, zentry *e,
                       arena scratch)
 {
-    zout *w     = k->out;
-    zin  *r     = &ar->in;
-    s8    name  = shown_name(ar, e);
-    u8   *fixed = 0;
-    i32   got   = zin_get(r, e->offset, ZIP_LOCAL_LEN, &fixed);
-    if (got <= 0) {
-        return read_failed(z, got, name, scratch);
-    }
-    u8 loc[ZIP_LOCAL_LEN];  // before the window moves
-    bytecopy(loc, fixed, ZIP_LOCAL_LEN);
-    iz  varlen = zip_local_varlen(loc);
-    iz  nlen   = get16(loc+26);
-    i64 data   = e->offset + ZIP_LOCAL_LEN + varlen;
-    if (varlen<0 || data>ar->end.cdoff || e->csize>ar->end.cdoff-data) {
+    zout  *w    = k->out;
+    zin   *r    = &ar->in;
+    s8     name = shown_name(ar, e);
+    zlocal loc  = {0};
+    switch (zar_local(ar, e, &loc)) {
+    case ZAR_OK:
+        break;
+    case ZAR_EREAD:
+        return read_failed(z, -1, name, scratch);
+    case ZAR_EEOF:
+        return read_failed(z, 0, name, scratch);
+    default:
         return fail(z, ZE_FORM, S("Zip file structure invalid"), e->name,
                     scratch);
     }
-    u8 *var = 0;
-    got = zin_get(r, e->offset+ZIP_LOCAL_LEN, varlen, &var);
-    if (got <= 0) {
-        return read_failed(z, got, name, scratch);
-    }
-    check_local(z, loc, (s8){var, nlen}, e, name, scratch);
+    check_local(z, loc.fixed, loc.name, e, name, scratch);
 
     // Its extra fields are kept, as Info-ZIP keeps them even with -X,
     // except that Zip64 fields are made anew. Those must leave room.
-    s8 lextra = {var+nlen, varlen-nlen};
-    e->lextra = zip_filter_extra(&scratch, lextra);
+    e->lextra = zip_filter_extra(&scratch, loc.extra);
     e->offset = zout_tell(w);
     e->zip64  = e->usize>=ZIP_MAX32 || e->csize>=ZIP_MAX32;
     if (!zip_fits(e)) {
@@ -2206,7 +2297,7 @@ static i32 copy_entry(zip *z, zarchive *ar, zwork *k, zentry *e,
 
     u8 *h = newbytes(&scratch, zip_local_len(e));
     zout_write(w, h, zip_local(h, e)-h);
-    got = zin_copy(r, w, data, e->csize);
+    i32 got = zin_copy(r, w, loc.data, e->csize);
     if (got <= 0) {
         return read_failed(z, got, name, scratch);
     }
@@ -2801,15 +2892,15 @@ static s8 entry_path(zip *z, s8 name, arena scratch)
 // reach beyond the current directory; a link at its end is followed, as
 // for any path, unless -y. Those of the path checked before, through its
 // last slash, are known to be directories, so that a run of entries in
-// one directory examines it once.
-static b32 linkless(zip *z, s8 path, s8 *checked, arena scratch)
+// one directory examines it once, as are those ending before from, the
+// length of a prefix the caller trusts (zip trusts none: 0).
+static b32 linkless(os *ctx, s8 path, iz from, s8 *checked, arena scratch)
 {
-    iz from = 0;
     for (iz k = 0; k<path.len && k<checked->len; k++) {
         if (path.s[k] != checked->s[k]) {
             break;
         }
-        from = path.s[k]=='/' ? k+1 : from;
+        from = path.s[k]=='/' ? MAX(k+1, from) : from;
     }
     iz last = 0;
     for (iz k = 0; k < path.len; k++) {
@@ -2817,7 +2908,7 @@ static b32 linkless(zip *z, s8 path, s8 *checked, arena scratch)
             continue;
         }
         os_info info = {0};
-        if (k>=from && (!os_stat(z->ctx, (s8){path.s, k}, 0, &info, scratch) ||
+        if (k>=from && (!os_stat(ctx, (s8){path.s, k}, 0, &info, scratch) ||
                         info.type!=FT_DIR)) {
             return 0;
         }
@@ -2858,7 +2949,7 @@ static b32 scan_entries(zip *z, zarchive *ar, iz n, zindex *old, s8 pattern,
             continue;
         }
         s8 path = entry_path(z, name, iter);
-        if (!path.s || !linkless(z, path, &checked, iter)) {
+        if (!path.s || !linkless(z->ctx, path, 0, &checked, iter)) {
             continue;
         }
         taken[i] = 1;
@@ -2979,8 +3070,8 @@ static i32 zip_main(zipconfig *conf)
 
     // Options from the environment precede the arguments, as in Info-ZIP:
     // those of ZIPOPT or, if it has none, of ZIP
-    s8s env = env_args(z, conf->zipopt);
-    env = env.len ? env : env_args(z, conf->zipenv);
+    s8s env = env_args(&z->perm, conf->zipopt, z->windows);
+    env = env.len ? env : env_args(&z->perm, conf->zipenv, z->windows);
     for (i32 i = 0; i < conf->nargs; i++) {
         *push(&z->perm, &env) = conf->args[i];
     }
@@ -3017,7 +3108,7 @@ static i32 zip_main(zipconfig *conf)
         // A directory there holds no names, as Info-ZIP's getc fails at
         // once to read one
         os_info in   = {0};
-        s8      text = read_all(z, 0, &z->perm);
+        s8      text = read_all(z->ctx, 0, &z->perm);
         s8      why  = text.s ? S("") : os_error(z->ctx);
         if (!text.s && os_fstat(z->ctx, 0, &in) && in.type==FT_DIR) {
             text = S("");
