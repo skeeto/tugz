@@ -82,13 +82,14 @@ tests-zip: test/ziptests.c src/base.c src/zip.c src/wild.c
 tests-zipcli: test/zipclitests.c test/zipos.c $(ZIPSRC)
 	$(CC) $(DEBUG) -o $@ test/zipclitests.c
 
-check: tests tests-lib tests-zip tests-zipcli gzip zip-debug
+# zip.sh's out-of-memory tests need a build without AddressSanitizer
+check: tests tests-lib tests-zip tests-zipcli gzip zip zip-debug
 	./tests
 	./tests-lib
 	./tests-zip
 	./tests-zipcli
 	sh test/cli.sh ./gzip
-	sh test/zip.sh ./zip-debug
+	ZIPOOM=./zip sh test/zip.sh ./zip-debug
 
 # The library: an object exporting only the tugz.h interface
 libtugz.o: $(LIB)

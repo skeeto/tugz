@@ -641,11 +641,14 @@ neither inflate nor the gzip container.
   (opening /dev/zero)" (4). The hook refuses arenas other than
   perm and scratch, such as a codec's exactly sized one. Running out
   (of address space, of the commit limit, or of `ulimit -d`) is still
-  "zip error: Out of memory" (4), as `test/zip.sh` checks on Linux under
-  `ulimit -v` (over a sweep of limits, where reserving all but a sliver
-  once failed `opendir` and the temporary file instead, 15 or 10) and
-  `ulimit -d` (for builds that are not sanitized). gzip and the library
-  keep their fixed arenas: their hooks only report running out.
+  "zip error: Out of memory" (4), as `test/zip.sh` checks under `ulimit
+  -v` (over a sweep of limits, where reserving all but a sliver once
+  failed `opendir` and the temporary file instead, 15 or 10) and on
+  Linux `ulimit -d`, wherever the shell sets them (not macOS), for a
+  build without sanitizers that reserve shadow memory (UBSan alone
+  passes): `make check` gives it `./zip` (`ZIPOOM`). gzip and the
+  library keep their fixed arenas: their hooks only report running
+  out.
 - Memory per entry: perm keeps only what is recorded. A file's path and
   name are built in scratch and copied to perm once it is added, as one
   string when the name ends the path, as most do (`d/f`, `./d/f`, `-j`'s
@@ -726,7 +729,8 @@ neither inflate nor the gzip container.
 Each is deliberate, for safety, determinism, or a friendlier result.
 `test/zip.sh` asserts most of them that POSIX shows (most marked
 "Departure" there), `test/zip_windows.sh` the Windows ones, and
-`test/zipclitests.c` an archive that shrinks.
+`test/zipclitests.c` an archive that shrinks (also in `zip.sh`, when
+its race allows).
 
 - Exit statuses: `-u` and `-f` with nothing newer exit 0 (Info-ZIP: 12).
   An unreadable directory, or a dangling link (or one whose target
@@ -900,7 +904,8 @@ Each is deliberate, for safety, determinism, or a friendlier result.
 
     make check                 # unit, library, ZIP format, and zip
                                # program tests (ASan/UBSan), gzip and
-                               # zip end to end
+                               # zip end to end (zip's out-of-memory
+                               # tests with ./zip, where ulimit works)
                                # (needs zlib, libdeflate, /usr/bin/gzip,
                                # Info-ZIP unzip and zipinfo; optional Python)
     SLOW=1 sh test/cli.sh ./gzip   # adds a 5 GiB stream (>4 GiB offsets)

@@ -2,6 +2,8 @@
 # End-to-end tests of a zip binary, verified with unzip, zipinfo, and
 # Python's zipfile (via uv when available).
 # Usage: sh test/zip.sh ./zip
+# Set ZIPOOM to another build for the out-of-memory tests, as make check
+# does, its own build being sanitized.
 # Set SLOW=1 to include Zip64 tests: 4 and 5 GiB files, 70,000 entries.
 # These need about 10 GiB free in TMPDIR (a stored 5 GiB archive and the
 # temporary file that merging into it writes).
@@ -10,6 +12,9 @@ set -e
 unset ZIPOPT ZIP  # options for zip, and ZIP unexported for the binary
 unset SOURCE_DATE_EPOCH  # set where tested, as by a reproducible build
 ZIP=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+if [ -n "$ZIPOOM" ]; then  # another build for the out-of-memory tests
+    ZIPOOM=$(cd "$(dirname "$ZIPOOM")" && pwd)/$(basename "$ZIPOOM")
+fi
 CHECK=$(cd "$(dirname "$0")" && pwd)/zipcheck.py
 if command -v uv >/dev/null 2>&1; then
     PY="uv run --no-project python3"
@@ -1739,8 +1744,10 @@ cp wf/u.zip wfu.orig
 printf '%s\n' 'zip I/O error: File too large' \
     'zip error: Output file write failure (write error on zip file)' >want
 for arc in w u; do
+    st=0
     (trap '' XFSZ; ulimit -f 2000; exec "$ZIP" wf/$arc.zip wf/big wf/small) \
-        >out 2>err && fail "failed write succeeded ($arc)"
+        >out 2>err || st=$?
+    [ $st = 14 ] || fail "failed write ($arc): status $st"
     grep -qx '  adding: wf/big' out || fail "failed write ($arc): $(cat out)"
     cmp -s err want || fail "failed write ($arc): $(cat err)"
 done
@@ -2099,6 +2106,29 @@ else
     echo "zip.sh: zip finished before it could be terminated" >&2
 fi
 
+# An archive that shrinks while zip works ends early (2), as in Info-ZIP,
+# leaving no temporary file. Departure: it fails at the entry being
+# copied, where Info-ZIP notices only at an entry's header, copying a
+# cut-off entry's data without error. Here zip is stopped while it writes
+# a replacement, before the entry after it, which is then cut short.
+head -c 3000000 /dev/urandom >race/b_big
+"$ZIP" -q0 rz/cut.zip race/a_big race/b_big
+cp rz/cut.zip cut.orig
+if bgzip rz -q rz/cut.zip race/a_big; then
+    head -c 2500000 cut.orig >rz/cut.zip  # the same file, cut
+    kill -CONT $pid
+    wait $bg
+    w='zip error: Unexpected end of zip file (was copying race/b_big)'
+    [ "$(cat bg.status)" = 2 ] && [ "$(cat bg.err)" = "
+$w" ] || fail "archive cut short: $(cat bg.status) $(cat bg.err)"
+    [ "$(ls rz | tr '\n' ' ')" = "cut.zip race.zip " ] ||
+        fail "archive cut short: $(ls rz)"
+else
+    wait $bg
+    echo "zip.sh: zip finished before its archive could be cut" >&2
+fi
+rm -f rz/cut.zip cut.orig race/b_big
+
 # Departure: a new archive replaces nothing, so that one made at its path
 # meanwhile is kept, and zip fails to replace it (15) rather than lose
 # what it never read (Info-ZIP replaces it)
@@ -2256,20 +2286,25 @@ fi
 # Running out of memory exits 4, as in Info-ZIP, before any output, as
 # zip allocates what grows with its work first: no archive is created
 # (here under one limit) or changed (under the other), and no temporary
-# file is left. Linux limits address space (ulimit -v), into which zip's
-# reservation then shrinks, and private writable memory (ulimit -d),
-# against which each commit counts. A small run fits under each, while
-# the 65,535 paths through a chain of directories, each linking twice to
-# the next, need some 250 MB. A file that only ends like an archive,
-# whose directory of zeros (sparse, 92 MB) would hold 2M entries, is not
-# one (3), however much memory those would take. macOS ignores these
-# limits, and sanitizers and emulators cannot run under them.
+# file is left. (tests-zipcli checks that nothing is claimed once output
+# begins.) Systems limit address space (ulimit -v), into which zip's
+# reservation then shrinks, and Linux also private writable memory
+# (ulimit -d), against which each commit counts. A small run fits under
+# each, while the 65,535 paths through a chain of directories, each
+# linking twice to the next, need some 250 MB. A file that only ends like
+# an archive, whose directory of zeros (sparse, 92 MB) would hold 2M
+# entries, is not one (3), however much memory those would take. macOS's
+# shell sets neither limit, and builds with sanitizers that reserve shadow
+# memory (not UBSan) cannot run under them, nor can emulators, which the
+# probe below finds. ZIPOOM names another build for these tests, as
+# make check, whose $ZIP is sanitized, gives one.
+oomzip=${ZIPOOM:-$ZIP}
 oomskip=
-if [ "$(uname -s)" != Linux ]; then
-    oomskip="not Linux"
-elif LC_ALL=C grep -aq -e __asan_ -e __hwasan_ -e __lsan_ -e __msan_ \
-                       -e __tsan_ -e __ubsan_ -e liblsan "$ZIP"; then
+if LC_ALL=C grep -aq -e __asan_ -e __hwasan_ -e __msan_ -e __tsan_ \
+                     "$oomzip"; then
     oomskip="sanitized"
+elif ! (ulimit -v 60000) 2>/dev/null; then
+    oomskip="ulimit -v unsupported"
 else
     mkdir oom oomdag
     long=$(awk 'BEGIN{while(length(s)<250)s=s "x";print s}')
@@ -2297,8 +2332,9 @@ for run in "-v 60000 new.zip" "-d 30000 small.zip"; do  # limit, archive
     limit=${run% *}
     arc=${run##* }
     [ -z "$oomskip" ] || break
+    [ "$limit" != "-d 30000" ] || [ "$(uname -s)" = Linux ] || continue
     set +e
-    (ulimit $limit && exec "$ZIP" -v) >out 2>err
+    (ulimit $limit && exec "$oomzip" -v) >out 2>err
     st=$?
     set -e
     if [ $st != 0 ] && [ $st != 4 ] && [ $st -lt 128 ]; then
@@ -2307,12 +2343,12 @@ for run in "-v 60000 new.zip" "-d 30000 small.zip"; do  # limit, archive
     fi
     grep -q '^tugz zip' out || fail "zip -v under ulimit $limit: $st $(cat err)"
     rm -f oom/*
-    (ulimit $limit && exec "$ZIP" -qr oom/small.zip tree) ||
+    (ulimit $limit && exec "$oomzip" -qr oom/small.zip tree) ||
         fail "a small run under ulimit $limit"
     extract_same oom/small.zip tree
     cp oom/small.zip oom.orig
     set +e
-    (ulimit $limit && exec "$ZIP" -qr oom/$arc oomdag/0) 2>err
+    (ulimit $limit && exec "$oomzip" -qr oom/$arc oomdag/0) 2>err
     st=$?
     set -e
     [ $st = 4 ] && cmp -s err want ||
@@ -2321,7 +2357,7 @@ for run in "-v 60000 new.zip" "-d 30000 small.zip"; do  # limit, archive
     [ "$(ls oom)" = small.zip ] || fail "ulimit $limit left: $(ls oom)"
     if [ -e oomsparse.zip ]; then
         set +e
-        (ulimit $limit && exec "$ZIP" -q oomsparse.zip tree/a.txt) 2>err
+        (ulimit $limit && exec "$oomzip" -q oomsparse.zip tree/a.txt) 2>err
         st=$?
         set -e
         [ $st = 3 ] && grep -q 'structure invalid (oomsparse.zip)' err ||
@@ -2336,7 +2372,7 @@ if [ -z "$oomskip" ]; then
     mkdir -p oomsweep/s
     printf f >oomsweep/f
     printf g >oomsweep/s/g
-    "$ZIP" -q oomtiny.zip oomsweep/f
+    "$oomzip" -q oomtiny.zip oomsweep/f
     v=12000
     ran=
     while [ $v -le 40000 ]; do
@@ -2344,7 +2380,7 @@ if [ -z "$oomskip" ]; then
             rm -f oom/*
             cp oomtiny.zip oom/tiny.zip
             set +e
-            (ulimit -v $v && exec "$ZIP" -qr oom/$arc oomsweep) 2>err
+            (ulimit -v $v && exec "$oomzip" -qr oom/$arc oomsweep) 2>err
             st=$?
             set -e
             if [ $st = 0 ]; then
