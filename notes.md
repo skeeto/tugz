@@ -692,7 +692,11 @@ neither inflate nor the gzip container.
   since an array doubled as it grew in scratch, which grows down and so
   never in place, left each smaller copy behind: about 265 bytes a name
   where 89 and the name do, which put one directory of 200K files 27%
-  above Info-ZIP's peak, and now level with it. (Windows still doubles.)
+  above Info-ZIP's peak, and now level with it. On Windows a listing
+  does the same, each name packed with what the listing tells of the
+  file until its entry is made, 117 bytes and the name, and names are
+  converted from UTF-16 at their length rather than at three bytes a
+  unit, which left the rest of each in scratch.
 - libdeflate issue #323: Windows' zip folder rejects incomplete Huffman
   codes (such as a lone distance code in a block with at most one
   distinct distance), which DEFLATE permits. `huff_build` always codes at
@@ -1162,9 +1166,13 @@ Fuzzers:
   to open (`Invalid argument`: no Windows name holds `*`). Unlike the C
   runtime's expansion, which w64devkit's busybox gzip gets, `*.txt`
   matches long names only (not `long.txtx` by its 8.3 name). Listings
-  take three quarters of gzip's fixed 32 MiB meanwhile, which holds a
-  directory of 55,000 names of 13 characters but not one of 67,000:
-  beyond that gzip runs out of memory (1) before doing anything.
+  take three quarters of gzip's fixed 32 MiB meanwhile, and the
+  arguments, packed, then made at once, the rest: that holds a
+  directory of 170,000 names of 13 characters, but not one of 180,000
+  (on i686, 190,000 and 200,000), where names at three bytes a UTF-16
+  unit, and listings and arguments that grew by doubling, held 65,000
+  but not 67,000 (85,000 and 100,000). Beyond that gzip runs out of
+  memory (1) before doing anything.
 - Output to a Windows console is converted from UTF-8 (WTF-8, for file
   names) to UTF-16 for `WriteConsoleW`, since `WriteFile` would take the
   bytes in the console code page. A sequence split between writes is

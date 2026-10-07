@@ -57,23 +57,15 @@ static b32 os_setmeta(os *ctx, i32 fd, osmeta *m)
                                       &set, sizeof(set));
 }
 
-typedef struct {
-    arena *perm;
-    struct {
-        s8 *data;
-        iz  len;
-        iz  cap;
-    } args;
-} expansion;
-
+// A match: its path packed after the last, with a terminator, in the
+// arena that data is.
 static b32 add_arg(void *data, s8 path, os_dirent *entry, arena scratch)
 {
     (void)entry;
     (void)scratch;
-    expansion *e = data;
-    s8 copy = {newstr(e->perm, path.len), path.len};
-    bytecopy(copy.s, path.s, path.len);
-    *push(e->perm, &e->args) = copy;
+    u8 *copy = newstr(data, path.len+1);
+    bytecopy(copy, path.s, path.len);
+    copy[path.len] = 0;
     return 1;
 }
 
@@ -81,19 +73,37 @@ static b32 add_arg(void *data, s8 path, os_dirent *entry, arena scratch)
 // as zip expands them (src/dir.c) and as a POSIX shell would: one with *
 // or ? becomes the names it matches, in order, but for hidden and system
 // files, as a shell leaves out dotfiles, or if none, stays as it is.
-// The arguments go to perm, and directory listings to scratch.
+// The arguments go to perm, and directory listings to scratch. Matches
+// are packed first, then the arguments made all at once, since an array
+// doubled as it grew between them would leave each smaller copy behind.
 static s8 *expand_args(os *ctx, arena *perm, s8 *args, i32 *nargs,
                        arena scratch)
 {
-    expansion e = {perm, {0}};
+    iz *matches = new(perm, *nargs, iz);
+    u8 *p       = (u8 *)perm->beg;  // where they begin
+    iz  total   = 0;
     for (i32 i = 0; i < *nargs; i++) {
-        if (!zip_haswild(args[i], 0) ||
-            !expand_wild(ctx, args[i], 0, 0, add_arg, &e, scratch)) {
-            *push(perm, &e.args) = args[i];
+        if (zip_haswild(args[i], 0)) {
+            matches[i] = expand_wild(ctx, args[i], 0, 0, add_arg, perm,
+                                     scratch);
+        }
+        total += matches[i] ? matches[i] : 1;
+    }
+
+    s8 *r = new(perm, total, s8);
+    iz  n = 0;
+    for (i32 i = 0; i < *nargs; i++) {
+        if (!matches[i]) {
+            r[n++] = args[i];
+        }
+        for (iz k = 0; k < matches[i]; k++, n++) {
+            r[n].s = p;
+            for (; p[r[n].len]; r[n].len++) {}
+            p += r[n].len + 1;
         }
     }
-    *nargs = (i32)e.args.len;
-    return e.args.data;
+    *nargs = (i32)total;
+    return r;
 }
 
 void mainCRTStartup(void)

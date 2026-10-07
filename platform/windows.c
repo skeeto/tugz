@@ -131,36 +131,42 @@ typedef struct {
     iz   len;
 } s16;
 
-// Convert UTF-16 to WTF-8: unpaired surrogates encode like any other
-// code point so that arbitrary file names round trip.
-static s8 towtf8(arena *a, c16 *w)
+// Encode UTF-16 as WTF-8, where unpaired surrogates encode like any
+// other code point so that arbitrary file names round trip, into d
+// unless null. Returns the length, at most three bytes a unit.
+static iz wtf8_encode(u8 *d, c16 const *w, iz wlen)
 {
-    iz wlen = 0;
-    for (; w[wlen]; wlen++) {}
-
-    s8 r = {newstr(a, 3*wlen), 0};
+    static u8 const lead[] = {0, 0, 0xc0, 0xe0, 0xf0};
+    iz len = 0;
     for (iz i = 0; i < wlen; i++) {
         u32 c = w[i];
         if (c>=0xd800 && c<=0xdbff && i+1<wlen &&
             w[i+1]>=0xdc00 && w[i+1]<=0xdfff) {
             c = 0x10000 + ((c - 0xd800)<<10) + (w[++i] - 0xdc00);
         }
-        if (c < 0x80) {
-            r.s[r.len++] = (u8)c;
-        } else if (c < 0x800) {
-            r.s[r.len++] = (u8)(0xc0 | c>>6);
-            r.s[r.len++] = (u8)(0x80 | (c & 63));
-        } else if (c < 0x10000) {
-            r.s[r.len++] = (u8)(0xe0 | c>>12);
-            r.s[r.len++] = (u8)(0x80 | (c>>6 & 63));
-            r.s[r.len++] = (u8)(0x80 | (c & 63));
-        } else {
-            r.s[r.len++] = (u8)(0xf0 | c>>18);
-            r.s[r.len++] = (u8)(0x80 | (c>>12 & 63));
-            r.s[r.len++] = (u8)(0x80 | (c>>6 & 63));
-            r.s[r.len++] = (u8)(0x80 | (c & 63));
+        i32 n = c<0x80 ? 1 : c<0x800 ? 2 : c<0x10000 ? 3 : 4;
+        for (i32 k = n-1; d && k>0; k--, c >>= 6) {
+            d[len+k] = (u8)(0x80 | (c & 63));
         }
+        if (d) {
+            d[len] = (u8)(lead[n] | c);
+        }
+        len += n;
     }
+    return len;
+}
+
+// Convert null-terminated UTF-16 to WTF-8, allocating just its length,
+// since an arena that grows down (zip's scratch) could not give back
+// the rest of a guess at it, as for every name in a listing.
+static s8 towtf8(arena *a, c16 *w)
+{
+    iz wlen = 0;
+    for (; w[wlen]; wlen++) {}
+    s8 r  = {0};
+    r.len = wtf8_encode(0, w, wlen);
+    r.s   = newstr(a, r.len);
+    wtf8_encode(r.s, w, wlen);
     return r;
 }
 
@@ -799,6 +805,12 @@ static i64 unixtime(u32 const ft[2])
 // its hard links, as Microsoft documents, where a handle's would not.
 // The search pattern, dead once the search begins, is overwritten by the
 // listing, so that a deep tree's directories do not each keep theirs.
+// Each entry is first packed after the last, its name, a terminator, and
+// what the listing tells of it, then entries are made for them all at
+// once: an array doubled as it grew would, in an arena that grows down
+// (zip's scratch), or in one where names follow it (gzip's), leave each
+// smaller copy behind, some 265 bytes a name in all on x86-64, where
+// this takes 117 and the name.
 static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
                              arena *a)
 {
@@ -812,7 +824,14 @@ static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
     b32 sep = dir.len && dir.s[dir.len-1]=='\\';
     c16 *pattern = s16cat(&tmp, dir, s16lit(sep ? L"*" : L"\\*"));
 
-    os_dirents list = {0};
+    typedef struct {
+        u32 attributes;
+        u32 written[2], accessed[2];
+        u32 size_hi, size_lo;
+    } found;
+    u8 *first = (u8 *)(a->down ? a->end : a->beg);  // where entries begin
+    u8 *last  = first;                              // and end
+    iz  n     = 0;
     find_data fd = {0};
     iptr h = FindFirstFileExW(pattern, 1, &fd, 0, 0,
                               FIND_FIRST_EX_LARGE_FETCH);
@@ -825,23 +844,26 @@ static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
     } else {
         u32 skip = all ? 0 : FILE_ATTRIBUTE_HIDDEN|FILE_ATTRIBUTE_SYSTEM;
         do {
-            if (fd.attributes & skip) {
+            c16 *w    = fd.name;
+            b32  dots = w[0]=='.' && (!w[1] || (w[1]=='.' && !w[2]));
+            if ((fd.attributes & skip) || dots) {
                 continue;
             }
-            s8 name = towtf8(a, fd.name);
-            if (s8equals(name, S(".")) || s8equals(name, S(".."))) {
-                continue;
-            }
-            os_dirent *e = push(a, &list);
-            *e = (os_dirent){name, {0}};  // type FT_NONE
-            if (!(fd.attributes & FILE_ATTRIBUTE_REPARSE)) {
-                b32 isdir = fd.attributes & FILE_ATTRIBUTE_DIRECTORY;
-                e->info.type  = isdir ? FT_DIR : FT_FILE;
-                e->info.size  = (i64)((u64)fd.size_hi<<32 | fd.size_lo);
-                e->info.mtime = unixtime(fd.written);
-                e->info.atime = unixtime(fd.accessed);
-                e->info.attr  = fd.attributes;
-            }
+            iz wlen = 0;
+            for (; w[wlen]; wlen++) {}
+            iz    len  = wtf8_encode(0, w, wlen);
+            iz    size = len + 1 + (iz)sizeof(found);
+            u8   *e    = newstr(a, size);
+            found f    = {
+                fd.attributes, {fd.written[0], fd.written[1]},
+                {fd.accessed[0], fd.accessed[1]}, fd.size_hi, fd.size_lo
+            };
+            assert(a->down ? e+size==last : e==last);  // packed
+            wtf8_encode(e, w, wlen);
+            e[len] = 0;
+            bytecopy(e+len+1, &f, sizeof(f));
+            last = a->down ? e : e+size;
+            n++;
         } while (FindNextFileW(h, &fd));
         b32 done = GetLastError() == ERROR_NO_MORE_FILES;
         FindClose(h);
@@ -849,8 +871,27 @@ static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
             return 0;  // not a partial listing
         }
     }
-    *count = list.len;
-    return list.data ? list.data : new(a, 1, os_dirent);
+
+    os_dirent *list = new(a, n, os_dirent);  // type FT_NONE
+    u8        *p    = MIN(first, last);
+    for (iz i = 0; i < n; i++) {
+        os_dirent *e = list + i;
+        e->name.s = p;
+        for (; p[e->name.len]; e->name.len++) {}
+        found f;
+        bytecopy(&f, p+e->name.len+1, sizeof(f));
+        p += e->name.len + 1 + (iz)sizeof(f);
+        if (!(f.attributes & FILE_ATTRIBUTE_REPARSE)) {
+            b32 isdir = f.attributes & FILE_ATTRIBUTE_DIRECTORY;
+            e->info.type  = isdir ? FT_DIR : FT_FILE;
+            e->info.size  = (i64)((u64)f.size_hi<<32 | f.size_lo);
+            e->info.mtime = unixtime(f.written);
+            e->info.atime = unixtime(f.accessed);
+            e->info.attr  = f.attributes;
+        }
+    }
+    *count = n;
+    return list;
 }
 
 // Upper case by the system's "file system rules", its default without
