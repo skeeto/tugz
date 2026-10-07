@@ -1950,6 +1950,38 @@ for m in 4755 1755; do
         fail "replaced mode $m: $(ls -l perm.zip)"
 done
 chmod 644 perm.zip
+# Its group too, where the user may give it (Info-ZIP's rename keeps
+# none), as when a supplementary group shares it. Else the new file's
+# group (the user's, or on BSD the directory's) gets only the permissions
+# of others, not the old group's: here a group the user is not in, which
+# BSD gave the archive from its directory, before that changed.
+gid() { ls -ln "$1" | awk '{print $4}'; }
+mkdir grp
+: >grp/probe
+newgid=$(gid grp/probe)
+member=
+other=
+for g in $(id -G); do
+    [ $g = $newgid ] && member=1
+    [ $g != $newgid ] && [ -z "$other" ] && other=$g
+done
+"$ZIP" -q grp/g.zip tree/a.txt
+if [ -n "$other" ] && chgrp $other grp/g.zip 2>/dev/null; then
+    chmod 660 grp/g.zip
+    "$ZIP" -q grp/g.zip tree/b.txt
+    [ "$(gid grp/g.zip)" = $other ] &&
+        [ "$(ls -l grp/g.zip | cut -c1-10)" = -rw-rw---- ] ||
+        fail "replaced group: $(ls -ln grp/g.zip)"
+fi
+if [ -z "$member" ] && [ "$(id -u)" != 0 ]; then
+    "$ZIP" -q grp/n.zip tree/a.txt
+    chmod 654 grp/n.zip
+    chgrp "$(id -g)" grp
+    "$ZIP" -q grp/n.zip tree/b.txt
+    [ "$(gid grp/n.zip)" = "$(id -g)" ] &&
+        [ "$(ls -l grp/n.zip | cut -c1-10)" = -rw-r--r-- ] ||
+        fail "replaced group not kept: $(ls -ln grp/n.zip)"
+fi
 
 # With standard output closed, progress lines stay out of the archive
 "$ZIP" -r closed.zip tree >&-

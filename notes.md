@@ -432,14 +432,18 @@ neither inflate nor the gzip container.
   target within the directory where the archive was named is named from
   there, as the user named it, and otherwise a drive or share path is
   given without `\\?\`. A link that cannot be followed cannot be written
-  (15, as in Info-ZIP). The new archive keeps the old one's mode on
-  POSIX (not its owner, group, or ACL, so its set-ID and sticky bits
-  only if the owner and group are the same anyway, where Info-ZIP keeps
-  them regardless), or stays owner-only, as Info-ZIP's would, should
-  examining the old one then fail for any reason but its absence; and on
-  Windows its hidden, system, and not-indexed attributes, with the
-  archive bit set, but not its access control: as for gzip's outputs,
-  that is inherited from the directory (copying it would take advapi32).
+  (15, as in Info-ZIP). On POSIX the new archive keeps the old one's
+  mode, and its group where the user may give it (a member of it, or
+  root), but not its owner or ACL. Where the group is not kept, the new
+  file's (the user's, or on BSD the directory's) gets only the
+  permissions of others rather than the old group's, and set-ID and
+  sticky bits stay only with the same owner and group (Info-ZIP keeps
+  the whole mode for any group). Should examining the old archive fail
+  for any reason but its absence, the new one stays owner-only, as
+  Info-ZIP's would. On Windows it keeps the old one's hidden, system,
+  and not-indexed attributes, with the archive bit set, but not its
+  access control: as for gzip's outputs, that is inherited from the
+  directory (copying it would take advapi32).
 - Merging: the central directory is parsed with every field bounds
   checked, and as in Info-ZIP, an entry without a name makes it invalid
   (3, after "zero-length name for entry #1"); copied entries get
@@ -799,9 +803,13 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   target created and survives (Info-ZIP leaves an empty file there and
   replaces the link with the archive). On Windows the new archive is
   flushed to the device before the rename (see Writing), which Info-ZIP
-  never does. The old archive's set-ID and sticky bits are kept only if
-  the new one has its owner and group, where Info-ZIP keeps them for a
-  new owner or group.
+  never does. The old archive's group is kept where the user may give
+  it, where Info-ZIP's new file has the user's (or on BSD the
+  directory's) unless it copied into the archive through a link. If not
+  kept, the group gets the permissions of others, and in any case the
+  set-ID and sticky bits are kept only if the new archive has the old
+  owner and group, where Info-ZIP keeps the whole mode for a new owner
+  or group.
 
 ## Workflow
 

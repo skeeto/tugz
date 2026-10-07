@@ -58,17 +58,18 @@ static b32  os_writable(os *, s8 path, arena scratch);
 // before anything is replaced: on POSIX, one that closing reports
 // (there is no fsync, as in Info-ZIP); on Windows, which renames before
 // closing, one that flushing reports. On POSIX it takes the replaced
-// file's mode, though not its owner, group, or ACL (so its set-ID and
-// sticky bits only if it has the same owner and group anyway), and
-// stays owner-only if that cannot be examined; without one it has a new
-// file's permissions (0666 less the umask, and a default ACL if created
-// with OS_DEFPERMS). On Windows it takes the replaced file's hidden,
-// system, and not-indexed attributes, but like any new file gets its
-// access control from the directory. Returns COMMIT_OK, or the step
-// that failed, as os_error then tells why: COMMIT_ECLOSE, the deferred
-// write error, or COMMIT_EREPLACE, the move. The descriptor is closed
-// even on failure, which discards the file, unless whatever refused the
-// move refuses removing it too.
+// file's mode, and its group where the user may give it, but not its
+// owner or ACL: without the group, the group's permissions are those of
+// others, and set-ID and sticky bits stay only with the same owner and
+// group. It stays owner-only if the replaced file cannot be examined;
+// without one it has a new file's permissions (0666 less the umask, and
+// a default ACL if created with OS_DEFPERMS). On Windows it takes the
+// replaced file's hidden, system, and not-indexed attributes, but like
+// any new file gets its access control from the directory. Returns
+// COMMIT_OK, or the step that failed, as os_error then tells why:
+// COMMIT_ECLOSE, the deferred write error, or COMMIT_EREPLACE, the move.
+// The descriptor is closed even on failure, which discards the file,
+// unless whatever refused the move refuses removing it too.
 enum { COMMIT_OK, COMMIT_ECLOSE, COMMIT_EREPLACE };
 static i32  os_commit(os *, i32 fd, s8 temp, s8 path, b32 replace,
                       arena scratch);

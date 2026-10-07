@@ -294,14 +294,23 @@ static i32 os_commit(os *ctx, i32 fd, s8 temp, s8 path, b32 replace,
     char *dst = tocstr(&scratch, path);
     struct stat st;
     if (!stat(dst, &st)) {
+        // The old group, where the user may give it (a member, or root),
+        // else its permissions would go to another group (the user's, or
+        // on BSD the directory's), which then gets only those of others.
         // Set-ID and sticky bits too, as Info-ZIP keeps them, but only
         // while the owner and group are the old ones: otherwise set-ID
         // bits would run the program as someone the old file did not.
         // Should the system refuse them (BSD's sticky files), the rest.
-        mode_t mode = st.st_mode & 0777;
+        mode_t      mode  = st.st_mode & 0777;
         struct stat self;
-        if (!fstat(fd, &self) && self.st_uid==st.st_uid &&
-                self.st_gid==st.st_gid) {
+        b32         known = !fstat(fd, &self);
+        if (known && self.st_gid!=st.st_gid &&
+                !fchown(fd, (uid_t)-1, st.st_gid)) {
+            self.st_gid = st.st_gid;
+        }
+        if (!known || self.st_gid!=st.st_gid) {
+            mode = (mode_t)((mode & 0707) | (mode & 07)<<3);
+        } else if (self.st_uid == st.st_uid) {
             mode = st.st_mode & 07777;
         }
         if (fchmod(fd, mode)) {
