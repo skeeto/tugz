@@ -6,6 +6,11 @@
 // hooks os_oom and os_extend come from the program's own layer
 // (src/gzipio.c, src/zipcli.c) or from its entry file.
 
+// The release, as the programs report it. CMakeLists.txt, the
+// amalgamations, and the release workflow (whose tag must be v plus this)
+// read it from here.
+#define TUGZ_VERSION "1.0.0"
+
 typedef unsigned char       u8;
 typedef unsigned short      u16;
 typedef   signed int        i32;

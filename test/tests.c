@@ -2671,7 +2671,8 @@ static void test_cli(os *ctx, arena a)
     TEST(run(ctx, a, "-h") == EXIT_OK);
     TEST(mfs_get(ctx, "<stdout>").len > 0);
     TEST(run(ctx, a, "--version") == EXIT_OK);
-    TEST(equals(mfs_get(ctx, "<stdout>"), (u8 *)"gzip (tugz) 1.0\n", 16));
+    s8 version = S("gzip (tugz) " TUGZ_VERSION "\n");
+    TEST(equals(mfs_get(ctx, "<stdout>"), version.s, version.len));
 
     // Error wins over warning in the exit status
     mfs_put(ctx, "w", text, 10);

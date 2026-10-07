@@ -522,7 +522,7 @@ static i32 apply_option(options *o, i32 c, arena scratch)
         print(scratch, 1, usage_text);
         return EXIT_OK;
     case 'V':
-        print(scratch, 1, S("gzip (tugz) 1.0\n"));
+        print(scratch, 1, S("gzip (tugz) " TUGZ_VERSION "\n"));
         return EXIT_OK;
     }
     print(scratch, 2, usage_text);

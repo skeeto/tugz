@@ -6,10 +6,11 @@
 # target tugz::tugz.
 cmake_minimum_required(VERSION 3.21...4.4)
 
-# The version the programs report
-file(STRINGS src/cli.c tugz_version REGEX "gzip \\(tugz\\) [0-9.]+")
-string(REGEX REPLACE ".*gzip \\(tugz\\) ([0-9.]+).*" "\\1"
-       tugz_version "${tugz_version}")
+# The release, TUGZ_VERSION in src/base.c, which the programs report
+file(STRINGS src/base.c tugz_version
+     REGEX "^#define TUGZ_VERSION \"[0-9]+\\.[0-9]+\\.[0-9]+\"$")
+string(REGEX REPLACE ".*\"(.*)\"" "\\1" tugz_version "${tugz_version}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS src/base.c)
 
 project(tugz
     VERSION ${tugz_version}
@@ -110,7 +111,7 @@ if(WIN32 AND (TUGZ_BUILD_GZIP OR TUGZ_BUILD_ZIP OR TUGZ_BUILD_TESTS))
         else()
             message(STATUS
                 "tugz: no libmemory, so Windows programs import memcpy and "
-                "memset from msvcrt.dll")
+                "memset from the C runtime's DLL (msvcrt or UCRT)")
         endif()
     endif()
 endif()

@@ -80,15 +80,13 @@ function(tugz_concat var)
     set(${var} "${text}" PARENT_SCOPE)
 endfunction()
 
-# Sets out to the version in a line of a file matching a pattern, whose
-# first group is the version.
-function(tugz_version out path pattern)
-    file(STRINGS "${path}" lines REGEX "${pattern}")
-    if(NOT lines MATCHES "${pattern}")
-        message(FATAL_ERROR "no version in ${path}")
-    endif()
-    set(${out} "${CMAKE_MATCH_1}" PARENT_SCOPE)
-endfunction()
+# The release, TUGZ_VERSION in src/base.c
+set(pattern "^#define TUGZ_VERSION \"([0-9]+\\.[0-9]+\\.[0-9]+)\"$")
+file(STRINGS "${root}/src/base.c" v REGEX "${pattern}")
+if(NOT v MATCHES "${pattern}")
+    message(FATAL_ERROR "no TUGZ_VERSION in src/base.c")
+endif()
+set(v "${CMAKE_MATCH_1}")
 
 # Writes text, unescaped, to a file in the output directory, through a
 # temporary file renamed over it.
@@ -102,7 +100,6 @@ function(tugz_write name text)
 endfunction()
 
 function(tugz_gzip)
-    tugz_version(v "${root}/src/cli.c" "gzip \\(tugz\\) ([0-9.]*)")
     tugz_inputs(files platform/gzip_windows.c)
     set(text
         "// tugz ${v}: tiny unity gzip, a drop-in gzip for Windows\n"
@@ -116,7 +113,6 @@ function(tugz_gzip)
 endfunction()
 
 function(tugz_zip)
-    tugz_version(v "${root}/src/zipcli.c" "tugz zip ([0-9][0-9.]*)")
     tugz_inputs(files platform/zip_windows.c)
     set(text
         "// tugz zip ${v}: an Info-ZIP compatible zip for Windows\n"
@@ -129,7 +125,6 @@ function(tugz_zip)
 endfunction()
 
 function(tugz_library)
-    tugz_version(v "${root}/src/cli.c" "gzip \\(tugz\\) ([0-9.]*)")
     tugz_inputs(files platform/libtugz.c)
 
     # Names the core defines as macros, and as types: "typedef ... name;"

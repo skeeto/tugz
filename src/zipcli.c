@@ -113,7 +113,7 @@ typedef struct {
 } zipconfig;
 
 static s8 const zip_usage = S8(
-    "tugz zip 1.0, a subset of Info-ZIP Zip 3.0\n"
+    "tugz zip " TUGZ_VERSION ", a subset of Info-ZIP Zip 3.0\n"
     "usage: zip [-options] archive[.zip] [path ...] [-x pattern ...]\n"
     "  -0..-9  store only, compress faster..better (default 6)\n"
     "  -r      recurse into directories\n"
