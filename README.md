@@ -1,6 +1,6 @@
 # tugz: tiny unity gzip
 
-<p align="center"><img src="tugz.png" width="320" alt="tugz mascot: a smiling blue tugboat with tire fenders"></p>
+<p align="center"><img src="docs/tugz.png" width="320" alt="tugz mascot: a smiling blue tugboat with tire fenders"></p>
 
 A from-specification implementation of gzip ([RFC 1952][]), zlib ([RFC
 1950][]), and DEFLATE ([RFC 1951][]) in C11 with C23 attributes, for GCC
@@ -151,24 +151,24 @@ not, except when freshening, as in Info-ZIP.
 
 Headers, attributes, extra fields, messages, and exit statuses match
 Info-ZIP's, but for deliberate departures, all listed in
-[notes.md](notes.md#departures-from-info-zip). Friendlier exit statuses
-include these: `-u` or `-f` with nothing newer exits 0 (Info-ZIP: 12),
-an unreadable directory or a dangling link met while recursing exits 18
-(Info-ZIP: 0) unless `-x` or `-i` leaves out all it could add, and `-i`
-that matches nothing exits 12 (Info-ZIP writes an empty archive). An
-archive that can be written but not read is an error (11), which
-Info-ZIP replaces as though missing, losing its entries, as is one that
-is found but then cannot be examined, and a new archive never replaces a
-file made at its path meanwhile. Warnings and errors go to standard
-error, without the tab that starts Info-ZIP's warnings on standard
-output. Every entry that does not shrink is stored (Info-ZIP stores only
-small ones), and none is marked as text. A directory loop through links
-is not followed. A hard-linked archive is replaced by a new file, so its
-other names keep the old archive. Entries select only files within the
-current directory, never by absolute names, `..`, or linked directories,
-so that refreshing an untrusted archive cannot read other files. A file
-that cannot be read to its end is left out (18), where Info-ZIP stores
-what it read (0).
+[docs/notes.md](docs/notes.md#departures-from-info-zip). Friendlier exit
+statuses include these: `-u` or `-f` with nothing newer exits 0
+(Info-ZIP: 12), an unreadable directory or a dangling link met while
+recursing exits 18 (Info-ZIP: 0) unless `-x` or `-i` leaves out all it
+could add, and `-i` that matches nothing exits 12 (Info-ZIP writes an
+empty archive). An archive that can be written but not read is an error
+(11), which Info-ZIP replaces as though missing, losing its entries, as
+is one that is found but then cannot be examined, and a new archive
+never replaces a file made at its path meanwhile. Warnings and errors go
+to standard error, without the tab that starts Info-ZIP's warnings on
+standard output. Every entry that does not shrink is stored (Info-ZIP
+stores only small ones), and none is marked as text. A directory loop
+through links is not followed. A hard-linked archive is replaced by a
+new file, so its other names keep the old archive. Entries select only
+files within the current directory, never by absolute names, `..`, or
+linked directories, so that refreshing an untrusted archive cannot read
+other files. A file that cannot be read to its end is left out (18),
+where Info-ZIP stores what it read (0).
 
 Output is deterministic: entries within each directory are sorted by
 name, and with `-X` an archive depends only on file contents, names,
@@ -210,8 +210,8 @@ Explorer, .NET, and tar. So `make check` needs zlib, libdeflate, a
 reference gzip (`/usr/bin/gzip`), and Info-ZIP's `unzip` and `zipinfo`,
 while Python (through `uv` if installed) adds checks. Tested on macOS,
 Linux (x86-64, i386, aarch64, big-endian PowerPC), and Windows (x86-64,
-i686). See [notes.md](notes.md) for design decisions, test coverage, and
-the optimization log.
+i686). See [docs/notes.md](docs/notes.md) for design decisions, test
+coverage, and the optimization log.
 
 [RFC 1950]: https://www.rfc-editor.org/rfc/rfc1950
 [RFC 1951]: https://www.rfc-editor.org/rfc/rfc1951
