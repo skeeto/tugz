@@ -757,9 +757,11 @@ its race allows).
   read error, which silently selects, or excludes, less. An archive that
   can be written but not read fails (11, "Could not open archive"),
   where Info-ZIP takes it for a missing one and replaces it, losing its
-  entries. So does, before any work, one that cannot be examined for any
-  reason but that nothing is there, such as an I/O error (Info-ZIP opens
-  it regardless, and replaces one that it cannot open). A file that
+  entries. So does, before any work, one that is found but then cannot
+  be examined, as when an I/O error strikes once its path is resolved
+  (Info-ZIP opens it regardless, and replaces one that it cannot open);
+  a path that cannot be examined at all is taken for a missing archive,
+  as in Info-ZIP (see Compatibility). A file that
   cannot be read to its end is left out, or its entry kept, with the
   reason and "could not read input file" (18), where Info-ZIP, when
   deflating, stores what it read, exiting 0, warning only that the
