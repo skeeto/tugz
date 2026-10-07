@@ -16,5 +16,6 @@ fuzz/
 /zip.c
 /tests-lib
 /tests-zip
+/tests-zipcli
 /libtugz.o
 /tugz.c

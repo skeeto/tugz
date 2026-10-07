@@ -1,14 +1,14 @@
 // libFuzzer harness: arbitrary bytes as an existing archive
 // Parses end records and the central directory with src/zip.c's parsers,
-// whose header parser the zip program shares, though it reads a header
-// at a time (src/zipcli.c's read_archive, not fuzzed here). Whatever
-// parses is then rewritten much as zip merges, copying each entry's data,
-// but skipping entries with bad local headers (zip fails on them) and
+// each given exactly the bytes it is to read, in an allocation of their
+// size, so that AddressSanitizer sees any read past them. The zip program
+// shares the header parser, though it reads a header at a time
+// (src/zipcli.c's read_archive, which fuzz_zip.c fuzzes). Whatever parses
+// is then rewritten much as zip merges, copying each entry's data, but
+// skipping entries with bad local headers (zip fails on them) and
 // clearing every descriptor flag (zip keeps an encrypted entry's), and
 // the result must parse back to the same entries. Entries may share data,
 // so a rewrite can far exceed its input.
-// Each parser is given exactly the bytes it is to read, in an allocation
-// of their size, so that AddressSanitizer sees any read past them.
 // $ clang -g -O1 -fsanitize=fuzzer,address,undefined test/fuzz_zipread.c
 // $ ./a.out -max_len=8192 corpus/
 #include "../src/base.c"

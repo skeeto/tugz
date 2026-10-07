@@ -79,10 +79,14 @@ tests-lib: test/libtests.c $(LIB)
 tests-zip: test/ziptests.c src/base.c src/zip.c src/wild.c
 	$(CC) $(DEBUG) -o $@ test/ziptests.c
 
-check: tests tests-lib tests-zip gzip zip-debug
+tests-zipcli: test/zipclitests.c test/zipos.c $(ZIPSRC)
+	$(CC) $(DEBUG) -o $@ test/zipclitests.c
+
+check: tests tests-lib tests-zip tests-zipcli gzip zip-debug
 	./tests
 	./tests-lib
 	./tests-zip
+	./tests-zipcli
 	sh test/cli.sh ./gzip
 	sh test/zip.sh ./zip-debug
 
@@ -132,8 +136,11 @@ fuzz-diff-deflate: test/fuzz_diff_deflate.c test/fuzzos.c $(SRC)
 fuzz-zipread: test/fuzz_zipread.c src/base.c src/zip.c
 	$(FUZZCC) $(FUZZ) -o $@ test/fuzz_zipread.c
 
+fuzz-zip: test/fuzz_zip.c test/zipos.c $(ZIPSRC)
+	$(FUZZCC) $(FUZZ) -o $@ test/fuzz_zip.c
+
 fuzz: fuzz-inflate fuzz-roundtrip fuzz-diff-inflate fuzz-diff-deflate \
-      fuzz-zipread
+      fuzz-zipread fuzz-zip
 
 fuzz-seeds:
 	uv run --no-project python test/seeds.py
@@ -143,8 +150,8 @@ bench: test/bench.c $(SRC)
 
 clean:
 	rm -rf gzip gzip-debug gzip.exe gzip.c zip zip-debug zip.exe zip.c \
-	       tests tests-zip tests-lib bench *.dSYM libtugz.o tugz.c \
-	       fuzz-inflate fuzz-roundtrip fuzz-diff-inflate \
-	       fuzz-diff-deflate fuzz-zipread
+	       tests tests-zip tests-zipcli tests-lib bench *.dSYM libtugz.o \
+	       tugz.c fuzz-inflate fuzz-roundtrip fuzz-diff-inflate \
+	       fuzz-diff-deflate fuzz-zipread fuzz-zip
 
 .PHONY: amalgamation check fuzz fuzz-seeds clean

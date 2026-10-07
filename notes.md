@@ -47,9 +47,12 @@ implementations live in `platform/posix.c` and `platform/windows.c`.
 | `platform/libtugz.c`     | library layer; `tugz.h` is its interface        |
 | `test/tests.c`           | test suite (in-memory file system)              |
 | `test/libtests.c`        | library interface tests                         |
-| `test/fuzz_*.c`          | libFuzzer harnesses, most sharing `fuzzos.c`    |
+| `test/fuzz_*.c`          | libFuzzer harnesses, sharing `fuzzos.c` (codec) |
+|                          | or `zipos.c` (zip)                              |
 | `test/bench.c`           | benchmark versus zlib and libdeflate            |
 | `test/ziptests.c`        | ZIP format unit tests                           |
+| `test/zipclitests.c`     | zip program tests, in memory                    |
+| `test/zipos.c`           | in-memory platform layer for the zip program    |
 | `test/cli.sh`            | end-to-end gzip tests                           |
 | `test/zip.sh`            | end-to-end zip tests (unzip, zipinfo, Python)   |
 | `test/zipcheck.py`       | zip.sh's verifier through Python's `zipfile`    |
@@ -197,7 +200,8 @@ ns on the i9-12900) and in WSL2 (650 ns). Library inflate into
 The zip program shares the deflate core and `src/io.c`, adding a
 portable format layer (`src/zip.c`, no I/O, fuzzed), wildcard matching
 and directory listings (`src/wild.c`, `src/dir.c`), and a driver
-(`src/zipcli.c`) over a few more platform functions: `os_stat`,
+(`src/zipcli.c`, also tested and fuzzed over an in-memory platform
+layer, `test/zipos.c`) over a few more platform functions: `os_stat`,
 `os_listdir`, `os_readlink`, positioned `os_readat`/`os_writeat`,
 `os_truncate`, `os_commit` (atomic rename over the target, only once
 the file is closed, or on Windows flushed, without error),
@@ -657,13 +661,17 @@ neither inflate nor the gzip container.
   extra fields; the buffers and deflate state (the old archive's read
   window comes earlier, as it is read); and a megabyte of room for any
   one entry's headers and messages, each forgotten before the next. So
-  running out of memory cannot strike once output has started. A file's
-  name is its key, too, in the map that finds recorded files by name: on
-  Windows, where names that differ only in ASCII case are one, the map
-  folds them as it hashes and compares them, rather than keep a folded
-  copy of each, as it did: for 50,000 files with paths of about 120
-  bytes, peak commit went from 32.1 to 26.0 MiB on x86-64 (i686 27.3 to
-  21.3), with archives byte-identical.
+  running out of memory cannot strike once output has started, as
+  `test/zipclitests.c` and `fuzz-zip` check: their platform layer
+  commits exactly what is asked, and traps on committing more once the
+  temporary file exists. Only a failure's reason, from a file that
+  cannot be read or a write that fails, is then copied into perm. A
+  file's name is its key, too, in the map that finds recorded files by
+  name: on Windows, where names that differ only in ASCII case are one,
+  the map folds them as it hashes and compares them, rather than keep a
+  folded copy of each, as it did: for 50,000 files with paths of about
+  120 bytes, peak commit went from 32.1 to 26.0 MiB on x86-64 (i686 27.3
+  to 21.3), with archives byte-identical.
 - Memory per existing entry: about 200 bytes for names of 17 bytes with
   `UT` and `ux` fields (Info-ZIP 3.0: about 270 on macOS, 390 on Linux).
   A 112-byte `zentry` (its Zip64 flag a byte, in what was padding), its
@@ -888,16 +896,18 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
 
 ## Workflow
 
-    make check                 # unit, library, and ZIP format tests
-                               # (ASan/UBSan), gzip and zip end to end
+    make check                 # unit, library, ZIP format, and zip
+                               # program tests (ASan/UBSan), gzip and
+                               # zip end to end
                                # (needs zlib, libdeflate, /usr/bin/gzip,
                                # Info-ZIP unzip and zipinfo; optional Python)
     SLOW=1 sh test/cli.sh ./gzip   # adds a 5 GiB stream (>4 GiB offsets)
     make gzip.exe zip.exe      # Win32 builds (w64devkit or CROSS=...)
-    make fuzz                  # build the five fuzzers
+    make fuzz                  # build the six fuzzers
     make fuzz-seeds            # seed corpora in fuzz/corpus/
     ./fuzz-diff-inflate -fork=3 -max_len=65536 fuzz/corpus/diff-inflate
     ./fuzz-zipread -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zipread
+    ./fuzz-zip -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zip
     make bench && ./bench -l 1,6,9 bench_corpus/silesia/*
     make amalgamation          # single-file Windows sources, gzip.c and zip.c
     SLOW=1 sh test/zip.sh ./zip    # adds Zip64: 4 and 5 GiB files, 70,000 entries
@@ -922,11 +932,23 @@ Fuzzers:
   streaming encoder, in every format with fuzzer-placed NONE/SYNC/FULL
   flushes and piece sizes, must produce piece-independent output that
   decodes under zlib, libdeflate, and our streaming decoder
-- `fuzz-zipread`: arbitrary bytes as an existing archive; whatever
-  parses is rewritten through `src/zip.c` much as a merge would (but
-  skipping bad local headers, which fail a merge, and dropping every
-  data descriptor), and its central directory must parse back to the
-  same entries
+- `fuzz-zipread`: arbitrary bytes as an existing archive, parsed by
+  `src/zip.c` as the program reads it (the final 64 KiB, then the Zip64
+  end record and the central directory), each part in an allocation of
+  its exact size, so that AddressSanitizer sees reads past it; whatever
+  parses is rewritten much as a merge would (but skipping bad local
+  headers, which fail a merge, and dropping every data descriptor), and
+  its central directory must parse back to the same entries
+- `fuzz-zip`: the zip program itself (`zip_main`, in memory), with
+  arbitrary bytes as the archive it adds to, refreshes, or deletes from,
+  in eight modes, with POSIX or Windows conventions, and faults (the
+  archive shrinking or failing to read, before it is read or while
+  entries are copied, and writes failing). It must leave the archive as
+  it was, or else replace it with one whose entries are the old ones in
+  order, copied exactly or replaced by the files', then the files'
+  (unless deleted), and which it reads back; it must leave no temporary
+  file, nor claim memory once it has created one. Inputs need more than
+  64 KiB (`-max_len`) for copies to read through the window again.
 
 ## Cross-platform verification
 

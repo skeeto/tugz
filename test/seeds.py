@@ -386,6 +386,28 @@ if zipprog:
                 stream = args[0] == "-"
                 zips[name] = r.stdout if stream else open(out, "rb").read()
 
+# A stored entry ahead of the final 64 KiB, which the zip program first
+# reads, so that copying it reads through its window again
+big = bytes(random.getrandbits(8) for _ in range(70000))
+zips["large"] = archive([(entry("first.txt", zipfile.ZIP_STORED), b"first"),
+                         (entry("big.bin", zipfile.ZIP_STORED), big),
+                         (entry("last.c"), text)])
+
 for name, z in zips.items():
     put("zipread", name + ".zip", z)
 print(len(zips), "zip seeds")
+
+# The same for fuzz-zip after its two-byte header (see test/fuzz_zip.c):
+# every mode (the low three bits) on POSIX, two with Windows conventions
+# (bit 3), and faults (bits 4-6) striking halfway or early: the archive
+# shrinking or its reads failing once the temporary file exists, and
+# writes failing
+nzip = 0
+for name, z in zips.items():
+    hows = [mode for mode in range(8)] + [8 | 0, 8 | 2]
+    hows += [2<<4 | 0, 4<<4 | 1, 5<<4 | 2]
+    for how in hows:
+        at = 2 if how>>4 == 5 else 128
+        put("zip", f"{name}-{how:02x}.zip", bytes([how, at]) + z)
+        nzip += 1
+print(nzip, "zip program seeds")
