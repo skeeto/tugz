@@ -2085,7 +2085,8 @@ fi
 # Departure: a temporary file that cannot be removed after a failure,
 # here a write past the file size limit, is named in a warning (Info-ZIP
 # says nothing)
-printf '#!/bin/sh\ntrap "" XFSZ\nulimit -f 1000\nexec "%s" "$@"\n' "$ZIP" >limzip
+printf '#!/bin/sh\ntrap "" XFSZ\nulimit -f 1000\nexec "%s" "$@"\n' \
+    "$ZIP" >limzip
 chmod +x limzip
 zip0=$ZIP
 ZIP=$(pwd)/limzip

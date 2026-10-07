@@ -568,10 +568,10 @@ neither inflate nor the gzip container.
 - Memory: zip has no fixed cap. Its memory is one reservation of
   address space, as much as the system lends up to 16 GiB on 64-bit
   POSIX hosts and 64 GiB on 64-bit Windows (1 GiB for 32-bit
-  processes), halving on refusal (on POSIX, where a limit on address
-  space, `ulimit -v`, also counts what the C library's `malloc` takes
-  for `opendir` and the like, and the stack, the most that leaves them
-  4 MiB, found by bisection), holding a double-ended arena: perm,
+  processes), halving on refusal (on POSIX, the most that leaves 4 MiB
+  for the C library's `malloc`, which `opendir` and the like still use,
+  and the stack, which a limit on address space, `ulimit -v`, counts
+  too, found by bisection), holding a double-ended arena: perm,
   for what lasts the run, grows up from the bottom, and scratch, passed
   by value and so freed by returning, grows down from the top. When an
   allocation does not fit, the allocator calls the platform's
@@ -595,9 +595,8 @@ neither inflate nor the gzip container.
   "zip error: Out of memory" (4), as `test/zip.sh` checks on Linux under
   `ulimit -v` (over a sweep of limits, where reserving all but a sliver
   once failed `opendir` and the temporary file instead, 15 or 10) and
-  `ulimit -d` (for builds that are not sanitized). gzip
-  and the library keep their fixed arenas: their hooks only report
-  running out.
+  `ulimit -d` (for builds that are not sanitized). gzip and the library
+  keep their fixed arenas: their hooks only report running out.
 - Memory per entry: perm keeps only what is recorded. A file's path and
   name are built in scratch and copied to perm once it is added, as one
   string when the name ends the path, as most do (`d/f`, `./d/f`, `-j`'s
@@ -637,12 +636,12 @@ neither inflate nor the gzip container.
   Cross-platform verification). Each listing is sorted as pointers to
   its entries rather than moving them, and each entry's strings are
   forgotten as the next is taken. Each open level keeps one copy of its
-  path, with a slash after it, of which its name is the end where it
-  ends the path, as usual, rather than three (path, name, and name with
-  a slash): at 450 levels on the Mac, the scan's scratch went from
-  716 KB to 306 KB. `os_listdir` and `os_readlink` take a
-  single arena for their results and temporaries, since callers that
-  wanted transient results passed one arena as both `perm` and
+  path, followed by a slash, whose end is its name too where the name
+  ends the path, as it usually does, rather than three copies (path,
+  name, and name with a slash): at 450 levels on the Mac, the scan's
+  scratch went from 716 KB to 306 KB. `os_listdir` and `os_readlink`
+  take a single arena for their results and temporaries, since callers
+  that wanted transient results passed one arena as both `perm` and
   `scratch`, whose allocations then overlapped. On POSIX a listing
   reads its names first, packed, then makes their entries at once,
   since an array doubled as it grew in scratch, which grows down and so
@@ -818,9 +817,9 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   only if removing it fails too. After a failed read or write, one that
   cannot be removed is named in a warning ("could not remove temporary
   file"), where Info-ZIP removes it as it can, saying nothing. A
-  dangling link at its path gets its
-  target created and survives (Info-ZIP leaves an empty file there and
-  replaces the link with the archive). On Windows the new archive is
+  dangling link at its path gets its target created and survives
+  (Info-ZIP leaves an empty file there and replaces the link with the
+  archive). On Windows the new archive is
   flushed to the device before the rename (see Writing), which Info-ZIP
   never does. The old archive's group is kept where the user may give
   it, where Info-ZIP's new file has the user's (or on BSD the
