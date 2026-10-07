@@ -78,7 +78,7 @@ builds only the library, `tugz::tugz`:
 include(FetchContent)
 FetchContent_Declare(tugz
     URL https://github.com/skeeto/tugz/releases/download/v0.1.0/tugz-0.1.0.tar.gz
-    URL_HASH SHA256=<from the release's SHA256SUMS>
+    URL_HASH SHA256=<the asset's digest on the release page>
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(tugz)
 target_link_libraries(app PRIVATE tugz::tugz)
