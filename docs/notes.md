@@ -182,17 +182,27 @@ output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
   and 0.31 / 0.54 s with the new, with or without the reuse.
 - Programs reach the buffers without copying (`*_pending`/`*_consume`),
   so the program's throughput is unchanged by the restructure.
-- `make libtugz.o` builds an object exporting only `tugz_*` (no writable
-  data). `make tugz.c` produces a single-file amalgamation with the
-  header inlined; define `TUGZ_API` as `static` to embed it. Around the
-  core it saves and restores (`push_macro`, `pop_macro`) every name the
-  core defines as a macro, so its macros neither leak into the program
-  nor replace the program's: its `assert` once turned a program's
-  assertions into optimizer assumptions, even under `NDEBUG`. Its type
-  names become `tugz__` ones, as they collide with common headers:
-  `<windows.h>` defines `byte`, and on LP64 a program's `int64_t i64` is
-  `long`. Static functions and enumerators still share the program's
-  names (documented in `tugz.h`).
+- `platform/libtugz.c` builds an object, or the CMake target
+  `tugz::tugz` (static, or shared with `BUILD_SHARED_LIBS`), exporting
+  only `tugz_*` (no writable data): the core's other functions are all
+  static, so ELF, Mach-O, and MinGW DLL builds export no more without a
+  visibility attribute. `cmake/amalgamate.cmake` (a `cmake -P` script,
+  sorting by byte, so the same in every locale) produces `tugz.c`, a
+  single-file amalgamation with the header inlined; define `TUGZ_API` as
+  `static` to embed it. Around the core it saves and restores
+  (`push_macro`, `pop_macro`) every name the core defines as a macro, so
+  its macros neither leak into the program nor replace the program's:
+  its `assert` once turned a program's assertions into optimizer
+  assumptions, even under `NDEBUG`. Its type names become `tugz__` ones,
+  as they collide with common headers: `<windows.h>` defines `byte`, and
+  on LP64 a program's `int64_t i64` is `long`. Static functions and
+  enumerators still share the program's names (documented in `tugz.h`).
+  `test/amalgtests.c` (ctest's `amalgamation`) embeds it beside a
+  program's own `assert`, `MIN`, `i64`, and `byte`.
+- The targets leave `C_STANDARD` unset, so the compiler's default
+  (gnu17 or later, which accepts C23 attributes) applies even when a
+  consumer sets `CMAKE_C_STANDARD` to 11, and compile at `-O2`, as the
+  performance figures were measured, rather than Release's `-O3`.
 
 ## zip
 
@@ -651,8 +661,8 @@ It needs neither inflate nor the gzip container.
   of limits, where reserving all but a sliver once failed `opendir` and
   the temporary file instead, 15 or 10) and on Linux `ulimit -d`,
   wherever the shell sets them (not macOS), for a build without
-  sanitizers that reserve shadow memory (UBSan alone passes): `make
-  check` gives it `./zip` (`ZIPOOM`). gzip and the library keep their
+  sanitizers that reserve shadow memory (UBSan alone passes): ctest
+  gives it the release `zip` (`ZIPOOM`). gzip and the library keep their
   fixed arenas: their hooks only report running out.
 - Memory per entry: perm keeps only what is recorded. A file's path and
   name are built in scratch and copied to perm once it is added, as one
@@ -908,25 +918,31 @@ race allows).
 
 ## Workflow
 
-    make check                 # unit, library, ZIP format, and zip
-                               # program tests (ASan/UBSan), gzip and
-                               # zip end to end (zip's out-of-memory
-                               # tests with ./zip, where ulimit works)
-                               # (needs zlib, libdeflate, /usr/bin/gzip,
-                               # Info-ZIP unzip and zipinfo; optional Python)
-    SLOW=1 sh test/cli.sh ./gzip   # adds a 5 GiB stream (>4 GiB offsets)
-    make gzip.exe zip.exe      # Win32 builds (w64devkit or CROSS=...)
-    make fuzz                  # build the six fuzzers
-    make fuzz-seeds            # seed corpora in fuzz/corpus/
-    ./fuzz-diff-inflate -fork=3 -max_len=65536 fuzz/corpus/diff-inflate
-    ./fuzz-zipread -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zipread
-    ./fuzz-zip -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zip
-    make bench && ./bench -l 1,6,9 bench_corpus/silesia/*
-    make amalgamation          # single-file Windows sources, gzip.c and zip.c
-    SLOW=1 sh test/zip.sh ./zip    # adds Zip64: 4 and 5 GiB files, 70,000 entries
-                                   # (needs about 10 GiB free in TMPDIR)
+    cmake -B build && cmake --build build -j
+    ctest --test-dir build -j4 # unit, library, ZIP format, zip program,
+                               # and amalgamation tests (ASan/UBSan),
+                               # gzip and zip end to end (zip's
+                               # out-of-memory tests with the release
+                               # zip, where ulimit works) (needs zlib,
+                               # libdeflate, /usr/bin/gzip, Info-ZIP
+                               # unzip and zipinfo; optional Python)
+    SLOW=1 sh test/cli.sh build/gzip   # adds a 5 GiB stream (>4 GiB offsets)
+    cmake -B build-w64 -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-x86_64.cmake
+                               # Win32 builds (or cmake -G Ninja natively
+                               # under w64devkit, which runs zip-windows)
+    cmake -B build-fuzz -DCMAKE_C_COMPILER=clang -DTUGZ_BUILD_FUZZ=ON
+    cmake --build build-fuzz   # the six fuzzers (LLVM clang)
+    cmake --build build-fuzz --target tugz_fuzz_seeds  # fuzz/corpus/
+    build-fuzz/fuzz-diff-inflate -fork=3 -max_len=65536 fuzz/corpus/diff-inflate
+    build-fuzz/fuzz-zipread -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zipread
+    build-fuzz/fuzz-zip -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zip
+    cmake -B build -DTUGZ_BUILD_BENCH=ON && cmake --build build
+    build/bench -l 1,6,9 bench_corpus/silesia/*
+    cmake -P cmake/amalgamate.cmake    # gzip.c, zip.c, tugz.c (and the
+                                       # build's amalgamation/ has them)
+    SLOW=1 sh test/zip.sh build/zip    # adds Zip64: 4 and 5 GiB files, 70,000 entries
+                                       # (needs about 10 GiB free in TMPDIR)
     sh test/zip_windows.sh ./zip.exe   # on Windows, under w64devkit
-    make tugz.c libtugz.o      # single-file library source, library object
 
 Fuzzers:
 
@@ -974,7 +990,7 @@ Fuzzers:
   `test/cli.sh`; `Stop-Process -Force` mid-compression leaves the input
   and no output; console detection checked under ConPTY (`ssh -tt`).
 
-- Windows 11, i9-12900, w64devkit GCC 16: `make gzip.exe` with the real
+- Windows 11, i9-12900, w64devkit GCC 16: `gzip.exe` with the real
   CRT-free flags (imports only KERNEL32 and SHELL32), `test/cli.sh`
   against busybox gzip, plain and `-mpclmul` builds. Non-ASCII and
   non-BMP file names, and 396-character paths, work.

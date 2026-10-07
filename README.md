@@ -29,8 +29,14 @@ time), and the CRC instructions on ARMv8 targets that have them.
 The zip program builds the same way from `platform/zip_posix.c` and
 `platform/zip_windows.c`.
 
-`make amalgamation` produces `gzip.c` and `zip.c`, the Windows builds as
-single source files with their build commands in the header:
+CMake builds the library, both programs, and the tests (see
+Development):
+
+    $ cmake -B build && cmake --build build
+
+Each release also carries `gzip.c` and `zip.c`, the Windows builds as
+single source files with their build commands in the header, which
+`cmake -P cmake/amalgamate.cmake` writes from a source tree:
 
     $ cc -O2 -nostartfiles -o gzip.exe gzip.c -lmemory
     $ cc -O2 -nostartfiles -o zip.exe zip.c -lmemory
@@ -57,8 +63,49 @@ rather than init's clearing of 512 KiB, so 100-byte streams compress
 about 4x faster. One in 2,048 of the resets and FULL flushes that follow
 a longer history still clears as init does. Inflate init and
 `tugz_inflate_reset` both take a small constant time. Build
-`platform/libtugz.c` as an object (`make libtugz.o`), or use `make
-tugz.c` for a single-file amalgamation with the header inlined.
+`platform/libtugz.c` as an object (`cc -c -O2 platform/libtugz.c`), or
+use a release's `tugz.c` (or `cmake -DTUGZ_ARTIFACT=tugz -P
+cmake/amalgamate.cmake`), a single-file amalgamation with the header
+inlined. Define `TUGZ_API` as `static` before including it to embed the
+library in another program.
+
+### Using the library from CMake
+
+Each release's source tarball can be fetched as a dependency, which
+builds only the library, `tugz::tugz`:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(tugz
+    URL https://github.com/skeeto/tugz/releases/download/v1.0.0/tugz-1.0.0.tar.gz
+    URL_HASH SHA256=<from the release's SHA256SUMS>
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(tugz)
+target_link_libraries(app PRIVATE tugz::tugz)
+```
+
+Or, after `cmake --install`, `find_package(tugz 1.0 CONFIG REQUIRED)`
+provides the same target. The library is static unless
+`BUILD_SHARED_LIBS` is set, and position-independent code is the
+consumer's choice (`CMAKE_POSITION_INDEPENDENT_CODE`). The targets keep
+the compiler's default C standard whatever `CMAKE_C_STANDARD` says, as
+C11 alone lacks the C23 attributes. Options:
+
+| Option | Default | Builds |
+|---|---|---|
+| `TUGZ_BUILD_LIBRARY` | ON | the library |
+| `TUGZ_BUILD_GZIP`, `TUGZ_BUILD_ZIP` | top level | the programs |
+| `TUGZ_BUILD_TESTS` | top level, not cross | the tests (CTest) |
+| `TUGZ_BUILD_FUZZ` | OFF | the libFuzzer harnesses (LLVM clang) |
+| `TUGZ_BUILD_BENCH` | OFF | the benchmark |
+| `TUGZ_INSTALL` | top level | install rules and the package |
+| `TUGZ_WARNINGS` | top level | warnings for tugz's own targets |
+| `TUGZ_SANITIZE` | if supported | ASan and UBSan in the tests |
+| `TUGZ_LIBMEMORY` | AUTO | Windows programs with w64devkit's `-lmemory` |
+
+Installing the programs (the `programs` component, which a plain
+`cmake --install` includes) puts `gzip` and `zip` in the prefix's
+`bin`, where they may shadow the system's.
 
 ## Usage
 
@@ -199,16 +246,21 @@ Silesia corpus on Apple M-series, compression ratio @ MB/s:
 
 ## Development
 
-    $ make check     # unit, library, and in-memory zip tests (ASan/UBSan),
-                     # then gzip and zip end to end
-    $ make fuzz      # libFuzzer harnesses, including differential
-    $ make bench     # benchmark against zlib and libdeflate
+    $ cmake -B build && cmake --build build
+    $ ctest --test-dir build   # unit, library, and in-memory zip tests
+                               # (ASan/UBSan), then gzip and zip end to end
+
+Options add the libFuzzer harnesses, including differential ones
+(`-DTUGZ_BUILD_FUZZ=ON`, with LLVM clang as `CMAKE_C_COMPILER`), and a
+benchmark against zlib and libdeflate (`-DTUGZ_BUILD_BENCH=ON`).
 
 Tests and benchmarks use zlib and libdeflate as references, and zip
 archives are verified with unzip, Python's zipfile, and on Windows with
-Explorer, .NET, and tar. So `make check` needs zlib, libdeflate, a
-reference gzip (`/usr/bin/gzip`), and Info-ZIP's `unzip` and `zipinfo`,
-while Python (through `uv` if installed) adds checks. Tested on macOS,
+Explorer, .NET, and tar. So the full test run needs zlib, libdeflate, a
+reference gzip (`/usr/bin/gzip`, or `-DTUGZ_REF_GZIP=...`), and
+Info-ZIP's `unzip` and `zipinfo`, while Python (through `uv` if
+installed) adds checks. Configuring warns of a test skipped or disabled
+for want of one. Tested on macOS,
 Linux (x86-64, i386, aarch64, big-endian PowerPC), and Windows (x86-64,
 i686). See [docs/notes.md](docs/notes.md) for design decisions, test
 coverage, and the optimization log.

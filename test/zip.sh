@@ -2,7 +2,7 @@
 # End-to-end tests of a zip binary, verified with unzip, zipinfo, and
 # Python's zipfile (via uv when available).
 # Usage: sh test/zip.sh ./zip
-# Set ZIPOOM to another build for the out-of-memory tests, as make check
+# Set ZIPOOM to another build for the out-of-memory tests, as ctest
 # does, its own build being sanitized.
 # Set SLOW=1 to include Zip64 tests: 4 and 5 GiB files, 70,000 entries.
 # These need about 10 GiB free in TMPDIR (a stored 5 GiB archive and the
@@ -2297,7 +2297,7 @@ fi
 # shell sets neither limit, and builds with sanitizers that reserve shadow
 # memory (not UBSan) cannot run under them, nor can emulators, which the
 # probe below finds. ZIPOOM names another build for these tests, as
-# make check, whose $ZIP is sanitized, gives one.
+# ctest, whose $ZIP is sanitized, gives one.
 oomzip=${ZIPOOM:-$ZIP}
 oomskip=
 if LC_ALL=C grep -aq -e __asan_ -e __hwasan_ -e __msan_ -e __tsan_ \
