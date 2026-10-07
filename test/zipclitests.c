@@ -57,6 +57,7 @@ static s8 build(zspec const *spec, i32 n, i32 const *order)
         cap += ZIP_LOCAL_LEN + ZIP_CENTRAL_LEN + 2*spec[i].name.len +
                spec[i].data.len;
     }
+    TEST(n >= 0);
     u8     *buf = malloc((uz)cap);
     zentry *e   = calloc((uz)n, sizeof(*e));
     TEST(buf && e);
@@ -190,7 +191,7 @@ static void test_window(os *ctx, arena a)
         char *s = names + i*256;
         iz    n = 200 + i%50;
         memset(s, 'n', (uz)n);
-        snprintf(s, 10, "e%05d", i);
+        snprintf(s, 16, "e%05d", i);
         s[6] = '/';
         spec[i].name = (s8){(u8 *)s, n};
         spec[i].data = some_bytes(i%7, (u32)i);
