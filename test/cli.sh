@@ -462,8 +462,16 @@ if [ -n "$windows" ]; then
     [ "$("$GZIP" -c 'WILD\D?/X.*' 'wild/no*.*' | "$GZIP" -dc)" = xyn ] ||
         fail "wildcard components and DOS rules"
     expect_status 1 "$GZIP" -c 'wild/*.none' 'wild/a.*'
-    "$GZIP" -c 'wild/*.none' 'wild/a.*' 2>/dev/null >none.gz || true
+    "$GZIP" -c 'wild/*.none' 'wild/a.*' 2>none.err >none.gz || true
     [ "$("$GZIP" -dc none.gz)" = a ] || fail "wildcard matching nothing"
+    # ...and is not found, as after a shell, rather than an invalid name,
+    # so that decompressing tries the suffixes too
+    grep -qx 'gzip: wild/\*\.none: No such file or directory' none.err ||
+        fail "wildcard matching nothing: $(cat none.err)"
+    expect_status 1 "$GZIP" -d 'wild/*.none'
+    "$GZIP" -d 'wild/*.none' 2>none.err || true
+    grep -qx 'gzip: wild/\*\.none\.gz: No such file or directory' none.err ||
+        fail "-d wildcard matching nothing: $(cat none.err)"
     "$GZIP" 'wild/*.txt'
     for f in a.txt.gz B.TXT.gz c.txtx h.txt s.txt; do
         [ -e wild/$f ] || fail "in place wildcard: no $f"

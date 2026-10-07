@@ -110,6 +110,7 @@ void mainCRTStartup(void)
 {
     os ctx = {0};
     os_init(&ctx);
+    ctx.wildnames = 1;  // as after a shell (expand_args)
     iz    cap = (iz)1 << 25;
     byte *mem = VirtualAlloc(0, cap, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
     if (!mem) {

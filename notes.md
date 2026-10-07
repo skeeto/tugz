@@ -1170,8 +1170,10 @@ Fuzzers:
   the names it matches, in name order, matched as zip matches them
   (ignoring case beyond ASCII too, by DOS rules, in any component), but
   for hidden and system files, as zip leaves them out and a shell leaves
-  out dotfiles, or if it matches nothing, into itself, which then fails
-  to open (`Invalid argument`: no Windows name holds `*`). Unlike the C
+  out dotfiles, or if it matches nothing, into itself, which then is not
+  found, as after a shell (`No such file or directory`, and under `-d`
+  for each suffix tried), where Windows would call the name invalid
+  (`Invalid argument`: no Windows name holds `*`). Unlike the C
   runtime's expansion, which w64devkit's busybox gzip gets, `*.txt`
   matches long names only (not `long.txtx` by its 8.3 name). Listings
   take three quarters of gzip's fixed 32 MiB meanwhile, and the

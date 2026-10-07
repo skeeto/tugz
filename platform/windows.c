@@ -126,6 +126,7 @@ struct os {
     u8    rest[8];     // console input converted but not yet read
     u8    nrest;
     c16   high;        // a high surrogate read last, for its low one
+    b32   wildnames;   // gzip: a name with * or ? is not found (os_open)
     i32   unsure;      // creations refused in a row, each name maybe taken
     iptr  guard;       // zip's archive, held so that it can be replaced
     byte *lo;          // zip: the uncommitted middle of its memory
@@ -607,6 +608,13 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
     iptr h = 0;
     i32 err = open_input(wpath, mode, &h);
     if (err) {
+        // A wildcard that matched nothing stays as it is, as a POSIX
+        // shell leaves it, and as there names no file, though Windows
+        // calls a name with one invalid
+        if (err==OS_ERR && ctx->wildnames && zip_haswild(path, 0) &&
+            GetLastError()==ERROR_INVALID_NAME) {
+            SetLastError(ERROR_FILE_NOT_FOUND);
+        }
         return err;
     }
     ctx->handles[fd] = h;
