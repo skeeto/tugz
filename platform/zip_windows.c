@@ -416,6 +416,7 @@ static i32 os_commit(os *ctx, i32 fd, s8 temp, s8 path, b32 replace,
         u32 err = GetLastError();
         if (err!=ERROR_INVALID_FUNCTION && err!=ERROR_NOT_SUPPORTED) {
             os_close(ctx, fd);  // still delete-pending
+            release_guard(ctx);
             SetLastError(err);
             return COMMIT_ECLOSE;
         }
@@ -424,6 +425,7 @@ static i32 os_commit(os *ctx, i32 fd, s8 temp, s8 path, b32 replace,
     c16 *wtemp = winpath(&scratch, temp);
     if (!wpath || !wtemp) {
         os_close(ctx, fd);
+        release_guard(ctx);
         SetLastError(ERROR_INVALID_NAME);
         return COMMIT_EREPLACE;
     }
@@ -454,6 +456,7 @@ static i32 os_commit(os *ctx, i32 fd, s8 temp, s8 path, b32 replace,
     if (!SetFileInformationByHandle(h, FileDispositionInfo, &keep, 1)) {
         u32 err = GetLastError();
         os_close(ctx, fd);  // still delete-pending
+        release_guard(ctx);
         SetLastError(err);
         return COMMIT_EREPLACE;
     }
