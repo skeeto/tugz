@@ -20,8 +20,9 @@
 #include <time.h>
 
 // POSIX names anonymous memory only since 2024, so under _POSIX_C_SOURCE
-// the BSDs hide it, and a private mapping of /dev/zero stands in. (macOS
-// cannot map /dev/zero, but _DARWIN_C_SOURCE shows MAP_ANON.)
+// the BSDs hide it, as glibc did before 2.37, and a private mapping of
+// /dev/zero stands in. (macOS cannot map /dev/zero, but _DARWIN_C_SOURCE
+// shows MAP_ANON.)
 #if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)
 #  define MAP_ANONYMOUS MAP_ANON  // its older name
 #endif
@@ -42,6 +43,12 @@ static void reserve(os *ctx)
     flags |= MAP_ANONYMOUS;
 #else
     fd = open("/dev/zero", O_RDONLY);
+    if (fd < 0) {
+        // As Info-ZIP words what it was doing when memory ran out
+        s8 msg = S("\nzip error: Out of memory (opening /dev/zero)\n");
+        os_write(ctx, 2, msg.s, msg.len);
+        os_exit(ctx, ZE_MEM);
+    }
 #endif
     iz cap = (iz)1 << (sizeof(void *)==8 ? 34 : 30);
     for (; cap >= (iz)1<<24; cap /= 2) {

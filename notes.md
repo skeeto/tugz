@@ -583,8 +583,10 @@ neither inflate nor the gzip container.
   overcommit (`vm.overcommit_memory=2`), which ignores `MAP_NORESERVE`;
   that flag is not used, since in the other modes it would only leave
   the committed chunks out of `Committed_AS`. Where `_POSIX_C_SOURCE`
-  hides `MAP_ANON` (FreeBSD, NetBSD, OpenBSD), the reservation maps
-  `/dev/zero` privately instead. The hook refuses arenas other than
+  hides `MAP_ANON` (FreeBSD, NetBSD, OpenBSD, and glibc before 2.37),
+  the reservation maps `/dev/zero` privately instead, and without that
+  (some chroots and sandboxes) zip says so: "zip error: Out of memory
+  (opening /dev/zero)" (4). The hook refuses arenas other than
   perm and scratch, such as a codec's exactly sized one. Running out
   (of address space, of the commit limit, or of `ulimit -d`) is still
   "zip error: Out of memory" (4), as `test/zip.sh` checks on Linux under
