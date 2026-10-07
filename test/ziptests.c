@@ -45,6 +45,16 @@ static b32 equals(s8 a, char const *z)
     return a.len==b.len && !memcmp(a.s, b.s, (uz)a.len);
 }
 
+// A copy of exactly len bytes, as parsers get from the zip program,
+// rather than a view into a larger buffer, whose following bytes would
+// hide reads past its end.
+static u8 *exact(u8 const *p, iz len)
+{
+    u8 *r = malloc((uz)len);
+    TEST(r || !len);
+    return bytecopy(r, p, len);
+}
+
 static void test_dostime(void)
 {
     i32 tm[6];
@@ -370,16 +380,31 @@ static void test_roundtrip_headers(arena a)
         TEST(v == e[i].name.len + e[i].lextra.len);
     }
 
-    // Corruptions are rejected, never read out of bounds
-    for (iz n = 0; n < (iz)cdsize; n++) {
-        zentry *r = zip_parse_central(buf+cdoff, n, 3, cdoff, &a);
-        TEST(!r);
+    // Corruptions are rejected, never read out of bounds: each in an
+    // allocation of its exact size, so that AddressSanitizer would see.
+    // Only whole headers, as many as expected, make a central directory.
+    iz ends[4] = {0};  // of the first i headers
+    for (i32 i = 0; i < 3; i++) {
+        ends[i+1] = ends[i] + zip_central_len(e+i);
     }
-    TEST(!zip_parse_central(buf+cdoff, (iz)cdsize, 4, cdoff, &a));
-    TEST(!zip_parse_central(buf+cdoff, (iz)cdsize, 2, cdoff, &a));
-    TEST(!zip_parse_central(buf+cdoff, (iz)cdsize, 3, 20, &a));
-    TEST(zip_find_end(buf, total-1, total-1, &end) == ZIP_ENOEND);
-    TEST(zip_find_end(buf, 10, 10, &end) == ZIP_ENOEND);
+    for (iz n = 0; n <= (iz)cdsize; n++) {
+        u8 *cd = exact(buf+cdoff, n);
+        for (i32 count = 0; count <= 4; count++) {
+            zentry *r = zip_parse_central(cd, n, count, cdoff, &a);
+            TEST(!r == (count==4 || n!=ends[count]));
+        }
+        TEST(!zip_parse_central(cd, n, 3, 20, &a));
+        free(cd);
+    }
+    for (iz n = 0; n < total; n++) {
+        u8 *t   = exact(buf+total-n, n);  // a tail, which must hold it all
+        i32 got = zip_find_end(t, n, total, &end);
+        TEST(got == (n<ZIP_END_LEN+comment.len ? ZIP_ENOEND : ZIP_OK));
+        free(t);
+        t = exact(buf, n);  // the archive cut short
+        TEST(zip_find_end(t, n, n, &end) == ZIP_ENOEND);
+        free(t);
+    }
     TEST(zip_local_varlen(buf+1) == -1);
 
     // Data prepended to the archive (as by a self-extractor) is detected

@@ -1,10 +1,14 @@
 // libFuzzer harness: arbitrary bytes as an existing archive
-// Parses end records and the central directory as the zip program does
-// before merging. Whatever parses is then rewritten much as zip merges,
-// copying each entry's data, but skipping entries with bad local headers
-// (zip fails on them) and clearing every descriptor flag (zip keeps an
-// encrypted entry's), and the result must parse back to the same entries.
-// Entries may share data, so a rewrite can far exceed its input.
+// Parses end records and the central directory with src/zip.c's parsers,
+// whose header parser the zip program shares, though it reads a header
+// at a time (src/zipcli.c's read_archive, not fuzzed here). Whatever
+// parses is then rewritten much as zip merges, copying each entry's data,
+// but skipping entries with bad local headers (zip fails on them) and
+// clearing every descriptor flag (zip keeps an encrypted entry's), and
+// the result must parse back to the same entries. Entries may share data,
+// so a rewrite can far exceed its input.
+// Each parser is given exactly the bytes it is to read, in an allocation
+// of their size, so that AddressSanitizer sees any read past them.
 // $ clang -g -O1 -fsanitize=fuzzer,address,undefined test/fuzz_zipread.c
 // $ ./a.out -max_len=8192 corpus/
 #include "../src/base.c"
@@ -40,39 +44,17 @@ static b32 same(s8 a, s8 b)
     return a.len==b.len && (!a.len || !__builtin_memcmp(a.s, b.s, (uz)a.len));
 }
 
-int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
+// A copy of exactly len bytes, rather than one within an arena, whose
+// following bytes would hide reads past its end.
+static u8 *exact(u8 const *p, iz len)
 {
-    if (size > MAXIN) {
-        return 0;
-    }
-    static byte *mem;
-    iz cap = (iz)1 << 26;
-    if (!mem) {
-        mem = malloc((uz)cap);
-    }
-    (void)bytemove;
-    arena a = {mem, mem+cap, 0, 0};
+    u8 *r = malloc((uz)len);
+    CHECK(r || !len);
+    return bytecopy(r, p, len);
+}
 
-    iz  len = (iz)size;
-    u8 *in  = newbytes(&a, len);
-    bytecopy(in, data, len);
-
-    zend end = {0};
-    i32 r = zip_find_end(in, len, len, &end);
-    if (r==ZIP_OK && end.end64>=0) {
-        CHECK(end.end64+ZIP_END64_LEN <= end.endpos);
-        r = zip_parse_end64(in+end.end64, &end);
-    }
-    if (r != ZIP_OK) {
-        return 0;
-    }
-    CHECK(end.cdoff>=0 && end.cdsize>=0 && end.cdoff+end.cdsize<=len);
-    zentry *e = zip_parse_central(in+end.cdoff, (iz)end.cdsize, end.count,
-                                  end.cdoff, &a);
-    if (!e) {
-        return 0;
-    }
-
+static void rewrite(u8 *in, zend end, zentry *e, arena a)
+{
     // Rewrite, as zip copies entries, skipping bad local headers. Many
     // entries may share the same data, so first bound the output size,
     // counting extra fields before filtering, and skip huge rewrites.
@@ -100,7 +82,7 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
         max += zip_local_len(o) + o->csize + zip_central_len(o);
     }
     if (max > MAXOUT) {
-        return 0;
+        return;
     }
 
     // Lay out the archive exactly, then write it to that layout
@@ -109,7 +91,7 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
         out[i].lextra = zip_filter_extra(&a, out[i].lextra);
         out[i].offset = cdoff;
         if (!zip_fits(out+i)) {
-            return 0;  // zip refuses to copy it
+            return;  // zip refuses to copy it
         }
         cdoff += zip_local_len(out+i) + out[i].csize;
     }
@@ -133,9 +115,10 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     CHECK(p-buf == cdoff+cdsize);
     p = zip_end(p, m, cdsize, cdoff, end.comment, 0x031e);
     CHECK(p-buf == total);
+    buf = exact(buf, total);
 
     zend end2 = {0};
-    r = zip_find_end(buf, total, total, &end2);
+    i32 r = zip_find_end(buf, total, total, &end2);
     if (r==ZIP_OK && end2.end64>=0) {
         r = zip_parse_end64(buf+end2.end64, &end2);
     }
@@ -154,5 +137,51 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
         iz v = zip_local_varlen(buf+back[i].offset);
         CHECK(v == zip_local_len(out+i)-ZIP_LOCAL_LEN);
     }
+    free(buf);
+}
+
+// Parse as the zip program reads an archive: the end records among its
+// final bytes, then the Zip64 end record and the central directory, each
+// parser given exactly the bytes it is to read.
+static void parse(u8 *in, iz len, arena a)
+{
+    iz   n    = (iz)MIN(len, ZIP_END_LEN + ZIP_MAX16 + ZIP_LOC64_LEN);
+    u8  *tail = exact(in+len-n, n);  // holds the comment until the rewrite
+    zend end  = {0};
+    i32  r    = zip_find_end(tail, n, len, &end);
+    if (r==ZIP_OK && end.end64>=0) {
+        CHECK(end.end64+ZIP_END64_LEN <= end.endpos);
+        u8 *rec = exact(in+end.end64, ZIP_END64_LEN);
+        r = zip_parse_end64(rec, &end);
+        free(rec);
+    }
+    if (r == ZIP_OK) {
+        CHECK(end.cdoff>=0 && end.cdsize>=0 && end.cdoff+end.cdsize<=len);
+        u8     *cd = exact(in+end.cdoff, (iz)end.cdsize);
+        zentry *e  = zip_parse_central(cd, (iz)end.cdsize, end.count,
+                                       end.cdoff, &a);
+        if (e) {
+            rewrite(in, end, e, a);
+        }
+        free(cd);
+    }
+    free(tail);
+}
+
+int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
+{
+    if (size > MAXIN) {
+        return 0;
+    }
+    static byte *mem;
+    iz cap = (iz)1 << 26;
+    if (!mem) {
+        mem = malloc((uz)cap);
+    }
+    (void)bytemove;
+    arena a  = {mem, mem+cap, 0, 0};
+    u8   *in = exact(data, (iz)size);
+    parse(in, (iz)size, a);
+    free(in);
     return 0;
 }
