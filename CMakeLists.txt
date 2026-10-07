@@ -1,4 +1,4 @@
-# tugz: the library, the gzip and zip programs, and their tests
+# tugz: the library, the gzip, zip, and unzip programs, and their tests
 #   $ cmake -B build && cmake --build build && ctest --test-dir build
 # Each program and test is a unity build of one entry file, which a
 # compiler may also be given directly (see README.md). Included through
@@ -39,6 +39,7 @@ endif()
 option(TUGZ_BUILD_LIBRARY "Build the tugz library" ON)
 option(TUGZ_BUILD_GZIP "Build the gzip program" ${PROJECT_IS_TOP_LEVEL})
 option(TUGZ_BUILD_ZIP "Build the zip program" ${PROJECT_IS_TOP_LEVEL})
+option(TUGZ_BUILD_UNZIP "Build the unzip program" ${PROJECT_IS_TOP_LEVEL})
 option(TUGZ_BUILD_TESTS "Build the tests" ${tugz_tests_default})
 option(TUGZ_BUILD_FUZZ "Build the libFuzzer harnesses (LLVM clang)" OFF)
 option(TUGZ_BUILD_BENCH "Build the benchmark (zlib, libdeflate)" OFF)
@@ -91,7 +92,8 @@ endif()
 
 # Windows programs link no C runtime (see README.md)
 set(tugz_libmemory OFF)
-if(WIN32 AND (TUGZ_BUILD_GZIP OR TUGZ_BUILD_ZIP OR TUGZ_BUILD_TESTS))
+if(WIN32 AND (TUGZ_BUILD_GZIP OR TUGZ_BUILD_ZIP OR TUGZ_BUILD_UNZIP OR
+              TUGZ_BUILD_TESTS))
     if(NOT TUGZ_LIBMEMORY MATCHES "^(AUTO|ON|OFF)$")
         message(FATAL_ERROR "TUGZ_LIBMEMORY must be AUTO, ON, or OFF")
     endif()
@@ -150,6 +152,16 @@ if(TUGZ_BUILD_GZIP)
 endif()
 if(TUGZ_BUILD_ZIP)
     tugz_program(tugz_zip zip zip)
+endif()
+# unzip has no Windows layer yet
+set(tugz_unzip_port ON)
+if(WIN32)
+    set(tugz_unzip_port OFF)
+endif()
+if(TUGZ_BUILD_UNZIP AND NOT tugz_unzip_port)
+    message(STATUS "tugz: unzip is not yet ported to Windows")
+elseif(TUGZ_BUILD_UNZIP)
+    tugz_program(tugz_unzip unzip unzip)
 endif()
 
 # ---- Single-file sources ---------------------------------------------
@@ -275,6 +287,12 @@ if(TUGZ_BUILD_TESTS)
     tugz_sanitize(tugz_zip_debug)
     set_property(GLOBAL APPEND PROPERTY tugz_test_targets
                  tugz_gzip_debug tugz_zip_debug)
+    if(tugz_unzip_port)
+        tugz_program(tugz_unzip_debug unzip unzip-debug NOSTRIP)
+        tugz_sanitize(tugz_unzip_debug)
+        set_property(GLOBAL APPEND PROPERTY tugz_test_targets
+                     tugz_unzip_debug)
+    endif()
 
     find_program(TUGZ_SH sh)
     if(EXISTS /usr/bin/gzip)
@@ -284,8 +302,25 @@ if(TUGZ_BUILD_TESTS)
         find_program(TUGZ_REF_GZIP gzip
             DOC "Reference gzip for the gzip program's tests")
     endif()
-    find_program(TUGZ_UNZIP unzip)
+    find_program(TUGZ_UNZIP unzip
+        DOC "Info-ZIP's unzip, the reference for the unzip program's tests")
     find_program(TUGZ_ZIPINFO zipinfo)
+
+    # Whether a program is Info-ZIP's, by its version information's first
+    # line, rather than another of the same name, such as busybox's or
+    # tugz's own (which mentions Info-ZIP's too)
+    function(tugz_infozip out prog)
+        set(${out} OFF PARENT_SCOPE)
+        if(prog)
+            execute_process(COMMAND ${prog} -v
+                OUTPUT_VARIABLE version ERROR_QUIET)
+            if(version MATCHES "^(UnZip|ZipInfo) [^\n]*Info-ZIP")
+                set(${out} ON PARENT_SCOPE)
+            endif()
+        endif()
+    endfunction()
+    tugz_infozip(tugz_have_unzip "${TUGZ_UNZIP}")
+    tugz_infozip(tugz_have_zipinfo "${TUGZ_ZIPINFO}")
 
     # gzip end to end, as installed
     if(TARGET tugz_gzip)
@@ -308,10 +343,25 @@ if(TUGZ_BUILD_TESTS)
         set_tests_properties(zip-cli PROPERTIES
             ENVIRONMENT "ZIPOOM=$<TARGET_FILE:tugz_zip>")
     endif()
-    if(NOT TUGZ_UNZIP OR NOT TUGZ_ZIPINFO)
+    if(NOT tugz_have_unzip OR NOT tugz_have_zipinfo)
         message(WARNING
             "tugz: zip-cli disabled: it needs Info-ZIP's unzip and zipinfo")
         set_tests_properties(zip-cli PROPERTIES DISABLED ON)
+    endif()
+
+    # unzip end to end, sanitized, compared with Info-ZIP's, and reading
+    # archives from tugz's zip too
+    if(tugz_unzip_port)
+        add_test(NAME unzip-cli
+            COMMAND ${TUGZ_SH} ${PROJECT_SOURCE_DIR}/test/unzip.sh
+                    $<TARGET_FILE:tugz_unzip_debug>)
+        set_tests_properties(unzip-cli PROPERTIES ENVIRONMENT
+            "REF=${TUGZ_UNZIP};TUGZ_ZIP=$<TARGET_FILE:tugz_zip_debug>")
+        if(NOT tugz_have_unzip)
+            message(WARNING
+                "tugz: unzip-cli disabled: it needs Info-ZIP's unzip")
+            set_tests_properties(unzip-cli PROPERTIES DISABLED ON)
+        endif()
     endif()
 
     if(WIN32)
@@ -345,7 +395,7 @@ if(TUGZ_BUILD_TESTS)
     # Builds what the tests need and runs them
     if(PROJECT_IS_TOP_LEVEL)
         get_property(deps GLOBAL PROPERTY tugz_test_targets)
-        foreach(tgt IN ITEMS tugz_gzip tugz_zip)
+        foreach(tgt IN ITEMS tugz_gzip tugz_zip tugz_unzip)
             if(TARGET ${tgt})
                 list(APPEND deps ${tgt})
             endif()
@@ -445,8 +495,9 @@ if(TUGZ_INSTALL)
             ${PROJECT_BINARY_DIR}/tugzConfigVersion.cmake
             DESTINATION ${tugz_cmakedir})
     endif()
-    # Installed as gzip and zip, whenever built, as they may be the system's
-    foreach(tgt IN ITEMS tugz_gzip tugz_zip)
+    # Installed as gzip, zip, and unzip, whenever built, as they may be the
+    # system's
+    foreach(tgt IN ITEMS tugz_gzip tugz_zip tugz_unzip)
         if(TARGET ${tgt})
             install(TARGETS ${tgt}
                 RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

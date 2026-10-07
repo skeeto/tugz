@@ -17,6 +17,11 @@ fuzz/
 /tests-lib
 /tests-zip
 /tests-zipcli
+/tests-unzip
+/unzip
+/unzip-debug
+/unzip.exe
+/unzip.c
 /libtugz.o
 /tugz.c
 /tests-amalg

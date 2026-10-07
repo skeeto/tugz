@@ -28,6 +28,12 @@ for tool in unzip zipinfo; do
         echo "zip.sh: Info-ZIP's unzip and zipinfo are required" \
              "to verify archives, but $tool was not found" >&2
         exit 1
+    elif ! $tool -v 2>/dev/null | head -n 1 |
+            grep -q '^\(UnZip\|ZipInfo\) .*Info-ZIP'; then
+        # Another, as busybox's or tugz's own, first on the path
+        echo "zip.sh: Info-ZIP's unzip and zipinfo are required" \
+             "to verify archives, but $(command -v $tool) is not" >&2
+        exit 1
     fi
 done
 tmp=$(mktemp -d)
