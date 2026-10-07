@@ -47,8 +47,8 @@ layer adds none of them. The shared `os_*` implementations live in
 | `platform/libtugz.c`     | library layer; `tugz.h` is its interface        |
 | `test/tests.c`           | test suite (in-memory file system)              |
 | `test/libtests.c`        | library interface tests                         |
-| `test/fuzz_*.c`          | libFuzzer harnesses, sharing `fuzzos.c` (codec) |
-|                          | or `zipos.c` (zip)                              |
+| `test/fuzz_*.c`          | libFuzzer harnesses: codec ones share           |
+|                          | `fuzzos.c`, `fuzz_zip.c` uses `zipos.c`         |
 | `test/bench.c`           | benchmark versus zlib and libdeflate            |
 | `test/ziptests.c`        | ZIP format unit tests                           |
 | `test/zipclitests.c`     | zip program tests, in memory                    |

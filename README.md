@@ -199,7 +199,8 @@ Silesia corpus on Apple M-series, compression ratio @ MB/s:
 
 ## Development
 
-    $ make check     # unit and library tests (ASan/UBSan), gzip and zip end to end
+    $ make check     # unit, library, and in-memory zip tests (ASan/UBSan),
+                     # then gzip and zip end to end
     $ make fuzz      # libFuzzer harnesses, including differential
     $ make bench     # benchmark against zlib and libdeflate
 
