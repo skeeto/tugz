@@ -22,8 +22,10 @@ resumes where it stopped. Its only hooks are `os_oom` and `os_extend`
 interface and a buffered reader and writer); gzip adds `src/gzipio.c`
 (descriptor drivers) and `src/cli.c`, and zip `src/zip.c`, `src/wild.c`
 (wildcards), `src/dir.c` (directories), `src/zipin.c` (archive reading),
-and `src/zipcli.c`. The library layer adds none of them. The shared `os_*` implementations live in
-`platform/posix.c` and `platform/windows.c`.
+and `src/zipcli.c`. The library layer adds none of them. The shared
+`os_*` implementations live in `platform/posix.c` and
+`platform/windows.c`, and the file system functions that zip shares
+with unzip in `platform/zipfs_*.c`.
 
 | File                     | Purpose                                         |
 |--------------------------|-------------------------------------------------|
@@ -44,7 +46,8 @@ and `src/zipcli.c`. The library layer adds none of them. The shared `os_*` imple
 | `platform/posix.c`       | shared POSIX `os_*` implementation              |
 | `platform/windows.c`     | shared CRT-free Win32 `os_*`, paths, arguments  |
 | `platform/gzip_*.c`      | gzip entry points (POSIX, Windows)              |
-| `platform/zip_*.c`       | zip file system functions and entry points      |
+| `platform/zipfs_*.c`     | file system functions for zip and unzip         |
+| `platform/zip_*.c`       | zip's archive replacement and entry points      |
 | `platform/libtugz.c`     | library layer; `tugz.h` is its interface        |
 | `test/tests.c`           | test suite (in-memory file system)              |
 | `test/libtests.c`        | library interface tests                         |
