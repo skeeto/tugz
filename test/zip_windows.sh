@@ -425,8 +425,15 @@ ps "Set-Content -LiteralPath 1 -Value f;
 [ "$(list p7.zip)" = 1:s ] || fail "stream name: $(list p7.zip)"
 
 # A bare DOS device name is the device, a special file, but in a
-# directory a file named like one (made elsewhere) is just a file
-"$ZIP" dv.zip NUL 2>&1 | grep -q 'special file: NUL' || fail "NUL"
+# directory a file named like one (made elsewhere) is just a file. The
+# console (CON), where there is one, refuses an open for attributes
+# alone, but is special too.
+"$ZIP" dv.zip NUL 2>&1 | grep -qF 'special file: NUL' || fail "NUL"
+if "$ZIP" dv.zip 'CONIN$' 2>&1 | grep -qF 'special file: CONIN$'; then
+    "$ZIP" dv.zip CON >out 2>&1 || true
+    grep -qxF 'zip warning: ignoring special file: CON' out ||
+        fail "CON: $(cat out)"
+fi
 mkdir dv
 ps "[IO.File]::WriteAllText('\\\\?\\' + (Resolve-Path dv).Path + '\\aux.c', 'a')"
 "$ZIP" -qr dv.zip dv

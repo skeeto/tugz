@@ -168,7 +168,16 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
     iptr h = CreateFileW(wpath, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, 0,
                          OPEN_EXISTING, flags, 0);
     if (h == INVALID_HANDLE_VALUE) {
-        return 0;
+        // The console (CON), unlike other DOS devices (NUL, CONIN$),
+        // refuses an open that would neither read nor write, but is
+        // there to refuse it: special, as they are, rather than missing
+        b32 dosdev = wpath[0]=='\\' && wpath[1]=='\\' && wpath[2]=='.';
+        if (!dosdev || GetLastError()!=ERROR_INVALID_PARAMETER) {
+            return 0;
+        }
+        *info = (os_info){0};
+        info->type = FT_OTHER;
+        return 1;
     }
     b32 ok = handle_info(h, info);
     attribute_tag_info tag = {0};
