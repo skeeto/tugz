@@ -13,8 +13,11 @@ tmp=$(mktemp -d)
 trap 'cd / && rm -rf "$tmp"' EXIT
 cd "$tmp"
 
+# A failure is marked, so that one within a pipeline or $(...), whose
+# status no one sees, still fails the run at its end
 fail() {
     echo "FAIL: $*" >&2
+    : >"$tmp/FAILED"
     exit 1
 }
 
@@ -28,9 +31,12 @@ expect_status() {
     [ "$got" = "$want" ] || fail "expected status $want, got $got: $*"
 }
 
-# Archive names, as tar lists them (with CRLF line endings)
+# Archive names, as tar lists them (with CRLF line endings), failing the
+# test where it cannot read the archive
 list() {
-    "$TAR" -tf "$1" | tr -d '\r'
+    listed=$("$TAR" -tf "$1" 2>"$tmp/list.err") ||
+        fail "tar -tf $1: $(cat "$tmp/list.err")"
+    [ -z "$listed" ] || printf '%s\n' "$listed" | tr -d '\r'
 }
 
 ps() {
@@ -954,4 +960,5 @@ list env.zip | grep -q tree/b.txt && fail "ZIPOPT pattern"
 list env.zip | grep -q tree/a.txt || fail "ZIPOPT patterns: $(list env.zip)"
 rm 'tree/a b.txt'
 
+[ ! -e "$tmp/FAILED" ] || exit 1
 echo "windows zip tests pass"

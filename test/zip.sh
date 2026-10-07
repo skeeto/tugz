@@ -29,9 +29,31 @@ tmp=$(mktemp -d)
 trap 'cd / && chmod -R u+rwx "$tmp" && rm -rf "$tmp"' EXIT
 cd "$tmp"
 
+# A failure is reported on the original standard error, and marked, so
+# that one within a pipeline or $(...), whose status no one sees, still
+# fails the run at its end
+exec 9>&2
 fail() {
-    echo "FAIL: $*" >&2
+    echo "FAIL: $*" >&9
+    : >"$tmp/FAILED"
     exit 1
+}
+
+# A sanitizer's report exits 99, a status zip never gives (the default,
+# 1, would pass for a failure in tests that expect one)
+export ASAN_OPTIONS="exitcode=99${ASAN_OPTIONS:+:$ASAN_OPTIONS}"
+export UBSAN_OPTIONS="exitcode=99${UBSAN_OPTIONS:+:$UBSAN_OPTIONS}"
+
+# Run a command, with the caller's redirections, which must exit with a
+# status, exactly: not with any failure, as a crash also is.
+exits() {
+    want=$1
+    shift
+    set +e
+    "$@"
+    got=$?
+    set -e
+    [ "$got" = "$want" ] || fail "expected status $want, got $got: $*"
 }
 
 expect_status() {
@@ -52,8 +74,14 @@ verify() {
     fi
 }
 
+# Entry names, as zipinfo lists them: none for an empty archive, of
+# which it warns (1), but failing the test where it cannot read one
 names() {
-    zipinfo -1 "$1" 2>/dev/null || true
+    st=0
+    list=$(zipinfo -1 "$1" 2>"$tmp/names.err") || st=$?
+    [ $st -le 1 ] || fail "zipinfo -1 $1: status $st: $(cat "$tmp/names.err")"
+    # (quietly, should a reader such as grep -q stop early)
+    [ -z "$list" ] || printf '%s\n' "$list" 2>/dev/null
 }
 
 extract_same() {  # archive tree
@@ -229,11 +257,11 @@ names c7.zip | grep -q tree/a.txt || fail "-x- excluded a.txt"
 # that unsupported ones are rejected under their own names, while -h2 is
 # help; -jj is not one of them, but -j twice
 for opt in fd fz dd; do
-    "$ZIP" -$opt c8.zip tree/a.txt 2>err && fail "-$opt succeeded"
+    exits 16 "$ZIP" -$opt c8.zip tree/a.txt 2>err
     grep -q "short option '$opt' not supported" err || fail "-$opt: $(cat err)"
 done
 expect_status 16 "$ZIP" -qmm c8.zip tree/a.txt
-"$ZIP" -mm c8.zip tree/a.txt 2>err && fail "-mm succeeded"
+exits 16 "$ZIP" -mm c8.zip tree/a.txt 2>err
 grep -q '(-mm not supported, Must_Match is -MM)$' err || fail "-mm: $(cat err)"
 "$ZIP" -h2 >out
 grep -q usage out || fail "-h2: $(cat out)"
@@ -241,7 +269,7 @@ for opt in -H '-?'; do  # Info-ZIP's aliases for -h
     "$ZIP" "$opt" c8.zip tree/a.txt >out || fail "$opt failed"
     grep -q usage out || fail "$opt: $(cat out)"
 done
-"$ZIP" -H- 2>err && fail "-H- succeeded"
+exits 16 "$ZIP" -H- 2>err
 grep -q "(option 'H' (help) not negatable)$" err || fail "-H-: $(cat err)"
 "$ZIP" -qjj c8.zip tree/a.txt
 [ "$(names c8.zip)" = a.txt ] || fail "-jj: $(names c8.zip)"
@@ -251,12 +279,12 @@ grep -q "(option 'H' (help) not negatable)$" err || fail "-H-: $(cat err)"
 "$ZIP" -q c9.zip tree/a.txt tree/b.txt
 cp c9.zip c9.orig
 for opt in '-u -u' -uu '-f -f' -ff '-d -d' '-u -f' '-d -u' -df; do
-    "$ZIP" $opt c9.zip tree/a.txt >out 2>&1 && fail "$opt succeeded"
+    exits 16 "$ZIP" $opt c9.zip tree/a.txt >out 2>&1
     grep -q 'specify just one action' out || fail "$opt: $(cat out)"
 done
-"$ZIP" -u c9.zip -u tree/a.txt >out 2>&1 && fail "-u, -u later succeeded"
+exits 16 "$ZIP" -u c9.zip -u tree/a.txt >out 2>&1
 for opt in '-FS -u' '-f -FS' '-FS -d'; do
-    "$ZIP" $opt c9.zip tree/a.txt >out 2>&1 && fail "$opt succeeded"
+    exits 16 "$ZIP" $opt c9.zip tree/a.txt >out 2>&1
     grep -q "can't use -d, -f, -u, -U, or -g with filesync -FS)" out ||
         fail "$opt: $(cat out)"
 done
@@ -393,7 +421,7 @@ cmp -s got want || fail "overlapping paths: $(cat got)"
 find tree | "$ZIP" -qr -@ dup3.zip
 [ "$(names dup3.zip | wc -l)" = "$(wc -l <want)" ] || fail "find | zip -r@"
 expect_status 16 "$ZIP" dup4.zip tree/a.txt ./tree/a.txt
-"$ZIP" -j dup5.zip tree/a.txt tree/sub/../a.txt 2>out && fail "-j collision"
+exits 16 "$ZIP" -j dup5.zip tree/a.txt tree/sub/../a.txt 2>out
 grep -q 'result of using -j' out || fail "-j collision: $(cat out)"
 [ ! -e dup4.zip ] && [ ! -e dup5.zip ] || fail "made an archive with dups"
 
@@ -403,7 +431,7 @@ grep -q 'result of using -j' out || fail "-j collision: $(cat out)"
 [ $(names dot1.zip | wc -l) = $(($(wc -l <want) - 1)) ] ||
     fail ". sub/random: $(names dot1.zip)"
 (cd tree && expect_status 16 "$ZIP" -r ../dot2.zip . ./a.txt)
-(cd tree && "$ZIP" -r ../dot3.zip . ./sub 2>../out) && fail ". ./sub"
+(cd tree && exits 16 "$ZIP" -r ../dot3.zip . ./sub 2>../out)
 grep -q 'second full name: sub/$' out || fail ". ./sub: $(cat out)"
 
 # Departure: "./" without -r names nothing and is passed over, where
@@ -414,8 +442,8 @@ grep -q 'second full name: sub/$' out || fail ". ./sub: $(cat out)"
 
 # As in Info-ZIP, only the first repeat in order of names is reported,
 # by the first two of its paths in order, in one indented warning
-"$ZIP" -j dup6.zip tree/b.txt ./tree/b.txt tree/a.txt tree/sub ./tree/a.txt \
-    ./tree/sub/../a.txt 2>out && fail "dup6.zip"
+exits 16 "$ZIP" -j dup6.zip tree/b.txt ./tree/b.txt tree/a.txt tree/sub \
+    ./tree/a.txt ./tree/sub/../a.txt 2>out
 in='                     '
 printf '%s\n' "zip warning:   first full name: ./tree/a.txt" \
     "$in second full name: ./tree/sub/../a.txt" \
@@ -425,7 +453,7 @@ printf '%s\n' "zip warning:   first full name: ./tree/a.txt" \
     >want
 cmp -s want out || fail "repeated names: $(cat out)"
 # ...two different paths, a path given again counting once
-"$ZIP" dup7.zip tree/a.txt ./tree/a.txt ./tree/a.txt 2>out && fail "dup7.zip"
+exits 16 "$ZIP" dup7.zip tree/a.txt ./tree/a.txt ./tree/a.txt 2>out
 grep -q 'first full name: \./tree/a\.txt$' out &&
     grep -q 'second full name: tree/a\.txt$' out ||
     fail "repeated names given again: $(cat out)"
@@ -501,9 +529,9 @@ printf d >./-dash
 [ "$(names dl1.zip)" = tree/a.txt ] || fail "-x -dash: $(names dl1.zip)"
 "$ZIP" -q dl2.zip tree/a.txt tree/b.txt -i -- tree/b.txt
 [ "$(names dl2.zip)" = tree/b.txt ] || fail "-i --: $(names dl2.zip)"
-"$ZIP" -q dl3.zip tree/a.txt -x tree/b.txt - 2>err && fail "list then -"
+exits 16 "$ZIP" -q dl3.zip tree/a.txt -x tree/b.txt - 2>err
 grep -q '(streaming with - not supported)$' err || fail "list then -: $(cat err)"
-"$ZIP" -q dl3.zip tree/a.txt -x @ tree/b.txt 2>err && fail "-x @"
+exits 16 "$ZIP" -q dl3.zip tree/a.txt -x @ tree/b.txt 2>err
 grep -q '(missing file after @)$' err || fail "-x @: $(cat err)"
 "$ZIP" -q dl4.zip tree/a.txt -x= tree/b.txt --exclude=
 [ "$(names dl4.zip)" = "tree/a.txt
@@ -511,10 +539,10 @@ tree/b.txt" ] || fail "-x=: $(names dl4.zip)"
 "$ZIP" -q dl5.zip --exclude= tree/a.txt
 [ "$(names dl5.zip)" = tree/a.txt ] || fail "--exclude=: $(names dl5.zip)"
 expect_status 12 "$ZIP" -q dl6.zip tree/a.txt -i=  # Departure, as above
-"$ZIP" -q dl7.zip tree/a.txt -x 2>err && fail "-x without a list"
+exits 16 "$ZIP" -q dl7.zip tree/a.txt -x 2>err
 grep -q "(option 'x' (exclude files matching patterns) requires a value)$" \
     err || fail "-x without a list: $(cat err)"
-"$ZIP" -q dl7.zip tree/a.txt --inc 2>err && fail "--inc without a list"
+exits 16 "$ZIP" -q dl7.zip tree/a.txt --inc 2>err
 grep -q "'include' (include only files matching patterns) requires a value)$" \
     err || fail "--inc without a list: $(cat err)"
 expect_status 16 "$ZIP" -q dl7.zip tree/a.txt --exclude
@@ -555,7 +583,7 @@ printf '*.txt\rtree/s*\r' >patterns.cr
 names x6.zip >got
 printf 'tree/\ntree/.hidden/\ntree/empty\ntree/one\n' >want
 cmp -s got want || fail "-x @file: $(cat got)"
-"$ZIP" -qr x7.zip tree -x @missing.lst 2>err && fail "missing pattern file"
+exits 18 "$ZIP" -qr x7.zip tree -x @missing.lst 2>err
 printf '%s\n' 'zip I/O error: No such file or directory' \
     "zip error: File not found or no read permission (x pattern file '@missing.lst')" >want
 cmp -s err want || fail "missing pattern file: $(cat err)"
@@ -568,7 +596,7 @@ mkdir -p atdir/d
 printf x >atdir/f
 (cd atdir && "$ZIP" -q ../atdir1.zip f -x@d -i @d) || fail "@dir list"
 [ "$(names atdir1.zip)" = f ] || fail "@dir list: $(names atdir1.zip)"
-"$ZIP" atdir2.zip -x@atdir/d >out 2>&1 && fail "@dir list, no paths"
+exits 12 "$ZIP" atdir2.zip -x@atdir/d >out 2>&1
 [ "$(cat out)" = "
 zip error: Nothing to do! (atdir2.zip)" ] || fail "@dir list: $(cat out)"
 expect_status 12 "$ZIP" atdir2.zip -i@atdir/d
@@ -592,7 +620,7 @@ mkdir -p stdir/d
 printf x >stdir/f
 (cd stdir && "$ZIP" -q ../stdir1.zip -@ f <d) || fail "-@ from a directory"
 [ "$(names stdir1.zip)" = f ] || fail "-@ from a dir: $(names stdir1.zip)"
-"$ZIP" stdir2.zip -@ <stdir/d >out 2>&1 && fail "-@ from a directory alone"
+exits 12 "$ZIP" stdir2.zip -@ <stdir/d >out 2>&1
 [ "$(cat out)" = "
 zip error: Nothing to do! (stdir2.zip)" ] || fail "-@ from a dir: $(cat out)"
 expect_status 12 "$ZIP" stdir2.zip -@ <stdir/d
@@ -629,11 +657,21 @@ if ln -s a.txt tree/link 2>/dev/null; then
         [ "$(unzip -p l3.zip deep)" = $deep ] || fail "-y deep target"
     done
     rm deep
+    # Departure: a directory reached again through a link within it, a
+    # loop, is added but not entered, with a warning, where Info-ZIP
+    # follows the links until the system refuses (ELOOP)
     ln -s . tree/sub/loop
-    "$ZIP" -qr loop.zip tree/sub
+    "$ZIP" -r loop.zip tree/sub >out 2>err
     verify loop.zip
+    [ "$(cat err)" = 'zip warning: skipping directory loop: tree/sub/loop' ] ||
+        fail "directory loop: $(cat err)"
+    names loop.zip | grep -qx tree/sub/loop/ ||
+        fail "directory loop: $(names loop.zip)"
+    names loop.zip | grep -q '^tree/sub/loop/.' &&
+        fail "directory loop entered: $(names loop.zip)"
     "$ZIP" -qry loop2.zip tree/sub
     verify loop2.zip
+    names loop2.zip | grep -qx tree/sub/loop || fail "-y loop: $(names loop2.zip)"
     rm tree/link tree/sub/loop
 
     # Departure: a dangling link while recursing exits 18, where Info-ZIP
@@ -713,8 +751,10 @@ TZ=UTC0 touch -t 202001011000.01 tz.txt
 "$ZIP" -q tz1.zip tz.txt
 "$ZIP" -qX tz2.zip tz.txt
 TZ=UTC0 touch -t 202001011000.02 tz.txt  # the same DOS time, rounded up
-"$ZIP" -u tz1.zip tz.txt | grep -q updating || fail "-u by UT time"
-"$ZIP" -u tz2.zip tz.txt | grep -q updating && fail "-u -X by DOS time"
+"$ZIP" -u tz1.zip tz.txt >out
+grep -q updating out || fail "-u by UT time"
+"$ZIP" -u tz2.zip tz.txt >out
+grep -q updating out && fail "-u -X by DOS time"
 
 # Also as there, the last UT field decides, though without the time, and
 # failing one, an old UX field: entries a day newer by these, and a day
@@ -744,10 +784,11 @@ for kind, x, d in (("ux", b"UX\x08\x00" + struct.pack("<II", t, t+86400),
     end = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 1, 1, len(cen),
                       len(loc), 0)
     open("ux-%s.zip" % kind, "wb").write(loc + cen + end)'
-    TZ=UTC0 "$ZIP" -u ux-ux.zip ux.txt | grep -q updating && fail "-u by UX"
+    TZ=UTC0 "$ZIP" -u ux-ux.zip ux.txt >out
+    grep -q updating out && fail "-u by UX"
     for kind in ut2 ut0; do
-        TZ=UTC0 "$ZIP" -u ux-$kind.zip ux.txt | grep -q updating ||
-            fail "-u by the last UT field ($kind)"
+        TZ=UTC0 "$ZIP" -u ux-$kind.zip ux.txt >out
+        grep -q updating out || fail "-u by the last UT field ($kind)"
     done
 fi
 
@@ -824,7 +865,9 @@ cmp -s fs.zip fs0.zip || fail "-FS with nothing found changed the archive"
 # As in Info-ZIP, a path not on disk selects the entries it matches as
 # a pattern, and -u and -f without paths select every entry: the file
 # each names is examined (without recursion, -D, or -j), and if it is
-# gone the entry is kept, or deleted under -FS
+# gone the entry is kept, or deleted under -FS. Each file's contents is
+# one letter, upper case on disk, so that the archive's tell which
+# entries were written, and which copied.
 mkdir -p sel/d1/s sel/d2
 printf a >sel/d1/a.txt
 printf b >sel/d1/b.log
@@ -833,46 +876,57 @@ printf g >sel/d1/gone
 printf d >sel/d2/d.txt
 (cd sel && touch -t 202001010000 d1/* d1/s/c.txt d2/d.txt d2 d1 &&
  "$ZIP" -qr ../sel.zip d1 d2 && rm d1/gone &&
- touch -t 202301010000 d1/a.txt d1/s/c.txt && touch -t 202001010000 d1)
-selz() {  # expected-progress zip-arguments...
-    want=$1
-    shift
+ printf A >d1/a.txt && printf B >d1/b.log && printf C >d1/s/c.txt &&
+ touch -t 202301010000 d1/a.txt d1/s/c.txt &&
+ touch -t 202001010000 d1/b.log d1)
+all='d1/ d1/a.txt d1/b.log d1/gone d1/s/ d1/s/c.txt d2/ d2/d.txt '
+selz() {  # status progress names contents zip-arguments...
+    st=$1 want=$2 wnames=$3 wdata=$4
+    shift 4
     cp sel.zip sel/t.zip
-    (cd sel && "$ZIP" "$@" >../out 2>../err) || true
+    (cd sel && exits $st "$ZIP" "$@" >../out 2>../err)
     progress out | tr '\n' ' ' >got
     [ "$(cat got)" = "$want" ] || fail "zip $*: $(cat got) $(cat err)"
+    verify sel/t.zip
+    [ "$(names sel/t.zip | tr '\n' ' ')" = "$wnames" ] &&
+        [ "$(unzip -p sel/t.zip)" = "$wdata" ] ||
+        fail "zip $*: $(names sel/t.zip) $(unzip -p sel/t.zip)"
 }
-selz 'updating: d1/a.txt updating: d1/s/c.txt ' -u t.zip d2/d.txt 'd1/*'
-selz 'updating: d1/a.txt updating: d1/s/c.txt ' -u -@ t.zip <<EOF
+selz 0 'updating: d1/a.txt updating: d1/s/c.txt ' "$all" AbgCd \
+    -u t.zip d2/d.txt 'd1/*'
+selz 0 'updating: d1/a.txt updating: d1/s/c.txt ' "$all" AbgCd \
+    -u -@ t.zip <<EOF
 d1/*.txt
 EOF
-selz 'updating: d1/a.txt updating: d1/s/c.txt ' -u t.zip
-selz 'freshening: d1/a.txt freshening: d1/s/c.txt ' -f t.zip
-selz 'freshening: d1/a.txt freshening: d1/s/c.txt ' -f t.zip '*'
-selz 'updating: d1/a.txt ' -u t.zip -x '*s/*'
-selz 'updating: d1/a.txt ' -u -nw -D -j t.zip 'd1/a?txt'
-selz 'updating: d1/a.txt updating: d1/s/c.txt ' -u t.zip 'd1/*' ./d1/a.txt
-selz 'updating: d1/ updating: d1/a.txt updating: d1/b.log updating: d1/s/ updating: d1/s/c.txt ' t.zip 'd1/*'
-names sel/t.zip | grep -q d1/gone || fail "a missing file's entry was lost"
-selz 'deleting: d1/ updating: d1/a.txt deleting: d1/b.log deleting: d1/gone deleting: d1/s/ updating: d1/s/c.txt ' -FS t.zip d2 d2/d.txt 'd1/*.txt'
+selz 0 'updating: d1/a.txt updating: d1/s/c.txt ' "$all" AbgCd -u t.zip
+selz 0 'freshening: d1/a.txt freshening: d1/s/c.txt ' "$all" AbgCd -f t.zip
+selz 0 'freshening: d1/a.txt freshening: d1/s/c.txt ' "$all" AbgCd \
+    -f t.zip '*'
+selz 0 'updating: d1/a.txt ' "$all" Abgcd -u t.zip -x '*s/*'
+selz 0 'updating: d1/a.txt ' "$all" Abgcd -u -nw -D -j t.zip 'd1/a?txt'
+selz 0 'updating: d1/a.txt updating: d1/s/c.txt ' "$all" AbgCd \
+    -u t.zip 'd1/*' ./d1/a.txt
+selz 0 'updating: d1/ updating: d1/a.txt updating: d1/b.log updating: d1/s/ updating: d1/s/c.txt ' \
+    "$all" ABgCd t.zip 'd1/*'
+selz 0 'deleting: d1/ updating: d1/a.txt deleting: d1/b.log deleting: d1/gone deleting: d1/s/ updating: d1/s/c.txt ' \
+    'd1/a.txt d1/s/c.txt d2/ d2/d.txt ' ACd -FS t.zip d2 d2/d.txt 'd1/*.txt'
 cp sel.zip sel/t.zip
 (cd sel && expect_status 12 "$ZIP" -u t.zip 'd1/g*')
 (cd sel && expect_status 12 "$ZIP" -u -nw t.zip 'd1/*')
-(cd sel && "$ZIP" -u t.zip 'nomatch*' 2>&1 | grep -q 'not matched: nomatch') ||
-    fail "pattern matching no entry"
-(cd sel && "$ZIP" -u t.zip 'd1/g*' 2>&1 | grep -q 'not matched') &&
-    fail "pattern matching an entry of a missing file"
+(cd sel && exits 12 "$ZIP" -u t.zip 'nomatch*' 2>../err)
+grep -q 'not matched: nomatch' err || fail "pattern matching no entry"
+(cd sel && exits 12 "$ZIP" -u t.zip 'd1/g*' 2>../err)
+grep -q 'not matched' err && fail "pattern matching an entry of a missing file"
 
 # An entry selected by name that has changed between file and directory
 # is kept, with Info-ZIP's warning
 rm sel/d1/b.log
 mkdir sel/d1/b.log
 touch -t 202001010000 sel/d1
-selz 'updating: d1/a.txt updating: d1/b.log updating: d1/s/c.txt ' -u t.zip
+selz 18 'updating: d1/a.txt updating: d1/b.log updating: d1/s/c.txt ' \
+    "$all" AbgCd -u t.zip
 grep -q 'file and directory with the same name: d1/b.log' err ||
     fail "file then directory: $(cat err)"
-[ "$(unzip -p sel/t.zip d1/b.log)" = b ] || fail "file then directory kept"
-(cd sel && expect_status 18 "$ZIP" -u t.zip)
 
 # Departure: entry names select files only within the current
 # directory, so that an untrusted archive cannot select any file beyond
@@ -1014,7 +1068,7 @@ mkdir ffd
 printf x >ffd/fifo
 (cd ffd && "$ZIP" -q ../ff.zip fifo)
 if mkfifo fifo 2>/dev/null; then
-    "$ZIP" -d ff.zip fifo >out 2>&1 && fail "-d of a FIFO name succeeded"
+    exits 12 "$ZIP" -d ff.zip fifo >out 2>&1
     grep -q 'ignoring FIFO (Named Pipe): fifo' out ||
         fail "-d of a FIFO: $(cat out)"
     [ "$(names ff.zip)" = fifo ] || fail "-d of a FIFO deleted the entry"
@@ -1112,7 +1166,7 @@ end = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 1, 1, len(cen), len(loc),
                   0)
 open(sys.argv[1], "wb").write(loc + cen + end)' nofit.zip
     cp nofit.zip nofit0.zip
-    "$ZIP" nofit.zip tree/a.txt >out 2>&1 && fail "no room for Zip64"
+    exits 3 "$ZIP" nofit.zip tree/a.txt >out 2>&1
     grep -q 'structure invalid (big: no room' out || fail "no room: $(cat out)"
     cmp -s nofit.zip nofit0.zip || fail "a refused copy changed the archive"
 
@@ -1156,7 +1210,7 @@ for n in b"", b"ok.txt":
 end = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 2, 2, len(cen), len(loc), 0)
 open(sys.argv[1], "wb").write(loc + cen + end)' noname.zip
     cp noname.zip noname0.zip
-    "$ZIP" noname.zip tree/a.txt >out 2>&1 && fail "unnamed entry accepted"
+    exits 3 "$ZIP" noname.zip tree/a.txt >out 2>&1
     printf '%s\n' 'zip warning: zero-length name for entry #1' '' \
         'zip error: Zip file structure invalid (noname.zip)' >want
     cmp -s out want || fail "unnamed entry: $(cat out)"
@@ -1341,11 +1395,15 @@ open(sys.argv[1], "wb").write(loc + cen + end)' up-$crc.zip $crc
     cp up-good.zip up.zip
     "$ZIP" -d up.zip "$u" >out 2>&1
     grep -qx "deleting: $u" out || fail "-d by Unicode path: $(cat out)"
+    # Departure: a stale field is warned of by its entry's name (as UTF-8,
+    # if decoded from a code page), where Info-ZIP's gives "(null)"
     cp up-stale.zip up.zip
-    "$ZIP" -q up.zip "$u"
+    "$ZIP" up.zip "$u" >out 2>err
     verify up.zip
     [ "$(wc -l <check.out | tr -d ' ')" = 2 ] ||
         fail "stale Unicode path matched: $(cat check.out)"
+    printf 'zip warning: Unicode does not match path - ignoring Unicode: caf\202.txt\n' |
+        cmp -s - err || fail "stale Unicode path: $(cat err)"
 fi
 
 # Departure: a file matches by Unicode name only an entry that no file
@@ -1425,7 +1483,7 @@ cat stub plain.zip >sfx0.zip
 cp sfx0.zip sfx0.orig
 expect_status 3 "$ZIP" sfx0.zip sx2.txt
 expect_status 3 "$ZIP" -d sfx0.zip sx1.txt
-"$ZIP" sfx0.zip sx2.txt >out 2>&1 && fail "unadjusted stub accepted"
+exits 3 "$ZIP" sfx0.zip sx2.txt >out 2>&1
 w='zip warning: offsets do not account for data before the archive'
 printf '%s\n' "$w" '' 'zip error: Zip file structure invalid (sfx0.zip)' >want
 cmp -s out want || fail "unadjusted stub: $(cat out)"
@@ -1510,10 +1568,10 @@ write("r64bad.zip", cdoff=len(loc)+1)'
         [ "$(names $f.zip | tr '\n' ' ')" = "e/a.txt e/b.txt tree/a.txt " ] ||
             fail "end records of $f.zip: $(names $f.zip)"
     done
-    "$ZIP" r64split.zip tree/a.txt >out 2>&1 && fail "split Zip64 accepted"
+    exits 3 "$ZIP" r64split.zip tree/a.txt >out 2>&1
     printf '\nzip error: Split archives not supported (r64split.zip)\n' >want
     cmp -s out want || fail "split Zip64: $(cat out)"
-    "$ZIP" r64bad.zip tree/a.txt >out 2>&1 && fail "bad Zip64 accepted"
+    exits 3 "$ZIP" r64bad.zip tree/a.txt >out 2>&1
     printf '\nzip error: Zip file structure invalid (r64bad.zip)\n' >want
     cmp -s out want || fail "bad Zip64: $(cat out)"
 fi
@@ -1523,12 +1581,11 @@ expect_status 12 "$ZIP" nothing.zip missing
 [ ! -e nothing.zip ] || fail "created an archive with nothing to do"
 # Under -r without patterns, Info-ZIP's error suggests the paths as -i
 # patterns of ".", in the arguments with options first
-env ZIPOPT=-9 "$ZIP" -r nothing.zip missing -q -- missing2 2>err &&
-    fail "-r with nothing to do"
+exits 12 env ZIPOPT=-9 "$ZIP" -r nothing.zip missing -q -- missing2 2>err
 [ "$(cat err)" = "
 zip error: Nothing to do! (try: zip -9 -r -q nothing.zip . -i missing -- missing2)" ] ||
     fail "-r with nothing to do: $(cat err)"
-"$ZIP" -qr nothing.zip missing -x missing2 2>err && fail "-r -x, nothing to do"
+exits 12 "$ZIP" -qr nothing.zip missing -x missing2 2>err
 [ "$(cat err)" = "
 zip error: Nothing to do! (nothing.zip)" ] || fail "-r -x, nothing to do: $(cat err)"
 expect_status 0 "$ZIP" some.zip missing tree/a.txt
@@ -1549,7 +1606,7 @@ expect_status 12 "$ZIP" -d de.zip - -x -  # -x applies, as to any name
 "$ZIP" de.zip - -d >out || fail "-d -: $(cat out)"
 [ "$(cat out)" = "deleting: -" ] || fail "-d -: $(cat out)"
 [ "$(names de.zip)" = tree/a.txt ] || fail "-d -: $(names de.zip)"
-"$ZIP" -d de.zip - 2>err && fail "-d - without the entry succeeded"
+exits 12 "$ZIP" -d de.zip - 2>err
 grep -q 'not matched' err && fail "-d - warned: $(cat err)"
 
 # As in Info-ZIP, -x and -i patterns need something to select from:
@@ -1557,10 +1614,10 @@ grep -q 'not matched' err && fail "-d - warned: $(cat err)"
 "$ZIP" -q ns.zip tree/a.txt
 cp ns.zip ns.orig
 for mode in -q -qd -qFS; do
-    "$ZIP" $mode ns.zip -x '*.tmp' >out 2>&1 && fail "$mode -x, no paths"
+    exits 16 "$ZIP" $mode ns.zip -x '*.tmp' >out 2>&1
     grep -q 'nothing to select from' out || fail "$mode -x: $(cat out)"
 done
-printf '\n' | "$ZIP" -@ ns.zip -i '*.txt' >out 2>&1 && fail "-@ -i, no paths"
+printf '\n' | exits 16 "$ZIP" -@ ns.zip -i '*.txt' >out 2>&1
 grep -q 'nothing to select from' out || fail "-@ -i: $(cat out)"
 expect_status 16 "$ZIP" -x '*.tmp'
 expect_status 16 "$ZIP" -d ns-gone.zip -x '*.tmp'
@@ -1586,7 +1643,7 @@ done
 [ ! -s empty.zip ] || fail "an empty archive was written"
 (cd tree && : >self.zip && expect_status 3 "$ZIP" -r self.zip . && rm self.zip)
 mkdir isdir.zip
-"$ZIP" -r isdir.zip tree >out 2>&1 && fail "directory archive succeeded"
+exits 3 "$ZIP" -r isdir.zip tree >out 2>&1
 grep -q 'adding:' out && fail "directory archive did work first: $(cat out)"
 grep -q 'structure invalid' out || fail "directory archive: $(cat out)"
 if mkfifo fifo.zip 2>/dev/null; then
@@ -1621,7 +1678,7 @@ if ln -s ../store/r.zip al/dist/rel.zip 2>/dev/null; then
     [ "$(names al/store/new.zip)" = tree/a.txt ] ||
         fail "dangling archive link: $(names al/store/new.zip)"
     ln -s loop.zip al/loop.zip
-    "$ZIP" al/loop.zip tree/a.txt 2>err && fail "archive link loop succeeded"
+    exits 15 "$ZIP" al/loop.zip tree/a.txt 2>err
     grep -q 'Could not create output file (al/loop.zip)' err ||
         fail "archive link loop: $(cat err)"
     [ -L al/loop.zip ] || fail "archive link loop replaced"
@@ -1632,7 +1689,7 @@ if ln -s ../store/r.zip al/dist/rel.zip 2>/dev/null; then
         ln -s '' $e 2>/dev/null || break  # Linux refuses one
         printf '%s\n' 'zip I/O error: No such file or directory' \
             "zip error: Could not create output file ($e)" >want
-        "$ZIP" $e tree/a.txt >out 2>err && fail "empty link $e succeeded"
+        exits 15 "$ZIP" $e tree/a.txt >out 2>err
         [ ! -s out ] && cmp -s err want || fail "empty link $e: $(cat out err)"
         [ -L $e ] || fail "empty link $e replaced"
         rm $e
@@ -1651,7 +1708,7 @@ if ln -s ../store/r.zip al/dist/rel.zip 2>/dev/null; then
         fail "archive through $((n-1)) links"
     [ "$(names al/chain/l0.zip | tr '\n' ' ')" = "tree/a.txt tree/b.txt " ] ||
         fail "archive through $((n-1)) links: $(names al/chain/l0.zip)"
-    "$ZIP" al/chain/l$n.zip tree/one 2>err && fail "$n links succeeded"
+    exits 15 "$ZIP" al/chain/l$n.zip tree/one 2>err
     grep -q 'zip I/O error: ..' err || fail "$n links: $(cat err)"
 fi
 
@@ -1665,7 +1722,7 @@ fi
 # A failed read is told from a failed open (Linux: reading this file at
 # offset 0 fails), after its reason, as Info-ZIP's perror gives it
 if [ -r /proc/self/mem ]; then
-    "$ZIP" mem.zip /proc/self/mem >out 2>err && fail "read error succeeded"
+    exits 18 "$ZIP" mem.zip /proc/self/mem >out 2>err
     printf '%s\n' 'zip warning: Input/output error' \
         'zip warning: could not read input file: proc/self/mem' >want
     head -n 2 err | cmp -s - want || fail "read error: $(cat err)"
@@ -1691,31 +1748,35 @@ cmp -s wf/u.zip wfu.orig || fail "failed write changed the archive"
 [ "$(ls wf | tr '\n' ' ')" = "big small u.zip " ] ||
     fail "failed write left: $(ls wf)"
 
-# With nothing to update, -u and -f exit 12 silently, as Info-ZIP does,
-# and on a missing archive it warns
-"$ZIP" -u u.zip missing >out 2>&1 && fail "-u with nothing found"
-grep -q 'Nothing to do' out && fail "-u with nothing found: $(cat out)"
-"$ZIP" -f u0.zip missing >out 2>&1 && fail "-f with nothing found"
-grep -q 'Nothing to do' out && fail "-f with nothing found: $(cat out)"
+# With no file found, -u and -f exit 12, as Info-ZIP does, warning only
+# that the name is not matched (no "Nothing to do!"), and on a missing
+# archive warn of that too
+exits 12 "$ZIP" -u u.zip missing >out 2>&1
+[ "$(cat out)" = 'zip warning: name not matched: missing' ] ||
+    fail "-u with nothing found: $(cat out)"
+exits 12 "$ZIP" -f u0.zip missing >out 2>&1
+[ "$(cat out)" = 'zip warning: name not matched: missing' ] ||
+    fail "-f with nothing found: $(cat out)"
 "$ZIP" -u newu.zip tree/a.txt >out 2>&1
 grep -q 'newu.zip not found or empty' out || fail "-u, no archive: $(cat out)"
 names newu.zip | grep -q tree/a.txt || fail "-u, no archive: $(names newu.zip)"
 
 # -d and -f warn the same of a missing or empty archive, then go on
 # with their arguments, as Info-ZIP does
-"$ZIP" -d gone.zip nosuch tree/a.txt >out 2>&1 && fail "-d, no archive"
+exits 12 "$ZIP" -d gone.zip nosuch tree/a.txt >out 2>&1
 grep -q 'gone.zip not found or empty' out || fail "-d, no archive: $(cat out)"
 grep -q 'name not matched: nosuch' out || fail "-d, no archive: $(cat out)"
 grep -q 'name not matched: tree/a.txt' out && fail "-d, no archive: $(cat out)"
 grep -q 'Nothing to do' out || fail "-d, no archive: $(cat out)"
 expect_status 16 "$ZIP" -f gone.zip tree/a.txt ./tree/a.txt
-"$ZIP" -f gone.zip tree/a.txt nosuch >out 2>&1 && fail "-f, no archive"
+exits 12 "$ZIP" -f gone.zip tree/a.txt nosuch >out 2>&1
 grep -q 'name not matched: nosuch' out || fail "-f, no archive: $(cat out)"
 "$ZIP" -q em.zip tree/a.txt
 "$ZIP" -qd em.zip tree/a.txt
 expect_status 12 "$ZIP" -f em.zip tree/b.txt
-for mode in -d -f -u; do  # the last adds
-    "$ZIP" $mode em.zip tree/b.txt >out 2>&1 || true
+for run in '12 -d' '12 -f' '0 -u'; do  # the last adds
+    mode=${run#* }
+    exits ${run% *} "$ZIP" $mode em.zip tree/b.txt >out 2>&1
     grep -q 'em.zip not found or empty' out || fail "$mode, empty: $(cat out)"
 done
 [ ! -e gone.zip ] || fail "-d or -f created an archive"
@@ -1731,8 +1792,7 @@ if [ "$(id -u)" != 0 ]; then
     # As in Info-ZIP, the progress line comes first, then the system's
     # reason, and the warning gives the entry's name. Its summary counts
     # what was read, and abbreviates large byte counts.
-    "$ZIP" -j r2.zip ./unreadable tree/b.txt >out 2>err &&
-        fail "unreadable file succeeded"
+    exits 18 "$ZIP" -j r2.zip ./unreadable tree/b.txt >out 2>err
     grep -qx '  adding: unreadable' out || fail "unreadable: $(cat out)"
     cat >want <<EOF
 zip warning: Permission denied
@@ -1742,16 +1802,16 @@ zip warning: Not all files were readable
   files/entries read:  1 (1 bytes)  skipped:  1 (24 bytes)
 EOF
     cmp -s err want || fail "unreadable: $(cat err)"
-    "$ZIP" -j r3.zip unreadable tree/sub/random >out 2>err || true
+    exits 18 "$ZIP" -j r3.zip unreadable tree/sub/random >out 2>err
     grep -qx '  files/entries read:  1 (292K bytes)  skipped:  1 (24 bytes)' \
         err || fail "unreadable, large: $(cat err)"
     # Info-ZIP's perror lines come even under -q
-    "$ZIP" -q r4.zip unreadable 2>err && fail "unreadable file, -q"
+    exits 18 "$ZIP" -q r4.zip unreadable 2>err
     [ "$(cat err)" = 'zip warning: Permission denied' ] ||
         fail "-q, unreadable: $(cat err)"
 
     # As there, the summary comes before "zip file empty"
-    "$ZIP" r5.zip unreadable >out 2>err && fail "unreadable file alone"
+    exits 18 "$ZIP" r5.zip unreadable >out 2>err
     cat >want <<EOF
 zip warning: Permission denied
 zip warning: could not open for reading: unreadable
@@ -1770,7 +1830,7 @@ EOF
     cp ro/x.zip rodir.orig
     chmod 555 ro
     expect_status 10 "$ZIP" ro/x.zip tree/b.txt
-    "$ZIP" ro/new.zip tree/b.txt 2>err && fail "archive in read-only directory"
+    exits 15 "$ZIP" ro/new.zip tree/b.txt 2>err
     printf '%s\n' 'zip I/O error: Permission denied' \
         'zip error: Could not create output file (ro/new.zip)' >want
     cmp -s err want || fail "read-only directory: $(cat err)"
@@ -1790,7 +1850,7 @@ EOF
     "$ZIP" -q rox.zip tree/a.txt
     cp rox.zip rox.orig
     chmod 444 rox.zip
-    "$ZIP" rox.zip tree/b.txt >out 2>err && fail "read-only archive updated"
+    exits 15 "$ZIP" rox.zip tree/b.txt >out 2>err
     printf '%s\n' 'zip I/O error: Permission denied' \
         'zip error: Could not create output file (rox.zip)' >want
     cmp -s err want || fail "read-only archive: $(cat err)"
@@ -1804,7 +1864,7 @@ EOF
     expect_status 15 "$ZIP" rox.zip tree/b.txt
     expect_status 15 "$ZIP" -u rox.zip tree/b.txt
     expect_status 12 "$ZIP" -f rox.zip tree/b.txt
-    "$ZIP" -d rox.zip tree/a.txt >out 2>&1 && fail "-d on mode 000 archive"
+    exits 12 "$ZIP" -d rox.zip tree/a.txt >out 2>&1
     grep -q 'rox.zip not found or empty' out || fail "-d, 000: $(cat out)"
     grep -q 'Nothing to do' out || fail "-d, 000: $(cat out)"
 
@@ -1866,14 +1926,14 @@ EOF
         chmod 644 stale
     done
     chmod 000 stale
-    "$ZIP" s.zip stale >out 2>err && fail "unreadable replacement succeeded"
+    exits 18 "$ZIP" s.zip stale >out 2>err
     cat >want <<EOF
 stale: Permission denied
 zip warning: could not open for reading: stale
 zip warning: will just copy entry over: stale
 EOF
     cmp -s err want || fail "copy over warning: $(cat err)"
-    "$ZIP" -q s.zip stale >out 2>err && fail "unreadable replacement, -q"
+    exits 18 "$ZIP" -q s.zip stale >out 2>err
     [ "$(cat err)" = 'stale: Permission denied' ] ||
         fail "copy over, -q: $(cat err)"
     chmod 644 stale
@@ -2393,5 +2453,6 @@ fi
 # No run left a temporary file
 find . -name 'zi[0-9][0-9][0-9][0-9][0-9][0-9]' >out
 [ ! -s out ] || fail "temporary files left: $(cat out)"
+[ ! -e "$tmp/FAILED" ] || exit 1
 
 echo "zip tests pass"

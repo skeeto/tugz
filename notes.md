@@ -723,8 +723,10 @@ neither inflate nor the gzip container.
 
 ### Departures from Info-ZIP
 
-Each is deliberate, for safety, determinism, or a friendlier result,
-and `test/zip.sh` asserts most of them (marked "Departure" there).
+Each is deliberate, for safety, determinism, or a friendlier result.
+`test/zip.sh` asserts most of them that POSIX shows (most marked
+"Departure" there), `test/zip_windows.sh` the Windows ones, and
+`test/zipclitests.c` an archive that shrinks.
 
 - Exit statuses: `-u` and `-f` with nothing newer exit 0 (Info-ZIP: 12).
   An unreadable directory, or a dangling link (or one whose target
