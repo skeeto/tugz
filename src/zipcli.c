@@ -2285,6 +2285,18 @@ static i32 create_temp(zip *z, s8 *path, arena scratch)
     return OS_ERR;
 }
 
+// Close the temporary file after a failure, which discards it, warning
+// should it stay, as where its directory has since refused removing it,
+// which Info-ZIP passes over in silence.
+static void discard_temp(zip *z, i32 fd, s8 temp, arena scratch)
+{
+    os_close(z->ctx, fd);
+    os_info info = {0};
+    if (os_stat(z->ctx, temp, 0, &info, scratch)) {
+        warn(z, S("could not remove temporary file: "), temp, scratch);
+    }
+}
+
 static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
 {
     // Whatever grows with the number of entries is allocated before any
@@ -2340,7 +2352,7 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     i32 got = ar ? zin_copy(&ar->in, &w, 0, ar->beg) : 1;
     if (got <= 0) {
         i32 err = read_failed(z, got, (s8){0}, scratch);  // before closing
-        os_close(z->ctx, fd);
+        discard_temp(z, fd, temp, scratch);
         return err;
     }
 
@@ -2435,7 +2447,7 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
         if (copy) {
             i32 err = copy_entry(z, ar, &k, copy, scratch);
             if (err) {
-                os_close(z->ctx, fd);
+                discard_temp(z, fd, temp, scratch);
                 return err;
             }
             cd[count++] = copy;
@@ -2472,10 +2484,11 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     }
     if (w.err || !os_truncate(z->ctx, fd, zout_tell(&w))) {
         // Info-ZIP's words for a failed write, in whichever entry
-        s8 why = w.err ? w.why : os_error(z->ctx);
-        os_close(z->ctx, fd);
-        return fail_why(z, ZE_WRITE, why, S("Output file write failure"),
-                        S("write error on zip file"), scratch);
+        s8  why = w.err ? w.why : os_error(z->ctx);
+        i32 err = fail_why(z, ZE_WRITE, why, S("Output file write failure"),
+                           S("write error on zip file"), scratch);
+        discard_temp(z, fd, temp, scratch);
+        return err;
     }
     if (!count) {
         warn(z, S("zip file empty"), S(""), scratch);

@@ -815,7 +815,10 @@ and `test/zip.sh` asserts most of them (marked "Departure" there).
   fails to replace it (15), where Info-ZIP replaces it. When the archive
   cannot be replaced, the temporary file is removed, where Info-ZIP
   keeps it ("new zip file left as"), as zip does, with that warning,
-  only if removing it fails too. A dangling link at its path gets its
+  only if removing it fails too. After a failed read or write, one that
+  cannot be removed is named in a warning ("could not remove temporary
+  file"), where Info-ZIP removes it as it can, saying nothing. A
+  dangling link at its path gets its
   target created and survives (Info-ZIP leaves an empty file there and
   replaces the link with the archive). On Windows the new archive is
   flushed to the device before the rename (see Writing), which Info-ZIP

@@ -2082,6 +2082,32 @@ elif [ "$(id -u)" != 0 ]; then
     echo "zip.sh: zip finished before its replacement could fail" >&2
 fi
 
+# Departure: a temporary file that cannot be removed after a failure,
+# here a write past the file size limit, is named in a warning (Info-ZIP
+# says nothing)
+printf '#!/bin/sh\ntrap "" XFSZ\nulimit -f 1000\nexec "%s" "$@"\n' "$ZIP" >limzip
+chmod +x limzip
+zip0=$ZIP
+ZIP=$(pwd)/limzip
+cp race.orig rz/race.zip
+if [ "$(id -u)" != 0 ] && bgzip rz rz/race.zip race/a_big; then
+    chmod 555 rz
+    kill -CONT $pid
+    wait $bg
+    chmod 755 rz
+    left=$(cd rz && echo zi[0-9]*)
+    [ "$(cat bg.status)" = 14 ] &&
+        [ "$(tail -n 1 bg.err)" = \
+          "zip warning: could not remove temporary file: rz/$left" ] ||
+        fail "temporary file left: $(cat bg.status) $(cat bg.err)"
+    cmp -s rz/race.zip race.orig || fail "failed write changed the archive"
+    rm rz/zi[0-9]*
+elif [ "$(id -u)" != 0 ]; then
+    wait $bg
+    echo "zip.sh: zip finished before its temporary file could be kept" >&2
+fi
+ZIP=$zip0
+
 # A file swapped since the scan is not read: under -y, for a link, or a
 # file through a link swapped in for its directory, and in any case for
 # a FIFO (which a zip opening it would wait on, but here has a writer,
