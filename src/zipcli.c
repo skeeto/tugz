@@ -24,9 +24,9 @@ enum {
 // os_missing then tells apart. With follow, symbolic links are followed;
 // otherwise a link (on Windows, or a junction) is FT_LINK.
 static b32  os_stat(os *, s8 path, b32 follow, os_info *, arena scratch);
-// Whether the last os_stat failed because nothing is there (no such file
-// or directory, or a name that none could have), rather than for a
-// reason, such as an I/O error, that leaves what is there unknown.
+// Whether the last os_stat failed because nothing is there (no such
+// file, nor a directory on the way to it), rather than for a reason,
+// such as an I/O error, that leaves what is there unknown.
 static b32  os_missing(os *);
 // As os_stat, for the file that an open descriptor reads.
 static b32  os_fstat(os *, i32 fd, os_info *);
@@ -42,7 +42,8 @@ static b32  os_truncate(os *, i32 fd, i64 len);
 // The path to replace for path, so that symbolic links there survive
 // the replacement: path itself unless it is a link, else the file the
 // links lead to, which for a dangling link is where it points. Returns
-// a null string for a link the system would not follow (a loop).
+// a null string for a link the system would not follow (a loop), or a
+// path that cannot be examined for a reason other than nothing there.
 static s8   os_resolve(os *, s8 path, arena *perm, arena scratch);
 // Whether an existing file may be replaced as though written: on POSIX,
 // that the user may write it; on Windows, that it is not read-only and

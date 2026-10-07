@@ -14,13 +14,6 @@
 
 #include "windows.c"
 
-static b32 os_missing(os *ctx)
-{
-    (void)ctx;
-    u32 err = GetLastError();
-    return err==ERROR_FILE_NOT_FOUND || err==ERROR_PATH_NOT_FOUND;
-}
-
 // A pipe whose reader has gone, which has no SIGPIPE here: writes fail
 // with "the pipe is being closed", or else "the pipe has been ended".
 static b32 os_pipeclosed(os *ctx)

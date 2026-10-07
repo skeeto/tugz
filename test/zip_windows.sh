@@ -636,19 +636,69 @@ for share in ReadWrite None; do
     cmp -s ro.zip ro.orig || fail "archive held ($share) changed"
 done
 
-# Every system error has a reason, in the words of the C runtime of
-# Info-ZIP's port for the errno to which it maps the error: a share that
-# does not exist is no such file, and a link to itself, which the system
-# cannot follow, an invalid argument
-"$ZIP" //localhost/nosuchshare/x.zip tree/a.txt 2>err && fail "unknown share"
-grep -qx 'zip I/O error: No such file or directory' err ||
-    fail "unknown share: $(cat err)"
-if cmd /c 'mklink loop.zip loop.zip' >/dev/null 2>&1; then
-    "$ZIP" loop.zip tree/a.txt 2>err && fail "link loop"
-    grep -qx 'zip I/O error: Invalid argument' err ||
-        fail "link loop: $(cat err)"
-    rm loop.zip
-fi
+# So is an archive name that cannot be examined, for any reason but
+# nothing there, as Info-ZIP's port fails to create it then, the reason
+# worded by its C runtime for the errno to which it maps the error: a
+# share that does not exist is no such file, and a name that no file can
+# have, or a link to itself, which the system cannot follow, an invalid
+# argument
+long=$(printf 'n%.0s' $(seq 260)).zip
+for a in //localhost/nosuchshare/x.zip 'a<b.zip' "$long" loop.zip; do
+    why='Invalid argument'
+    case $a in
+    //*) why='No such file or directory';;
+    loop.zip) cmd /c 'mklink loop.zip loop.zip' >/dev/null 2>&1 || continue;;
+    esac
+    set +e
+    "$ZIP" "$a" tree/a.txt >out 2>err; st=$?
+    set -e
+    [ $st = 15 ] && grep -qx "zip I/O error: $why" err &&
+        grep -qx "zip error: Could not create output file ($a)" err ||
+        fail "unexaminable archive $a: $st $(cat err)"
+    grep -q adding out && fail "unexaminable archive $a: work done first"
+done
+rm -f loop.zip
+
+# ...as is one that another process holds delete-pending
+cat >dp.cs <<'EOF'
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+public static class Pending {
+    [DllImport("kernel32.dll")]
+    static extern bool SetFileInformationByHandle(System.IntPtr h, int c,
+                                                  ref byte discard, int n);
+    public static FileStream Hold(string path) {
+        FileStream f = new FileStream(path, FileMode.Open,
+            FileSystemRights.Read | FileSystemRights.Delete,
+            FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.None);
+        byte discard = 1;
+        SetFileInformationByHandle(f.SafeFileHandle.DangerousGetHandle(),
+                                   4, ref discard, 1);  // FileDispositionInfo
+        return f;
+    }
+}
+EOF
+"$ZIP" -q dp.zip tree/a.txt
+rm -f held done
+ps "Add-Type -TypeDefinition (Get-Content -Raw dp.cs);
+    \$f = [Pending]::Hold((Resolve-Path dp.zip).Path);
+    Set-Content held '';
+    for (\$i = 0; \$i -lt 600 -and !(Test-Path done); \$i++) {
+        Start-Sleep -Milliseconds 50
+    }
+    \$f.Close()" &
+pid=$!
+for i in 1 2 3 4 5 6 7 8 9 10; do [ -e held ] && break; sleep 1; done
+set +e
+"$ZIP" dp.zip tree/b.txt >out 2>err; st=$?
+set -e
+: >done
+wait $pid || true
+[ $st = 15 ] && grep -qx 'zip I/O error: Permission denied' err ||
+    fail "delete-pending archive: $st $(cat err)"
+grep -q adding out && fail "delete-pending archive: work done first"
+[ ! -e dp.zip ] || fail "delete-pending archive not deleted"
 
 # A replaced archive keeps its hidden, system, and not-indexed
 # attributes, as POSIX keeps the mode, with the archive bit set

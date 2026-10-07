@@ -250,7 +250,14 @@ neither inflate nor the gzip container.
   opening the archive with that access, and holds it so until the
   rename, so that no process can open it that way in the meantime. One
   that can be neither read nor written is, as in Info-ZIP, taken for a
-  missing archive, which then cannot be written. A missing or empty
+  missing archive, which then cannot be written. So is a path that
+  cannot be examined for any reason but nothing there, as Info-ZIP fails
+  to create it up front: one that `stat` refuses on POSIX, and on
+  Windows a name that no file can have (`a<b.zip`, a component over 255
+  characters), one that another process holds delete-pending, or a
+  share or server not found (a name with a colon, as `rel-12:30.zip`,
+  is still found invalid only by the rename, after the work, since
+  Windows takes it for a stream of a file not found). A missing or empty
   archive gets Info-ZIP's "not found or empty" warning under `-u`, `-f`,
   and `-d`, which go on with their arguments (warning of unmatched
   names, rejecting repeated ones). A file that cannot be added still

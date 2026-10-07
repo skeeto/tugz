@@ -711,6 +711,16 @@ static b32 os_isatty(os *ctx, i32 fd)
     return (u32)fd<3 && ctx->consoles>>fd & 1;
 }
 
+// Nothing there: no such file, nor a directory on the way to it, rather
+// than a share or server not found, which one that is down may give, or
+// a name that no file can have.
+static b32 os_missing(os *ctx)
+{
+    (void)ctx;
+    u32 err = GetLastError();
+    return err==ERROR_FILE_NOT_FOUND || err==ERROR_PATH_NOT_FOUND;
+}
+
 // Why the last system call failed, as the C runtime of Info-ZIP's port,
 // and of GNU gzip built for Windows, would say: in the words of its
 // strerror for the errno to which its _dosmaperr maps the code (checked

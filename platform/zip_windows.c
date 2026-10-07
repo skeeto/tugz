@@ -183,17 +183,6 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
     return ok;
 }
 
-// A name that no file could have, as one with a character Windows does
-// not allow (<, |), is missing, as creating the archive fails anyway.
-// Not so a network path or name not found, which a server down may give.
-static b32 os_missing(os *ctx)
-{
-    (void)ctx;
-    u32 err = GetLastError();
-    return err==ERROR_FILE_NOT_FOUND || err==ERROR_PATH_NOT_FOUND ||
-           err==ERROR_INVALID_NAME;
-}
-
 static b32 os_fstat(os *ctx, i32 fd, os_info *info)
 {
     return handle_info(ctx->handles[fd], info);
@@ -228,13 +217,22 @@ static c16 *final_path(iptr h, u32 how, arena *a)
 // the volume (a RAM disk), by its device, under \\?\GLOBALROOT. Since
 // messages name files beside the archive, a target within the directory
 // where the user named the archive is named from there, and otherwise,
-// a drive or share path loses its \\?\ (winpath restores it).
+// a drive or share path loses its \\?\ (winpath restores it). As on
+// POSIX, a path that cannot be examined, other than for nothing there,
+// cannot be followed, so that zip refuses it before any work, as
+// Info-ZIP does on failing to create it then: a name that no file can
+// have (<, a component over 255 units), a file that another process
+// holds delete-pending, a share or server not found.
 static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
 {
-    (void)ctx;
     c16 *wpath = winpath(&scratch, path);
     u32  attr  = wpath ? GetFileAttributesW(wpath) : INVALID_FILE_ATTRIBUTES;
-    if (attr==INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_REPARSE)) {
+    if (!wpath) {
+        SetLastError(ERROR_INVALID_NAME);  // as in os_open
+        return (s8){0};
+    } else if (attr == INVALID_FILE_ATTRIBUTES) {
+        return os_missing(ctx) ? path : (s8){0};
+    } else if (!(attr & FILE_ATTRIBUTE_REPARSE)) {
         return path;  // no link
     }
     iptr h = CreateFileW(wpath, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, 0,
