@@ -1274,8 +1274,9 @@ static b32 scan_arg(zip *z, s8 arg, arena scratch)
     } else if (!z->windows || z->mode==MODE_FRESHEN) {
         return 0;
     } else if (!zip_haswild(arg, 0) ||
-               !expand_wild(z->ctx, arg, z->hidden, z->nowild, scan_match, z,
-                            scratch)) {
+               !expand_wild(z->ctx, arg, z->hidden,
+                            WILD_WINDOWS | (z->nowild ? ZIP_NOWILD : 0),
+                            scan_match, z, scratch)) {
         warn(z, S("name not matched: "), arg, scratch);
     }
     return 1;

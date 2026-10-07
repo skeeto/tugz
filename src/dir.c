@@ -2,8 +2,10 @@
 //
 // zip lists directories to recurse into them. On Windows, whose shells
 // leave wildcards in arguments to programs, zip and gzip both expand
-// them here, as Info-ZIP's Windows port does, matching names by
-// src/wild.c. The platform layer provides os_listdir and os_upcase.
+// them here, as Info-ZIP's Windows port does, and unzip expands
+// wildcard archive names on every platform, as UnZip does, matching
+// names by src/wild.c. The platform layer provides os_listdir and
+// os_upcase.
 
 enum { FT_NONE, FT_FILE, FT_DIR, FT_LINK, FT_OTHER };
 
@@ -140,25 +142,40 @@ static b32 nonascii(s8 s)
 // describes it, else null. Returns whether the match counts.
 typedef b32 wild_found(void *data, s8 path, os_dirent *entry, arena scratch);
 
-// Expand wildcards in a path's components against the file system, as
-// Windows shells do not, matching as Info-ZIP does there: ignoring case,
-// by characters, with DOS rules, and if nowild (zip's -nw) only ?. Hidden
-// and system entries are left out unless all. Each match goes to found,
-// in name order. Returns the number of matches that found counted.
-static iz expand_wild(os *ctx, s8 path, b32 all, b32 nowild,
+// Flags for expand_wild, beside zip_match's
+enum {
+    // Names starting with '.' match only patterns that do, as on Unix,
+    // where UnZip's '*' and '?' do not match a leading dot
+    WILD_NODOTS   = 1 << 16,
+    // The ZIP_* flags of Info-ZIP's Windows port, as zip and gzip expand
+    // wildcards there: ignoring case, by characters, with DOS rules
+    WILD_WINDOWS  = ZIP_FOLD | ZIP_DOS | ZIP_UTF8,
+};
+
+// Expand wildcards in a path's components against the file system,
+// matching names by zip_match with flags (ZIP_*: with ZIP_SETS, '[' is a
+// wildcard too; ZIP_FOLD also ignores case beyond ASCII as the file
+// system does; ZIP_DOS takes paths by Windows rules), and WILD_NODOTS.
+// Hidden and system entries (Windows) are left out unless all. Each
+// match goes to found, in name order. Returns the number of matches that
+// found counted.
+static iz expand_wild(os *ctx, s8 path, b32 all, i32 flags,
                       wild_found *found, void *data, arena scratch)
 {
-    // Find the first component with a wildcard. A drive ends a component:
-    // "C:*.c" lists the drive's current directory, "C:".
-    u8 drive = path.len>=2 && path.s[1]==':' ? (u8)(path.s[0] | 0x20) : 0;
-    iz beg = 0;
-    iz end = 0;
+    // Find the first component with a wildcard. With Windows rules
+    // (ZIP_DOS), '\' separates them too, and a drive ends one: "C:*.c"
+    // lists the drive's current directory, "C:".
+    b32 win   = flags & ZIP_DOS;
+    b32 colon = win && path.len>=2 && path.s[1]==':';
+    u8  drive = colon ? (u8)(path.s[0] | 0x20) : 0;
+    iz  beg   = 0;
+    iz  end   = 0;
     for (iz i = drive>='a' && drive<='z' ? 2 : 0;; i = end + 1) {
         beg = i;
         for (end = i; end<path.len && path.s[end]!='/' &&
-                      path.s[end]!='\\'; end++) {}
+                      (!win || path.s[end]!='\\'); end++) {}
         s8 comp = {path.s+beg, end-beg};
-        if (zip_haswild(comp, 0)) {
+        if (zip_haswild(comp, flags)) {
             break;
         } else if (end == path.len) {
             return 0;
@@ -178,22 +195,25 @@ static iz expand_wild(os *ctx, s8 path, b32 all, b32 nowild,
     // Beyond ASCII, which ZIP_FOLD folds, case is ignored by comparing in
     // upper case, as the file system and Info-ZIP's port (by towupper)
     // compare names, where the pattern or the name needs it
-    i32 flags = ZIP_FOLD | ZIP_DOS | ZIP_UTF8 | (nowild ? ZIP_NOWILD : 0);
-    b32 wide  = nonascii(pat);
+    b32 fold  = flags & ZIP_FOLD;
+    b32 wide  = fold && nonascii(pat);
+    b32 dots  = (flags & WILD_NODOTS) && pat.len && pat.s[0]=='.';
     s8  upat  = wide ? os_upcase(ctx, pat, &scratch) : pat;
     iz  count = 0;
     for (iz i = 0; i < n; i++) {
         arena tmp = scratch;
         s8    kid = kids[i]->name;
-        b32   up  = wide || nonascii(kid);
-        if (!zip_match(up ? upat : pat,
-                       up ? os_upcase(ctx, kid, &tmp) : kid, flags)) {
+        b32   up  = wide || (fold && nonascii(kid));
+        if ((flags & WILD_NODOTS) && !dots && kid.len && kid.s[0]=='.') {
+            continue;
+        } else if (!zip_match(up ? upat : pat,
+                              up ? os_upcase(ctx, kid, &tmp) : kid, flags)) {
             continue;
         }
         arena iter = scratch;  // forgets each match's strings
         s8    cand = replace_part(&iter, path, beg, end, kid);
-        if (zip_haswild(rest, 0)) {
-            count += expand_wild(ctx, cand, all, nowild, found, data, iter);
+        if (zip_haswild(rest, flags)) {
+            count += expand_wild(ctx, cand, all, flags, found, data, iter);
             continue;
         }
         // The listing describes the match only if nothing follows it, and

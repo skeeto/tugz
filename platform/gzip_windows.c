@@ -84,8 +84,8 @@ static s8 *expand_args(os *ctx, arena *perm, s8 *args, i32 *nargs,
     iz  total   = 0;
     for (i32 i = 0; i < *nargs; i++) {
         if (zip_haswild(args[i], 0)) {
-            matches[i] = expand_wild(ctx, args[i], 0, 0, add_arg, perm,
-                                     scratch);
+            matches[i] = expand_wild(ctx, args[i], 0, WILD_WINDOWS, add_arg,
+                                     perm, scratch);
         }
         total += matches[i] ? matches[i] : 1;
     }
