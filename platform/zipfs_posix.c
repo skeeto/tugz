@@ -144,7 +144,7 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
     return 1;
 }
 
-static b32 os_missing(os *ctx)
+[[maybe_unused]] static b32 os_missing(os *ctx)
 {
     (void)ctx;
     return errno==ENOENT || errno==ENOTDIR;

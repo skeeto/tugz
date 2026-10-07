@@ -142,14 +142,14 @@ static u16 zip_needed(zentry const *e)
     return (u16)(MAX(v, old) | (e->needed & 0xff00));
 }
 
-static iz zip_local_len(zentry const *e)
+[[maybe_unused]] static iz zip_local_len(zentry const *e)
 {
     return ZIP_LOCAL_LEN + e->name.len + (e->zip64 ? 20 : 0) + e->lextra.len;
 }
 
 // Encode a local header, zip_local_len bytes. A Zip64 entry records both
 // sizes in its extra field, as required.
-static u8 *zip_local(u8 *p, zentry const *e)
+[[maybe_unused]] static u8 *zip_local(u8 *p, zentry const *e)
 {
     p = put32(p, ZIP_LOCAL_SIG);
     p = put16(p, zip_needed(e));
@@ -174,7 +174,7 @@ static u8 *zip_local(u8 *p, zentry const *e)
 
 // Data descriptor following an entry's data, at most 24 bytes, for
 // entries that keep the descriptor flag.
-static u8 *zip_desc(u8 *p, zentry const *e)
+[[maybe_unused]] static u8 *zip_desc(u8 *p, zentry const *e)
 {
     p = put32(p, ZIP_DESC_SIG);
     p = put32(p, e->crc);
@@ -199,14 +199,14 @@ static iz zip_central64_len(zentry const *e)
     return any ? 4 + 16 + (off ? 8 : 0) : 0;
 }
 
-static iz zip_central_len(zentry const *e)
+[[maybe_unused]] static iz zip_central_len(zentry const *e)
 {
     return ZIP_CENTRAL_LEN + e->name.len + zip_central64_len(e) +
            e->cextra.len + e->comment.len;
 }
 
 // Encode a central directory header, zip_central_len bytes.
-static u8 *zip_central(u8 *p, zentry const *e)
+[[maybe_unused]] static u8 *zip_central(u8 *p, zentry const *e)
 {
     iz z64 = zip_central64_len(e);
     p = put32(p, ZIP_CENTRAL_SIG);
@@ -242,7 +242,7 @@ static u8 *zip_central(u8 *p, zentry const *e)
 
 // Whether an entry's name, extra fields (with Zip64 fields as they would
 // be written), and comment fit their 16-bit lengths in both headers.
-static b32 zip_fits(zentry const *e)
+[[maybe_unused]] static b32 zip_fits(zentry const *e)
 {
     return e->name.len<=ZIP_MAX16 && e->comment.len<=ZIP_MAX16 &&
            e->lextra.len+(e->zip64 ? 20 : 0)<=ZIP_MAX16 &&
@@ -254,6 +254,7 @@ static b32 zip_end_needs64(i64 count, i64 cdsize, i64 cdoff)
     return count>=ZIP_MAX16 || cdsize>=ZIP_MAX32 || cdoff>=ZIP_MAX32;
 }
 
+[[maybe_unused]]
 static iz zip_end_len(i64 count, i64 cdsize, i64 cdoff, s8 comment)
 {
     b32 z64 = zip_end_needs64(count, cdsize, cdoff);
@@ -264,6 +265,7 @@ static iz zip_end_len(i64 count, i64 cdsize, i64 cdoff, s8 comment)
 // cdsize bytes at cdoff: Zip64 records when anything overflows, then the
 // end of central directory record. The Zip64 record gives the program's
 // version made by, as its entries do.
+[[maybe_unused]]
 static u8 *zip_end(u8 *p, i64 count, i64 cdsize, i64 cdoff, s8 comment,
                    u16 made)
 {
@@ -474,7 +476,7 @@ static s8 zip_filter_extra(arena *a, s8 x)
 // last extended timestamp ("UT") field, if it has one, else of an old
 // Unix ("UX") field, unless after a newer Unix ("Ux") field, which has
 // none, or a UT field. Returns false if there is none.
-static b32 zip_extra_mtime(s8 x, i64 *t)
+[[maybe_unused]] static b32 zip_extra_mtime(s8 x, i64 *t)
 {
     b32 have  = 0;
     b32 newer = 0;  // a UT or Ux field, over any UX field
@@ -688,7 +690,7 @@ static iz zip_local_varlen(u8 const *h)
 
 // Pack a broken-down time {year, month 1-12, day, hour, minute, second}
 // as an MS-DOS date<<16 | time, clamped to its range, 1980 to 2107.
-static u32 zip_dostime(i32 const t[6])
+[[maybe_unused]] static u32 zip_dostime(i32 const t[6])
 {
     if (t[0] < 1980) {
         return (0<<9 | 1<<5 | 1) << 16;
@@ -799,7 +801,7 @@ static iz zip_unc(s8 p, b32 windows)
 // drive (Windows) or UNC prefix, leading slashes, and leading ./
 // components are dropped; and doubled slashes collapse. Like Info-ZIP,
 // ../ components are kept.
-static s8 zip_name(arena *a, s8 path, b32 windows)
+[[maybe_unused]] static s8 zip_name(arena *a, s8 path, b32 windows)
 {
     s8 r = {newstr(a, path.len), 0};
     iz i = 0;
@@ -832,7 +834,7 @@ static s8 zip_name(arena *a, s8 path, b32 windows)
 // Info-ZIP's compression percentage, rounded, as its builds with 64-bit
 // offsets compute it, exactly (its 256-divisor reduction for large sizes
 // is disabled), which no real file size can overflow.
-static i32 zip_percent(i64 n, i64 m)
+[[maybe_unused]] static i32 zip_percent(i64 n, i64 m)
 {
     return n>m ? (i32)((1 + 200*(n - m)/n) / 2) : 0;
 }

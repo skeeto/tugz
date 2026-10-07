@@ -138,6 +138,7 @@ static void uz_wincomp(u8 *p, iz beg, iz *n)
 // A name ending in '/' is a directory (UZ_DIR). The path never holds
 // ".." components, a leading '/', NUL or control characters, nor on
 // Windows drive letters, streams, or device names.
+[[maybe_unused]]
 static uzpath uz_mapname(s8 name, u32 made, i32 opts, arena *perm)
 {
     uzpath r = {0};
@@ -256,7 +257,7 @@ static void uz_dosdate(u32 dostime, i32 tm[6])
 // DOS times with months 1-13 through 2100 that its builds extract; it
 // reads months 0, 14, and 15 from outside its table of days (ydays[]),
 // and counts 2100 a leap year for the years after it, a day late.
-static i64 uz_timegm(i32 const tm[6])
+[[maybe_unused]] static i64 uz_timegm(i32 const tm[6])
 {
     i64 m = (i64)tm[1] - 1;
     i64 q = m / 12 - (m%12 < 0);
@@ -469,6 +470,7 @@ static b32 uz_islink(u32 mode)
 
 static b32 uz_symlink_host(u32 made);
 
+[[maybe_unused]]
 static uzmode uz_mode(u32 extattr, u32 made, s8 name, s8 cextra, b32 keep)
 {
     uzmode r    = {0};
@@ -538,7 +540,7 @@ static b32 uz_symlink_host(u32 made)
 // attributes whatever the host, archive set for files, limited to the
 // bits it then sets (0x7f): read-only 0x01, hidden 0x02, system 0x04,
 // and archive 0x20 among them.
-static u32 uz_dosattr(u32 extattr)
+[[maybe_unused]] static u32 uz_dosattr(u32 extattr)
 {
     u32 a = extattr | (extattr & 0x10 ? 0 : 0x20);
     return a & 0x7f;

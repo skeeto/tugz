@@ -390,7 +390,7 @@ static b32 htable_build(htable *t, u32 *entries, iz cap, u16 const *lens,
 }
 
 // Memory needed by inflate_new, including alignment padding.
-static iz inflate_memsize(void)
+[[maybe_unused]] static iz inflate_memsize(void)
 {
     return (iz)sizeof(inflator) + _Alignof(inflator) + INF_WINCAP + 64;
 }
