@@ -47,7 +47,6 @@ W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 #define FILE_READ_ATTRIBUTES       0x80u
 #define FILE_FLAG_BACKUP_SEMANTICS 0x02000000u
 #define FILE_FLAG_DELETE_ON_CLOSE  0x04000000u
-#define FILE_TYPE_UNKNOWN          0u
 #define FILE_RENAME_REPLACE        1u
 #define FILE_RENAME_POSIX          2u
 #define ERROR_ENVVAR_NOT_FOUND     203u

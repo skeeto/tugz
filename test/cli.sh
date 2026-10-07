@@ -582,7 +582,8 @@ done
 
 # Standard input that another program left non-blocking is waited on,
 # as in GNU gzip, rather than failing for want of input yet (on Windows,
-# a pipe left PIPE_NOWAIT)
+# a pipe left PIPE_NOWAIT). Windows: a message-mode pipe is read too,
+# where a read returns part of a message longer than its buffer.
 PY=
 if [ -n "$windows" ]; then
     cat >nowait.cs <<'EOF'
@@ -593,6 +594,14 @@ using System.Threading;
 public static class NoWait {
     [DllImport("kernel32.dll")]
     static extern bool CreatePipe(out IntPtr r, out IntPtr w, IntPtr sa, int n);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr CreateNamedPipeW(string name, int open, int mode,
+                                          int max, int outsize, int insize,
+                                          int timeout, IntPtr sa);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr CreateFileW(string name, int access, int share,
+                                     IntPtr sa, int disposition, int flags,
+                                     IntPtr template);
     [DllImport("kernel32.dll")]
     static extern bool SetNamedPipeHandleState(IntPtr h, ref int mode,
                                                IntPtr n, IntPtr t);
@@ -625,14 +634,23 @@ public static class NoWait {
                                       IntPtr ta, bool inherit, int flags,
                                       IntPtr env, string dir,
                                       ref StartupInfo si, out ProcessInfo pi);
-    // Run a command with standard input from a pipe left PIPE_NOWAIT,
-    // written only after a second, and its output and errors to files.
+    // Run a command with standard input from a pipe left PIPE_NOWAIT, or
+    // given message, from one read as messages, written only after a
+    // second, as one message, and its output and errors to files.
     public static int Run(string cmd, string input, string output,
-                          string errors) {
+                          string errors, bool message) {
         IntPtr r, w;
-        CreatePipe(out r, out w, IntPtr.Zero, 0);
-        int mode = 1;  // PIPE_NOWAIT
-        SetNamedPipeHandleState(r, ref mode, IntPtr.Zero, IntPtr.Zero);
+        if (message) {
+            string name = @"\\.\pipe\tugz-" + Guid.NewGuid();
+            r = CreateNamedPipeW(name, 1, 6, 1, 0, 0, 0,
+                                 IntPtr.Zero);  // inbound, of messages
+            w = CreateFileW(name, 0x40000000, 0, IntPtr.Zero, 3, 0,
+                            IntPtr.Zero);  // GENERIC_WRITE, OPEN_EXISTING
+        } else {
+            CreatePipe(out r, out w, IntPtr.Zero, 0);
+            int mode = 1;  // PIPE_NOWAIT
+            SetNamedPipeHandleState(r, ref mode, IntPtr.Zero, IntPtr.Zero);
+        }
         FileStream o = File.Create(output);
         FileStream e = File.Create(errors);
         StartupInfo si = new StartupInfo();
@@ -666,10 +684,13 @@ public static class NoWait {
 EOF
     st=$(powershell -NoProfile -NonInteractive -Command "
         Add-Type -TypeDefinition (Get-Content -Raw nowait.cs)
-        [NoWait]::Run('\"$GZIP\" -c', 'text', 'nb.gz', 'nb.err')" |
-         tr -d '\r')
-    [ "$st" = 0 ] || fail "non-blocking standard input: $st $(cat nb.err)"
+        [NoWait]::Run('\"$GZIP\" -c', 'text', 'nb.gz', 'nb.err', \$false)
+        [NoWait]::Run('\"$GZIP\" -c', 'text', 'mp.gz', 'mp.err', \$true)" |
+         tr -d '\r' | tr '\n' ' ')
+    [ "$st" = '0 0 ' ] ||
+        fail "non-blocking or message standard input: $st $(cat nb.err mp.err)"
     "$GZIP" -dc nb.gz | cmp -s - text || fail "non-blocking standard input"
+    "$GZIP" -dc mp.gz | cmp -s - text || fail "message-mode standard input"
 elif command -v uv >/dev/null 2>&1; then
     PY="uv run --no-project python3"
 elif command -v python3 >/dev/null 2>&1; then

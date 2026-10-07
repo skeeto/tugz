@@ -61,6 +61,7 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define FILE_ATTRIBUTE_DIRECTORY   0x10u
 #define FILE_ATTRIBUTE_REPARSE     0x400u
 #define FILE_FLAG_OPEN_REPARSE     0x00200000u
+#define FILE_TYPE_UNKNOWN          0u
 #define FILE_TYPE_DISK             1u
 #define FIND_FIRST_EX_LARGE_FETCH  2u
 #define PIPE_NOWAIT                1u
@@ -85,6 +86,7 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define ERROR_INVALID_NAME         123u
 #define ERROR_HANDLE_EOF           38u
 #define ERROR_NO_DATA              232u
+#define ERROR_MORE_DATA            234u
 #define MEM_COMMIT                 0x1000u
 #define MEM_RESERVE                0x2000u
 #define PAGE_READWRITE             4u
@@ -465,10 +467,18 @@ static i32 open_input(c16 *wpath, i32 mode, iptr *out)
 
     // A volume or raw disk is a disk file too, but it has no file
     // information, which tells it apart from a file that failed to give
-    // it, as through a network error, which is no file type
-    i32 err = 0;
+    // it, as through a network error, which is no file type. Likewise an
+    // unknown type is one only if telling it did not fail.
+    i32 err  = 0;
+    u32 type = FILE_TYPE_DISK;
+    if (mode & OS_REGULAR) {
+        SetLastError(0);
+        type = GetFileType(h);
+    }
     by_handle_info info = {0};
-    if ((mode & OS_REGULAR) && GetFileType(h)!=FILE_TYPE_DISK) {
+    if (type==FILE_TYPE_UNKNOWN && GetLastError()) {
+        err = OS_ERR;
+    } else if (type != FILE_TYPE_DISK) {
         err = OS_ENOTREG;
     } else if (!GetFileInformationByHandle(h, &info)) {
         u32 why    = GetLastError();
@@ -685,6 +695,8 @@ static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
         u32 err = GetLastError();
         if (err==ERROR_BROKEN_PIPE || err==ERROR_HANDLE_EOF) {
             return 0;
+        } else if (err == ERROR_MORE_DATA) {
+            return got;  // part of a longer message (message-mode pipe)
         }
 
         // An inherited pipe left non-blocking (PIPE_NOWAIT), as another
