@@ -279,26 +279,41 @@ static b32 zequals(s8 a, s8 b)
     return a.len==b.len && (!a.len || !__builtin_memcmp(a.s, b.s, (uz)a.len));
 }
 
+// Whether two strings are equal, ignoring ASCII case given ZIP_FOLD.
+static b32 zfoldeq(s8 a, s8 b, i32 fold)
+{
+    if (!(fold & ZIP_FOLD)) {
+        return zequals(a, b);
+    }
+    b32 eq = a.len == b.len;
+    for (iz i = 0; eq && i < a.len; i++) {
+        eq = zip_fold(a.s[i], fold) == zip_fold(b.s[i], fold);
+    }
+    return eq;
+}
+
 static b32 zisspace(u8 c)
 {
     return c==' ' || (c>='\t' && c<='\r');
 }
 
-static u64 zhash(s8 s)
+static u64 zhash(s8 s, i32 fold)
 {
     u64 h = 0x100;
     for (iz i = 0; i < s.len; i++) {
-        h ^= s.s[i];
+        h ^= zip_fold(s.s[i], fold);
         h *= 1111111111111111111u;
     }
     return h;
 }
 
 // Find a key's value, inserting it with value -1 if perm is not null.
-static iz *zmap_upsert(zmap **m, s8 key, arena *perm)
+// Keys are compared ignoring ASCII case given ZIP_FOLD, by which they
+// are hashed too, so that the key is the name itself, not a folded copy.
+static iz *zmap_upsert(zmap **m, s8 key, i32 fold, arena *perm)
 {
-    for (u64 h = zhash(key); *m; h <<= 2) {
-        if (zequals(key, (*m)->key)) {
+    for (u64 h = zhash(key, fold); *m; h <<= 2) {
+        if (zfoldeq(key, (*m)->key, fold)) {
             return &(*m)->value;
         }
         m = &(*m)->child[h>>62];
@@ -1001,37 +1016,21 @@ static void keep_names(arena *perm, s8 *path, s8 *name)
     }
 }
 
-// Key for finding an archive entry, or a file to add, by name: on
-// Windows, ignoring ASCII case, as Info-ZIP's port finds entries (its
-// namecmp). It compares files to add by bytes (strcmp), adding both of
-// two names that differ only in case, which then collide when extracted
-// there, while here they are one name.
-static s8 entry_key(zip *z, s8 name, arena *a)
+// How archive entries, and files to add, are found by name: on Windows,
+// ignoring ASCII case, as Info-ZIP's port finds entries (its namecmp).
+// It compares files to add by bytes (strcmp), adding both of two names
+// that differ only in case, which then collide when extracted there,
+// while here they are one name.
+static i32 name_fold(zip *z)
 {
-    if (!z->windows) {
-        return name;
-    }
-    s8 key = {newstr(a, name.len), name.len};
-    for (iz i = 0; i < name.len; i++) {
-        key.s[i] = zip_fold(name.s[i], ZIP_FOLD);
-    }
-    return key;
+    return z->windows ? ZIP_FOLD : 0;
 }
 
 // Whether a name is the archive's path as given, compared as Info-ZIP
 // compares names: ignoring ASCII case on Windows.
 static b32 names_archive(zip *z, s8 name)
 {
-    i32 fold = z->windows ? ZIP_FOLD : 0;
-    if (name.len != z->archive.len) {
-        return 0;
-    }
-    for (iz i = 0; i < name.len; i++) {
-        if (zip_fold(name.s[i], fold) != zip_fold(z->archive.s[i], fold)) {
-            return 0;
-        }
-    }
-    return 1;
+    return zfoldeq(name, z->archive, name_fold(z));
 }
 
 // The order of names and paths in which the first repeat is reported:
@@ -1137,7 +1136,7 @@ static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
     // their slashes itself, and as tugz collapses doubled slashes in
     // names, it does in paths too. On Windows, names and paths that
     // differ only in case are the same (D/A.txt d/a.txt).
-    iz *seen = zmap_upsert(&z->names, entry_key(z, name, &scratch), 0);
+    iz *seen = zmap_upsert(&z->names, name, name_fold(z), 0);
     if (seen) {
         zfile *first = z->files.data[*seen];
         if (!zequals(trim_path(z, first->path, &scratch),
@@ -1147,10 +1146,10 @@ static void add_file(zip *z, s8 path, s8 name, os_info *info, arena scratch)
         return;
     }
 
-    // Only now, recorded, does the file take any permanent memory
+    // Only now, recorded, does the file take any permanent memory, its
+    // name its key too
     keep_names(&z->perm, &path, &name);
-    *zmap_upsert(&z->names, entry_key(z, name, &z->perm), &z->perm) =
-        z->files.len;
+    *zmap_upsert(&z->names, name, name_fold(z), &z->perm) = z->files.len;
     zfile *f = new_file(z, path, name, info);
     *push(&z->perm, &z->files) = f;
 }
@@ -2877,8 +2876,7 @@ static b32 scan_entries(zip *z, zarchive *ar, iz n, zindex *old, s8 pattern,
             also[i] = new_file(z, path, name, &info);
             continue;
         }
-        s8 key = entry_key(z, name, &z->perm);
-        *zmap_upsert(&z->names, key, &z->perm) = z->files.len;
+        *zmap_upsert(&z->names, name, name_fold(z), &z->perm) = z->files.len;
         zfile *f = new_file(z, path, name, &info);
         *push(&z->perm, &z->files) = f;
     }
@@ -2917,8 +2915,7 @@ static b32 refresh_entry(zip *z, zarchive *ar, zitem *it, iz i, zfile *f,
 
     // The entry keeps its name, in Unicode if the file matched that,
     // which is then written as UTF-8
-    s8  key    = entry_key(z, f->name, &scratch);
-    b32 stored = zequals(entry_key(z, e->name, &scratch), key);
+    b32 stored = zfoldeq(f->name, e->name, name_fold(z));
     s8  name   = stored ? e->name : entry_unicode(ar, i);
     if (name.len > ZIP_MAX16) {
         // Decoded from the OEM code page (Windows), as an entry selected

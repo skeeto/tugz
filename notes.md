@@ -657,7 +657,13 @@ neither inflate nor the gzip container.
   extra fields; the buffers and deflate state (the old archive's read
   window comes earlier, as it is read); and a megabyte of room for any
   one entry's headers and messages, each forgotten before the next. So
-  running out of memory cannot strike once output has started.
+  running out of memory cannot strike once output has started. A file's
+  name is its key, too, in the map that finds recorded files by name: on
+  Windows, where names that differ only in ASCII case are one, the map
+  folds them as it hashes and compares them, rather than keep a folded
+  copy of each, as it did: for 50,000 files with paths of about 120
+  bytes, peak commit went from 32.1 to 26.0 MiB on x86-64 (i686 27.3 to
+  21.3), with archives byte-identical.
 - Memory per existing entry: about 200 bytes for names of 17 bytes with
   `UT` and `ux` fields (Info-ZIP 3.0: about 270 on macOS, 390 on Linux).
   A 112-byte `zentry` (its Zip64 flag a byte, in what was padding), its
@@ -696,7 +702,9 @@ neither inflate nor the gzip container.
   does the same, each name packed with what the listing tells of the
   file until its entry is made, 117 bytes and the name, and names are
   converted from UTF-16 at their length rather than at three bytes a
-  unit, which left the rest of each in scratch.
+  unit, which left the rest of each in scratch: for one directory of
+  100,000 empty files, zip's peak commit went from 54.1 to 40.1 MiB on
+  x86-64 (i686 44.3 to 32.3), with archives byte-identical.
 - libdeflate issue #323: Windows' zip folder rejects incomplete Huffman
   codes (such as a lone distance code in a block with at most one
   distinct distance), which DEFLATE permits. `huff_build` always codes at
