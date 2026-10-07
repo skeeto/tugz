@@ -3127,6 +3127,7 @@ int main(void)
     test_inflate_zlib(&ctx, a);
     test_roundtrip(&ctx, a);
 
+    free(a.beg);
     puts("all tests pass");
     return 0;
 }
