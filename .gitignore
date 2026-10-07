@@ -19,3 +19,5 @@ fuzz/
 /tests-zipcli
 /libtugz.o
 /tugz.c
+/tests-amalg
+/build*/
