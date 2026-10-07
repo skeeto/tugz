@@ -34,7 +34,19 @@
 // would be charged in full under Linux's strict overcommit, which
 // ignores MAP_NORESERVE (in the other modes, that flag would only leave
 // the committed chunks uncounted). As much as the system will reserve,
-// up to 16 GiB (1 GiB in 32-bit processes), halving on refusal.
+// up to 16 GiB (1 GiB in 32-bit processes), but for room left for the C
+// library, whose malloc opendir, localtime, and open_output still use,
+// and for the stack: under a limit on address space (ulimit -v), which
+// counts the reservation in full, whatever zip took they could not have,
+// and their failures were reported as unreadable directories and failed
+// temporary files. Once refused, the most that leaves that room is found
+// to the megabyte by bisection, a mapping and unmapping each.
+static byte *map(iz size, int flags, int fd)
+{
+    byte *p = mmap(0, (uz)size, PROT_NONE, flags, fd, 0);
+    return p==MAP_FAILED ? 0 : p;
+}
+
 static void reserve(os *ctx)
 {
     int flags = MAP_PRIVATE;
@@ -50,21 +62,35 @@ static void reserve(os *ctx)
         os_exit(ctx, ZE_MEM);
     }
 #endif
-    iz cap = (iz)1 << (sizeof(void *)==8 ? 34 : 30);
-    for (; cap >= (iz)1<<24; cap /= 2) {
-        byte *p = mmap(0, (uz)cap, PROT_NONE, flags, fd, 0);
-        if (p != MAP_FAILED) {
-            ctx->lo = p;
-            ctx->hi = p + cap;
-            break;
+    iz    chunk = (iz)1 << 20;
+    iz    room  = 4 * chunk;
+    iz    cap   = (iz)1 << (sizeof(void *)==8 ? 34 : 30);
+    byte *p     = map(cap+room, flags, fd);
+    if (!p) {
+        iz lo = 0;    // known to fit with room (or nothing)
+        iz hi = cap;  // known not to
+        while (hi-lo > chunk) {
+            iz    mid = lo + (hi-lo)/chunk/2*chunk;
+            byte *t   = map(mid+room, flags, fd);
+            if (t) {
+                munmap(t, (uz)(mid+room));
+                lo = mid;
+            } else {
+                hi = mid;
+            }
         }
+        cap = lo;
+        p   = lo ? map(cap+room, flags, fd) : 0;
     }
     if (fd >= 0) {
         close(fd);
     }
-    if (!ctx->lo) {
+    if (!p) {
         os_oom(ctx);
     }
+    munmap(p+cap, (uz)room);
+    ctx->lo = p;
+    ctx->hi = p + cap;
 }
 
 // Commit more of the reservation to perm, from below the middle, or to

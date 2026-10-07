@@ -568,7 +568,10 @@ neither inflate nor the gzip container.
 - Memory: zip has no fixed cap. Its memory is one reservation of
   address space, as much as the system lends up to 16 GiB on 64-bit
   POSIX hosts and 64 GiB on 64-bit Windows (1 GiB for 32-bit
-  processes), halving on refusal, holding a double-ended arena: perm,
+  processes), halving on refusal (on POSIX, where a limit on address
+  space, `ulimit -v`, also counts what the C library's `malloc` takes
+  for `opendir` and the like, and the stack, the most that leaves them
+  4 MiB, found by bisection), holding a double-ended arena: perm,
   for what lasts the run, grows up from the bottom, and scratch, passed
   by value and so freed by returning, grows down from the top. When an
   allocation does not fit, the allocator calls the platform's
@@ -590,7 +593,9 @@ neither inflate nor the gzip container.
   perm and scratch, such as a codec's exactly sized one. Running out
   (of address space, of the commit limit, or of `ulimit -d`) is still
   "zip error: Out of memory" (4), as `test/zip.sh` checks on Linux under
-  `ulimit -v` and `ulimit -d` (for builds that are not sanitized). gzip
+  `ulimit -v` (over a sweep of limits, where reserving all but a sliver
+  once failed `opendir` and the temporary file instead, 15 or 10) and
+  `ulimit -d` (for builds that are not sanitized). gzip
   and the library keep their fixed arenas: their hooks only report
   running out.
 - Memory per entry: perm keeps only what is recorded. A file's path and

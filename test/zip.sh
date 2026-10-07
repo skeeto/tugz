@@ -2234,6 +2234,41 @@ for run in "-v 60000 new.zip" "-d 30000 small.zip"; do  # limit, archive
             fail "ulimit $limit, sparse: status $st $(cat err)"
     fi
 done
+if [ -z "$oomskip" ]; then
+    # Under any limit, zip leaves room for the C library, whose malloc
+    # opendir and others use, rather than reserving so much that those
+    # fail, which they did just above each power of two (15 for a new
+    # archive, 10 for an update). Limits too tight to start are skipped.
+    mkdir -p oomsweep/s
+    printf f >oomsweep/f
+    printf g >oomsweep/s/g
+    "$ZIP" -q oomtiny.zip oomsweep/f
+    v=12000
+    ran=
+    while [ $v -le 40000 ]; do
+        for arc in new.zip tiny.zip; do
+            rm -f oom/*
+            cp oomtiny.zip oom/tiny.zip
+            set +e
+            (ulimit -v $v && exec "$ZIP" -qr oom/$arc oomsweep) 2>err
+            st=$?
+            set -e
+            if [ $st = 0 ]; then
+                ran=1
+            elif [ $st != 4 ] && { [ -n "$ran" ] || [ $st -lt 126 ]; }; then
+                fail "ulimit -v $v, $arc: status $st $(cat err)"
+            elif [ $st = 4 ] && ! cmp -s err want; then
+                fail "ulimit -v $v, $arc: $(cat err)"
+            fi
+            case "$(ls oom)" in
+            *zi[0-9]*) fail "ulimit -v $v, $arc: temporary file left";;
+            esac
+        done
+        v=$((v + 200))
+    done
+    [ -n "$ran" ] || fail "no run under ulimit -v 40000"
+    rm -rf oom oomsweep oomtiny.zip
+fi
 [ -z "$oomskip" ] || echo "zip.sh: out-of-memory tests skipped: $oomskip" >&2
 rm -rf oomdag oomsparse.zip
 
