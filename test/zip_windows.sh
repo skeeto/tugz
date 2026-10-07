@@ -636,6 +636,20 @@ for share in ReadWrite None; do
     cmp -s ro.zip ro.orig || fail "archive held ($share) changed"
 done
 
+# Every system error has a reason, in the words of the C runtime of
+# Info-ZIP's port for the errno to which it maps the error: a share that
+# does not exist is no such file, and a link to itself, which the system
+# cannot follow, an invalid argument
+"$ZIP" //localhost/nosuchshare/x.zip tree/a.txt 2>err && fail "unknown share"
+grep -qx 'zip I/O error: No such file or directory' err ||
+    fail "unknown share: $(cat err)"
+if cmd /c 'mklink loop.zip loop.zip' >/dev/null 2>&1; then
+    "$ZIP" loop.zip tree/a.txt 2>err && fail "link loop"
+    grep -qx 'zip I/O error: Invalid argument' err ||
+        fail "link loop: $(cat err)"
+    rm loop.zip
+fi
+
 # A replaced archive keeps its hidden, system, and not-indexed
 # attributes, as POSIX keeps the mode, with the archive bit set
 "$ZIP" -q ha.zip tree/a.txt

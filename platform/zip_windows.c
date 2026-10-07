@@ -50,10 +50,6 @@ W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 #define FILE_TYPE_UNKNOWN          0u
 #define FILE_RENAME_REPLACE        1u
 #define FILE_RENAME_POSIX          2u
-#define ERROR_PATH_NOT_FOUND       3u
-#define ERROR_LOCK_VIOLATION       33u
-#define ERROR_DISK_FULL            112u
-#define ERROR_ALREADY_EXISTS       183u
 #define ERROR_ENVVAR_NOT_FOUND     203u
 
 enum {
@@ -479,33 +475,6 @@ static i32 os_commit(os *ctx, i32 fd, s8 temp, s8 path, b32 replace,
     release_guard(ctx);
     os_close(ctx, fd);
     return COMMIT_OK;
-}
-
-static b32 os_isatty(os *ctx, i32 fd)
-{
-    return (u32)fd<3 && ctx->consoles>>fd & 1;
-}
-
-// The common errors, worded as the C runtime that Info-ZIP's port uses
-// words the errno values it maps them to.
-static s8 os_error(os *ctx)
-{
-    (void)ctx;
-    switch (GetLastError()) {
-    case ERROR_FILE_NOT_FOUND:
-    case ERROR_PATH_NOT_FOUND:
-        return S("No such file or directory");
-    case ERROR_ACCESS_DENIED:
-    case ERROR_SHARING_VIOLATION:
-    case ERROR_LOCK_VIOLATION:
-        return S("Permission denied");
-    case ERROR_DISK_FULL:
-        return S("No space left on device");
-    case ERROR_FILE_EXISTS:
-    case ERROR_ALREADY_EXISTS:
-        return S("File exists");
-    }
-    return S("");
 }
 
 // By the system's OEM code page, as Info-ZIP's port converts such names

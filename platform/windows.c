@@ -1,7 +1,7 @@
 // Shared CRT-free Win32 platform code: the os_* file interface of
-// src/io.c, directory listings for src/dir.c, path conversion, and the
-// command line. Included by each Windows program after the sources it
-// needs.
+// src/io.c, directory listings for src/dir.c, path conversion, the
+// consoles, error wording, and the command line. Included by each
+// Windows program after the sources it needs.
 
 typedef unsigned short c16;
 typedef uptr           iptr;
@@ -72,6 +72,7 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define LCMAP_UPPERCASE            0x200u
 #define ERROR_INVALID_FUNCTION     1u
 #define ERROR_FILE_NOT_FOUND       2u
+#define ERROR_PATH_NOT_FOUND       3u
 #define ERROR_TOO_MANY_OPEN_FILES  4u
 #define ERROR_ACCESS_DENIED        5u
 #define ERROR_NO_MORE_FILES        18u
@@ -703,6 +704,60 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
         len -= wrote;
     }
     return 1;
+}
+
+static b32 os_isatty(os *ctx, i32 fd)
+{
+    return (u32)fd<3 && ctx->consoles>>fd & 1;
+}
+
+// Why the last system call failed, as the C runtime of Info-ZIP's port,
+// and of GNU gzip built for Windows, would say: in the words of its
+// strerror for the errno to which its _dosmaperr maps the code (checked
+// against msvcrt, and the UCRT, which differs only in mapping 1113 to
+// EILSEQ), or an empty string if none failed. Beyond its table, a disk
+// full through a handle (39) is a full disk too, and a pipe being closed
+// (232), which gzip takes for a closed pipe, a broken one.
+static s8 os_error(os *ctx)
+{
+    (void)ctx;
+    u32 err = GetLastError();
+    switch (err) {
+    case 0:
+        return S("");
+    case 2: case 3: case 15: case 18: case 53: case 67: case 161: case 206:
+        return S("No such file or directory");
+    case 4:
+        return S("Too many open files");
+    case 5: case 16: case 65: case 82: case 83: case 108: case 132:
+    case 158: case 167:
+        return S("Permission denied");
+    case 6: case 114: case 130:
+        return S("Bad file descriptor");
+    case 7: case 8: case 9: case 1816:
+        return S("Not enough space");
+    case 10:
+        return S("Arg list too long");
+    case 11:
+        return S("Exec format error");
+    case 17:
+        return S("Improper link");
+    case 39: case 112:
+        return S("No space left on device");
+    case 80: case 183:
+        return S("File exists");
+    case 89: case 164: case 215:
+        return S("Resource temporarily unavailable");
+    case 109: case 232:
+        return S("Broken pipe");
+    case 128: case 129:
+        return S("No child processes");
+    case 145:
+        return S("Directory not empty");
+    }
+    return err>=19 && err<=36   ? S("Permission denied")  // sharing, locks
+         : err>=188 && err<=202 ? S("Exec format error")
+         : S("Invalid argument");
 }
 
 // As unlink, even of a read-only file (remove_file).

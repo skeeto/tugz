@@ -697,6 +697,22 @@ for opts in '' -d; do
         fail "$opts nothere: $st $(cat why.err)"
 done
 
+# Windows: every system error has a reason, as the C runtime words the
+# errno to which it maps the error: a share that does not exist, or a
+# name no file can have
+if [ -n "$windows" ]; then
+    for p in //localhost/nosuchshare/x 'a<b'; do
+        set +e
+        "$GZIP" -c "$p" 2>why.err
+        st=$?
+        set -e
+        why='No such file or directory'
+        [ "$p" = 'a<b' ] && why='Invalid argument'
+        [ $st = 1 ] && grep -q "^gzip: $p: $why\$" why.err ||
+            fail "$p: $st $(cat why.err)"
+    done
+fi
+
 # An interrupted in-place operation leaves no partial output. A
 # non-interactive shell starts background jobs ignoring SIGINT, which
 # gzip honors (as under nohup), so use SIGTERM.

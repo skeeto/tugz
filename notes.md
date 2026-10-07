@@ -229,14 +229,18 @@ neither inflate nor the gzip container.
   original zip file") follow Info-ZIP, but for the departures below. As
   there, an I/O error (10, 11, 14, 15, 18) first gives the system's
   reason, worded by `strerror` ("zip I/O error: Permission denied"),
-  when there is one; on Windows, for the common errors, worded as its C
-  runtime would (unverified against Info-ZIP's port). A read error in
-  the archive is its "Input file read failure" (11), and one that ends
-  early, having shrunk while zip works, is its "Unexpected end of zip
-  file" (2), either naming the entry being copied ("was copying a.txt"),
-  else the archive. A read-only archive fails with 15 once there is
-  something to do, before doing it, as Info-ZIP finds by opening it to
-  update it (replacing it needs no permission to write it): as `access`
+  when there is one; on Windows, as its C runtime words the errno to
+  which its `_dosmaperr` maps the error: every error, so that an unknown
+  share is "No such file or directory" and a link loop or a network
+  error "Invalid argument" (the table checked against msvcrt and the
+  UCRT on Windows 11; the port itself inferred from its sources, as it
+  uses the runtime's `strerror`). A read error in the archive is its
+  "Input file read failure" (11), and one that ends early, having shrunk
+  while zip works, is its "Unexpected end of zip file" (2), either
+  naming the entry being copied ("was copying a.txt"), else the archive.
+  A read-only archive fails with 15 once there is something to do,
+  before doing it, as Info-ZIP finds by opening it to update it
+  (replacing it needs no permission to write it): as `access`
   judges on POSIX, and on Windows by the read-only attribute, which
   would otherwise refuse the rename only after all the work. So does, on
   Windows, an archive that another process holds open without sharing
@@ -1018,10 +1022,11 @@ Fuzzers:
   (`gzip: f.gz: No space left on device`), naming the file that failed:
   the input when opening or reading, the output (`stdout` or the new
   file) when creating, writing, or closing, and for a forced output
-  that could not be replaced, why it could not be removed. The gzip
-  platform layers word Windows' common errors as its C runtime words
-  them (`os_error`), and an error with no such wording gets a
-  description instead (`cannot open for reading`, `write error`).
+  that could not be replaced, why it could not be removed. On Windows,
+  every error is worded as its C runtime words it (`os_error` in
+  `platform/windows.c`, shared with zip), and a failure with no system
+  error behind it gets a description instead (`cannot open for
+  reading`, `write error`).
 - Other messages are worded as GNU gzip 1.14 words them, bad headers
   described from their bytes (`unknown method 7 -- not supported`,
   `has flags 0x40`, `header checksum 0xffff != computed checksum
