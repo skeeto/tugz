@@ -65,7 +65,12 @@ time via CPUID, so default builds benefit with no flags and still run on
 CPUs without it. On an i9-12900, PCLMUL folding runs at 16.8 GB/s versus
 3 GB/s for slicing-by-8, making Windows `gzip -d` 25% faster (607 to 762
 MB/s on Silesia). Both paths were verified with one binary under QEMU
-CPU models with and without PCLMUL.
+CPU models with and without PCLMUL. CPUID is asked once per codec state
+(and zip run), which keeps the answer, not on each update: a hypervisor
+traps it, as under Windows 11 with virtualization-based security (620
+ns on the i9-12900) and in WSL2 (650 ns). Library inflate into
+256-byte output buffers there ran at 258 MB/s, and now at 772, and into
+4 KiB at 698, now 790.
 
 ## Library
 

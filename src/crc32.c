@@ -389,10 +389,18 @@ static u32 crc32_slice8(u32 crc, u8 const *p, iz len)
 // These are CPU feature tests, not platform tests: ARMv8 has instructions
 // for exactly this polynomial, and x86 can fold with carry-less multiply.
 // (The SSE4.2 crc32 instruction computes CRC-32C, a different CRC.)
+//
+// Where the CPU must be asked whether it can (x86, by CPUID), *cpu keeps
+// the answer: callers keep it in their state, zero at first, so that the
+// question is asked once per state, not once per update. CPUID costs
+// about 100 cycles natively, but a hypervisor traps it, at around 700 ns
+// (WSL2, virtual machines, and Windows 11 with virtualization-based
+// security), which a library caller's small updates paid every time.
 #if __ARM_FEATURE_CRC32
 #include <arm_acle.h>
-static u32 crc32_update(u32 crc, u8 const *p, iz len)
+static u32 crc32_update(u32 crc, u8 const *p, iz len, i32 *cpu)
 {
+    (void)cpu;
     crc = ~crc;
     for (; len >= 8; p += 8, len -= 8) {
         u64 v = (u64)p[0]     | (u64)p[1]<< 8 | (u64)p[2]<<16 | (u64)p[3]<<24 |
@@ -469,25 +477,30 @@ static u32 crc32_pclmul(u32 crc, u8 const *p, iz len)
     return crc32_slice8(~crc, p, len);
 }
 
-// Checked on each call rather than cached, keeping the core free of
-// mutable globals: CPUID costs about 100 cycles, and only large updates
-// (typically a 256 KiB output flush) get this far.
 static b32 crc32_has_pclmul(void)
 {
     u32 a, b, c, d;
     return __get_cpuid(1, &a, &b, &c, &d) && (c & bit_PCLMUL) && (d & bit_SSE2);
 }
 
-static u32 crc32_update(u32 crc, u8 const *p, iz len)
+// Kept in the caller's state rather than a global, keeping the core free
+// of mutable globals: 1 for PCLMULQDQ, -1 for none, 0 not yet asked.
+static u32 crc32_update(u32 crc, u8 const *p, iz len, i32 *cpu)
 {
-    if (len>=64 && crc32_has_pclmul()) {
-        return crc32_pclmul(crc, p, len);
+    if (len >= 64) {
+        if (!*cpu) {
+            *cpu = crc32_has_pclmul() ? 1 : -1;
+        }
+        if (*cpu > 0) {
+            return crc32_pclmul(crc, p, len);
+        }
     }
     return crc32_slice8(crc, p, len);
 }
 #else
-static u32 crc32_update(u32 crc, u8 const *p, iz len)
+static u32 crc32_update(u32 crc, u8 const *p, iz len, i32 *cpu)
 {
+    (void)cpu;
     return crc32_slice8(crc, p, len);
 }
 #endif

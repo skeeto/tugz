@@ -216,6 +216,7 @@ typedef struct {
     i64     bread;
     iz      nskipped;
     i64     bskipped;
+    i32     crccpu;  // crc32_update's answer from the CPU
 } zip;
 
 static s8 zjoin(arena *a, s8 const *parts, iz n)
@@ -1523,7 +1524,7 @@ static s8 entry_uname(zip *z, zentry *e, arena *perm, arena scratch)
     if (e->flags & ZIP_FLAG_UTF8) {
         return (s8){0};
     }
-    u32 crc = crc32_update(0, e->name.s, e->name.len);
+    u32 crc = crc32_update(0, e->name.s, e->name.len, &z->crccpu);
     s8  u   = zip_extra_upath(e->cextra, crc);
     if (!u.s || zip_utf8(u)<0) {
         i32 utf8 = zip_utf8(e->name);
@@ -1891,13 +1892,13 @@ static void store_data(zip *z, zwork *k, zsrc *s, u32 *crc, i64 *usize)
 {
     if (s->mem.s) {
         // Written directly, as it may be the input buffer itself
-        *crc = crc32_update(*crc, s->mem.s, s->mem.len);
+        *crc = crc32_update(*crc, s->mem.s, s->mem.len, &z->crccpu);
         *usize += s->mem.len;
         zout_write(k->out, s->mem.s, s->mem.len);
         return;
     }
     for (iz n; (n = src_read(z, s, k->buf, k->cap));) {
-        *crc = crc32_update(*crc, k->buf, n);
+        *crc = crc32_update(*crc, k->buf, n, &z->crccpu);
         *usize += n;
         zout_write(k->out, k->buf, n);
     }
@@ -1914,7 +1915,7 @@ static b32 deflate_data(zip *z, zwork *k, zsrc *s, u32 *crc, i64 *usize)
         iz n = src_read(z, s, k->buf, k->cap);
         more = n > 0;
         first = first<0 ? n : first;
-        *crc = crc32_update(*crc, k->buf, n);
+        *crc = crc32_update(*crc, k->buf, n, &z->crccpu);
         *usize += n;
         zbuf b = {k->buf, n, 0, 0};
         for (;;) {

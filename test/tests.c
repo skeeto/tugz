@@ -678,23 +678,33 @@ static void test_tables(void)
             TEST(crc32_table[k][n] == want);
         }
     }
+    i32 cpu = 0;
     for (i32 len = 0; len < 64; len++) {
         u8 buf[64];
         for (i32 i = 0; i < len; i++) {
             buf[i] = (u8)(i*37 + len);
         }
-        TEST(crc32_update(0, buf, len) == (u32)crc32(0, buf, (uInt)len));
+        TEST(crc32_update(0, buf, len, &cpu) == (u32)crc32(0, buf, (uInt)len));
         TEST(crc32_slice8(0, buf, len) == (u32)crc32(0, buf, (uInt)len));
     }
-    TEST(crc32_update(0, (u8 *)"123456789", 9) == 0xcbf43926);
-    TEST(crc32_update(0, 0, 0) == 0);
+    TEST(!cpu);  // not asked for short updates
+    TEST(crc32_update(0, (u8 *)"123456789", 9, &cpu) == 0xcbf43926);
+    TEST(crc32_update(0, 0, 0, &cpu) == 0);
 
+    // The CPU is asked at most once, and either answer gives the same
     u8 *p = randbytes(100000, 1);
-    u32 whole = crc32_update(0, p, 100000);
+    u32 whole = crc32_update(0, p, 100000, &cpu);
+    i32 asked = cpu;
     TEST(whole == (u32)crc32(0, p, 100000));
     TEST(whole == crc32_slice8(0, p, 100000));
-    u32 parts = crc32_update(crc32_update(0, p, 33333), p+33333, 66667);
-    TEST(whole == parts);
+    u32 parts = crc32_update(crc32_update(0, p, 33333, &cpu), p+33333,
+                             66667, &cpu);
+    TEST(whole==parts && cpu==asked);
+    i32 none = -1;
+    TEST(crc32_update(0, p, 100000, &none)==whole && none==-1);
+    for (iz len = 64; len < 300; len++) {
+        TEST(crc32_update(0, p+len, len, &cpu) == crc32_slice8(0, p+len, len));
+    }
     free(p);
 
     for (i32 len = 3; len <= 258; len++) {
@@ -1920,7 +1930,7 @@ static void test_golden(arena a)
         u8 *p = golden_input(lens[k], k);
         for (i32 level = 1; level <= 9; level++) {
             s8 z = zcompress(a, FMT_GZIP, p, lens[k], level, 0, 0, 0);
-            TEST(crc32_update(0, z.s, z.len) == crcs[k][level-1]);
+            TEST(crc32_slice8(0, z.s, z.len) == crcs[k][level-1]);
             free(z.s);
         }
         free(p);
@@ -2080,7 +2090,7 @@ static void test_container(os *ctx, arena a)
             n += 8;
         }
         if (flags & FHCRC) {
-            u32 crc = crc32_update(0, hdr, n);
+            u32 crc = crc32_slice8(0, hdr, n);
             hdr[n++] = (u8)crc;
             hdr[n++] = (u8)(crc >> 8);
         }

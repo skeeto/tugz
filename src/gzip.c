@@ -37,11 +37,13 @@ static u32 get32be(u8 const *p)
     return (u32)p[0]<<24 | (u32)p[1]<<16 | (u32)p[2]<<8 | (u32)p[3];
 }
 
-static u32 check_update(i32 format, u32 check, u8 const *p, iz len)
+// The check of more data, with crc32_update's cache of the CPU's answer.
+static u32 check_update(i32 format, u32 check, u8 const *p, iz len,
+                        i32 *cpu)
 {
     switch (format) {
     case FMT_ZLIB: return adler32_update(check, p, len);
-    case FMT_GZIP: return crc32_update(check, p, len);
+    case FMT_GZIP: return crc32_update(check, p, len, cpu);
     }
     return 0;
 }
@@ -76,6 +78,7 @@ typedef struct {
     u32 hcrc;
     i32 flg;
     i32 xlen;
+    i32 cpu;      // for crc32_update, kept across resets
 } decoder;
 
 static iz decoder_memsize(void)
@@ -142,7 +145,7 @@ static i32 gzip_header_byte(decoder *z, u8 c)
         }
         z->flg = z->buf[3];
         if (z->flg & FHCRC) {
-            z->hcrc = crc32_update(0, z->buf, 10);
+            z->hcrc = crc32_update(0, z->buf, 10, &z->cpu);
         }
         z->len = 0;
         z->xlen = 0;
@@ -150,7 +153,7 @@ static i32 gzip_header_byte(decoder *z, u8 c)
         break;
     case DEC_XLEN:
         if (z->flg & FHCRC) {
-            z->hcrc = crc32_update(z->hcrc, &c, 1);
+            z->hcrc = crc32_update(z->hcrc, &c, 1, &z->cpu);
         }
         z->xlen |= c << 8*z->len++;
         if (z->len < 2) {
@@ -190,7 +193,7 @@ static void gzip_header_span(decoder *z, zbuf *b)
         n += done;  // the terminating zero
     }
     if (z->flg & FHCRC) {
-        z->hcrc = crc32_update(z->hcrc, b->in, n);
+        z->hcrc = crc32_update(z->hcrc, b->in, n, &z->cpu);
     }
     z->hpos += n;
     b->in += n;
@@ -281,7 +284,8 @@ static i32 decoder_run(decoder *z, zbuf *b)
             u8 *out = b->out;
             i32 r = inflate_stream(z->inf, b);
             if (z->format != FMT_RAW) {
-                z->check = check_update(z->format, z->check, out, b->out-out);
+                z->check = check_update(z->format, z->check, out,
+                                        b->out-out, &z->cpu);
             }
             z->total += (u64)(b->out - out);
             if (r != GZ_OK) {
@@ -325,6 +329,7 @@ typedef struct {
     u32 check;    // of the input so far
     u64 total;
     b32 done;     // trailer written
+    i32 cpu;      // for crc32_update, kept across resets
 } encoder;
 
 static iz encoder_memsize(void)
@@ -382,7 +387,8 @@ static i32 encoder_run(encoder *e, zbuf *b, i32 flush)
     u8 const *in = b->in;
     i32 r = deflate_stream(d, b, flush);
     if (e->format != FMT_RAW) {
-        e->check = check_update(e->format, e->check, in, b->in-in);
+        e->check = check_update(e->format, e->check, in, b->in-in,
+                                &e->cpu);
     }
     e->total += (u64)(b->in - in);
 

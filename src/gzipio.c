@@ -45,7 +45,7 @@ static void decoder_consume(decoder *z, iz n)
 {
     s8 p = inflate_pending(z->inf);
     if (z->format != FMT_RAW) {
-        z->check = check_update(z->format, z->check, p.s, n);
+        z->check = check_update(z->format, z->check, p.s, n, &z->cpu);
     }
     z->total += (u64)n;
     inflate_consume(z->inf, n);
