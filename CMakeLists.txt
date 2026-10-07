@@ -444,7 +444,7 @@ if(TUGZ_INSTALL)
             ${PROJECT_BINARY_DIR}/tugzConfigVersion.cmake
             DESTINATION ${tugz_cmakedir})
     endif()
-    # Installed as gzip and zip, these shadow the system's
+    # Installed as gzip and zip, whenever built, as they may be the system's
     foreach(tgt IN ITEMS tugz_gzip tugz_zip)
         if(TARGET ${tgt})
             install(TARGETS ${tgt}

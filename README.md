@@ -103,9 +103,11 @@ C11 alone lacks the C23 attributes. Options:
 | `TUGZ_SANITIZE` | if supported | ASan and UBSan in the tests |
 | `TUGZ_LIBMEMORY` | AUTO | Windows programs with w64devkit's `-lmemory` |
 
-Installing the programs (the `programs` component, which a plain
-`cmake --install` includes) puts `gzip` and `zip` in the prefix's
-`bin`, where they may shadow the system's.
+A plain `cmake --install` installs whatever was built: the library, its
+header, and the package, and the programs as `gzip` and `zip` in the
+prefix's `bin`, where they can serve as the system's own. Configure with
+`-DTUGZ_BUILD_GZIP=OFF -DTUGZ_BUILD_ZIP=OFF` to install the library
+alone, or install with `--component programs` for the programs alone.
 
 ## Usage
 
