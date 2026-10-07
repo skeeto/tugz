@@ -77,14 +77,14 @@ builds only the library, `tugz::tugz`:
 ```cmake
 include(FetchContent)
 FetchContent_Declare(tugz
-    URL https://github.com/skeeto/tugz/releases/download/v1.0.0/tugz-1.0.0.tar.gz
+    URL https://github.com/skeeto/tugz/releases/download/v0.1.0/tugz-0.1.0.tar.gz
     URL_HASH SHA256=<from the release's SHA256SUMS>
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(tugz)
 target_link_libraries(app PRIVATE tugz::tugz)
 ```
 
-Or, after `cmake --install`, `find_package(tugz 1.0 CONFIG REQUIRED)`
+Or, after `cmake --install`, `find_package(tugz 0.1 CONFIG REQUIRED)`
 provides the same target. The library is static unless
 `BUILD_SHARED_LIBS` is set, and position-independent code is the
 consumer's choice (`CMAKE_POSITION_INDEPENDENT_CODE`). The targets keep

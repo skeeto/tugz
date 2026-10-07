@@ -9,7 +9,7 @@
 // The release, as the programs report it. CMakeLists.txt, the
 // amalgamations, and the release workflow (whose tag must be v plus this)
 // read it from here.
-#define TUGZ_VERSION "1.0.0"
+#define TUGZ_VERSION "0.1.0"
 
 typedef unsigned char       u8;
 typedef unsigned short      u16;
