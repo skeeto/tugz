@@ -351,7 +351,10 @@ static void encoder_reset(encoder *e, i32 level)
 
     switch (e->format) {
     case FMT_GZIP: {
-        static u8 const header[10] = {0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3};
+        // XFL marks the fastest and the smallest levels, as GNU gzip and
+        // zlib mark them
+        u8 header[10] = {0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3};
+        header[8] = level==1 ? 4 : level==9 ? 2 : 0;
         deflate_bytes(e->def, header, countof(header));
     } break;
     case FMT_ZLIB: {

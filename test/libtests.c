@@ -502,6 +502,25 @@ static void test_zlib_format(void)
         free(c.s);
     }
 
+    // So do gzip headers, but for the OS (Unix): XFL marks levels 1 and 9
+    // (4 and 2), as GNU gzip's does
+    for (i32 level = 1; level <= 9; level++) {
+        buf c = tcompress(TUGZ_GZIP, level, msg, 11, 0, 0, 0, 0);
+        z_stream s = {0};
+        TEST(deflateInit2(&s, level, Z_DEFLATED, 31, 8,
+                          Z_DEFAULT_STRATEGY) == Z_OK);
+        u8 z[64];
+        s.next_in = (u8 *)msg;
+        s.avail_in = 11;
+        s.next_out = z;
+        s.avail_out = sizeof(z);
+        TEST(deflate(&s, Z_FINISH) == Z_STREAM_END);
+        deflateEnd(&s);
+        TEST(!memcmp(c.s, z, 9) && c.s[9]==3);
+        TEST(c.s[8] == (level==1 ? 4 : level==9 ? 2 : 0));
+        free(c.s);
+    }
+
     // Adler-32 against zlib, including sums near the modulus
     u8 *ff = malloc(100000);
     memset(ff, 0xff, 100000);

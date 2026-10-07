@@ -1034,10 +1034,12 @@ Fuzzers:
   many levels of symbolic links"); a failure to set both the mode and
   the times is one warning, where GNU gives one for each; and no
   message begins with GNU's blank line.
-- Headers record no name and no time (FLG and MTIME 0), which is GNU
-  gzip's `-n` output but for XFL (always 0), so `-n` and `--no-name` are
-  accepted and do nothing. `-N`, which asks for a name and time to be
-  saved or restored, is refused.
+- Headers record no name and no time (FLG and MTIME 0), as GNU gzip's
+  `-n` headers do, XFL included (4 at `-1`, 2 at `-9`, else 0, as zlib
+  sets it too, and which `file` reports as "max speed" or "max
+  compression"), so `-n` and `--no-name` are accepted and do nothing.
+  `-N`, which asks for a name and time to be saved or restored, is
+  refused.
 - As in GNU gzip, the program name sets the default mode: names starting
   with `un` or `gun` decompress, and `zcat` or `gzcat` decompress to
   standard output (case-insensitive; Windows drops `.exe`). Platform

@@ -54,7 +54,8 @@
 // is delivered.
 //
 // Compression levels are 1 (fastest) through 9 (smallest), and others are
-// clamped into that range. The gzip header records no name or time.
+// clamped into that range. The gzip header records no name or time, and
+// its XFL marks levels 1 and 9 as GNU gzip and zlib mark them.
 //
 // Define TUGZ_API (e.g. as static) to control the linkage of definitions.
 // The single-file tugz.c (make tugz.c) may so be embedded in a program's
