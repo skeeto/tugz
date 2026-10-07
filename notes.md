@@ -1016,7 +1016,10 @@ Fuzzers:
   `-x` too, scanned at no cost in memory; one directory of 500K files
   14 s and 183 MB (19.5 s, 186 MB), 214 MB when its listing grew by
   doubling. Windows 11: a one-file run commits 7 MB (257 MB committed up
-  front before), 100K files 46 MB, 1M files 398 MB (i686 298 MB); a tree
+  front before), 100K files 46 MB, 1M files 398 MB (i686 298 MB), both
+  measured while each recorded name kept a folded copy and listings were
+  converted at three bytes a unit, so lower now (see Memory per entry
+  and Scanning); a tree
   15,000 levels deep (30K-character paths) archives with a peak commit
   of 439 MiB on x86-64 and 437 MiB on i686 (673 and 670 MiB while each
   recorded name kept a folded copy; and before each level kept one copy
