@@ -26,6 +26,20 @@ expect_status() {
     [ "$got" = "$want" ] || fail "expected status $want, got $got: $*"
 }
 
+# A sanitizer's report exits 99, not 1, gzip's status for an error,
+# which tests of corrupt input expect
+export ASAN_OPTIONS="exitcode=99${ASAN_OPTIONS:+:$ASAN_OPTIONS}"
+export UBSAN_OPTIONS="exitcode=99${UBSAN_OPTIONS:+:$UBSAN_OPTIONS}"
+
+# Whether a command writes a file's contents and succeeds, without even a
+# warning, which in a pipeline its status would not tell
+same_output() {  # file command...
+    file=$1
+    shift
+    rm -f same.st
+    { "$@" || echo $? >same.st; } | cmp -s - "$file" && [ ! -e same.st ]
+}
+
 # Inputs
 : >empty
 printf x >one
@@ -38,20 +52,21 @@ cp "$GZIP" binary
 for f in empty one random zeros text binary; do
     for level in 1 2 3 4 5 6 7 8 9; do
         "$GZIP" -$level -c $f >$f.gz
-        "$REF" -dc <$f.gz | cmp -s - $f || fail "$REF -d of $f at -$level"
-        "$GZIP" -dc $f.gz | cmp -s - $f || fail "self -d of $f at -$level"
+        same_output $f "$REF" -dc <$f.gz || fail "$REF -d of $f at -$level"
+        same_output $f "$GZIP" -dc $f.gz || fail "self -d of $f at -$level"
         if [ -n "$LIBDEFLATE" ]; then
-            "$LIBDEFLATE" -dc $f.gz | cmp -s - $f ||
+            same_output $f "$LIBDEFLATE" -dc $f.gz ||
                 fail "libdeflate -d of $f at -$level"
         fi
     done
     for level in 1 6 9; do
-        "$REF" -$level -c <$f | "$GZIP" -dc | cmp -s - $f ||
-            fail "self -d of $REF -$level $f"
+        "$REF" -$level -c <$f >ref.gz
+        same_output $f "$GZIP" -dc <ref.gz || fail "self -d of $REF -$level $f"
     done
     if [ -n "$LIBDEFLATE" ]; then
         for level in 1 6 9 12; do
-            "$LIBDEFLATE" -$level -c $f | "$GZIP" -dc | cmp -s - $f ||
+            "$LIBDEFLATE" -$level -c $f >ref.gz
+            same_output $f "$GZIP" -dc <ref.gz ||
                 fail "self -d of libdeflate -$level $f"
         done
     fi
@@ -91,7 +106,7 @@ done
 # As there, decompressing or testing a missing name without a suffix
 # tries it with suffixes (.gz, .z, -z, .Z), so that zcat foo reads foo.gz
 printf x | "$GZIP" >miss-z
-"$GZIP" -dc miss | cmp -s - one || fail "-dc of NAME for NAME-z"
+same_output one "$GZIP" -dc miss || fail "-dc of NAME for NAME-z"
 expect_status 0 "$GZIP" -t miss
 "$GZIP" -d miss
 [ -e miss ] && [ ! -e miss-z ] && cmp -s miss one || fail "-d of NAME-z"
@@ -108,8 +123,8 @@ expect_status 1 "$GZIP" has.tgz
 
 # Headers have no name or time, as GNU gzip's under -n, which does nothing
 "$GZIP" -c text >nn.gz
-"$GZIP" -nc text | cmp -s - nn.gz || fail "-n"
-"$GZIP" --no-name -c text | cmp -s - nn.gz || fail "--no-name"
+same_output nn.gz "$GZIP" -nc text || fail "-n"
+same_output nn.gz "$GZIP" --no-name -c text || fail "--no-name"
 expect_status 1 "$GZIP" -Nc text
 
 # Multiple members
@@ -120,8 +135,8 @@ cat one text | cmp -s - m.out || fail "multi-member"
 
 # Files in one run share an encoder yet compress as each does alone
 "$GZIP" -c text one empty binary one >m3.gz
-for f in text one empty binary one; do "$GZIP" -c $f; done |
-    cmp -s - m3.gz || fail "several files in one run"
+for f in text one empty binary one; do "$GZIP" -c $f; done >m3.want
+cmp -s m3.want m3.gz || fail "several files in one run"
 
 # Trailing garbage is a warning; corruption is an error
 { cat m1.gz; printf junk; } >tg.gz
@@ -137,7 +152,7 @@ expect_status 0 "$GZIP" -t c.gz
 # byte other than zero may begin one, which is then truncated
 { cat m1.gz; head -c 1000 /dev/zero; } >pad.gz
 expect_status 0 "$GZIP" -t pad.gz
-"$GZIP" -dc pad.gz | cmp -s - one || fail "zero padding"
+same_output one "$GZIP" -dc pad.gz || fail "zero padding"
 { cat m1.gz; head -c 10 /dev/zero; printf x; } >padx.gz
 expect_status 2 "$GZIP" -t padx.gz
 { cat m1.gz; printf '\037'; } >cut.gz
@@ -193,10 +208,10 @@ expect_status 2 "$GZIP" d
 # Long options, help and version on standard output, end of options
 "$GZIP" -9 -c text >o9.gz
 "$GZIP" -1 -c text >o1.gz
-"$GZIP" --best --stdout text | cmp -s - o9.gz || fail "--best --stdout"
-"$GZIP" --fast --to-stdout text | cmp -s - o1.gz || fail "--fast"
-"$GZIP" --decompress --stdout o9.gz | cmp -s - text || fail "--decompress"
-"$GZIP" --uncompress -c o1.gz | cmp -s - text || fail "--uncompress"
+same_output o9.gz "$GZIP" --best --stdout text || fail "--best --stdout"
+same_output o1.gz "$GZIP" --fast --to-stdout text || fail "--fast"
+same_output text "$GZIP" --decompress --stdout o9.gz || fail "--decompress"
+same_output text "$GZIP" --uncompress -c o1.gz || fail "--uncompress"
 expect_status 0 "$GZIP" --test o9.gz
 cp one kk
 "$GZIP" --keep kk
@@ -234,10 +249,10 @@ for n in gunzip zcat gzcat; do
     ln -s "$GZIP" names/$n$ext 2>/dev/null || cp "$GZIP" names/$n$ext
 done
 "$GZIP" -c text >n.gz
-names/gunzip$ext -c n.gz | cmp -s - text || fail "gunzip -c"
-names/zcat$ext n.gz | cmp -s - text || fail "zcat"
-names/zcat$ext n | cmp -s - text || fail "zcat of NAME for NAME.gz"
-names/gzcat$ext <n.gz | cmp -s - text || fail "gzcat stdin"
+same_output text names/gunzip$ext -c n.gz || fail "gunzip -c"
+same_output text names/zcat$ext n.gz || fail "zcat"
+same_output text names/zcat$ext n || fail "zcat of NAME for NAME.gz"
+same_output text names/gzcat$ext <n.gz || fail "gzcat stdin"
 [ -e n.gz ] || fail "zcat removed its input"
 names/gunzip$ext n.gz
 [ -e n ] && [ ! -e n.gz ] && cmp -s n text || fail "gunzip in place"
@@ -287,7 +302,8 @@ printf 'target\n' >target
 if ln -s target slink 2>/dev/null; then
     expect_status 1 "$GZIP" slink
     [ -e slink ] && [ ! -e slink.gz ] || fail "symlink compressed in place"
-    "$GZIP" -c slink | "$GZIP" -dc | cmp -s - target || fail "-c symlink"
+    "$GZIP" -c slink >slink.gz.out
+    same_output target "$GZIP" -dc slink.gz.out || fail "-c symlink"
     "$GZIP" -f slink
     [ ! -e slink ] && [ -e slink.gz ] && [ -e target ] || fail "-f symlink"
 fi
@@ -325,7 +341,7 @@ if [ -z "$windows" ]; then
         [ $st = 2 ] && [ "$(cat err)" = "gzip: $f $msg" ] && [ -e $f ] &&
             [ ! -e $f.gz ] || fail "$f in place: $st $(cat err)"
         "$GZIP" -c $f >$f.gz
-        "$GZIP" -dc $f.gz | cmp -s - $f || fail "-c $f"
+        same_output $f "$GZIP" -dc $f.gz || fail "-c $f"
         chmod $m $f.gz
         expect_status 2 "$GZIP" -d $f.gz
         if [ $f = sticky ]; then
