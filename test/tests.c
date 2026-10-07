@@ -3035,28 +3035,57 @@ static void test_io_stops(os *ctx, arena a)
     free(big);
 }
 
+// Run gzip (or with unzip, gunzip) in an arena of exactly cap bytes, its
+// own allocation, so that AddressSanitizer would see any use past its
+// end, and page-aligned, so that alignment pads every run alike. Returns
+// whether it ran out of memory (os_exit), else checks that it produced
+// want.
+static b32 oom_run(os *ctx, iz cap, b32 unzip, s8 in, s8 want)
+{
+    void *mem = 0;
+    TEST(!posix_memalign(&mem, 4096, (uz)cap + !cap));
+    arena t = {0};
+    t.beg = mem;
+    t.end = t.beg + cap;
+    t.ctx = ctx;
+    jmp_buf save;
+    memcpy(save, ctx->fail, sizeof(save));
+    b32 out_of_memory = 1;
+    if (!setjmp(ctx->fail)) {
+        s8  out;
+        i32 status = unzip ? do_gunzip(ctx, t, in.s, in.len, &out)
+                           : do_gzip(ctx, t, in.s, in.len, 6, &out);
+        TEST(status==GZ_OK && equals(out, want.s, want.len));
+        free(out.s);
+        out_of_memory = 0;
+    }
+    memcpy(ctx->fail, save, sizeof(save));
+    free(t.beg);
+    return out_of_memory;
+}
+
 static void test_oom(os *ctx, arena a)
 {
-    // Every truncation of the arena must fail cleanly via os_exit
+    // Arenas too small fail cleanly via os_exit, at a range of sizes and
+    // just below the least that works, which then works, as do all larger
     u8 *text = randbytes(1000, 2);
-    s8 gz;
+    s8  raw  = {text, 1000};
+    s8  gz;
     TEST(do_gzip(ctx, a, text, 1000, 6, &gz) == GZ_OK);
-    for (iz cap = 0; cap < 4<<20; cap = cap*2 + 1000) {
-        arena t = a;
-        t.end = t.beg + cap;
-        jmp_buf save;
-        memcpy(save, ctx->fail, sizeof(save));
-        if (!setjmp(ctx->fail)) {
-            s8 out;
-            do_gunzip(ctx, t, gz.s, gz.len, &out);
-            free(out.s);
+    for (b32 unzip = 0; unzip <= 1; unzip++) {
+        s8 in   = unzip ? gz : raw;
+        s8 want = unzip ? raw : gz;
+        iz lo = 0;        // runs out
+        iz hi = 4 << 20;  // works
+        TEST(oom_run(ctx, lo, unzip, in, want));
+        TEST(!oom_run(ctx, hi, unzip, in, want));
+        while (hi-lo > 1) {
+            iz mid = lo + (hi-lo)/2;
+            *(oom_run(ctx, mid, unzip, in, want) ? &lo : &hi) = mid;
         }
-        if (!setjmp(ctx->fail)) {
-            s8 out;
-            do_gzip(ctx, t, text, 1000, 6, &out);
-            free(out.s);
+        for (iz cap = 0; cap < 4<<20; cap = cap*2 + 1000) {
+            TEST(oom_run(ctx, cap, unzip, in, want) == (cap < hi));
         }
-        memcpy(ctx->fail, save, sizeof(save));
     }
     free(gz.s);
     free(text);
