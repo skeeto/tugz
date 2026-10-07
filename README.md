@@ -2,16 +2,16 @@
 
 # tugz: tiny unity gzip
 
-A from-specification implementation of gzip ([RFC 1952][]), zlib
-([RFC 1950][]), and DEFLATE ([RFC 1951][]) in C11 with C23 attributes,
-for GCC or Clang, as a drop-in `gzip` command, a streaming library, and
-an Info-ZIP compatible `zip`. It compresses faster than zlib at every
-level with equal or better ratios, and validates input exactly as
-strictly as zlib.
+A from-specification implementation of gzip ([RFC 1952][]), zlib ([RFC
+1950][]), and DEFLATE ([RFC 1951][]) in C11 with C23 attributes, for GCC
+or Clang, as a drop-in `gzip` command, a streaming library, and an
+Info-ZIP compatible `zip`. It compresses faster than zlib at every level
+with equal or better ratios, and validates input exactly as strictly as
+zlib.
 
-The core has no dependencies, no global state, no platform
-conditionals, and does no I/O. Each program is a unity build: a platform
-layer includes the core and supplies a handful of functions.
+The core has no dependencies, no global state, no platform conditionals,
+and does no I/O. Each program is a unity build: a platform layer
+includes the core and supplies a handful of functions.
 
 ## Build
 
@@ -54,11 +54,11 @@ many streams, reset a state rather than initialize it again:
 `tugz_deflate_reset` (which also sets the level) takes time in
 proportion to at most the first 1 KiB of the previous stream's input,
 rather than init's clearing of 512 KiB, so 100-byte streams compress
-about 4x faster. One in 2,048 of the resets and FULL flushes that
-follow a longer history still clears as init does. Inflate init and
+about 4x faster. One in 2,048 of the resets and FULL flushes that follow
+a longer history still clears as init does. Inflate init and
 `tugz_inflate_reset` both take a small constant time. Build
-`platform/libtugz.c` as an object (`make libtugz.o`), or use
-`make tugz.c` for a single-file amalgamation with the header inlined.
+`platform/libtugz.c` as an object (`make libtugz.o`), or use `make
+tugz.c` for a single-file amalgamation with the header inlined.
 
 ## Usage
 
@@ -78,8 +78,8 @@ follow a longer history still clears as init does. Inflate init and
 
 Long forms (`--stdout`, `--decompress`, `--best`, ...) are accepted.
 Installed (or linked) as `gunzip` it decompresses, and as `zcat` or
-`gzcat` it decompresses to standard output. On Windows, where `cmd`
-and PowerShell pass wildcards on as they are, arguments with them are
+`gzcat` it decompresses to standard output. On Windows, where `cmd` and
+PowerShell pass wildcards on as they are, arguments with them are
 expanded as zip expands them, ignoring case, but for hidden and system
 files, as a POSIX shell leaves out dotfiles.
 
@@ -135,19 +135,19 @@ applies only to entries written. Also as there, `-u` and `-f` without
 paths refresh every entry, and a path not on disk, such as a quoted
 wildcard, selects the entries it matches. As in Info-ZIP, a file also
 matches an entry by its Unicode path field, which Windows tools add to
-names they store in a code page, and on Windows by its name decoded
-from the OEM code page, in which Explorer stores names, or, if made
-elsewhere and not UTF-8, from the ANSI code page. Data before the
-first entry, such as a self-extractor's stub or a Python zipapp's `#!`
-line, is kept when the archive's offsets account for it (as after
-`zip -A`), as in Info-ZIP, while an archive whose offsets do not is
-refused (3), as there. The new archive is written to a temporary file
-and renamed over the old one, where symbolic links at its path lead, so
-that they survive (a dangling link gets its target created). Zip64 is
-used as needed for large files, large archives, and more than 65,535
-entries. Names are stored as UTF-8 with flag bit 11 when they are valid
-UTF-8 and not ASCII. On Windows, arguments with wildcards are expanded,
-as `cmd` does not, except when freshening, as in Info-ZIP.
+names they store in a code page, and on Windows by its name decoded from
+the OEM code page, in which Explorer stores names, or, if made elsewhere
+and not UTF-8, from the ANSI code page. Data before the first entry,
+such as a self-extractor's stub or a Python zipapp's `#!` line, is kept
+when the archive's offsets account for it (as after `zip -A`), as in
+Info-ZIP, while an archive whose offsets do not is refused (3), as
+there. The new archive is written to a temporary file and renamed over
+the old one, where symbolic links at its path lead, so that they survive
+(a dangling link gets its target created). Zip64 is used as needed for
+large files, large archives, and more than 65,535 entries. Names are
+stored as UTF-8 with flag bit 11 when they are valid UTF-8 and not
+ASCII. On Windows, arguments with wildcards are expanded, as `cmd` does
+not, except when freshening, as in Info-ZIP.
 
 Headers, attributes, extra fields, messages, and exit statuses match
 Info-ZIP's, but for deliberate departures, all listed in
@@ -181,11 +181,11 @@ always counts as changed (and if it is not, its entry is rewritten byte
 for byte).
 
 Other options are rejected (16) rather than ignored, among them the
-interactive and legacy features: encryption, comments, splits,
-adjusting self-extractors (`-A`, `-J`), `-F` fixes, line ending
-conversion, streaming (adding `-`, which `-d` takes as an entry's name,
-or to standard output without an archive name), `-T`, `-m`, `-n`,
-`--out`, and logging.
+interactive and legacy features: encryption, comments, splits, adjusting
+self-extractors (`-A`, `-J`), `-F` fixes, line ending conversion,
+streaming (adding `-`, which `-d` takes as an entry's name, or to
+standard output without an archive name), `-T`, `-m`, `-n`, `--out`, and
+logging.
 
 ## Performance
 
@@ -209,9 +209,8 @@ Explorer, .NET, and tar. So `make check` needs zlib, libdeflate, a
 reference gzip (`/usr/bin/gzip`), and Info-ZIP's `unzip` and `zipinfo`,
 while Python (through `uv` if installed) adds checks. Tested on macOS,
 Linux (x86-64, i386, aarch64, big-endian PowerPC), and Windows (x86-64,
-i686).
-See [notes.md](notes.md) for design decisions, test coverage, and the
-optimization log.
+i686). See [notes.md](notes.md) for design decisions, test coverage, and
+the optimization log.
 
 [RFC 1950]: https://www.rfc-editor.org/rfc/rfc1950
 [RFC 1951]: https://www.rfc-editor.org/rfc/rfc1951

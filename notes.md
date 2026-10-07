@@ -20,10 +20,10 @@ no I/O: callers hand it input and output buffers of any size and it
 resumes where it stopped. Its only hooks are `os_oom` and `os_extend`
 (for an arena that runs out). Programs add `src/io.c` (the `os_*` file
 interface and a buffered reader and writer); gzip adds `src/gzipio.c`
-(descriptor drivers) and `src/cli.c`, and zip `src/zip.c`,
-`src/wild.c` (wildcards), `src/dir.c` (directories), and
-`src/zipcli.c`. The library layer adds none of them. The shared `os_*`
-implementations live in `platform/posix.c` and `platform/windows.c`.
+(descriptor drivers) and `src/cli.c`, and zip `src/zip.c`, `src/wild.c`
+(wildcards), `src/dir.c` (directories), and `src/zipcli.c`. The library
+layer adds none of them. The shared `os_*` implementations live in
+`platform/posix.c` and `platform/windows.c`.
 
 | File                     | Purpose                                         |
 |--------------------------|-------------------------------------------------|
@@ -70,10 +70,10 @@ CPUs without it. On an i9-12900, PCLMUL folding runs at 16.8 GB/s versus
 MB/s on Silesia). Both paths were verified with one binary under QEMU
 CPU models with and without PCLMUL. CPUID is asked once per codec state
 (and zip run), which keeps the answer, not on each update: a hypervisor
-traps it, as under Windows 11 with virtualization-based security (620
-ns on the i9-12900) and in WSL2 (650 ns). Library inflate into
-256-byte output buffers there ran at 258 MB/s, and now at 772, and into
-4 KiB at 698, now 790.
+traps it, as under Windows 11 with virtualization-based security (620 ns
+on the i9-12900) and in WSL2 (650 ns). Library inflate into 256-byte
+output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
+698, now 790.
 
 ## Library
 
@@ -83,13 +83,13 @@ ns on the i9-12900) and in WSL2 (650 ns). Library inflate into
   `int`. No `long`, no `size_t`.
 - State is fixed-size and lives in caller memory of any alignment
   (`tugz_*_size`, `tugz_*_init`): 308 KB to inflate and 2.7 MB to
-  deflate. The optional allocator has the Lua shape
-  `(ctx, ptr, old, new)` and is called once to allocate and once to free,
-  with the size. Init on the same memory starts over, as does a reset,
-  which for deflate is far cheaper (below). `os_oom` traps in the
-  library: init checks the size first, so it is unreachable. Programs
-  allocate their codecs from exactly-sized sub-arenas, so every program
-  run checks the size calculation.
+  deflate. The optional allocator has the Lua shape `(ctx, ptr, old,
+  new)` and is called once to allocate and once to free, with the size.
+  Init on the same memory starts over, as does a reset, which for
+  deflate is far cheaper (below). `os_oom` traps in the library: init
+  checks the size first, so it is unreachable. Programs allocate their
+  codecs from exactly-sized sub-arenas, so every program run checks the
+  size calculation.
 - Inflate decodes in atomic units: a block header (for a dynamic block,
   up to its code lengths: at most 74 bits), a run of code lengths, or
   one literal or length/distance pair. If input runs out mid-unit, the
@@ -98,11 +98,11 @@ ns on the i9-12900) and in WSL2 (650 ns). Library inflate into
   than 8 bits (whole bytes are returned to the input), and the stash
   holds only bytes of one incomplete unit. So the stream end is exact:
   after `TUGZ_DONE`, `in` points just past the stream, as zlib's
-  `avail_in` does. The code lengths resume where they stopped, as
-  zlib's do, where a whole dynamic header (up to ~300 bytes) once was
-  one unit, decoded again from its first bit on every call: fed a byte
-  at a time, a stream of 20,000 header-only blocks decoded at 355 ns per
-  input byte (zlib 14), now 25.
+  `avail_in` does. The code lengths resume where they stopped, as zlib's
+  do, where a whole dynamic header (up to ~300 bytes) once was one unit,
+  decoded again from its first bit on every call: fed a byte at a time,
+  a stream of 20,000 header-only blocks decoded at 355 ns per input byte
+  (zlib 14), now 25.
 - Errors are reported only once every bit of the offending field is
   present, in zlib's order, and a unit stops at the first field input
   cannot finish, never looking up the next one in the bits at hand. So
@@ -111,9 +111,9 @@ ns on the i9-12900) and in WSL2 (650 ns). Library inflate into
   `test_inflate_splits` at every split of streams with lone and empty
   distance codes, whose invalid 1-bit entries expose an early lookup).
   That includes zlib streams with a preset dictionary (FDICT), which
-  tugz does not support: `TUGZ_EHEADER` comes once the 4-byte
-  dictionary ID is in, where zlib asks for the dictionary, and not
-  sooner, at the flag.
+  tugz does not support: `TUGZ_EHEADER` comes once the 4-byte dictionary
+  ID is in, where zlib asks for the dictionary, and not sooner, at the
+  flag.
 - Inflate decodes ahead of the caller's output buffer, into its window
   (up to 256 KiB), so a call returns `TUGZ_NEED_OUTPUT` whenever decoded
   output remains, even with the input used up or an error found. Any
@@ -121,19 +121,19 @@ ns on the i9-12900) and in WSL2 (650 ns). Library inflate into
   zlib, which decodes no further than its output buffer. A caller can
   then wait for input at `TUGZ_NEED_INPUT` (an interactive SYNC-flushed
   stream) or stop there (a truncated file) without losing output, and
-  gets all output before an error. `test_held_output` checks prefixes
-  of streams, and of broken ones, against zlib with small buffers, and
+  gets all output before an error. `test_held_output` checks prefixes of
+  streams, and of broken ones, against zlib with small buffers, and
   `fuzz-diff-inflate` checks the output at truncation and at errors.
   Programs take output copy-free, so for them `GZ_NEEDOUT` only asks
   them to take it and call again.
 - Deflate stages output (~576 KiB) and parses into tokens only when its
   window fills or at a flush. Each emission step (one block, a window
-  slide, or a flush) needs `DEF_STAGE_NEED` bytes of room: a block has at
-  most `TOK_CAP` tokens of at most 48 bits, a stored block is chosen only
-  when no larger, and held-back stored data is under 64 KiB. Lacking room,
-  parsing pauses at the block boundary. Output therefore depends only on
-  input bytes and flush points, never on buffer sizes (checked by tests
-  and fuzzers).
+  slide, or a flush) needs `DEF_STAGE_NEED` bytes of room: a block has
+  at most `TOK_CAP` tokens of at most 48 bits, a stored block is chosen
+  only when no larger, and held-back stored data is under 64 KiB.
+  Lacking room, parsing pauses at the block boundary. Output therefore
+  depends only on input bytes and flush points, never on buffer sizes
+  (checked by tests and fuzzers).
 - SYNC emits an empty stored block (`00 00 ff ff`); FULL also clears the
   hash chains so no match reaches behind the flush. zlib headers match
   zlib's byte for byte (FLEVEL). gzip decoding stops after each member;
@@ -148,47 +148,46 @@ ns on the i9-12900) and in WSL2 (650 ns). Library inflate into
   tokens are written before use, and chains lead only to links that
   insertions wrote. A slide rebases every link, written or not, so it
   neither branches on one nor passes one to a call, either of which
-  MemorySanitizer reports (as it did at -O0). Forgetting history (a
-  FULL flush, or `deflate_reset` before a new stream) must empty the
-  heads. After at most 1024 inserted positions, it rehashes them and
-  clears their slots. After more, rather than clear 512 KiB, it
-  advances a stamp: each hash table entry is its position plus one plus
-  the stamp, which moves in steps of 2^21, more than any window position
-  plus a window, and `find_match` measures distances from p's own
-  entry, so an older entry lies more than a window back, even after a
-  reset restarts positions at zero, and ends a chain as an empty one
-  does. Slides zero such entries, and after 2,047 advances the heads are
-  zeroed and the stamp starts over. A reset or FULL flush thus costs at
-  most a 1024-position rehash, and one in 2,048 of those after a longer
-  history costs the clearing. Sampling for 3-byte matching keeps its
-  own 8 KiB bitmap, since the 3-byte heads it borrowed may now hold
-  forgotten entries. zip resets one deflator per entry, gzip one encoder
-  per file, and the library exposes this as `tugz_deflate_reset`; a
-  fresh deflator still zeroes 512 KiB. The reset also sets the level,
-  which only selects parameters and the zlib header, so
-  `tugz_deflate_size` takes only the format. Per 100-byte gzip stream
-  (M4 Max / Pi 4): deflate 11.4 / 78 us after init, 2.5 / 21 us after
-  reset.
+  MemorySanitizer reports (as it did at -O0). Forgetting history (a FULL
+  flush, or `deflate_reset` before a new stream) must empty the heads.
+  After at most 1024 inserted positions, it rehashes them and clears
+  their slots. After more, rather than clear 512 KiB, it advances a
+  stamp: each hash table entry is its position plus one plus the stamp,
+  which moves in steps of 2^21, more than any window position plus a
+  window, and `find_match` measures distances from p's own entry, so an
+  older entry lies more than a window back, even after a reset restarts
+  positions at zero, and ends a chain as an empty one does. Slides zero
+  such entries, and after 2,047 advances the heads are zeroed and the
+  stamp starts over. A reset or FULL flush thus costs at most a
+  1024-position rehash, and one in 2,048 of those after a longer history
+  costs the clearing. Sampling for 3-byte matching keeps its own 8 KiB
+  bitmap, since the 3-byte heads it borrowed may now hold forgotten
+  entries. zip resets one deflator per entry, gzip one encoder per file,
+  and the library exposes this as `tugz_deflate_reset`; a fresh deflator
+  still zeroes 512 KiB. The reset also sets the level, which only
+  selects parameters and the zlib header, so `tugz_deflate_size` takes
+  only the format. Per 100-byte gzip stream (M4 Max / Pi 4): deflate
+  11.4 / 78 us after init, 2.5 / 21 us after reset.
 - An inflator starts uncleared: the fixed codes' decoding tables are
   constants (2 KiB, which `test_tables` checks against `htable_build`),
   and every other field is written before it is read, so init sets only
-  what `tugz_inflate_reset` does. On the M4 Max / Pi 4, init took
-  2.0 / 12.6 us, clearing 14 KiB and building the fixed tables, and now
-  takes 3 / 39 ns. A 100-byte gzip stream decodes in 1.2 / 7.3 us after
-  init or reset, where it took 3.2 / 19.9 us after init. The library
-  object grew by 2 KiB (+5%) of constant tables. gzip -d and -t reset
-  one decoder per file, as compression does its encoder, though with
-  init this cheap that saves nothing measurable: over 20,000 gzipped
-  200-360 B slices of dickens, `-dc` took 0.38 / 0.80 s of CPU with the
-  old init and 0.31 / 0.54 s with the new, with or without the reuse.
+  what `tugz_inflate_reset` does. On the M4 Max / Pi 4, init took 2.0 /
+  12.6 us, clearing 14 KiB and building the fixed tables, and now takes
+  3 / 39 ns. A 100-byte gzip stream decodes in 1.2 / 7.3 us after init
+  or reset, where it took 3.2 / 19.9 us after init. The library object
+  grew by 2 KiB (+5%) of constant tables. gzip -d and -t reset one
+  decoder per file, as compression does its encoder, though with init
+  this cheap that saves nothing measurable: over 20,000 gzipped 200-360
+  B slices of dickens, `-dc` took 0.38 / 0.80 s of CPU with the old init
+  and 0.31 / 0.54 s with the new, with or without the reuse.
 - Programs reach the buffers without copying (`*_pending`/`*_consume`),
   so the program's throughput is unchanged by the restructure.
 - `make libtugz.o` builds an object exporting only `tugz_*` (no writable
-  data). `make tugz.c` produces a single-file amalgamation with the header
-  inlined; define `TUGZ_API` as `static` to embed it. Around the core it
-  saves and restores (`push_macro`, `pop_macro`) every name the core
-  defines as a macro, so its macros neither leak into the program nor
-  replace the program's: its `assert` once turned a program's
+  data). `make tugz.c` produces a single-file amalgamation with the
+  header inlined; define `TUGZ_API` as `static` to embed it. Around the
+  core it saves and restores (`push_macro`, `pop_macro`) every name the
+  core defines as a macro, so its macros neither leak into the program
+  nor replace the program's: its `assert` once turned a program's
   assertions into optimizer assumptions, even under `NDEBUG`. Its type
   names become `tugz__` ones, as they collide with common headers:
   `<windows.h>` defines `byte`, and on LP64 a program's `int64_t i64` is
@@ -201,19 +200,19 @@ The zip program shares the deflate core and `src/io.c`, adding a
 portable format layer (`src/zip.c`, no I/O, fuzzed), wildcard matching
 and directory listings (`src/wild.c`, `src/dir.c`), and a driver
 (`src/zipcli.c`, also tested and fuzzed over an in-memory platform
-layer, `test/zipos.c`) over more platform functions, declared at the
-top of `src/zipcli.c` and `src/dir.c`: `os_stat`, `os_fstat`, and
+layer, `test/zipos.c`) over more platform functions, declared at the top
+of `src/zipcli.c` and `src/dir.c`: `os_stat`, `os_fstat`, and
 `os_missing` (whether a failed `os_stat` found nothing there),
 `os_listdir`, `os_readlink`, positioned `os_readat`/`os_writeat`,
 `os_truncate`, `os_resolve` (the file that links at the archive's path
 lead to), `os_writable` (whether the archive may be replaced),
 `os_commit` (atomic rename over the target, only once the file is
 closed, or on Windows flushed, without error), `os_localtime`,
-`os_isatty`, `os_error` (the last failure's reason), and, needed only
-on Windows (POSIX stubs them), `os_fromcp` (a name in a code page),
+`os_isatty`, `os_error` (the last failure's reason), and, needed only on
+Windows (POSIX stubs them), `os_fromcp` (a name in a code page),
 `os_fullpath` (a file's final path, to tell files apart without IDs),
-and `os_upcase` (a name in upper case, as the file system ignores
-case). It needs neither inflate nor the gzip container.
+and `os_upcase` (a name in upper case, as the file system ignores case).
+It needs neither inflate nor the gzip container.
 
 - Scope: batch use by release scripts. Other options, everything
   interactive or legacy among them (encryption, comments, splits, SFX
@@ -251,9 +250,9 @@ case). It needs neither inflate nor the gzip container.
   naming the entry being copied ("was copying a.txt"), else the archive.
   A read-only archive fails with 15 once there is something to do,
   before doing it, as Info-ZIP finds by opening it to update it
-  (replacing it needs no permission to write it): as `access`
-  judges on POSIX, and on Windows by the read-only attribute, which
-  would otherwise refuse the rename only after all the work. So does, on
+  (replacing it needs no permission to write it): as `access` judges on
+  POSIX, and on Windows by the read-only attribute, which would
+  otherwise refuse the rename only after all the work. So does, on
   Windows, an archive that another process holds open without sharing
   delete access, which the rename needs (by its sources, Info-ZIP's port
   refuses it up front only if that process also refuses reading or
@@ -265,23 +264,23 @@ case). It needs neither inflate nor the gzip container.
   cannot be examined for any reason but nothing there, as Info-ZIP fails
   to create it up front: one that `stat` refuses on POSIX, and on
   Windows a name that no file can have (`a<b.zip`, a component over 255
-  characters), one that another process holds delete-pending, or a
-  share or server not found (a name with a colon, as `rel-12:30.zip`,
-  is still found invalid only by the rename, after the work, since
-  Windows takes it for a stream of a file not found). A missing or empty
-  archive gets Info-ZIP's "not found or empty" warning under `-u`, `-f`,
-  and `-d`, which go on with their arguments (warning of unmatched
-  names, rejecting repeated ones). A file that cannot be added still
-  gets its progress line, then the system's reason as Info-ZIP's
-  `perror` gives it (even under `-q`, as there), then a warning under
-  its entry's name that tells a failed open from a failed read. Should
-  writing the archive fail, its progress line lacks the result, and the
-  error is Info-ZIP's "Output file write failure (write error on zip
-  file)". The "Not all files were readable" summary, before any "zip
-  file empty", as there, counts the files and entries read and skipped
-  as Info-ZIP does, with its abbreviated byte counts ("292K"), in the
-  same words. Info-ZIP's quirks kept: `../` stays in names, an emptied
-  archive remains as a 22-byte file, odd seconds round up (but not past
+  characters), one that another process holds delete-pending, or a share
+  or server not found (a name with a colon, as `rel-12:30.zip`, is still
+  found invalid only by the rename, after the work, since Windows takes
+  it for a stream of a file not found). A missing or empty archive gets
+  Info-ZIP's "not found or empty" warning under `-u`, `-f`, and `-d`,
+  which go on with their arguments (warning of unmatched names,
+  rejecting repeated ones). A file that cannot be added still gets its
+  progress line, then the system's reason as Info-ZIP's `perror` gives
+  it (even under `-q`, as there), then a warning under its entry's name
+  that tells a failed open from a failed read. Should writing the
+  archive fail, its progress line lacks the result, and the error is
+  Info-ZIP's "Output file write failure (write error on zip file)". The
+  "Not all files were readable" summary, before any "zip file empty", as
+  there, counts the files and entries read and skipped as Info-ZIP does,
+  with its abbreviated byte counts ("292K"), in the same words.
+  Info-ZIP's quirks kept: `../` stays in names, an emptied archive
+  remains as a 22-byte file, odd seconds round up (but not past
   `SOURCE_DATE_EPOCH`). Times before the DOS range clamp to its start
   (and after it, a departure, to its end). A name over 65,535 bytes
   (possible in deep Windows paths) is skipped with a warning, exiting
@@ -296,11 +295,11 @@ case). It needs neither inflate nor the gzip container.
   in Info-ZIP's builds, whose long names differ too: on Windows, there
   is no `--symlinks`, and the port's `--archive-clear`, `--archive-set`,
   `--ignore-case`, and `--use-privileges` (unsupported) make `--i`
-  ambiguous. Its two-letter short options (those of its
-  Windows port there) are matched before single letters, so that
-  unsupported ones are rejected by name (`-fd`), `-mm` with Info-ZIP's
-  own message ("Must_Match is -MM"), and `-h2` is `-h`. A pattern list,
-  `-x` or `-i`, is its attached value alone, if it has one (`-x=` and
+  ambiguous. Its two-letter short options (those of its Windows port
+  there) are matched before single letters, so that unsupported ones are
+  rejected by name (`-fd`), `-mm` with Info-ZIP's own message
+  ("Must_Match is -MM"), and `-h2` is `-h`. A pattern list, `-x` or
+  `-i`, is its attached value alone, if it has one (`-x=` and
   `--exclude=` attach an empty pattern, which matches nothing), and
   otherwise the next argument, whatever it is (`-x -dash`), and those
   after it up to one that starts with `-` (a lone `-` included) or a
@@ -329,20 +328,20 @@ case). It needs neither inflate nor the gzip container.
   dropped and `../` kept, and on POSIX too a leading `//host/share/` is
   dropped (`zip t.zip //h/s/f` stores `f`). A directory is named with
   its separator, as procname names it, so a share root `//h/s` is named
-  by nothing, like `//h/s/`, and so are its entries' prefixes
-  (`zip -r t.zip //h/s` stores `f`). As procname names them, the
-  entries of `.` have paths without `./` (`d/a`, in messages too). The
-  same path reached twice (`f f`, `d d/a`, `d d/`, `. d/a`,
-  `find d | zip -r@`) is added once, silently, as in Info-ZIP;
-  different paths giving one name (`./d/a d/a`, `. ./d/a`, or a `-j`
-  collision) are an error (16), reported as there once every path is
-  scanned and matched: only the first name repeated in order of names,
-  by the first two of its different paths in order (a directory's with
-  a slash; `a ./a ./a` gives `./a` and `a`), in one warning whose lines
-  Info-ZIP indents to line up past its tab. Also as there, a file whose
-  name is the archive's path as given (with `.zip` added) is left out
-  silently even when it is another file, as `-j` may name it
-  (`zip -j dist.zip build/dist.zip`).
+  by nothing, like `//h/s/`, and so are its entries' prefixes (`zip -r
+  t.zip //h/s` stores `f`). As procname names them, the entries of `.`
+  have paths without `./` (`d/a`, in messages too). The same path
+  reached twice (`f f`, `d d/a`, `d d/`, `. d/a`, `find d | zip -r@`) is
+  added once, silently, as in Info-ZIP; different paths giving one name
+  (`./d/a d/a`, `. ./d/a`, or a `-j` collision) are an error (16),
+  reported as there once every path is scanned and matched: only the
+  first name repeated in order of names, by the first two of its
+  different paths in order (a directory's with a slash; `a ./a ./a`
+  gives `./a` and `a`), in one warning whose lines Info-ZIP indents to
+  line up past its tab. Also as there, a file whose name is the
+  archive's path as given (with `.zip` added) is left out silently even
+  when it is another file, as `-j` may name it (`zip -j dist.zip
+  build/dist.zip`).
 - Entry names in code pages: files match an entry by its stored name,
   then, as in Info-ZIP, by an Info-ZIP Unicode path field (0x7075) whose
   CRC is the stored name's, as Info-ZIP's Windows port, WinZip, and
@@ -369,16 +368,16 @@ case). It needs neither inflate nor the gzip container.
   its stored name.
 - Selection: as Info-ZIP's procname does, a path not on disk is a
   pattern for the archive's entries (taken up after the paths on disk,
-  which come first), and `-u` and `-f` without paths select every
-  entry. Info-ZIP's Windows port takes such patterns only when
-  freshening; otherwise it expands wildcards on disk and stops there,
-  and so does tugz. The file a selected entry names is examined without
-  recursion, `-D`, or `-j` (which does not cut the pattern either), if
-  the name passes `-i` and `-x` and stays within the current directory
-  (see the departures). Leading `./`, which bsdtar and Windows' `tar`
-  write, stays there, so those entries are refreshed, as in Info-ZIP, a
-  `./` entry by the current directory. As there, every entry selected
-  is refreshed, each of an archive's entries with one name (as Python's
+  which come first), and `-u` and `-f` without paths select every entry.
+  Info-ZIP's Windows port takes such patterns only when freshening;
+  otherwise it expands wildcards on disk and stops there, and so does
+  tugz. The file a selected entry names is examined without recursion,
+  `-D`, or `-j` (which does not cut the pattern either), if the name
+  passes `-i` and `-x` and stays within the current directory (see the
+  departures). Leading `./`, which bsdtar and Windows' `tar` write,
+  stays there, so those entries are refreshed, as in Info-ZIP, a `./`
+  entry by the current directory. As there, every entry selected is
+  refreshed, each of an archive's entries with one name (as Python's
   `zipfile` appends them) included, while a path names only the first
   (Info-ZIP's binary search finds any one). A missing file leaves its
   entry (deleted by `-FS`). One that has changed between file and
@@ -392,20 +391,20 @@ case). It needs neither inflate nor the gzip container.
   of a file gone from disk, is looked up by name rather than matched
   with every entry, unless some names share the index's slots
   (duplicates, or names that differ only in case on Windows, or by
-  Unicode names): `-d` of 2,000 such names from 100,000 entries took
-  3.1 s, now 0.02 s (Info-ZIP: 1.7 s).
-- Updates: as in Info-ZIP, `-u` and `-f` take a file that is newer
-  than its entry by the Unix time of the entry's last `UT` field, if
-  that has one, or failing any, of an old `UX` field (Info-ZIP 2's), so
-  the time zone does not matter, else by DOS times; `-FS` replaces one
-  whose DOS time or size differs (time zone and all), and reports
-  "Archive is current" when nothing changed. Under
-  `SOURCE_DATE_EPOCH`, files' times are compared unclamped, so a file
-  modified after the epoch is always newer than its entry, which the
-  clamped archive could not record; an unchanged one is rewritten with
-  identical bytes. At an odd epoch, a time clamped to it rounds down,
-  and so does one equal to it when compared, so a file modified at the
-  epoch is not newer, and one a second later is.
+  Unicode names): `-d` of 2,000 such names from 100,000 entries took 3.1
+  s, now 0.02 s (Info-ZIP: 1.7 s).
+- Updates: as in Info-ZIP, `-u` and `-f` take a file that is newer than
+  its entry by the Unix time of the entry's last `UT` field, if that has
+  one, or failing any, of an old `UX` field (Info-ZIP 2's), so the time
+  zone does not matter, else by DOS times; `-FS` replaces one whose DOS
+  time or size differs (time zone and all), and reports "Archive is
+  current" when nothing changed. Under `SOURCE_DATE_EPOCH`, files' times
+  are compared unclamped, so a file modified after the epoch is always
+  newer than its entry, which the clamped archive could not record; an
+  unchanged one is rewritten with identical bytes. At an odd epoch, a
+  time clamped to it rounds down, and so does one equal to it when
+  compared, so a file modified at the epoch is not newer, and one a
+  second later is.
 - Patterns: `-x`, `-i`, and `-d` patterns, `@file` lines included, are
   normalized as names are, so that `./` and `/` prefixes (and on
   Windows, backslashes and drives) match. Matching follows Info-ZIP's
@@ -431,8 +430,8 @@ case). It needs neither inflate nor the gzip container.
   local header can be patched once sizes are known: new entries need no
   data descriptors (some copied ones keep theirs: see Merging). An entry
   that does not shrink is rewritten stored, from the input buffer if one
-  read got it all, else by reopening the input; one that grows past
-  4 GiB while being read is redone with a Zip64 local header. A size of
+  read got it all, else by reopening the input; one that grows past 4
+  GiB while being read is redone with a Zip64 local header. A size of
   exactly 0xffffffff gets Zip64 too, as APPNOTE reserves that value, and
   a central Zip64 extra, once there is one, always holds both sizes
   (their 32-bit fields saturated), then the offset if it overflows.
@@ -458,9 +457,9 @@ case). It needs neither inflate nor the gzip container.
   has hard links, which FAT lacks). On POSIX that follows closing it,
   which reports the write errors that network file systems defer, but
   there is no fsync, as in Info-ZIP: on a Raspberry Pi's SD card,
-  waiting for the device turned a 0.85 s run storing 256 MiB into
-  20-40 s, for only durability across a crash and the rare device error
-  that nothing else reports. On Windows the rename is by handle, after
+  waiting for the device turned a 0.85 s run storing 256 MiB into 20-40
+  s, for only durability across a crash and the rare device error that
+  nothing else reports. On Windows the rename is by handle, after
   flushing and clearing delete-pending, so it never appears incomplete.
   Closing comes after it there, so the flush, which does wait for the
   device, is the only check for deferred errors before the archive is
@@ -506,51 +505,51 @@ case). It needs neither inflate nor the gzip container.
   regenerated local headers and raw data copies, warning as Info-ZIP
   does of a local header that disagrees with the central one in its
   version needed, flags, CRC (unless a descriptor gives it), or name
-  ("Local Entry CRC does not match CD: a.txt"). Their descriptor flag
-  is cleared, except, as in Info-ZIP, for encrypted entries (flag bit 0,
-  as traditional encryption's check byte depends on it, though AES's
-  does not): those keep it, and a data descriptor after their data.
-  They keep their extra fields, even with `-X`, which as in
-  Info-ZIP applies only to entries written (some fields are needed to
-  extract, such as AES's), except Zip64 fields, made anew; one whose
-  fields leave no room for a Zip64 field it now needs is an error (3),
-  not a wrapped length. Saturated sizes without a
-  Zip64 extra are literal, as Info-ZIP, which uses Zip64 only beyond
-  them, writes a file of exactly 4 GiB - 1 bytes, and as it, UnZip, and
-  Python read it; such an entry is copied with Zip64. So are they beside
-  a Zip64 extra that holds only a saturated offset, as Info-ZIP writes
-  such a file past 4 GiB, though APPNOTE would have the extra begin with
-  the sizes. UnZip and Info-ZIP itself so take the offset for the
-  uncompressed size, and Info-ZIP then cannot copy the entry (3, "Did
-  not find entry"), while Python refuses the archive. The other reading,
-  from Info-ZIP an entry past 4 GiB that begins at exactly 0xffffffff,
-  is far less likely, and for it a local header would not be found when
-  copying (3). A replaced entry keeps its comment, as in Info-ZIP. Data
-  before the first entry (a self-extractor's stub after `zip -A`, a
-  Python zipapp's `#!` line) is copied first, as Info-ZIP copies it, so
-  that offsets accounting for it stay absolute and the file still runs.
-  Offsets that do not account for a preamble are refused (3), as in
-  Info-ZIP, which needs `-A` to fix them, with a warning saying so. With
-  no entries, the preamble is what precedes the central directory, so a
-  file added to an emptied self-extractor keeps its stub. An empty
-  central directory's offset is written as 0, as Info-ZIP writes it,
-  since only so does UnZip find an emptied self-extractor empty (1)
-  rather than corrupt (3); read, an offset of 0 there places it at the
-  end record, after any preamble. The Zip64 end record gives the
-  program's version made by, as Info-ZIP's does. A Zip64 end record is
-  trusted only if it checks out, or the plain end record calls for it or
-  leaves room for it (its central directory ending short of it, as some
-  writers make small archives), since bytes resembling a Zip64 locator
-  may precede the end record by chance (found by fuzzing); where there
-  is room, a fault in the Zip64 records is theirs, not taken for data
-  before the archive. As in Info-ZIP, an archive is split by its disk
-  numbers (the end record's, the locator's, and the Zip64 record's
-  central directory disk), not by counts of entries on this disk, which
-  writers can get wrong on a single disk, nor by the Zip64 record's own.
-  Only a missing archive is new: anything else at its path must be a zip
-  file, so an empty file, a directory, a FIFO, or a device fails with 3
-  before any work, as Info-ZIP fails (it waits on a FIFO, and cannot
-  open a socket, 15). An empty file therefore never adds itself.
+  ("Local Entry CRC does not match CD: a.txt"). Their descriptor flag is
+  cleared, except, as in Info-ZIP, for encrypted entries (flag bit 0, as
+  traditional encryption's check byte depends on it, though AES's does
+  not): those keep it, and a data descriptor after their data. They keep
+  their extra fields, even with `-X`, which as in Info-ZIP applies only
+  to entries written (some fields are needed to extract, such as AES's),
+  except Zip64 fields, made anew; one whose fields leave no room for a
+  Zip64 field it now needs is an error (3), not a wrapped length.
+  Saturated sizes without a Zip64 extra are literal, as Info-ZIP, which
+  uses Zip64 only beyond them, writes a file of exactly 4 GiB - 1 bytes,
+  and as it, UnZip, and Python read it; such an entry is copied with
+  Zip64. So are they beside a Zip64 extra that holds only a saturated
+  offset, as Info-ZIP writes such a file past 4 GiB, though APPNOTE
+  would have the extra begin with the sizes. UnZip and Info-ZIP itself
+  so take the offset for the uncompressed size, and Info-ZIP then cannot
+  copy the entry (3, "Did not find entry"), while Python refuses the
+  archive. The other reading, from Info-ZIP an entry past 4 GiB that
+  begins at exactly 0xffffffff, is far less likely, and for it a local
+  header would not be found when copying (3). A replaced entry keeps its
+  comment, as in Info-ZIP. Data before the first entry (a
+  self-extractor's stub after `zip -A`, a Python zipapp's `#!` line) is
+  copied first, as Info-ZIP copies it, so that offsets accounting for it
+  stay absolute and the file still runs. Offsets that do not account for
+  a preamble are refused (3), as in Info-ZIP, which needs `-A` to fix
+  them, with a warning saying so. With no entries, the preamble is what
+  precedes the central directory, so a file added to an emptied
+  self-extractor keeps its stub. An empty central directory's offset is
+  written as 0, as Info-ZIP writes it, since only so does UnZip find an
+  emptied self-extractor empty (1) rather than corrupt (3); read, an
+  offset of 0 there places it at the end record, after any preamble. The
+  Zip64 end record gives the program's version made by, as Info-ZIP's
+  does. A Zip64 end record is trusted only if it checks out, or the
+  plain end record calls for it or leaves room for it (its central
+  directory ending short of it, as some writers make small archives),
+  since bytes resembling a Zip64 locator may precede the end record by
+  chance (found by fuzzing); where there is room, a fault in the Zip64
+  records is theirs, not taken for data before the archive. As in
+  Info-ZIP, an archive is split by its disk numbers (the end record's,
+  the locator's, and the Zip64 record's central directory disk), not by
+  counts of entries on this disk, which writers can get wrong on a
+  single disk, nor by the Zip64 record's own. Only a missing archive is
+  new: anything else at its path must be a zip file, so an empty file, a
+  directory, a FIFO, or a device fails with 3 before any work, as
+  Info-ZIP fails (it waits on a FIFO, and cannot open a socket, 15). An
+  empty file therefore never adds itself.
 - Reading the old archive: through a 1 MiB window, so that one read
   serves the headers and data of many small entries (a pread for each
   local header, name, and data made adding a file to many entries
@@ -561,18 +560,18 @@ case). It needs neither inflate nor the gzip container.
   carries on from the last, and drops back to a page at a jump
   elsewhere: an entry out of order costs a small read, and data larger
   than the window is read a window at a time. Read-ahead stays within
-  the size the archive had when examined, and once the central
-  directory is read, before it, where the entries end; should a fill
-  fail, as when the archive has shrunk since, the bytes needed are read
-  alone, so that it fails only where reading just those would. The end
-  records are found among the final 64 KiB, read into the window, and
-  the central directory is read through it too, whole if it fits (so a
-  small archive is read once), and parsed a header at a time, each entry
-  keeping only its name, extra fields (without Zip64), and comment,
-  packed, not the directory. Its entries' memory is claimed only once
-  its first header checks out, and is filled as each is parsed, so that
-  a file that only ends like an archive (sparse, or damaged), whose end
-  record claims millions of entries, costs nothing for them.
+  the size the archive had when examined, and once the central directory
+  is read, before it, where the entries end; should a fill fail, as when
+  the archive has shrunk since, the bytes needed are read alone, so that
+  it fails only where reading just those would. The end records are
+  found among the final 64 KiB, read into the window, and the central
+  directory is read through it too, whole if it fits (so a small archive
+  is read once), and parsed a header at a time, each entry keeping only
+  its name, extra fields (without Zip64), and comment, packed, not the
+  directory. Its entries' memory is claimed only once its first header
+  checks out, and is filled as each is parsed, so that a file that only
+  ends like an archive (sparse, or damaged), whose end record claims
+  millions of entries, costs nothing for them.
 - Windows: made-by host 0 (FAT), as in Info-ZIP's port, DOS attributes,
   and a `UT` extra field (see the departures), with DOS times local by
   each year's own daylight saving rules, as on POSIX
@@ -621,41 +620,40 @@ case). It needs neither inflate nor the gzip container.
   can lag for a file changed through another of its hard links, as
   Microsoft notes.) Only a letter is a drive: `1:x` names stream `x` of
   file `1`.
-- Memory: zip has no fixed cap. Its memory is one reservation of
-  address space, as much as the system lends up to 16 GiB on 64-bit
-  POSIX hosts and 64 GiB on 64-bit Windows (1 GiB for 32-bit
-  processes), halving on refusal (on POSIX, the most that leaves 4 MiB
-  for the C library's `malloc`, which `opendir` and the like still use,
-  and the stack, which a limit on address space, `ulimit -v`, counts
-  too, found by bisection), holding a double-ended arena: perm,
-  for what lasts the run, grows up from the bottom, and scratch, passed
-  by value and so freed by returning, grows down from the top. When an
-  allocation does not fit, the allocator calls the platform's
-  `os_extend` hook, which gives the arena more of the unclaimed middle,
-  a megabyte at a time, so that neither side strands memory the other
-  could use. Only scratch's high-water mark stays scratch's, since by
-  value it cannot tell when that is free again; scratch below the frame
-  asking is always free. Both platforms reserve it inaccessible and
-  commit each megabyte as it is claimed (Windows `MEM_COMMIT`, POSIX
-  `mprotect` to read-write), so the commit charge grows with use. A
-  writable reservation would be charged in full under Linux's strict
-  overcommit (`vm.overcommit_memory=2`), which ignores `MAP_NORESERVE`;
-  that flag is not used, since in the other modes it would only leave
-  the committed chunks out of `Committed_AS`. Where `_POSIX_C_SOURCE`
-  hides `MAP_ANON` (FreeBSD, NetBSD, OpenBSD, and glibc before 2.37),
-  the reservation maps `/dev/zero` privately instead, and without that
-  (some chroots and sandboxes) zip says so: "zip error: Out of memory
-  (opening /dev/zero)" (4). The hook refuses arenas other than
-  perm and scratch, such as a codec's exactly sized one. Running out
-  (of address space, of the commit limit, or of `ulimit -d`) is still
-  "zip error: Out of memory" (4), as `test/zip.sh` checks under `ulimit
-  -v` (over a sweep of limits, where reserving all but a sliver once
-  failed `opendir` and the temporary file instead, 15 or 10) and on
-  Linux `ulimit -d`, wherever the shell sets them (not macOS), for a
-  build without sanitizers that reserve shadow memory (UBSan alone
-  passes): `make check` gives it `./zip` (`ZIPOOM`). gzip and the
-  library keep their fixed arenas: their hooks only report running
-  out.
+- Memory: zip has no fixed cap. Its memory is one reservation of address
+  space, as much as the system lends up to 16 GiB on 64-bit POSIX hosts
+  and 64 GiB on 64-bit Windows (1 GiB for 32-bit processes), halving on
+  refusal (on POSIX, the most that leaves 4 MiB for the C library's
+  `malloc`, which `opendir` and the like still use, and the stack, which
+  a limit on address space, `ulimit -v`, counts too, found by
+  bisection), holding a double-ended arena: perm, for what lasts the
+  run, grows up from the bottom, and scratch, passed by value and so
+  freed by returning, grows down from the top. When an allocation does
+  not fit, the allocator calls the platform's `os_extend` hook, which
+  gives the arena more of the unclaimed middle, a megabyte at a time, so
+  that neither side strands memory the other could use. Only scratch's
+  high-water mark stays scratch's, since by value it cannot tell when
+  that is free again; scratch below the frame asking is always free.
+  Both platforms reserve it inaccessible and commit each megabyte as it
+  is claimed (Windows `MEM_COMMIT`, POSIX `mprotect` to read-write), so
+  the commit charge grows with use. A writable reservation would be
+  charged in full under Linux's strict overcommit
+  (`vm.overcommit_memory=2`), which ignores `MAP_NORESERVE`; that flag
+  is not used, since in the other modes it would only leave the
+  committed chunks out of `Committed_AS`. Where `_POSIX_C_SOURCE` hides
+  `MAP_ANON` (FreeBSD, NetBSD, OpenBSD, and glibc before 2.37), the
+  reservation maps `/dev/zero` privately instead, and without that (some
+  chroots and sandboxes) zip says so: "zip error: Out of memory (opening
+  /dev/zero)" (4). The hook refuses arenas other than perm and scratch,
+  such as a codec's exactly sized one. Running out (of address space, of
+  the commit limit, or of `ulimit -d`) is still "zip error: Out of
+  memory" (4), as `test/zip.sh` checks under `ulimit -v` (over a sweep
+  of limits, where reserving all but a sliver once failed `opendir` and
+  the temporary file instead, 15 or 10) and on Linux `ulimit -d`,
+  wherever the shell sets them (not macOS), for a build without
+  sanitizers that reserve shadow memory (UBSan alone passes): `make
+  check` gives it `./zip` (`ZIPOOM`). gzip and the library keep their
+  fixed arenas: their hooks only report running out.
 - Memory per entry: perm keeps only what is recorded. A file's path and
   name are built in scratch and copied to perm once it is added, as one
   string when the name ends the path, as most do (`d/f`, `./d/f`, `-j`'s
@@ -711,22 +709,22 @@ case). It needs neither inflate nor the gzip container.
   scratch went from 716 KB to 306 KB. `os_listdir` and `os_readlink`
   take a single arena for their results and temporaries, since callers
   that wanted transient results passed one arena as both `perm` and
-  `scratch`, whose allocations then overlapped. On POSIX a listing
-  reads its names first, packed, then makes their entries at once,
-  since an array doubled as it grew in scratch, which grows down and so
-  never in place, left each smaller copy behind: about 265 bytes a name
-  where 89 and the name do, which put one directory of 200K files 27%
-  above Info-ZIP's peak, and now level with it. On Windows a listing
-  does the same, each name packed with what the listing tells of the
-  file until its entry is made, 117 bytes and the name, and names are
-  converted from UTF-16 at their length rather than at three bytes a
-  unit, which left the rest of each in scratch: for one directory of
-  100,000 empty files, zip's peak commit went from 54.1 to 40.1 MiB on
-  x86-64 (i686 44.3 to 32.3), with archives byte-identical.
+  `scratch`, whose allocations then overlapped. On POSIX a listing reads
+  its names first, packed, then makes their entries at once, since an
+  array doubled as it grew in scratch, which grows down and so never in
+  place, left each smaller copy behind: about 265 bytes a name where 89
+  and the name do, which put one directory of 200K files 27% above
+  Info-ZIP's peak, and now level with it. On Windows a listing does the
+  same, each name packed with what the listing tells of the file until
+  its entry is made, 117 bytes and the name, and names are converted
+  from UTF-16 at their length rather than at three bytes a unit, which
+  left the rest of each in scratch: for one directory of 100,000 empty
+  files, zip's peak commit went from 54.1 to 40.1 MiB on x86-64 (i686
+  44.3 to 32.3), with archives byte-identical.
 - libdeflate issue #323: Windows' zip folder rejects incomplete Huffman
   codes (such as a lone distance code in a block with at most one
-  distinct distance), which DEFLATE permits. `huff_build` always codes at
-  least two symbols, so every code is complete; `test_complete_codes`
+  distinct distance), which DEFLATE permits. `huff_build` always codes
+  at least two symbols, so every code is complete; `test_complete_codes`
   parses emitted headers to check this, and zip_windows.sh extracts a
   literal-only input (a de Bruijn sequence: no 3-byte repeats) through
   Explorer.
@@ -736,8 +734,8 @@ case). It needs neither inflate nor the gzip container.
 Each is deliberate, for safety, determinism, or a friendlier result.
 `test/zip.sh` asserts most of them that POSIX shows (most marked
 "Departure" there), `test/zip_windows.sh` the Windows ones, and
-`test/zipclitests.c` an archive that shrinks (also in `zip.sh`, when
-its race allows).
+`test/zipclitests.c` an archive that shrinks (also in `zip.sh`, when its
+race allows).
 
 - Exit statuses: `-u` and `-f` with nothing newer exit 0 (Info-ZIP: 12).
   An unreadable directory, or a dangling link (or one whose target
@@ -761,11 +759,11 @@ its race allows).
   be examined, as when an I/O error strikes once its path is resolved
   (Info-ZIP opens it regardless, and replaces one that it cannot open);
   a path that cannot be examined at all is taken for a missing archive,
-  as in Info-ZIP (see Compatibility). A file that
-  cannot be read to its end is left out, or its entry kept, with the
-  reason and "could not read input file" (18), where Info-ZIP, when
-  deflating, stores what it read, exiting 0, warning only that the
-  file's size changed (under `-0`, on Linux, it fails to write, 14).
+  as in Info-ZIP (see Compatibility). A file that cannot be read to its
+  end is left out, or its entry kept, with the reason and "could not
+  read input file" (18), where Info-ZIP, when deflating, stores what it
+  read, exiting 0, warning only that the file's size changed (under
+  `-0`, on Linux, it fails to write, 14).
 - Messages: warnings and errors go to standard error, where Info-ZIP
   writes all but `perror`'s to standard output, and without the tab that
   starts most of its warnings. Advice on options that tugz rejects is
@@ -774,9 +772,9 @@ its race allows).
   after "ignoring FIFO (Named Pipe)". An I/O error's reason is the one
   found when the error occurred, where Info-ZIP's can be a later call's.
   A stale Unicode path field is warned of by its entry's name (see Entry
-  names in code pages). A read error in a local or central header of
-  the archive gives its reason once, where Info-ZIP also warns with it
-  first ("reading local entry: Input/output error").
+  names in code pages). A read error in a local or central header of the
+  archive gives its reason once, where Info-ZIP also warns with it first
+  ("reading local entry: Input/output error").
 - Archive contents: entries are sorted by name within each directory
   (Info-ZIP uses readdir order). Any entry that does not shrink is
   stored, though that may take reading the file again, where Info-ZIP
@@ -871,8 +869,8 @@ its race allows).
   read as Info-ZIP means them, not as it and UnZip read them (see
   Merging). Offsets that do not account for data before the archive are
   refused before any work, with a warning saying so, where Info-ZIP
-  fails only on copying an entry (warning that it "did not find" it),
-  so it updates one whose every entry it replaces or deletes. The end
+  fails only on copying an entry (warning that it "did not find" it), so
+  it updates one whose every entry it replaces or deletes. The end
   records must lie exactly where they place each other: the central
   directory ending where the Zip64 end record, or failing one the end
   record, begins, and the Zip64 end record, by its size, ending where
@@ -899,15 +897,14 @@ its race allows).
   file"), where Info-ZIP removes it as it can, saying nothing. A
   dangling link at its path gets its target created and survives
   (Info-ZIP leaves an empty file there and replaces the link with the
-  archive). On Windows the new archive is
-  flushed to the device before the rename (see Writing), which Info-ZIP
-  never does. The old archive's group is kept where the user may give
-  it, where Info-ZIP's new file has the user's (or on BSD the
-  directory's) unless it copied into the archive through a link. If not
-  kept, the group gets the permissions of others, and in any case the
-  set-ID and sticky bits are kept only if the new archive has the old
-  owner and group, where Info-ZIP keeps the whole mode for a new owner
-  or group.
+  archive). On Windows the new archive is flushed to the device before
+  the rename (see Writing), which Info-ZIP never does. The old archive's
+  group is kept where the user may give it, where Info-ZIP's new file
+  has the user's (or on BSD the directory's) unless it copied into the
+  archive through a link. If not kept, the group gets the permissions of
+  others, and in any case the set-ID and sticky bits are kept only if
+  the new archive has the old owner and group, where Info-ZIP keeps the
+  whole mode for a new owner or group.
 
 ## Workflow
 
@@ -938,11 +935,12 @@ Fuzzers:
   sizes or stream offset (including past 4 GiB), nor, in any format, on
   an encoder reset after other streams at the same or another level;
   zlib must agree
-- `fuzz-diff-inflate`: exact accept/reject and output agreement with zlib,
-  for raw DEFLATE and for multi-member gzip (GNU trailing-data policy);
-  then streaming in raw, zlib, and gzip formats with fuzzer-chosen input
-  and output piece sizes, which must agree with zlib on success, on
-  truncation versus error, on output, and on the exact stream end
+- `fuzz-diff-inflate`: exact accept/reject and output agreement with
+  zlib, for raw DEFLATE and for multi-member gzip (GNU trailing-data
+  policy); then streaming in raw, zlib, and gzip formats with
+  fuzzer-chosen input and output piece sizes, which must agree with zlib
+  on success, on truncation versus error, on output, and on the exact
+  stream end
 - `fuzz-diff-deflate`: zlib (every parameter, flush mode, mid-stream
   parameter change) and libdeflate streams must decode exactly; our
   streaming encoder, in every format with fuzzer-placed NONE/SYNC/FULL
@@ -992,20 +990,20 @@ Fuzzers:
   warning-free with GCC and mingw, and `tugz.h` parses as C++.
 
 - zip: `test/zip.sh` passes on macOS (also `SLOW=1`: 5 GiB entries
-  compressed and stored, an entry offset past 4 GiB, merging into a Zip64
-  archive, 70,000 entries), on aarch64 Linux, and with the big-endian
-  ppc build under QEMU. Header fields match Info-ZIP 3.0 (see
-  Compatibility). `test/zip_windows.sh` passes for the x86-64 build,
-  the amalgamation, and the i686 build on Windows 11: Explorer's zip
-  folder, `Expand-Archive`, and `tar` extract levels 1, 6, and 9
-  identically, including the literal-only input. zip.exe is about 100
-  KiB, imports only KERNEL32 and SHELL32, and has no stack frame over
-  4000 bytes (no `__chkstk`).
+  compressed and stored, an entry offset past 4 GiB, merging into a
+  Zip64 archive, 70,000 entries), on aarch64 Linux, and with the
+  big-endian ppc build under QEMU. Header fields match Info-ZIP 3.0 (see
+  Compatibility). `test/zip_windows.sh` passes for the x86-64 build, the
+  amalgamation, and the i686 build on Windows 11: Explorer's zip folder,
+  `Expand-Archive`, and `tar` extract levels 1, 6, and 9 identically,
+  including the literal-only input. zip.exe is about 100 KiB, imports
+  only KERNEL32 and SHELL32, and has no stack frame over 4000 bytes (no
+  `__chkstk`).
 - zip speed versus Info-ZIP 3.0 on the 267 MB benchmark corpus (Apple
   M-series): -1 2.2 s vs 1.9 s (4% smaller), -6 3.1 s vs 4.9 s, -9 6.8 s
-  vs 12.6 s (smaller). 10,000 small files (64 B to 8 KiB, -6): 0.32 s
-  vs 0.47 s; on a Raspberry Pi 4, 1.7 s vs 2.0 s, and 20,000 files of
-  about 280 bytes at -9 1.2 s vs 2.0 s.
+  vs 12.6 s (smaller). 10,000 small files (64 B to 8 KiB, -6): 0.32 s vs
+  0.47 s; on a Raspberry Pi 4, 1.7 s vs 2.0 s, and 20,000 files of about
+  280 bytes at -9 1.2 s vs 2.0 s.
 - zip memory, `-qr` over empty files unless noted, versus Info-ZIP 3.0.
   Before the reserved arena, 250K files ran out of the fixed 256 MiB.
   Apple M-series: 1M files 27 s and 371 MB peak RSS (36 s, 370 MB).
@@ -1015,48 +1013,47 @@ Fuzzers:
   and 374 (10.7 s, 271); before the read window and the cuts per entry,
   0.73 s and 325, 27 s and 677, and 6.2 s and 531. 100K files of 100
   bytes 5 s and 41 MB (11 s, 40 MB), with a 1M-file subtree excluded by
-  `-x` too, scanned at no cost in memory; one directory of 500K files
-  14 s and 183 MB (19.5 s, 186 MB), 214 MB when its listing grew by
+  `-x` too, scanned at no cost in memory; one directory of 500K files 14
+  s and 183 MB (19.5 s, 186 MB), 214 MB when its listing grew by
   doubling. Windows 11: a one-file run commits 7 MB (257 MB committed up
   front before), 100K files 46 MB, 1M files 398 MB (i686 298 MB), both
   measured while each recorded name kept a folded copy and listings were
   converted at three bytes a unit, so lower now (see Memory per entry
-  and Scanning); a tree
-  15,000 levels deep (30K-character paths) archives with a peak commit
-  of 439 MiB on x86-64 and 437 MiB on i686 (673 and 670 MiB while each
-  recorded name kept a folded copy; and before each level kept one copy
-  of its path rather than three, i686 ran out of its 1 GiB reservation
-  with "zip error: Out of memory", 4), where the recursive build
-  overflowed its stack by 8,000 levels.
-  WSL: the `-m32` build zips 1M files in 4 s and 265 MB, and under
-  `ulimit -v 200000` both builds exit 4 with that message and leave no
-  temporary file. Raspberry Pi 4: 100K files of 100 bytes 3.6 s and
-  41 MB (8.9 s, 44 MB), 250K files 5.3 s (14.3 s). Merging there, as
-  above, in CPU seconds (the shared Pi's wall times were noise) and MiB:
-  adding one file 1.6 s and 190 (6.5 s, 376), `-r` 24 s and 405 (61 s,
-  452), and `-ru` 10 s and 373 (20 s, 414); before, 6.3 s and 325, 26 s
-  and 676, and 12 s and 530.
+  and Scanning); a tree 15,000 levels deep (30K-character paths)
+  archives with a peak commit of 439 MiB on x86-64 and 437 MiB on i686
+  (673 and 670 MiB while each recorded name kept a folded copy; and
+  before each level kept one copy of its path rather than three, i686
+  ran out of its 1 GiB reservation with "zip error: Out of memory", 4),
+  where the recursive build overflowed its stack by 8,000 levels. WSL:
+  the `-m32` build zips 1M files in 4 s and 265 MB, and under `ulimit -v
+  200000` both builds exit 4 with that message and leave no temporary
+  file. Raspberry Pi 4: 100K files of 100 bytes 3.6 s and 41 MB (8.9 s,
+  44 MB), 250K files 5.3 s (14.3 s). Merging there, as above, in CPU
+  seconds (the shared Pi's wall times were noise) and MiB: adding one
+  file 1.6 s and 190 (6.5 s, 376), `-r` 24 s and 405 (61 s, 452), and
+  `-ru` 10 s and 373 (20 s, 414); before, 6.3 s and 325, 26 s and 676,
+  and 12 s and 530.
 - zip's lazy POSIX commit, measured in overcommit mode 0 by each
   process's charged mappings (`VmFlags` `ac` in `/proc/PID/smaps`) and
-  `Committed_AS`. The old reservation without `MAP_NORESERVE`, as
-  strict overcommit charges it, cost 16 GiB at startup in WSL (1 GiB
-  for `-m32`, 4 GiB on the Pi, whose heuristic refused more). The
-  `PROT_NONE` one costs 1 MiB at startup and then what is claimed:
-  129 MiB after reading 64 MiB of `-@` names, 257 MiB after 192 MiB.
-  Under `ulimit -v` and `ulimit -d` (which refuses the `mprotect`, the
-  strict overcommit path), the x86-64, i386, and aarch64 builds, and
-  the `/dev/zero` build forced on Linux, complete small runs, exit 4 on
-  100K or 1M files with no archive or temporary file, and leave an
-  archive being updated untouched. No cost: user+sys for 100K and 1M
-  empty files is unchanged on the Mac (1.71 s, 27.3 s) and in WSL
-  (0.28 s, 2.9 s), and within noise on a loaded Pi (100K, mean of 8:
-  2.28 s before, 2.30 s after).
+  `Committed_AS`. The old reservation without `MAP_NORESERVE`, as strict
+  overcommit charges it, cost 16 GiB at startup in WSL (1 GiB for
+  `-m32`, 4 GiB on the Pi, whose heuristic refused more). The
+  `PROT_NONE` one costs 1 MiB at startup and then what is claimed: 129
+  MiB after reading 64 MiB of `-@` names, 257 MiB after 192 MiB. Under
+  `ulimit -v` and `ulimit -d` (which refuses the `mprotect`, the strict
+  overcommit path), the x86-64, i386, and aarch64 builds, and the
+  `/dev/zero` build forced on Linux, complete small runs, exit 4 on 100K
+  or 1M files with no archive or temporary file, and leave an archive
+  being updated untouched. No cost: user+sys for 100K and 1M empty files
+  is unchanged on the Mac (1.71 s, 27.3 s) and in WSL (0.28 s, 2.9 s),
+  and within noise on a loaded Pi (100K, mean of 8: 2.28 s before, 2.30
+  s after).
 
 ## gzip and platform behavior
 
-- Decoder strictness matches zlib exactly: incomplete codes rejected except
-  a lone 1-bit code; an empty distance code is an error only when used;
-  reserved header flags rejected; FHCRC verified.
+- Decoder strictness matches zlib exactly: incomplete codes rejected
+  except a lone 1-bit code; an empty distance code is an error only when
+  used; reserved header flags rejected; FHCRC verified.
 - Concatenated members decode in sequence. As in GNU gzip, data after
   the last member is ignored with a warning (exit 2), unless it is only
   zero bytes (padding, as on tape), which is fine, or starts with the
@@ -1072,34 +1069,34 @@ Fuzzers:
   precedence. (zip's follow Info-ZIP: see its section.)
 - As in GNU gzip, a read or write error (including a failed close of an
   output) ends the run at once: nothing more of the file is read or
-  written, and no later file is begun, where reading on would only
-  waste work or, with a closed pipe and no SIGPIPE (Windows), never
-  end. A stream that a read error cuts short is left unfinished, so
-  that it cannot pass for all of its input. It is an error (1), but as
-  there with SIGPIPE ignored, a closed pipe is a warning (2), silent
-  under `-q`, since the default SIGPIPE would have ended the run
-  quietly; Windows, which has no SIGPIPE, treats one so too.
+  written, and no later file is begun, where reading on would only waste
+  work or, with a closed pipe and no SIGPIPE (Windows), never end. A
+  stream that a read error cuts short is left unfinished, so that it
+  cannot pass for all of its input. It is an error (1), but as there
+  with SIGPIPE ignored, a closed pipe is a warning (2), silent under
+  `-q`, since the default SIGPIPE would have ended the run quietly;
+  Windows, which has no SIGPIPE, treats one so too.
 - Messages give the system's reason for a failure, as GNU gzip's do
   (`gzip: f.gz: No space left on device`), naming the file that failed:
   the input when opening or reading, the output (`stdout` or the new
-  file) when creating, writing, or closing, and for a forced output
-  that could not be replaced, why it could not be removed. On Windows,
-  every error is worded as its C runtime words it (`os_error` in
+  file) when creating, writing, or closing, and for a forced output that
+  could not be replaced, why it could not be removed. On Windows, every
+  error is worded as its C runtime words it (`os_error` in
   `platform/windows.c`, shared with zip), and a failure with no system
-  error behind it gets a description instead (`cannot open for
-  reading`, `write error`).
+  error behind it gets a description instead (`cannot open for reading`,
+  `write error`).
 - Other messages are worded as GNU gzip 1.14 words them, bad headers
-  described from their bytes (`unknown method 7 -- not supported`,
-  `has flags 0x40`, `header checksum 0xffff != computed checksum
-  0x77a7`). As there, an existing output is reported even under `-q`,
-  and `-dq` of a name without a known suffix skips it with status 0.
-  Known differences: a hard-linked input "has other links", where GNU
-  counts them ("has 1 other link"), since the platform layers report
-  no count; a refused symbolic link "is a symbolic link -- ignored" on
-  every platform, where GNU gives the reason its open failed ("Too
-  many levels of symbolic links"); a failure to set both the mode and
-  the times is one warning, where GNU gives one for each; and no
-  message begins with GNU's blank line.
+  described from their bytes (`unknown method 7 -- not supported`, `has
+  flags 0x40`, `header checksum 0xffff != computed checksum 0x77a7`). As
+  there, an existing output is reported even under `-q`, and `-dq` of a
+  name without a known suffix skips it with status 0. Known differences:
+  a hard-linked input "has other links", where GNU counts them ("has 1
+  other link"), since the platform layers report no count; a refused
+  symbolic link "is a symbolic link -- ignored" on every platform, where
+  GNU gives the reason its open failed ("Too many levels of symbolic
+  links"); a failure to set both the mode and the times is one warning,
+  where GNU gives one for each; and no message begins with GNU's blank
+  line.
 - Headers record no name and no time (FLG and MTIME 0), as GNU gzip's
   `-n` headers do, XFL included (4 at `-1`, 2 at `-9`, else 0, as zlib
   sets it too, and which `file` reports as "max speed" or "max
@@ -1148,21 +1145,21 @@ Fuzzers:
   input's metadata is an error (1).
 - Outputs are discarded unless explicitly kept after success
   (`os_keep`): on failure, on a failed close (which may mean lost data),
-  and on interruption. POSIX uses a handler for SIGHUP, SIGINT,
-  SIGPIPE, SIGQUIT, SIGTERM, SIGXCPU, and SIGXFSZ (inherited "ignore"
+  and on interruption. POSIX uses a handler for SIGHUP, SIGINT, SIGPIPE,
+  SIGQUIT, SIGTERM, SIGXCPU, and SIGXFSZ (inherited "ignore"
   dispositions are respected, as under nohup). Windows marks the file
   delete-pending at creation, so even `TerminateProcess` cleans up.
   Clearing that could fail (a file system or filter may refuse), which
-  closing would follow by deleting the output, so it is an error like
-  a failed close, keeping the input.
+  closing would follow by deleting the output, so it is an error like a
+  failed close, keeping the input.
 - An inherited descriptor left non-blocking (a pipe or terminal another
-  program set `O_NONBLOCK` on) is read as GNU gzip reads it: a read
-  that finds no input yet clears the flag and waits, rather than
-  failing. The flag belongs to the open file, shared with whoever else
-  holds it, but as there it is not restored. zip's `-@` reads so too.
-  On Windows, likewise, a pipe left non-blocking (`PIPE_NOWAIT`), whose
-  reads fail with `ERROR_NO_DATA` until input comes, is set to wait,
-  keeping its read mode.
+  program set `O_NONBLOCK` on) is read as GNU gzip reads it: a read that
+  finds no input yet clears the flag and waits, rather than failing. The
+  flag belongs to the open file, shared with whoever else holds it, but
+  as there it is not restored. zip's `-@` reads so too. On Windows,
+  likewise, a pipe left non-blocking (`PIPE_NOWAIT`), whose reads fail
+  with `ERROR_NO_DATA` until input comes, is set to wait, keeping its
+  read mode.
 - Files are opened for reading with `O_NOCTTY`, as GNU gzip opens its
   inputs, so that on Linux (and System V) a session leader without a
   controlling terminal, such as a daemon, that reads a terminal (`gzip
@@ -1175,20 +1172,20 @@ Fuzzers:
   program instead exits before opening anything, with a message and
   status 1 (gzip) or 10 (zip, a temporary file failure).
 - As in GNU gzip, decompressing in place reads the input's header before
-  creating the output, so input that is not gzip, or whose header is
-  bad or cut short, leaves an existing output alone even under `-f`,
-  and without `-f` that is the error (1), not the existing output (2).
-  As there, under `-f` a member found corrupt only after its header has
+  creating the output, so input that is not gzip, or whose header is bad
+  or cut short, leaves an existing output alone even under `-f`, and
+  without `-f` that is the error (1), not the existing output (2). As
+  there, under `-f` a member found corrupt only after its header has
   already replaced the output, which is then removed: keeping the old
   file until success would take a temporary name and a rename, as zip
   does, and on Windows, care for read-only and delete-pending targets.
 - `-f` replaces an existing output by unlinking it first, never writing
   through a link. On Windows a read-only output is replaced too, as
   unlinking ignores the mode on POSIX: the attribute is cleared just to
-  delete the file, then restored, so other hard links to it keep it.
-  An output it cannot remove (a directory, and on Windows a name
-  another process holds delete-pending) is an error (1), as in GNU
-  gzip, while without `-f` it is refused with a warning (2).
+  delete the file, then restored, so other hard links to it keep it. An
+  output it cannot remove (a directory, and on Windows a name another
+  process holds delete-pending) is an error (1), as in GNU gzip, while
+  without `-f` it is refused with a warning (2).
 - Windows paths get the `\\?\` prefix, lifting MAX_PATH. It turns off
   Win32 parsing, so paths are first resolved as Win32 would: against the
   current directory (UNC or not), a drive's, or the root, dropping `.`,
@@ -1219,12 +1216,12 @@ Fuzzers:
   runtime's expansion, which w64devkit's busybox gzip gets, `*.txt`
   matches long names only (not `long.txtx` by its 8.3 name). Listings
   take three quarters of gzip's fixed 32 MiB meanwhile, and the
-  arguments, packed, then made at once, the rest: that holds a
-  directory of 170,000 names of 13 characters, but not one of 180,000
-  (on i686, 190,000 and 200,000), where names at three bytes a UTF-16
-  unit, and listings and arguments that grew by doubling, held 65,000
-  but not 67,000 (85,000 and 100,000). Beyond that gzip runs out of
-  memory (1) before doing anything.
+  arguments, packed, then made at once, the rest: that holds a directory
+  of 170,000 names of 13 characters, but not one of 180,000 (on i686,
+  190,000 and 200,000), where names at three bytes a UTF-16 unit, and
+  listings and arguments that grew by doubling, held 65,000 but not
+  67,000 (85,000 and 100,000). Beyond that gzip runs out of memory (1)
+  before doing anything.
 - Output to a Windows console is converted from UTF-8 (WTF-8, for file
   names) to UTF-16 for `WriteConsoleW`, since `WriteFile` would take the
   bytes in the console code page. A sequence split between writes is
@@ -1255,18 +1252,19 @@ Fuzzers:
   end-of-block code, reserved flags, bad header CRC)
 - streaming exposed timing differences from zlib, invisible when only
   whole streams were compared: an empty code length code is an error
-  only at the missing end-of-block code (zlib decodes it as 1-bit zeros);
-  a repeat-previous code is validated after its extra bits; gzip magic,
-  method, flags, and trailer CRC are checked as soon as each is complete
+  only at the missing end-of-block code (zlib decodes it as 1-bit
+  zeros); a repeat-previous code is validated after its extra bits; gzip
+  magic, method, flags, and trailer CRC are checked as soon as each is
+  complete
 - streaming inflate looked up a match's distance code even when input
   ran out inside the length's extra bits. With a lone 1-bit or empty
   distance code, an unread extra bit could select an invalid 1-bit
   entry, making the truncation a sticky data error, so valid files from
-  Go's compress/gzip (most levels, including its default) failed
-  `gzip -t` or the library depending on read boundaries. Fuzzing missed
-  it: zlib never writes such codes, and the streaming check's seeds
-  lacked its config byte (`test/seeds.py` now writes both; 44 of the
-  new seeds each trap `fuzz-diff-inflate` on the old decoder)
+  Go's compress/gzip (most levels, including its default) failed `gzip
+  -t` or the library depending on read boundaries. Fuzzing missed it:
+  zlib never writes such codes, and the streaming check's seeds lacked
+  its config byte (`test/seeds.py` now writes both; 44 of the new seeds
+  each trap `fuzz-diff-inflate` on the old decoder)
 - `memcpy` with a null pointer and zero length, from callers passing
   empty null buffers (UBSan under GCC)
 - zip: bytes resembling a Zip64 locator before a plain end record made
@@ -1289,8 +1287,8 @@ decoder on the same zlib -6 stream. Baseline is the original algorithms
 Changes, roughly in order of impact:
 
 1. inflate: table-driven decoding (zlib-style root tables plus
-   subtables) replacing bit-at-a-time canonical decoding; 64-bit refills;
-   fast loop; decode straight into a history window. ~3x.
+   subtables) replacing bit-at-a-time canonical decoding; 64-bit
+   refills; fast loop; decode straight into a history window. ~3x.
 2. CRC-32: byte table (458 MB/s) to slicing-by-8 (2 GB/s), then ARMv8
    CRC instructions (9 GB/s). Decompression +25% from the latter alone.
 3. inflate fast loop: entries carry code+extra bit totals, flag bits for
@@ -1311,14 +1309,14 @@ noise for twice the memory), shallower 3-byte chains at level 1.
 
 Remaining opportunities:
 
-- Decompression is ~83% of zlib and ~77% of libdeflate. The decode loop is
-  bound by the lookup->shift->lookup dependency; multi-symbol tables
+- Decompression is ~83% of zlib and ~77% of libdeflate. The decode loop
+  is bound by the lookup->shift->lookup dependency; multi-symbol tables
   (two literals per entry) would be the next step.
 - Level 1 is half libdeflate's speed: per-position overhead (two hash
   chain insertions, chain walk) dominates, not search depth. A
   chainless, bucketed hash table for the fast levels is the likely fix.
-- High levels: libdeflate's lazy2 and near-optimal parsing reach ~0.2-0.4
-  points better ratio.
+- High levels: libdeflate's lazy2 and near-optimal parsing reach
+  ~0.2-0.4 points better ratio.
 
 Per-file results (final):
 
@@ -1361,12 +1359,12 @@ and lowering it to 4,096 changed little. Clearing only touched slots
 cannot help, as hashes spread evenly: 8,192 insertions touch 86% of the
 table's cache lines. Stamps (see Library) make forgetting a long history
 free, but a lookup that meets a stale entry takes a step more than one
-that meets an empty slot, so short histories are still rehashed: stamping
-from 256 positions on made 300-byte streams 1-9% slower on the M4 Max,
-while from 1,024 on, small streams change by no more than code placement
-alone moves them (about 1%). Per stream, best of seven interleaved runs
-over slices of dickens and ooffice at levels 1, 6, and 9, change against
-the previous code:
+that meets an empty slot, so short histories are still rehashed:
+stamping from 256 positions on made 300-byte streams 1-9% slower on the
+M4 Max, while from 1,024 on, small streams change by no more than code
+placement alone moves them (about 1%). Per stream, best of seven
+interleaved runs over slices of dickens and ooffice at levels 1, 6, and
+9, change against the previous code:
 
 |                | 100 B, 1 KB | 4 KiB     | 8 KiB    | 16 KiB   | 32-64 KiB          | 2 MB              |
 |----------------|-------------|-----------|----------|----------|--------------------|-------------------|
