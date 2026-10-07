@@ -266,6 +266,7 @@ if(TUGZ_BUILD_TESTS)
     tugz_test(tugz_tests_lib tests-lib test/libtests.c ZLIB)
     tugz_test(tugz_tests_zip tests-zip test/ziptests.c)
     tugz_test(tugz_tests_zipcli tests-zipcli test/zipclitests.c)
+    tugz_test(tugz_tests_unzip tests-unzip test/unziptests.c)
 
     # The programs again, for their end-to-end tests
     tugz_program(tugz_gzip_debug gzip gzip-debug NOSTRIP)

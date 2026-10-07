@@ -43,6 +43,7 @@ with unzip in `platform/zipfs_*.c`.
 | `src/dir.c`              | directory listings, wildcard expansion on disk  |
 | `src/zipin.c`            | archive reading, shared by zip and unzip        |
 | `src/zipcli.c`           | zip command line and archive driver, `zip_main` |
+| `src/unzip.c`            | unzip's rules: names to paths, times, modes     |
 | `platform/posix.c`       | shared POSIX `os_*` implementation              |
 | `platform/windows.c`     | shared CRT-free Win32 `os_*`, paths, arguments  |
 | `platform/gzip_*.c`      | gzip entry points (POSIX, Windows)              |
@@ -57,6 +58,7 @@ with unzip in `platform/zipfs_*.c`.
 | `test/ziptests.c`        | ZIP format unit tests                           |
 | `test/zipclitests.c`     | zip program tests, in memory                    |
 | `test/zipos.c`           | in-memory platform layer for the zip program    |
+| `test/unziptests.c`      | unzip rule tests, with tables from UnZip 6.0    |
 | `test/cli.sh`            | end-to-end gzip tests                           |
 | `test/zip.sh`            | end-to-end zip tests (unzip, zipinfo, Python)   |
 | `test/zipcheck.py`       | zip.sh's verifier through Python's `zipfile`    |
