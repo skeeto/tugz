@@ -981,11 +981,12 @@ Fuzzers:
   14 s and 183 MB (19.5 s, 186 MB), 214 MB when its listing grew by
   doubling. Windows 11: a one-file run commits 7 MB (257 MB committed up
   front before), 100K files 46 MB, 1M files 398 MB (i686 298 MB); a tree
-  15,000 levels deep (30K-character paths) archives on x86-64 and on
-  i686 runs out of its 1 GiB reservation with "zip error: Out of memory"
-  (4), where the recursive build overflowed its stack by 8,000 levels
-  (measured before each level kept one copy of its path rather than
-  three, which let a review build archive it on i686 in 705 MB).
+  15,000 levels deep (30K-character paths) archives with a peak commit
+  of 439 MiB on x86-64 and 437 MiB on i686 (673 and 670 MiB while each
+  recorded name kept a folded copy; and before each level kept one copy
+  of its path rather than three, i686 ran out of its 1 GiB reservation
+  with "zip error: Out of memory", 4), where the recursive build
+  overflowed its stack by 8,000 levels.
   WSL: the `-m32` build zips 1M files in 4 s and 265 MB, and under
   `ulimit -v 200000` both builds exit 4 with that message and leave no
   temporary file. Raspberry Pi 4: 100K files of 100 bytes 3.6 s and
