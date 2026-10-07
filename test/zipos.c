@@ -16,6 +16,7 @@
 #include "../src/zip.c"
 #include "../src/wild.c"
 #include "../src/dir.c"
+#include "../src/zipin.c"
 #include "../src/zipcli.c"
 
 #include <setjmp.h>

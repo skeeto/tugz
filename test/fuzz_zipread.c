@@ -3,7 +3,7 @@
 // each given exactly the bytes it is to read, in an allocation of their
 // size, so that AddressSanitizer sees any read past them. The zip program
 // shares the header parser, though it reads a header at a time
-// (src/zipcli.c's read_archive, which fuzz_zip.c fuzzes). Whatever parses
+// (src/zipin.c's zar_read, which fuzz_zip.c fuzzes). Whatever parses
 // is then rewritten much as zip merges, copying each entry's data, but
 // skipping entries with bad local headers (zip fails on them) and
 // clearing every descriptor flag (zip keeps an encrypted entry's), and

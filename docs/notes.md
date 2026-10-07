@@ -21,8 +21,8 @@ resumes where it stopped. Its only hooks are `os_oom` and `os_extend`
 (for an arena that runs out). Programs add `src/io.c` (the `os_*` file
 interface and a buffered reader and writer); gzip adds `src/gzipio.c`
 (descriptor drivers) and `src/cli.c`, and zip `src/zip.c`, `src/wild.c`
-(wildcards), `src/dir.c` (directories), and `src/zipcli.c`. The library
-layer adds none of them. The shared `os_*` implementations live in
+(wildcards), `src/dir.c` (directories), `src/zipin.c` (archive reading),
+and `src/zipcli.c`. The library layer adds none of them. The shared `os_*` implementations live in
 `platform/posix.c` and `platform/windows.c`.
 
 | File                     | Purpose                                         |
@@ -39,6 +39,7 @@ layer adds none of them. The shared `os_*` implementations live in
 | `src/zip.c`              | ZIP format: headers, Zip64, parsing, names      |
 | `src/wild.c`             | wildcard matching, as Info-ZIP's                |
 | `src/dir.c`              | directory listings, wildcard expansion on disk  |
+| `src/zipin.c`            | archive reading, shared by zip and unzip        |
 | `src/zipcli.c`           | zip command line and archive driver, `zip_main` |
 | `platform/posix.c`       | shared POSIX `os_*` implementation              |
 | `platform/windows.c`     | shared CRT-free Win32 `os_*`, paths, arguments  |
@@ -208,10 +209,11 @@ output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
 
 The zip program shares the deflate core and `src/io.c`, adding a
 portable format layer (`src/zip.c`, no I/O, fuzzed), wildcard matching
-and directory listings (`src/wild.c`, `src/dir.c`), and a driver
-(`src/zipcli.c`, also tested and fuzzed over an in-memory platform
-layer, `test/zipos.c`) over more platform functions, declared at the top
-of `src/zipcli.c` and `src/dir.c`: `os_stat`, `os_fstat`, and
+and directory listings (`src/wild.c`, `src/dir.c`), an archive reader
+(`src/zipin.c`), and a driver (`src/zipcli.c`), also tested and fuzzed
+over an in-memory platform layer (`test/zipos.c`), over more platform
+functions, declared at the top of `src/zipin.c`, `src/zipcli.c`, and
+`src/dir.c`: `os_stat`, `os_fstat`, and
 `os_missing` (whether a failed `os_stat` found nothing there),
 `os_listdir`, `os_readlink`, positioned `os_readat`/`os_writeat`,
 `os_truncate`, `os_resolve` (the file that links at the archive's path

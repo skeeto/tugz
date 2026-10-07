@@ -1,18 +1,18 @@
 // libFuzzer harness: the zip program with arbitrary bytes as its archive
 // Runs zip_main in memory (test/zipos.c), so through the program's own
-// reader (src/zipcli.c's read_archive, its read-ahead window, entry_uname,
-// copy_entry), with the input after a two-byte header as a.zip beside a
-// few files. The first byte chooses the arguments, POSIX or Windows
-// conventions, and a fault, and the second where the fault strikes: the
-// archive shrinking, or its reads failing, from when it is opened or
-// from when the temporary file is created, or the temporary file's
-// writes failing. Whatever zip does must leave the archive as it was,
-// or else, having succeeded, replace it with one that src/zip.c parses,
-// whose entries are the old ones in order, each copied as it was or
-// replaced by a file's, and then files' (some modes delete entries), and
-// from which zip reads every entry back. No temporary file may remain,
-// and zip may claim no memory once it has created one (but after a
-// fault).
+// reader (src/zipin.c's zar_read, its read-ahead window, zar_uname,
+// zar_local, and src/zipcli.c's copy_entry), with the input after a
+// two-byte header as a.zip beside a few files. The first byte chooses
+// the arguments, POSIX or Windows conventions, and a fault, and the
+// second where the fault strikes: the archive shrinking, or its reads
+// failing, from when it is opened or from when the temporary file is
+// created, or the temporary file's writes failing. Whatever zip does
+// must leave the archive as it was, or else, having succeeded, replace
+// it with one that src/zip.c parses, whose entries are the old ones in
+// order, each copied as it was or replaced by a file's, and then files'
+// (some modes delete entries), and from which zip reads every entry
+// back. No temporary file may remain, and zip may claim no memory once
+// it has created one (but after a fault).
 // $ clang -g -O1 -fsanitize=fuzzer,address,undefined test/fuzz_zip.c
 // $ ./a.out -max_len=8192 corpus/
 #include "zipos.c"
