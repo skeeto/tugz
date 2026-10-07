@@ -366,10 +366,13 @@ static i32 zip_find_end(u8 *tail, iz n, i64 size, zend *e)
         }
 
         if (i>=ZIP_LOC64_LEN && get32(p-ZIP_LOC64_LEN)==ZIP_LOC64_SIG) {
-            // On another disk, or one of other than one disk: split
+            // On another disk, or one of more than one disk: split. A
+            // total of zero disks, as Microsoft's writers (Windows
+            // Explorer, .NET) put there, is taken for one, as Debian's
+            // UnZip (6.0-29) does, rather than for a split archive
             u8 *loc   = p - ZIP_LOC64_LEN;
             u64 off   = get64(loc+8);
-            b32 split = get32(loc+4) || get32(loc+16)!=1;
+            b32 split = get32(loc+4) || get32(loc+16)>1;
             b32 ok    = !split && e->endpos>=ZIP_LOC64_LEN+ZIP_END64_LEN &&
                         off<=(u64)(e->endpos-ZIP_LOC64_LEN-ZIP_END64_LEN);
             if (ok) {

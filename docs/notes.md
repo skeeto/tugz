@@ -560,7 +560,10 @@ It needs neither inflate nor the gzip container.
   Info-ZIP, an archive is split by its disk numbers (the end record's,
   the locator's, and the Zip64 record's central directory disk), not by
   counts of entries on this disk, which writers can get wrong on a
-  single disk, nor by the Zip64 record's own. Only a missing archive is
+  single disk, nor by the Zip64 record's own. A locator's total of zero
+  disks, as Microsoft's writers (Windows Explorer, .NET) put there, is
+  taken for one, as Debian's UnZip (6.0-29) takes it, though Info-ZIP's
+  zip and UnZip 6.0 take it for a split. Only a missing archive is
   new: anything else at its path must be a zip file, so an empty file, a
   directory, a FIFO, or a device fails with 3 before any work, as
   Info-ZIP fails (it waits on a FIFO, and cannot open a socket, 15). An
@@ -895,6 +898,9 @@ race allows).
   or a wrong Zip64 record size, directory size, or locator offset. No
   writer is known to make them, and tugz refuses them (3), as layouts
   that do not add up are how unadjusted data before the archive shows.
+  An archive whose Zip64 locator gives a total of zero disks, as
+  Microsoft's writers make them, is read as on one disk, where Info-ZIP
+  asks for the next part of a split archive (`Could not find: x.z01`).
 - Replacing the archive: a hard-linked archive is replaced by a new
   file, which its other names do not share (Info-ZIP copies into it).
   The temporary file goes beside the file that links at the archive path

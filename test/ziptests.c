@@ -858,8 +858,10 @@ static void test_end_records(arena a)
     put32(loc64+4, 0);
     put32(loc64+16, 2);  // total disks
     TEST(zip_find_end(tail, countof(tail), small, &z) == ZIP_EMULTI);
-    put32(loc64+16, 0);
-    TEST(zip_find_end(tail, countof(tail), small, &z) == ZIP_EMULTI);
+    put32(loc64+16, 0);  // as Microsoft writes it, taken for one disk
+    TEST(zip_find_end(tail, countof(tail), small, &z) == ZIP_OK);
+    TEST(zip_parse_end64(rec, &z) == ZIP_OK);
+    TEST(z.count==2 && z.cdoff==1000);
     put32(loc64+16, 1);
     put64(loc64+8, (u64)small);  // past the end
     TEST(zip_find_end(tail, countof(tail), small, &z) == ZIP_EFORMAT);

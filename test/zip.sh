@@ -1543,7 +1543,9 @@ fi
 # disk that differs from the total (on one disk) is no split archive, as
 # in Info-ZIP; a small archive may have Zip64 records beside an end
 # record of real values, and a fault in those is its own, not data
-# before the archive
+# before the archive. Microsoft's writers (Windows Explorer, .NET) put a
+# total of zero disks in the Zip64 locator, taken for one, as in Debian's
+# UnZip (6.0-29), the end record's fields saturated or not.
 if [ -n "$PY" ]; then
     $PY -c 'import struct, sys, zlib
 loc = cen = b""
@@ -1554,28 +1556,53 @@ for n, d in (b"e/a.txt", b"alpha"), (b"e/b.txt", b"bravo"):
     cen += struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 0x31e, 10, 0, 0, 0,
                        0x5021, c, len(d), len(d), len(n), 0, 0, 0, 0,
                        0x81a40000, o) + n
-def write(name, ndisk=2, total=1, cdoff=len(loc), z64=True):
+def write(name, ndisk=2, total=1, cdoff=len(loc), z64=True, recdisk=0,
+          sat=False):
     out = loc + cen
     if z64:
         rec = struct.pack("<IQHHIIQQQQ", 0x06064b50, 44, 0x31e, 45, 0, 0, 2,
                           2, len(cen), cdoff)
-        out += rec + struct.pack("<IIQI", 0x07064b50, 0, len(out), total)
-    out += struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, ndisk, 2, len(cen),
-                       len(loc), 0)
+        out += rec + struct.pack("<IIQI", 0x07064b50, recdisk, len(out),
+                                 total)
+    if sat:
+        out += struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 0xffff, 0xffff,
+                           0xffffffff, 0xffffffff, 0)
+    else:
+        out += struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, ndisk, 2,
+                           len(cen), len(loc), 0)
     open(name, "wb").write(out)
 write("nd0.zip", ndisk=0, z64=False)
 write("r64.zip")
 write("r64split.zip", total=2)
-write("r64bad.zip", cdoff=len(loc)+1)'
-    for f in nd0 r64; do
+write("r64bad.zip", cdoff=len(loc)+1)
+write("r64sat.zip", sat=True)
+write("ms64.zip", total=0)
+write("ms64sat.zip", total=0, sat=True)
+write("ms64split.zip", total=0, recdisk=1, sat=True)'
+    for f in ms64 ms64sat; do
+        cp $f.zip $f.d.zip
+    done
+    for f in nd0 r64 r64sat ms64 ms64sat; do
         "$ZIP" -q $f.zip tree/a.txt || fail "end records of $f.zip"
         verify $f.zip
         [ "$(names $f.zip | tr '\n' ' ')" = "e/a.txt e/b.txt tree/a.txt " ] ||
             fail "end records of $f.zip: $(names $f.zip)"
     done
+    # As from the same archives with a total of one disk
+    cmp -s ms64.zip r64.zip || fail "Microsoft's Zip64 locator"
+    cmp -s ms64sat.zip r64sat.zip || fail "Microsoft's Zip64 locator, saturated"
+    for f in ms64 ms64sat; do
+        "$ZIP" -q $f.d.zip -d e/a.txt || fail "-d from $f.zip"
+        verify $f.d.zip
+        [ "$(names $f.d.zip)" = e/b.txt ] ||
+            fail "-d from $f.zip: $(names $f.d.zip)"
+    done
     exits 3 "$ZIP" r64split.zip tree/a.txt >out 2>&1
     printf '\nzip error: Split archives not supported (r64split.zip)\n' >want
     cmp -s out want || fail "split Zip64: $(cat out)"
+    exits 3 "$ZIP" ms64split.zip tree/a.txt >out 2>&1
+    printf '\nzip error: Split archives not supported (ms64split.zip)\n' >want
+    cmp -s out want || fail "split Microsoft Zip64: $(cat out)"
     exits 3 "$ZIP" r64bad.zip tree/a.txt >out 2>&1
     printf '\nzip error: Zip file structure invalid (r64bad.zip)\n' >want
     cmp -s out want || fail "bad Zip64: $(cat out)"
