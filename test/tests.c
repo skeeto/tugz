@@ -972,15 +972,17 @@ static void test_complete_codes(os *ctx, arena a)
 
     for (i32 level = 1; level <= 9; level++) {
         // Literals only: no distance codes used at all
-        TEST(check_complete_codes(do_deflate(ctx, a, p, len, level, 0, 0),
-                                  -1));
+        s8 z = do_deflate(ctx, a, p, len, level, 0, 0);
+        TEST(check_complete_codes(z, -1));
+        free(z.s);
 
         // One match, at distance 17576 (symbol 28): a single distance
         // code used, which must appear in the checked block. Where the
         // code's other symbol goes is up to the encoder.
         bytecopy(p+len, p, 40);
-        s8 z = do_deflate(ctx, a, p, len+40, level, 0, 0);
+        z = do_deflate(ctx, a, p, len+40, level, 0, 0);
         TEST(check_complete_codes(z, 28));
+        free(z.s);
     }
 }
 
