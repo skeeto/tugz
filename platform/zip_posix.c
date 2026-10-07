@@ -172,18 +172,24 @@ static b32 os_fstat(os *ctx, i32 fd, os_info *info)
     return 1;
 }
 
-// Entries tell only names: each is left for os_stat.
+// Entries tell only names: each is left for os_stat. The names come
+// first, packed one after another with their terminators, then entries
+// for them all at once: an array doubled as it grew would, in an arena
+// that grows down (scratch), leave each smaller copy behind, some 265
+// bytes a name in all, where this takes 89 and the name.
 static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
                              arena *a)
 {
     (void)ctx;
     (void)all;  // no hidden or system attributes
-    arena tmp = *a;  // the path, which the listing then overwrites
+    arena tmp = *a;  // the path, which the names then overwrite
     DIR  *d   = opendir(tocstr(&tmp, path));
     if (!d) {
         return 0;
     }
-    os_dirents names = {0};
+    u8 *first = (u8 *)(a->down ? a->end : a->beg);  // where names begin
+    u8 *last  = first;                              // and end
+    iz  n     = 0;
     for (;;) {
         errno = 0;  // distinguishes an error from the end
         struct dirent *e = readdir(d);
@@ -194,17 +200,25 @@ static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
         if (zequals(name, S(".")) || zequals(name, S(".."))) {
             continue;
         }
-        s8 copy = {newstr(a, name.len), name.len};
-        bytecopy(copy.s, name.s, name.len);
-        *push(a, &names) = (os_dirent){copy, {0}};  // type FT_NONE
+        u8 *copy = newstr(a, name.len+1);
+        assert(a->down ? copy+name.len+1==last : copy==last);  // packed
+        bytecopy(copy, name.s, name.len+1);
+        last = a->down ? copy : copy+name.len+1;
+        n++;
     }
     int err = errno;
     closedir(d);
     if (err) {
         return 0;
     }
-    *count = names.len;
-    return names.data ? names.data : new(a, 1, os_dirent);
+    os_dirent *list = new(a, n, os_dirent);  // type FT_NONE
+    u8        *p    = MIN(first, last);
+    for (iz i = 0; i < n; i++) {
+        list[i].name = cstr((char *)p);
+        p += list[i].name.len + 1;
+    }
+    *count = n;
+    return list;
 }
 
 static s8 os_readlink(os *ctx, s8 path, arena *a)

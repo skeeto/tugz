@@ -639,7 +639,12 @@ neither inflate nor the gzip container.
   forgotten as the next is taken. `os_listdir` and `os_readlink` take a
   single arena for their results and temporaries, since callers that
   wanted transient results passed one arena as both `perm` and
-  `scratch`, whose allocations then overlapped.
+  `scratch`, whose allocations then overlapped. On POSIX a listing
+  reads its names first, packed, then makes their entries at once,
+  since an array doubled as it grew in scratch, which grows down and so
+  never in place, left each smaller copy behind: about 265 bytes a name
+  where 89 and the name do, which put one directory of 200K files 27%
+  above Info-ZIP's peak, and now level with it. (Windows still doubles.)
 - libdeflate issue #323: Windows' zip folder rejects incomplete Huffman
   codes (such as a lone distance code in a block with at most one
   distinct distance), which DEFLATE permits. `huff_build` always codes at
@@ -910,7 +915,8 @@ Fuzzers:
   0.73 s and 325, 27 s and 677, and 6.2 s and 531. 100K files of 100
   bytes 5 s and 41 MB (11 s, 40 MB), with a 1M-file subtree excluded by
   `-x` too, scanned at no cost in memory; one directory of 500K files
-  214 MB. Windows 11: a one-file run commits 7 MB (257 MB committed up
+  14 s and 183 MB (19.5 s, 186 MB), 214 MB when its listing grew by
+  doubling. Windows 11: a one-file run commits 7 MB (257 MB committed up
   front before), 100K files 46 MB, 1M files 398 MB (i686 298 MB); a tree
   15,000 levels deep (30K-character paths) archives on x86-64 and on
   i686 runs out of its 1 GiB reservation with "zip error: Out of memory"
