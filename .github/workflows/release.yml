@@ -1,0 +1,106 @@
+# On a version tag (v1.2.3, which must equal TUGZ_VERSION in src/base.c),
+# test, then publish a release: a deterministic source tarball, the
+# single-file sources (tugz.c with tugz.h, gzip.c, zip.c), and SHA256SUMS.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag against the version
+        run: |
+          v=$(sed -n 's/^#define TUGZ_VERSION "\([^"]*\)"$/\1/p' src/base.c)
+          if [ "$GITHUB_REF_NAME" != "v$v" ]; then
+              echo "::error::tag $GITHUB_REF_NAME is not v$v (TUGZ_VERSION)"
+              exit 1
+          fi
+          echo "V=$v" >>"$GITHUB_ENV"
+
+      - name: Install the test references
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev libdeflate-dev unzip
+
+      - name: Build and test
+        run: |
+          cmake -B build
+          cmake --build build -j"$(nproc)"
+          ctest --test-dir build -j"$(nproc)" --output-on-failure
+
+      # The tag's own gzip compresses the archive: no name or time in its
+      # header, and git archive sets every mtime to the commit's
+      - name: Source tarball
+        run: |
+          mkdir dist
+          cc -O2 -o gz platform/gzip_posix.c
+          git -c tar.umask=0022 archive --format=tar --prefix="tugz-$V/" \
+              "$GITHUB_SHA" | ./gz -9 >"dist/tugz-$V.tar.gz"
+
+      - name: Single-file sources
+        run: cmake -DTUGZ_OUTPUT_DIR=dist -P cmake/amalgamate.cmake
+
+      - name: Smoke test, FetchContent from the tarball
+        run: |
+          mkdir consumer
+          cat >consumer/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.21)
+          project(consumer LANGUAGES C)
+          set(CMAKE_C_STANDARD 11)
+          include(FetchContent)
+          FetchContent_Declare(tugz
+              URL "${TUGZ_URL}"
+              URL_HASH "SHA256=${TUGZ_SHA256}"
+              DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+          FetchContent_MakeAvailable(tugz)
+          add_executable(consumer main.c)
+          target_link_libraries(consumer PRIVATE tugz::tugz)
+          EOF
+          cat >consumer/main.c <<'EOF'
+          #include <stdlib.h>
+          #include <string.h>
+          #include <tugz.h>
+          int main(void)
+          {
+              static unsigned char in[1<<16], z[1<<17], out[1<<16];
+              for (int i = 0; i < (int)sizeof(in); i++) {
+                  in[i] = (unsigned char)("tugboat"[i%7] ^ (i>>9));
+              }
+              ptrdiff_t dlen = tugz_deflate_size(TUGZ_GZIP);
+              void *dmem = malloc(dlen);
+              tugz_deflator *d = tugz_deflate_init(dmem, dlen, TUGZ_GZIP, 9);
+              tugz_buf b = {in, sizeof(in), z, sizeof(z)};
+              if (!d || tugz_deflate(d, &b, TUGZ_FINISH) != TUGZ_DONE) return 1;
+              ptrdiff_t zlen = (ptrdiff_t)sizeof(z) - b.outlen;
+              ptrdiff_t ilen = tugz_inflate_size(TUGZ_GZIP);
+              void *imem = malloc(ilen);
+              tugz_inflator *f = tugz_inflate_init(imem, ilen, TUGZ_GZIP);
+              tugz_buf c = {z, zlen, out, sizeof(out)};
+              if (!f || tugz_inflate(f, &c) != TUGZ_DONE) return 1;
+              free(dmem);
+              free(imem);
+              return memcmp(in, out, sizeof(in)) != 0;
+          }
+          EOF
+          sum=$(sha256sum "dist/tugz-$V.tar.gz" | cut -d' ' -f1)
+          cmake -S consumer -B consumer/build \
+              -DTUGZ_URL="file://$PWD/dist/tugz-$V.tar.gz" -DTUGZ_SHA256="$sum"
+          cmake --build consumer/build
+          consumer/build/consumer
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && sha256sum -- * >SHA256SUMS)
+          cat dist/SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --verify-tag \
+              --title "tugz $V" dist/*
