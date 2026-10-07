@@ -89,13 +89,18 @@ endif()
 set(v "${CMAKE_MATCH_1}")
 
 # Writes text, unescaped, to a file in the output directory, through a
-# temporary file renamed over it.
+# temporary file renamed over it. Lines end in LF on every host, which
+# file(WRITE) would not do on Windows, while file(CONFIGURE) substitutes
+# @name@ references, so each @ is written as one.
 function(tugz_write name text)
     string(REPLACE "${esc_backslash}" "\\" text "${text}")
     string(REPLACE "${esc_semicolon}" ";" text "${text}")
     string(REPLACE "${esc_lbracket}" "[" text "${text}")
     string(REPLACE "${esc_rbracket}" "]" text "${text}")
-    file(WRITE "${outdir}/${name}.tmp" "${text}")
+    string(REPLACE "@" "@at@" text "${text}")
+    set(at "@")
+    file(CONFIGURE OUTPUT "${outdir}/${name}.tmp" CONTENT "${text}"
+         @ONLY NEWLINE_STYLE UNIX)
     file(RENAME "${outdir}/${name}.tmp" "${outdir}/${name}")
 endfunction()
 
