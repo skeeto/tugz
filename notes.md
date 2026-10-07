@@ -636,7 +636,11 @@ neither inflate nor the gzip container.
   Windows build's 2 MiB stack held 5,000 levels, not 8,000; see
   Cross-platform verification). Each listing is sorted as pointers to
   its entries rather than moving them, and each entry's strings are
-  forgotten as the next is taken. `os_listdir` and `os_readlink` take a
+  forgotten as the next is taken. Each open level keeps one copy of its
+  path, with a slash after it, of which its name is the end where it
+  ends the path, as usual, rather than three (path, name, and name with
+  a slash): at 450 levels on the Mac, the scan's scratch went from
+  716 KB to 306 KB. `os_listdir` and `os_readlink` take a
   single arena for their results and temporaries, since callers that
   wanted transient results passed one arena as both `perm` and
   `scratch`, whose allocations then overlapped. On POSIX a listing
@@ -920,7 +924,9 @@ Fuzzers:
   front before), 100K files 46 MB, 1M files 398 MB (i686 298 MB); a tree
   15,000 levels deep (30K-character paths) archives on x86-64 and on
   i686 runs out of its 1 GiB reservation with "zip error: Out of memory"
-  (4), where the recursive build overflowed its stack by 8,000 levels.
+  (4), where the recursive build overflowed its stack by 8,000 levels
+  (measured before each level kept one copy of its path rather than
+  three, which let a review build archive it on i686 in 705 MB).
   WSL: the `-m32` build zips 1M files in 4 s and 265 MB, and under
   `ulimit -v 200000` both builds exit 4 with that message and leave no
   temporary file. Raspberry Pi 4: 100K files of 100 bytes 3.6 s and

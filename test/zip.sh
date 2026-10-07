@@ -357,6 +357,13 @@ zipinfo -T far.zip | grep -q 19800101.000000 || fail "old: $(zipinfo -T far.zip)
 names n.zip >got
 printf '%s\n' a.txt sub/random ../tree/b.txt "${tmp#/}/tree/one" >want
 cmp -s got want || fail "path names: $(cat got)"
+# ...through recursion too, where names then no longer end paths
+"$ZIP" -qr ds.zip ./tree//sub "$tmp/tree//sub/deeper"
+names ds.zip >got
+printf '%s\n' tree/sub/ tree/sub/deeper/ tree/sub/deeper/text \
+    tree/sub/random >want
+printf '%s\n' "${tmp#/}/tree/sub/deeper/" "${tmp#/}/tree/sub/deeper/text" >>want
+cmp -s got want || fail "recursive path names: $(cat got)"
 
 # A leading //host/share/ is dropped, as Info-ZIP's Unix ex2in does
 unc="/$tmp/tree/a.txt"

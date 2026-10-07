@@ -1289,6 +1289,24 @@ static zdir *enter(zip *z, zdir *up, s8 path, s8 name, os_info *info,
     return d;
 }
 
+// The path of a directory's entry, and through name, its name, each
+// followed in memory by a slash, which a directory's name takes. Both
+// are one string where the name ends the path, as it usually does ("d"
+// and "d/", "./d" and "d/"), so that a deep tree's levels each keep one
+// copy of their path while their entries are scanned rather than three.
+static s8 kid_path(arena *a, zdir *dir, s8 kid, s8 *name)
+{
+    s8 full = JOIN(a, dir->path, dir->sep, kid, S("/"));
+    iz at   = full.len - 1 - kid.len - dir->name.len;  // name's start
+    if (at>=0 && zequals((s8){full.s+at, dir->name.len}, dir->name)) {
+        *name = (s8){full.s+at, dir->name.len+kid.len};
+    } else {
+        *name = JOIN(a, dir->name, kid, S("/"));
+        name->len--;
+    }
+    return (s8){full.s, full.len-1};
+}
+
 // Warn that a special file is left out, as Info-ZIP words it, but for its
 // advice to read a FIFO with -FI, which tugz does not support
 static void ignore_special(zip *z, s8 path, os_info *info, arena scratch)
@@ -1329,11 +1347,11 @@ static void scan(zip *z, s8 path, s8 name, os_info *info, arena scratch)
             }
             scratch = dir->base;
             os_dirent *k = dir->kids[dir->next++];
-            path = JOIN(&scratch, dir->path, dir->sep, k->name);
-            name = JOIN(&scratch, dir->name, k->name);
+            path = kid_path(&scratch, dir, k->name, &name);
             info = &k->info;
             if (listed(z, info) ||
                 os_stat(z->ctx, path, !z->symlinks, info, scratch)) {
+                name.len += info->type == FT_DIR;  // its slash, for enter
                 break;
             } else if (!unseen_out(z, path, name, scratch)) {
                 warn(z, S("could not open for reading: "), path, scratch);
