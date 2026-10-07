@@ -49,9 +49,11 @@
 // input. A due SYNC or FULL flush completes before a call in another
 // mode, or with more input, goes on as asked, so the caller need not
 // wait for TUGZ_DONE to move on, as to TUGZ_FINISH at the end of input.
-// Once TUGZ_FINISH falls due, only TUGZ_FINISH with no input is accepted
-// (others return TUGZ_EUSAGE), and it returns TUGZ_DONE once all output
-// is delivered.
+// Until it completes, even after such calls (which return
+// TUGZ_NEED_OUTPUT until it does), a call in its own mode with no input
+// only completes it, rather than flushing again. Once TUGZ_FINISH falls
+// due, only TUGZ_FINISH with no input is accepted (others return
+// TUGZ_EUSAGE), and it returns TUGZ_DONE once all output is delivered.
 //
 // Compression levels are 1 (fastest) through 9 (smallest), and others are
 // clamped into that range. The gzip header records no name or time, and
