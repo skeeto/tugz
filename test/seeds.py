@@ -4,6 +4,16 @@ import os, random, zlib
 
 random.seed(1)
 root = "fuzz/corpus"
+
+def words():
+    """The system's word list, or else generated text, as cli.sh uses."""
+    try:
+        with open("/usr/share/dict/words", "rb") as f:
+            return f.read()[:20000]
+    except OSError:
+        lines = (f"{i} {i*i} lorem ipsum\n" for i in range(2000))
+        return "".join(lines).encode()[:20000]
+
 samples = [
     b"",
     b"x",
@@ -11,7 +21,7 @@ samples = [
     bytes(range(256)) * 4,
     bytes(5000),
     bytes(random.getrandbits(8) for _ in range(3000)),
-    open("/usr/share/dict/words", "rb").read()[:20000],
+    words(),
     open("src/deflate.c", "rb").read()[:30000],
     bytes(random.choice(b"ab") for _ in range(4000)),
 ]
@@ -50,6 +60,31 @@ for i, s in enumerate(samples):
         put("roundtrip", f"s{i}_{k}", cfg[:3] + s[:8000])
         put("diff-deflate", f"s{i}_{k}", cfg + s[:8000])
 print(n, "deflate seeds")
+
+# Data after a gzip member, which GNU gzip's policy settles (see
+# fuzz_diff_inflate.c): zero bytes are padding, here also longer than the
+# decoder's 256 KiB reads (for runs with a -max_len above it); a lone
+# byte other than zero may begin a member, so is a truncation; other
+# data is a warning, even after zeros; and a second member may be cut
+# short after its magic
+member = zlib.compress(samples[2], wbits=31)
+second = zlib.compress(samples[1], wbits=31)
+trailing = {
+    "zeros": bytes(10),
+    "zero": bytes(1),
+    "lone": b"x",
+    "magic": b"\x1f",
+    "zeros-lone": bytes(10) + b"x",
+    "garbage": b"junk",
+    "zeros-garbage": bytes(100) + b"junk",
+    "padding": bytes(300000),
+    "cut-member": second[:2],
+    "members-garbage": second + b"junk",
+}
+for name, t in trailing.items():
+    for target in ("inflate", "diff-inflate"):
+        put(target, f"trailing-{name}.gz", member + t)
+print(len(trailing), "trailing-data seeds")
 
 # Dynamic blocks with a lone 1-bit distance code, which Go's
 # compress/flate writes when a block's matches share one distance code,
