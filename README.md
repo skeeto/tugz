@@ -1,6 +1,6 @@
-<p align="center"><img src="tugz.png" width="320" alt="tugz mascot: a smiling blue tugboat with tire fenders"></p>
-
 # tugz: tiny unity gzip
+
+<p align="center"><img src="tugz.png" width="320" alt="tugz mascot: a smiling blue tugboat with tire fenders"></p>
 
 A from-specification implementation of gzip ([RFC 1952][]), zlib ([RFC
 1950][]), and DEFLATE ([RFC 1951][]) in C11 with C23 attributes, for GCC
