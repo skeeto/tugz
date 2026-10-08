@@ -759,18 +759,25 @@ static s8 os_error(os *ctx)
 
 // Decoded as Latin-1, unlike any real code page, which is enough to
 // give names in one a second, Unicode, name (Windows conventions).
+// Through a copy in scratch, as the platform decodes through scratch,
+// which must stay apart from perm.
 static s8 os_fromcp(os *ctx, s8 name, b32 oem, arena *perm, arena scratch)
 {
-    (void)ctx; (void)oem; (void)scratch;
+    (void)ctx; (void)oem;
+    u8 *copy = newstr(&scratch, name.len);
+    bytecopy(copy, name.s, name.len);
     s8 r = {newstr(perm, 2*name.len), 0};
     for (iz i = 0; i < name.len; i++) {
-        u8 c = name.s[i];
+        u8 c = copy[i];
         if (c < 0x80) {
             r.s[r.len++] = c;
         } else {
             r.s[r.len++] = (u8)(0xc0 | c>>6);
             r.s[r.len++] = (u8)(0x80 | (c & 0x3f));
         }
+    }
+    for (iz i = 0; i < name.len; i++) {
+        CHECK(copy[i] == name.s[i]);  // perm overlapping scratch
     }
     return r;
 }
