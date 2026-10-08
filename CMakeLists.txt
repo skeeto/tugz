@@ -456,6 +456,7 @@ if(TUGZ_BUILD_FUZZ)
               test/fuzz_diff_deflate.c ZLIB LIBDEFLATE)
     tugz_fuzz(tugz_fuzz_zipread fuzz-zipread test/fuzz_zipread.c)
     tugz_fuzz(tugz_fuzz_zip fuzz-zip test/fuzz_zip.c)
+    tugz_fuzz(tugz_fuzz_unzip fuzz-unzip test/fuzz_unzip.c ZLIB)
 
     # Seed corpora, in the source tree's fuzz/corpus/
     find_program(TUGZ_UV uv)
