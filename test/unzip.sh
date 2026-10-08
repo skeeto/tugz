@@ -383,6 +383,18 @@ same -t overrun.zip
   printf 'At least one error was detected in deflate64bad.zip.\n'; } >want
 ours 2 want none -t deflate64bad.zip
 
+# Departure: an entry is read by its central header's CRC and sizes, not
+# its local header's, which here differ: UnZip finds a bad CRC in the
+# first entry and extracts three bytes of the second
+{ printf 'Archive:  localsizes.zip\n'
+  printf '    testing: %-22s   OK\n' a.txt s.txt
+  printf 'No errors detected in compressed data of localsizes.zip.\n'; } >want
+ours 0 want none -t localsizes.zip
+"$U" -p basic.zip dir/text.txt dir/stored.txt >want
+ours 0 want none -p localsizes.zip
+both -t localsizes.zip
+[ "$(cat ref.st)" = 2 ] || fail "localsizes.zip: REF's status $(cat ref.st)"
+
 # Wildcard archive names: each match, in name order, then a summary,
 # leaving out names starting with a dot unless the pattern does
 mkdir w

@@ -1253,7 +1253,10 @@ ones as invariants. Those that no test asserts are marked untested.
   `REF` where it finds them too; `tests-unzipcli`, `test_bomb`).
 - Sizes: an entry is read by its central header's sizes, method, and
   CRC, the central directory being read whole first, rather than by its
-  local header's (untested: no test sets them apart). Output stops at an
+  local header's, as UnZip reads it unless a data descriptor follows
+  (`unzip.sh`, "localsizes.zip", whose local CRC and sizes are not the
+  central ones, where UnZip finds a bad CRC and extracts part of a
+  stored entry). Output stops at an
   entry's size, where UnZip writes what it decodes beyond it before
   finding the CRC wrong (`unzip.sh`, "Output beyond an entry's size";
   `test_damaged`).

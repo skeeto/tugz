@@ -113,6 +113,7 @@ class Entry:
         self.lextra = kw.get("lextra", b"")
         self.comment = kw.get("comment", b"")
         self.lname = kw.get("lname", self.name)
+        self.lsizes = kw.get("lsizes")  # the local (crc, csize, usize)
         self.desc = kw.get("desc", False)  # data descriptor, bit 3
         self.offset = kw.get("offset")  # a central offset, else its own
         self.local = kw.get("local", True)  # write its local header
@@ -124,7 +125,7 @@ class Entry:
 
     def local_header(self):
         flags = self.flags | (8 if self.desc else 0)
-        crc, csize, usize = self.crc, self.csize, self.usize
+        crc, csize, usize = self.lsizes or (self.crc, self.csize, self.usize)
         if self.z64:
             csize = usize = 0xFFFFFFFF
         if self.desc:
@@ -272,6 +273,14 @@ write("storedsize.zip", build([Entry("s.txt", b"stored\n", method=0,
                                      usize=99)]))
 write("localname.zip", build([Entry("central.txt", b"x\n",
                                     lname=b"local.txt")]))
+# Local headers whose CRC and sizes are not the central header's: wrong,
+# and a stored entry's first three bytes
+write("localsizes.zip", build([
+    Entry("a.txt", TEXT, lsizes=(zlib.crc32(TEXT) ^ 1, len(deflate(TEXT)),
+                                 len(TEXT) + 5)),
+    Entry("s.txt", b"stored\n", method=0,
+          lsizes=(zlib.crc32(b"sto"), 3, 3)),
+]))
 write("badextra.zip", build([Entry("x.txt", b"x\n",
                                    lextra=b"UT\x09\x00\x01")]))
 
