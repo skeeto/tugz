@@ -280,6 +280,14 @@ typedef struct {
     i64     cdlim;   // entries' data lies before this, as offsets read
     iz      maxhdr;  // the longest central header read
     zin     cd;      // the central directory's own window (zar_reread)
+
+    // Reading as UnZip does, for unzip (zar_open, zar_check)
+    b32     unzip;   // set by the caller: read as UnZip reads
+    b32     moved64; // the Zip64 end record was found just before its
+                     // locator, not where that says (prepended data)
+    b32     nosig64; // no Zip64 end record there either (ZAR_EFORMAT)
+    i64     nread;   // central headers read, past the end record's count
+    b32     endsig;  // an end signature follows the last header read
 } zarchive;
 
 // Results of reading an archive (zar_open, zar_entries, zar_local)
@@ -353,6 +361,18 @@ static s8 zar_uname(os *ctx, zentry *e, b32 windows, i32 *crccpu, s8 *stale,
 // comment, once found, is kept in perm, even should the records then
 // prove invalid. Returns a ZAR code: for ZAR_EPREFIX, the records are
 // kept as they read, for the caller to shift (zar_entries).
+//
+// A Zip64 end record that is not where its locator says, but just before
+// the locator, is taken there (ar->moved64), as UnZip's find_ecrec64 and
+// Info-ZIP's zip look for it: data prepended to the archive without
+// adjusting its offsets, which then shift them (ZAR_EPREFIX), as for an
+// archive without Zip64 records. Where neither holds the record,
+// ar->nosig64.
+//
+// For unzip (ar->unzip), the end record is read as UnZip reads it: one
+// whose comment runs past the end of the file is taken, its comment cut
+// short (ar->end.cut), as is one that counts more entries than its
+// directory holds (as zar_check reads them). Zip refuses both.
 static i32 zar_open(zarchive *ar, os *ctx, i32 fd, i64 size, arena *perm)
 {
     zin *in = &ar->in;
@@ -375,20 +395,38 @@ static i32 zar_open(zarchive *ar, os *ctx, i32 fd, i64 size, arena *perm)
         return zar_failed(got);
     }
     i32 r = zip_find_end(tail, n, size, &ar->end);
-    if (r != ZIP_ENOEND) {
+    if (r!=ZIP_ENOEND && ar->end.cut && !ar->unzip) {
+        return ZAR_ENOEND;
+    } else if (r != ZIP_ENOEND) {
         ar->end.comment = JOIN(perm, ar->end.comment);  // the window moves
     }
     if (r==ZIP_OK && ar->end.end64>=0) {
-        u8 *rec = 0;
-        got = zin_get(in, ar->end.end64, ZIP_END64_LEN, &rec);
+        zend *e     = &ar->end;
+        i64   guess = e->endpos - ZIP_LOC64_LEN - ZIP_END64_LEN;
+        u8   *rec   = 0;
+        got = zin_get(in, e->end64, ZIP_END64_LEN, &rec);
         if (got <= 0) {
             return zar_failed(got);
         }
-        r = zip_parse_end64(rec, &ar->end);
+        b32 sig = get32(rec) == ZIP_END64_SIG;
+        if (!sig && guess!=e->end64) {
+            got = zin_get(in, guess, ZIP_END64_LEN, &rec);
+            if (got <= 0) {
+                return zar_failed(got);
+            }
+            sig = get32(rec) == ZIP_END64_SIG;
+            e->end64 = sig ? guess : e->end64;
+            ar->moved64 = sig;
+        }
+        r = zip_parse_end64(rec, e);
+        ar->moved64 &= e->end64 >= 0;
+        ar->nosig64  = !sig && e->end64>=0;
     }
     switch (r) {
     case ZIP_OK:
         return ZAR_OK;
+    case ZIP_ECOUNT:
+        return ar->unzip ? ZAR_OK : ZAR_EFORMAT;
     case ZIP_ENOEND:
         return ZAR_ENOEND;
     case ZIP_EMULTI:
@@ -439,6 +477,16 @@ static i32 zar_header(zin *in, i64 off, i64 cdend, i64 cdoff, iz max,
 // to the caller (zar_uname). Returns a ZAR code: for ZAR_EFORMAT, the
 // header that failed is ar->bad, the count of entries for a directory
 // that does not end where it should.
+//
+// For unzip (ar->unzip), which only checks it, it is read as UnZip reads
+// it (extract.c, list.c), not by the end record's count, but header by
+// header while they parse, within the directory: ar->nread of them,
+// which must be the count, or with no Zip64 end record, as writers
+// without Zip64 wrap it past 65,535 entries, the count modulo 65,536.
+// Then ar->endsig tells whether an end signature follows them, as UnZip
+// checks ("didn't find end-of-central-dir signature"). Otherwise, the
+// headers read are the entries, and the first that was not is ar->bad,
+// ZAR_EFORMAT (0: none, and the central directory is not there).
 static i32 zar_walk(zarchive *ar, arena *perm, arena scratch)
 {
     // The central directory is read through the window, whole if it
@@ -462,8 +510,13 @@ static i32 zar_walk(zarchive *ar, arena *perm, arena scratch)
     // damaged) does not, and is then not touched until each is parsed.
     // A count kept unchecked for the caller to shift (ZAR_EPREFIX) may be
     // anything that a Zip64 record says, even past 2^63 (negative here).
+    // Read as UnZip reads it, the count bounds nothing.
+    b32 past = ar->unzip && !perm;
     b32 head = cdend-off>=ZIP_CENTRAL_LEN && zip_central_varlen(h)>=0;
-    if (count<0 || count>ar->end.cdsize/ZIP_CENTRAL_LEN || (count && !head)) {
+    if (past) {
+        // headers are read while they parse, whatever the count
+    } else if (count<0 || count>ar->end.cdsize/ZIP_CENTRAL_LEN ||
+               (count && !head)) {
         ar->bad = 0;
         return ZAR_EFORMAT;
     } else if ((u64)count > (uz)-1>>1) {
@@ -471,18 +524,22 @@ static i32 zar_walk(zarchive *ar, arena *perm, arena scratch)
     }
     ar->cdlim  = cdoff;
     ar->maxhdr = 0;
+    ar->nread  = 0;
+    ar->endsig = 0;
     zentry one = {0};
     if (perm) {
         iz each = sizeof(zentry);
         ar->entries = alloc(perm, (iz)count, each, _Alignof(zentry), 0);
     }
-    for (i64 i = 0; i < count; i++) {
+    for (i64 i = 0; past ? off<cdend : i<count; i++) {
         zentry *e   = perm ? ar->entries+i : &one;
         iz      len = 0;
         i32     r   = zar_header(in, off, cdend, cdoff, in->cap, e, &len);
         if (r == ZAR_ENONAME) {
             ar->noname = i;
             return r;
+        } else if (r==ZAR_EFORMAT && past) {
+            break;
         } else if (r == ZAR_EFORMAT) {
             ar->bad = i;
             return r;
@@ -498,8 +555,27 @@ static i32 zar_walk(zarchive *ar, arena *perm, arena scratch)
             e->comment = JOIN(perm, e->comment);
         }
         off += len;
+        ar->nread = i + 1;
     }
-    if (off != cdend) {
+
+    if (past) {
+        // UnZip finds the directory missing if its first header is not
+        // there, even for a count of zero, unless empty (the caller's)
+        i64 n     = ar->nread;
+        b32 match = ar->end.end64<0 ? (n & ZIP_MAX16)==count : n==count;
+        if (!n || !match) {
+            ar->bad = n;
+            return ZAR_EFORMAT;
+        }
+        u8 *sig = 0;
+        got = zin_get(in, off, 4, &sig);
+        if (got <= 0) {
+            return zar_failed(got);
+        }
+        // With Zip64 records, which UnZip also takes for a Zip64 archive
+        // when the end record defers to them, it does not check
+        ar->endsig = ar->end.end64>=0 || get32(sig)==ZIP_END_SIG;
+    } else if (off != cdend) {
         ar->bad = count;
         return ZAR_EFORMAT;
     }
@@ -523,7 +599,8 @@ static i32 zar_entries(zarchive *ar, arena *perm, arena scratch)
 }
 
 // Check the central directory that zar_open found, as zar_entries reads
-// it, but keeping none of it, for zar_next to read it again.
+// it, or for unzip as UnZip reads it (zar_walk), but keeping none of it,
+// for zar_next to read it again.
 [[maybe_unused]] static i32 zar_check(zarchive *ar)
 {
     return zar_walk(ar, 0, (arena){0});

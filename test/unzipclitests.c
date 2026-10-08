@@ -889,7 +889,8 @@ static void test_damaged(os *ctx)
 
     // Data before an archive whose Zip64 record counts more entries than
     // 2^63, which its offsets, unadjusted, leave unchecked: a damaged
-    // archive, not too large for memory (a fuzzer's find)
+    // archive, not too large for memory (a fuzzer's find), whose entries
+    // are read, as UnZip reads them, but for the count
     s8     two = build(three, 2, 0);
     mbuf   b   = {0};
     iz     cd  = two.len - 22;
@@ -930,15 +931,191 @@ static void test_damaged(os *ctx)
     TEST(output_is(ctx, 2,
         "warning [a.zip]:  15 extra bytes at beginning or within zipfile\n"
         "  (attempting to process anyway)\n"
-        "error [a.zip]:  start of central directory not found;\n"
-        "  zipfile corrupt.\n"
+        "error:  expected central file header signature not found (file "
+        "#3).\n"
         "  (please check that you have transferred or created the zipfile "
         "in the\n"
         "  appropriate BINARY mode and that you have compiled UnZip "
         "properly)\n"));
+    TEST(equals(file_data(ctx, "a.txt"), "a\n"));
+    TEST(equals(file_data(ctx, "b.txt"), "b\n"));
     free(b.s);
     free(two.s);
     free(z.s);
+}
+
+// An archive from build, its end record replaced by Zip64 records and a
+// saturated end record, after prefix, its offsets unadjusted for it: as
+// it ends up after "cat stub archive.zip", or with a zipapp's #! line.
+static s8 zip64_after(s8 z, char const *prefix)
+{
+    mbuf b   = {0};
+    iz   cd  = z.len - 22;
+    u32  n   = get16(z.s+cd+10);
+    u32  len = get32(z.s+cd+12);
+    u32  off = get32(z.s+cd+16);
+    zput(&b, prefix, (iz)strlen(prefix));
+    zput(&b, z.s, cd);
+    zput32(&b, ZIP_END64_SIG);
+    zput32(&b, 44);
+    zput32(&b, 0);
+    zput16(&b, 45);
+    zput16(&b, 45);
+    zput32(&b, 0);
+    zput32(&b, 0);
+    for (i32 i = 0; i < 2; i++) {  // on this disk, in all
+        zput32(&b, n);
+        zput32(&b, 0);
+    }
+    zput32(&b, len);
+    zput32(&b, 0);
+    zput32(&b, off);
+    zput32(&b, 0);
+    zput32(&b, ZIP_LOC64_SIG);
+    zput32(&b, 0);
+    zput32(&b, off+len);  // where the record would be without prefix
+    zput32(&b, 0);
+    zput32(&b, 1);
+    zput32(&b, ZIP_END_SIG);
+    zput32(&b, 0);
+    zput32(&b, 0xffffffff);
+    zput32(&b, 0xffffffff);
+    zput32(&b, 0xffffffff);
+    zput16(&b, 0);
+    return (s8){b.s, b.len};
+}
+
+// Central directories read as UnZip reads them, header by header while
+// they parse, whatever the end record's count: more headers than it
+// counts, or fewer, even than the directory could hold, are processed,
+// then reported (3); a count that wrapped past 65,535 entries, as
+// writers without Zip64 leave it, is no error; a Zip64 end record just
+// before its locator, rather than where that says, is data before the
+// archive (1); and an end record whose comment runs past the end of the
+// file is taken, its comment cut short (1)
+static void test_directory(os *ctx)
+{
+    xspec three[] = {
+        {.name="a.txt", .data="a\n"},
+        {.name="b.txt", .data="b\n"},
+        {.name="c.txt", .data="c\n"},
+    };
+    s8  z   = build(three, countof(three), 0);
+    u8 *end = z.s + z.len - 22;
+    u32 counts[] = {0, 2, 4, 5};  // 5: more than the directory holds
+    for (i32 i = 0; i < countof(counts); i++) {
+        put16(end+8, counts[i]);
+        put16(end+10, counts[i]);
+        mfs_reset(ctx);
+        put_archive(ctx, "a.zip", z);
+        UNZIP(ctx, 3, "-q", "a.zip");
+        TEST(output_is(ctx, 2,
+            "error:  expected central file header signature not found (file "
+            "#4).\n"
+            "  (please check that you have transferred or created the "
+            "zipfile in the\n"
+            "  appropriate BINARY mode and that you have compiled UnZip "
+            "properly)\n"));
+        TEST(equals(file_data(ctx, "a.txt"), "a\n"));
+        TEST(equals(file_data(ctx, "c.txt"), "c\n"));
+        UNZIP(ctx, 3, "-l", "a.zip");
+        TEST(output_has(ctx, 1, "c.txt\n"));
+        TEST(!output_has(ctx, 1, "3 files"));
+    }
+    put16(end+8, 3);
+    put16(end+10, 3);
+
+    // A comment that the file cuts short: shown as far as it goes, then
+    // UnZip's caution, even for one with none of it there
+    char const *cuts[][2] = {
+        {"12345", "Archive:  a.zip\n12345\ncaution:  zipfile comment "
+                  "truncated\n"},
+        {"", "Archive:  a.zip\n\ncaution:  zipfile comment truncated\n"},
+    };
+    for (i32 i = 0; i < countof(cuts); i++) {
+        s8 c = build(three, countof(three), cuts[i][0]);
+        put16(c.s+c.len-(iz)strlen(cuts[i][0])-2, i ? 0xffff : 10);
+        mfs_reset(ctx);
+        put_archive(ctx, "a.zip", c);
+        UNZIP(ctx, 1, "-z", "a.zip");
+        TEST(output_is(ctx, 3, cuts[i][1]));
+        UNZIP(ctx, 1, "-t", "a.zip");
+        TEST(output_has(ctx, 1, cuts[i][1]));
+        TEST(output_has(ctx, 1, "No errors detected in compressed data"));
+        UNZIP(ctx, 0, "-tq", "a.zip");  // not shown: no caution
+        UNZIP(ctx, 1, "-o", "a.zip");
+        TEST(equals(file_data(ctx, "c.txt"), "c\n"));
+        free(c.s);
+    }
+
+    // Zip64 records after data that their offsets do not account for: the
+    // record is found just before its locator, as find_ecrec64 looks
+    s8 sfx = zip64_after(z, "#!/bin/sh\nexit\n");
+    mfs_reset(ctx);
+    put_archive(ctx, "a.zip", sfx);
+    UNZIP(ctx, 1, "-q", "a.zip");
+    TEST(output_is(ctx, 2,
+        "[a.zip]\n"
+        "error: End-of-centdir-64 signature not where expected (prepended "
+        "bytes?)\n"
+        "  (attempting to process anyway)\n"
+        "warning [a.zip]:  15 extra bytes at beginning or within zipfile\n"
+        "  (attempting to process anyway)\n"));
+    TEST(equals(file_data(ctx, "a.txt"), "a\n"));
+    TEST(equals(file_data(ctx, "c.txt"), "c\n"));
+    UNZIP(ctx, 0, "-z", "a.zip");
+    TEST(output_is(ctx, 3,
+        "Archive:  a.zip\n"
+        "error: End-of-centdir-64 signature not where expected (prepended "
+        "bytes?)\n"
+        "  (attempting to process anyway)\n"));
+    // ...and not there either: a damaged archive, perhaps not the one
+    iz rec = sfx.len - 22 - 20 - 56;
+    TEST(get32(sfx.s+rec) == ZIP_END64_SIG);
+    sfx.s[rec] ^= 1;
+    mfs_reset(ctx);
+    put_archive(ctx, "a.zip", sfx);
+    UNZIP(ctx, 9, "-t", "a.zip");
+    TEST(output_is(ctx, 3,
+        "Archive:  a.zip\n"
+        "fatal error: read failure while seeking for End-of-centdir-64 "
+        "signature.\n"
+        "  This zipfile is corrupt.\n"
+        "unzip:  cannot find zipfile directory in one of a.zip or\n"
+        "        a.zip.zip, and cannot find a.zip.ZIP, period.\n"));
+    free(sfx.s);
+    free(z.s);
+
+    // A count wrapped past 65,535 entries, without Zip64 records, and
+    // read whole, but one more is an error
+    i32    n    = 65536 + 3;
+    xspec *many = calloc((uz)n, sizeof(*many));
+    char  *names = calloc((uz)n, 8);
+    TEST(many && names);
+    for (i32 i = 0; i < n; i++) {
+        snprintf(names+8*i, 8, "%x", i);
+        many[i] = (xspec){.name=names+8*i};
+    }
+    z = build(many, n, 0);
+    TEST(get16(z.s+z.len-22+10) == 3);
+    mfs_reset(ctx);
+    put_archive(ctx, "a.zip", z);
+    UNZIP(ctx, 0, "-l", "a.zip");
+    TEST(output_has(ctx, 1, "65539 files\n"));
+    put16(z.s+z.len-22+10, 4);
+    mfs_reset(ctx);
+    put_archive(ctx, "a.zip", z);
+    UNZIP(ctx, 3, "-tqq", "a.zip");
+    TEST(output_is(ctx, 3,
+        "error:  expected central file header signature not found (file "
+        "#65540).\n"
+        "  (please check that you have transferred or created the zipfile "
+        "in the\n"
+        "  appropriate BINARY mode and that you have compiled UnZip "
+        "properly)\n"));
+    free(z.s);
+    free(names);
+    free(many);
 }
 
 // Faults: a failed write asks whether to go on, and either way the file
@@ -1320,6 +1497,7 @@ int main(void)
     test_bomb(ctx);
     test_changed(ctx);
     test_damaged(ctx);
+    test_directory(ctx);
     test_faults(ctx);
     test_windows(ctx);
     test_wintimes(ctx);

@@ -401,8 +401,18 @@ static void test_roundtrip_headers(arena a)
         i32 got = zip_find_end(t, n, total, &end);
         TEST(got == (n<ZIP_END_LEN+comment.len ? ZIP_ENOEND : ZIP_OK));
         free(t);
-        t = exact(buf, n);  // the archive cut short
-        TEST(zip_find_end(t, n, n, &end) == ZIP_ENOEND);
+        // The archive cut short: within its comment, the end record is
+        // taken, as UnZip takes it, its comment cut short too
+        t = exact(buf, n);
+        end = (zend){0};
+        got = zip_find_end(t, n, n, &end);
+        if (n < cdoff+cdsize+ZIP_END_LEN) {
+            TEST(got == ZIP_ENOEND);
+        } else {
+            TEST(got==ZIP_OK && end.cut && end.count==3);
+            TEST(end.comment.len == n-(cdoff+cdsize+ZIP_END_LEN));
+            TEST(!memcmp(end.comment.s, comment.s, (uz)end.comment.len));
+        }
         free(t);
     }
     TEST(zip_local_varlen(buf+1) == -1);
@@ -412,6 +422,36 @@ static void test_roundtrip_headers(arena a)
     bytefill(pre, 'x', 100);
     bytecopy(pre+100, buf, total);
     TEST(zip_find_end(pre, total+100, total+100, &end) == ZIP_EPREFIX);
+
+    // More entries than the central directory could hold
+    u8 *many = new(&a, total, u8);
+    bytecopy(many, buf, total);
+    put16(many + cdoff + cdsize + 8, 4);
+    put16(many + cdoff + cdsize + 10, 4);
+    end = (zend){0};
+    TEST(zip_find_end(many, total, total, &end) == ZIP_ECOUNT);
+    TEST(end.count==4 && end.cdsize==cdsize && end.cdoff==cdoff);
+    put16(many + cdoff + cdsize + 8, 3);
+    put16(many + cdoff + cdsize + 10, 3);
+
+    // A comment holding what looks like an end record, its comment
+    // fitting, which is taken over the real one, whose comment overruns
+    // the end, as UnZip takes the last of them
+    iz  len2  = (iz)(cdoff + cdsize) + 2*ZIP_END_LEN;
+    u8 *stray = new(&a, len2, u8);
+    bytecopy(stray, buf, (iz)(cdoff + cdsize) + ZIP_END_LEN);
+    u8 *fake  = stray + cdoff + cdsize + ZIP_END_LEN;
+    zip_end(fake, 0, 0, 0, (s8){0}, 0x031e);
+    put16(fake-2, ZIP_END_LEN+1);  // the real one's comment overruns
+    end = (zend){0};
+    TEST(zip_find_end(stray, len2, len2, &end) != ZIP_ENOEND);
+    TEST(!end.cut && end.endpos==cdoff+cdsize+ZIP_END_LEN);
+    // and without it, the real one, its comment cut short
+    fake[0] = 'x';
+    end = (zend){0};
+    TEST(zip_find_end(stray, len2, len2, &end) == ZIP_OK);
+    TEST(end.cut && end.endpos==cdoff+cdsize && end.count==3);
+    TEST(end.comment.len==ZIP_END_LEN && end.comment.s==fake);
 
     // Split archives are refused
     u8 *split = new(&a, total, u8);
@@ -795,11 +835,13 @@ static void test_end_records(arena a)
     TEST(zip_parse_end64(rec, &z) == ZIP_EMULTI);
     put32(rec+20, 0);
 
-    // More entries than the central directory could hold
+    // More entries than the central directory could hold, which zip
+    // refuses, and unzip reads past, as UnZip does
     put64(rec+24, (u64)n+1);
     put64(rec+32, (u64)n+1);
     TEST(zip_find_end(tail, countof(tail), size, &z) == ZIP_OK);
-    TEST(zip_parse_end64(rec, &z) == ZIP_EFORMAT);
+    TEST(zip_parse_end64(rec, &z) == ZIP_ECOUNT);
+    TEST(z.count==n+1 && z.cdsize==big && z.cdoff==1000);
     put64(rec+24, (u64)n);
     put64(rec+32, (u64)n);
 

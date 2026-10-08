@@ -327,13 +327,13 @@ typedef struct {
     i64     oldshift; // the shift undone to find an entry (UnZip's)
 } unzip;
 
-// What ended reading a central directory before its entries' count, as
-// UnZip finds the first only once it gets there
+// What ended reading a central directory, as UnZip finds it only once
+// it gets there
 enum {
     CD_OK,
-    CD_SIG,   // an entry's header was invalid (or had no name)
+    CD_SIG,   // a header, not the count's, was invalid (or had no name)
     CD_NONAME,
-    CD_END,   // a warning: the directory ended elsewhere than it says
+    CD_END,   // a warning: no end signature follows the count's headers
 };
 
 // Write a message as UnZip's UzpMessagePrnt does (fileio.c): with flags
@@ -480,8 +480,9 @@ static s8 shown(unzip *u, s8 name, arena *a)
 // do_string (fileio.c) does (DISPLAY): up to any NUL, without carriage
 // returns or ^S, and with an escape shown as "^[". Other control
 // characters, and what is not UTF-8, are shown as in names (uz_filter),
-// where UnZip writes them raw. A newline follows unless it ends one.
-static void show_text(unzip *u, s8 text, arena scratch)
+// where UnZip writes them raw. A newline follows unless it ends one, or
+// the text was cut short by the end of the file, where do_string stops.
+static void show_text(unzip *u, s8 text, b32 cut, arena scratch)
 {
     s8 t = {newstr(&scratch, text.len), 0};
     for (iz i = 0; i < text.len && text.s[i]; i++) {
@@ -499,7 +500,9 @@ static void show_text(unzip *u, s8 text, arena scratch)
         i = j + 1;
     }
     info(u, 0, r);
-    info(u, MSG_TNEWLN, S(""));
+    if (!cut) {
+        info(u, MSG_TNEWLN, S(""));
+    }
 }
 
 static s8 const end_sig_msg = S8(
@@ -962,7 +965,7 @@ static i32 list_files(unzip *u, zarchive *ar, arena scratch)
         }
         info(u, 0, JOIN(&tmp, line, shown(u, name, &tmp), S("\n")));
         if (!u->qflag && e->comment.len) {
-            show_text(u, e->comment, tmp);
+            show_text(u, e->comment, 0, tmp);
         }
         tusize += usize;
         tcsize += csize;
@@ -2445,6 +2448,12 @@ static s8 const no_endsig = S8(
     "  the last disk(s) of this archive.\n"
 );
 
+static s8 const no_end64sig = S8(
+    "fatal error: read failure while seeking for End-of-centdir-64"
+    " signature.\n"
+    "  This zipfile is corrupt.\n"
+);
+
 // The central directory's offset as the end record has it, undoing
 // zip_find_end's taking an empty one at offset 0 to be where it is.
 static i64 raw_cdoff(zarchive *ar)
@@ -2519,16 +2528,34 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
         info(u, 0, JOIN(&scratch, S("Archive:  "), path, S("\n")));
     }
 
+    ar.unzip = 1;  // read as UnZip reads it
     i32 r = fd==-2 ? ZAR_ENOEND : zar_open(&ar, u->ctx, fd, size, &u->perm);
     if (r==ZAR_EREAD || r==ZAR_EEOF) {
         info(u, MSG_STDERR, S("error:  zipfile read error\n"));
         err = r==ZAR_EREAD ? PK_BADERR : PK_EOF;
         goto done;
-    } else if (r == ZAR_ENOEND) {
+    }
+
+    // The comment, as find_ecrec shows it, before checking the records,
+    // as far as the file holds it, warning if it ends first
+    b32 cut = r!=ZAR_ENOEND && ar.end.cut;
+    if (r!=ZAR_ENOEND && (ar.end.comment.len || cut) &&
+        (u->zflag || !u->qflag)) {
+        show_text(u, ar.end.comment, cut, scratch);
+        if (cut) {
+            info(u, MSG_STDERR, S("\ncaution:  zipfile comment truncated\n"));
+            err = PK_WARN;
+        }
+    }
+
+    // No end record, or as find_ecrec64 fails, no Zip64 end record where
+    // its locator says, nor just before the locator: perhaps the wrong
+    // file, as UnZip takes it
+    if (r==ZAR_ENOEND || ar.nosig64) {
         if (u->qflag) {
             info(u, MSG_STDERR, JOIN(&scratch, S("["), path, S("]\n")));
         }
-        info(u, MSG_STDERR, no_endsig);
+        info(u, MSG_STDERR, r==ZAR_ENOEND ? no_endsig : no_end64sig);
         if (exe) {
             info(u, MSG_STDERR, JOIN(&scratch, S("note:  "), path,
                  S(" may be a plain executable, not an archive\n")));
@@ -2543,9 +2570,15 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
         return PK_NOZIP;
     }
 
-    // The comment, as find_ecrec shows it, before checking the records
-    if (ar.end.comment.len && (u->zflag || !u->qflag)) {
-        show_text(u, ar.end.comment, scratch);
+    // A Zip64 end record found just before its locator, rather than
+    // where that says: its offsets shift by the data before the archive
+    if (ar.moved64) {
+        if (u->qflag) {
+            info(u, MSG_STDERR, JOIN(&scratch, S("["), path, S("]\n")));
+        }
+        info(u, MSG_STDERR, S("error: End-of-centdir-64 signature not where "
+             "expected (prepended bytes?)\n  (attempting to process "
+             "anyway)\n"));
     }
     if (u->zflag) {
         goto done;
@@ -2560,6 +2593,7 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
         end.disk = end.cddisk = 0;
         switch (zip_check_end32(&end)) {
         case ZIP_OK:
+        case ZIP_ECOUNT:  // read past, as zar_open takes it
             r = ZAR_OK;
             break;
         case ZIP_EPREFIX:
@@ -2579,9 +2613,13 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
         }
         ar.end = end;
     }
+    // Fields that defer to a Zip64 end record that could not be used
+    // (ZAR_EFORMAT) tell nothing: no distance comes of them
     i64 cdoff = raw_cdoff(&ar);
     i64 real  = ar.end.end64>=0 ? ar.end.end64 : ar.end.endpos;
-    i64 extra = real - (cdoff + ar.end.cdsize);
+    b32 sat   = ar.end.end64>=0 &&
+                (ar.end.cdsize==ZIP_MAX32 || cdoff==ZIP_MAX32);
+    i64 extra = sat ? 0 : real - (cdoff + ar.end.cdsize);
     if (r == ZAR_EMULTI) {
         info(u, MSG_STDERR, JOIN(&scratch, S("\nerror ["), path,
              S("]:  zipfile is part of multi-disk archive\n"
@@ -2617,15 +2655,20 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
         goto done;
     }
 
-    // A directory invalid past its first entry is processed up to there,
-    // as UnZip finds it out once it gets there. Checked here, it is read
-    // again as needed, rather than held (zar_reread).
-    u->nentries = ar.end.count;
+    // Central headers are read while they parse, as UnZip reads them,
+    // whatever the count, which they must then match, as a count without
+    // Zip64 matches modulo 65,536. A directory invalid past its first
+    // entry, or of more or fewer entries than its count, is processed up
+    // to there, as UnZip finds it out once it gets there. Checked here,
+    // it is read again as needed, rather than held (zar_reread).
+    u->nentries = 0;
     u->cderr    = CD_OK;
     u->oldshift = 0;
     r = r==ZAR_EFORMAT ? ZAR_EFORMAT : zar_check(&ar);
     switch (r) {
     case ZAR_OK:
+        u->nentries = ar.nread;
+        u->cderr    = ar.endsig ? CD_OK : CD_END;
         break;
     case ZAR_EREAD:
     case ZAR_EEOF:
@@ -2635,8 +2678,7 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
     case ZAR_ENONAME:
     case ZAR_EFORMAT:
         u->nentries = r==ZAR_ENONAME ? ar.noname : ar.bad;
-        u->cderr    = r==ZAR_ENONAME ? CD_NONAME :
-                      ar.bad==ar.end.count ? CD_END : CD_SIG;
+        u->cderr    = r==ZAR_ENONAME ? CD_NONAME : CD_SIG;
         if (u->nentries <= 0) {
             info(u, MSG_STDERR, JOIN(&scratch, S("error ["), path,
                  S("]:  start of central directory not found;\n"

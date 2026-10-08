@@ -48,6 +48,7 @@ enum {
     ZIP_EMULTI,   // split or spanned archive
     ZIP_EPREFIX,  // data precedes the archive (self-extractor)
     ZIP_EFORMAT,  // inconsistent structure
+    ZIP_ECOUNT,   // valid, but for more entries than the directory holds
 };
 
 // An entry, one for each of an existing archive's, and so kept small: a
@@ -78,6 +79,7 @@ typedef struct {
     i64 end64;    // offset of the Zip64 end record, or -1
     i64 endpos;   // offset of the end of central directory record
     s8  comment;
+    b32 cut;      // the comment runs past the end of the file, cut short
     u32 disk;     // disk numbers from the end record
     u32 cddisk;
     u32 ndisk;    // entries on this disk
@@ -318,7 +320,10 @@ static b32 zip_end_reached(zend const *e)
 // Validate the end of central directory record on its own. As Info-ZIP
 // does, a split archive is known by its disk numbers, not by a count of
 // entries on this disk that differs from the total, which, on a single
-// disk, some writers get wrong (where Info-ZIP and UnZip read it).
+// disk, some writers get wrong (where Info-ZIP and UnZip read it). A
+// count of more entries than the directory could hold is ZIP_ECOUNT,
+// which zip refuses, and unzip reads past, as UnZip reads headers until
+// they stop (zar_check).
 static i32 zip_check_end32(zend *e)
 {
     e->end64 = -1;
@@ -327,7 +332,7 @@ static i32 zip_check_end32(zend *e)
     } else if (!zip_end_reached(e)) {
         return e->cdoff+e->cdsize<e->endpos ? ZIP_EPREFIX : ZIP_EFORMAT;
     }
-    return e->count<=e->cdsize/ZIP_CENTRAL_LEN ? ZIP_OK : ZIP_EFORMAT;
+    return e->count<=e->cdsize/ZIP_CENTRAL_LEN ? ZIP_OK : ZIP_ECOUNT;
 }
 
 // Find the end of central directory record among the final n bytes of an
@@ -338,56 +343,65 @@ static i32 zip_check_end32(zend *e)
 // such as in an entry comment, so a Zip64 record is relied upon only if
 // it checks out or the end record's fields call for one, or leave room
 // for one: then its own faults are reported, not the end record's.
+//
+// A signature whose comment runs past the end is stray, perhaps within
+// the comment, unless no other fits: then the last, nearest the end, is
+// taken, as UnZip takes it, its comment cut short (e->cut), which zip
+// refuses and unzip warns of.
 static i32 zip_find_end(u8 *tail, iz n, i64 size, zend *e)
 {
-    i64 base = size - n;
-    for (iz i = n-ZIP_END_LEN; i >= 0; i--) {
-        u8 *p = tail + i;
-        if (get32(p) != ZIP_END_SIG) {
-            continue;
-        }
-        iz clen = get16(p+20);
-        if (clen > n-i-ZIP_END_LEN) {
-            continue;  // a stray signature, perhaps within the comment
-        }
-
-        e->endpos  = base + i;
-        e->comment = (s8){p+ZIP_END_LEN, clen};
-        e->disk    = get16(p+4);
-        e->cddisk  = get16(p+6);
-        e->ndisk   = get16(p+8);
-        e->count   = get16(p+10);
-        e->cdsize  = get32(p+12);
-        e->cdoff   = get32(p+16);
-        e->end64   = -1;
-        if (!e->count && !e->cdsize && !e->cdoff) {
-            // An empty central directory at offset 0, as Info-ZIP writes
-            // one wherever it is, as after an emptied self-extractor's
-            // stub, and UnZip takes for an empty archive: it is here, and
-            // whatever precedes it is a preamble
-            e->cdoff = e->endpos;
-        }
-
-        if (i>=ZIP_LOC64_LEN && get32(p-ZIP_LOC64_LEN)==ZIP_LOC64_SIG) {
-            // On another disk, or one of more than one disk: split. A
-            // total of zero disks, as Microsoft's writers (Windows
-            // Explorer, .NET) put there, is taken for one, as Debian's
-            // UnZip (6.0-29) does, rather than for a split archive
-            u8 *loc   = p - ZIP_LOC64_LEN;
-            u64 off   = get64(loc+8);
-            b32 split = get32(loc+4) || get32(loc+16)>1;
-            b32 ok    = !split && e->endpos>=ZIP_LOC64_LEN+ZIP_END64_LEN &&
-                        off<=(u64)(e->endpos-ZIP_LOC64_LEN-ZIP_END64_LEN);
-            if (ok) {
-                e->end64 = (i64)off;
-                return ZIP_OK;
-            } else if (zip_end_saturated(e) || !zip_end_reached(e)) {
-                return split ? ZIP_EMULTI : ZIP_EFORMAT;
+    iz i = -1;
+    for (iz j = n-ZIP_END_LEN; j >= 0; j--) {
+        if (get32(tail+j) == ZIP_END_SIG) {
+            i = i<0 ? j : i;
+            if ((iz)get16(tail+j+20) <= n-j-ZIP_END_LEN) {
+                i = j;
+                break;
             }
         }
-        return zip_check_end32(e);
     }
-    return ZIP_ENOEND;
+    if (i < 0) {
+        return ZIP_ENOEND;
+    }
+
+    u8 *p    = tail + i;
+    iz  clen = get16(p+20);
+    e->cut     = clen > n-i-ZIP_END_LEN;
+    e->endpos  = size - n + i;
+    e->comment = (s8){p+ZIP_END_LEN, MIN(clen, n-i-ZIP_END_LEN)};
+    e->disk    = get16(p+4);
+    e->cddisk  = get16(p+6);
+    e->ndisk   = get16(p+8);
+    e->count   = get16(p+10);
+    e->cdsize  = get32(p+12);
+    e->cdoff   = get32(p+16);
+    e->end64   = -1;
+    if (!e->count && !e->cdsize && !e->cdoff) {
+        // An empty central directory at offset 0, as Info-ZIP writes one
+        // wherever it is, as after an emptied self-extractor's stub, and
+        // UnZip takes for an empty archive: it is here, and whatever
+        // precedes it is a preamble
+        e->cdoff = e->endpos;
+    }
+
+    if (i>=ZIP_LOC64_LEN && get32(p-ZIP_LOC64_LEN)==ZIP_LOC64_SIG) {
+        // On another disk, or one of more than one disk: split. A total
+        // of zero disks, as Microsoft's writers (Windows Explorer, .NET)
+        // put there, is taken for one, as Debian's UnZip (6.0-29) does,
+        // rather than for a split archive
+        u8 *loc   = p - ZIP_LOC64_LEN;
+        u64 off   = get64(loc+8);
+        b32 split = get32(loc+4) || get32(loc+16)>1;
+        b32 ok    = !split && e->endpos>=ZIP_LOC64_LEN+ZIP_END64_LEN &&
+                    off<=(u64)(e->endpos-ZIP_LOC64_LEN-ZIP_END64_LEN);
+        if (ok) {
+            e->end64 = (i64)off;
+            return ZIP_OK;
+        } else if (zip_end_saturated(e) || !zip_end_reached(e)) {
+            return split ? ZIP_EMULTI : ZIP_EFORMAT;
+        }
+    }
+    return zip_check_end32(e);
 }
 
 static i32 zip_check_end64(u8 const *p, zend *e)
@@ -416,23 +430,21 @@ static i32 zip_check_end64(u8 const *p, zend *e)
     }
     if (cdsize>limit || cdoff>limit || cdoff+cdsize!=(u64)e->end64) {
         b32 prefix = cdoff+cdsize < (u64)e->end64;
-        if (prefix && cdsize<=limit && cdoff<=limit) {
+        if (cdsize<=limit && cdoff<=limit) {
             // Kept, as zip_check_end32 keeps them, so that a reader may
             // shift the offsets by the data before the archive, as UnZip
-            // does: then the central directory ends at the record
+            // does, so that the central directory ends at the record, or
+            // tell how far short of it the directory ends
             e->count  = (i64)total;
             e->cdsize = (i64)cdsize;
             e->cdoff  = (i64)cdoff;
         }
         return prefix ? ZIP_EPREFIX : ZIP_EFORMAT;
     }
-    if (total > cdsize/ZIP_CENTRAL_LEN) {
-        return ZIP_EFORMAT;
-    }
     e->count  = (i64)total;
     e->cdsize = (i64)cdsize;
     e->cdoff  = (i64)cdoff;
-    return ZIP_OK;
+    return total<=cdsize/ZIP_CENTRAL_LEN ? ZIP_OK : ZIP_ECOUNT;
 }
 
 // Parse the Zip64 end record, ZIP_END64_LEN bytes at e->end64, falling
