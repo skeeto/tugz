@@ -1,11 +1,11 @@
 // Unit tests of the unzip program (src/unzipcli.c), run in memory
 // (test/unzipos.c): extraction and what it leaves, overwriting by -n,
 // -o, -f, -u, and the prompt, links made last and nothing written
-// through a link, zip bombs, damaged entries discarded, faults injected,
-// and Windows conventions on any host; in every run, memory claimed only
-// before the file system changes, and nothing changed but below the -d
-// directory. On success prints "all unzip program tests pass". A failure
-// traps.
+// through a link, zip bombs, an archive changed as it is read, damaged
+// entries discarded, faults injected, and Windows conventions on any
+// host; in every run, memory claimed only before the file system
+// changes, and nothing changed but below the -d directory. On success
+// prints "all unzip program tests pass". A failure traps.
 // $ cc -g3 -fsanitize=address,undefined -o tests-unzipcli test/unzipclitests.c
 #include "unzipos.c"
 #include "../src/deflate.c"
@@ -759,6 +759,62 @@ static void test_bomb(os *ctx)
     free(z.s);
 }
 
+// An archive rewritten as it is extracted, as by another process, its
+// central directory read again for each entry: an entry then not among
+// those that the overlap check found, or found again, is refused as
+// overlapped (12), and one that no longer reads as planned, nor fits
+// the room planned for it, ends the run as a read error (3), those
+// extracted before kept, and no memory claimed meanwhile (unzipos.c
+// checks that)
+static void test_changed(os *ctx)
+{
+    xspec spec[] = {
+        {.name="a.txt", .data="a\n"},
+        {.name="b.txt", .data="b\n"},
+        {.name="c.txt", .data="c\n",
+         .cextra=S8("\x99\x99\x06\x00" "abcdef")},  // an unknown field
+    };
+    s8 z = build(spec, countof(spec), 0);
+    for (i32 how = 0; how < 5; how++) {
+        s8  w = {malloc((uz)z.len), z.len};
+        TEST(w.s);
+        bytecopy(w.s, z.s, z.len);
+        u8 *b = w.s + get32(w.s+w.len-22+16) + 46+5;  // the second's header
+        u8 *c = b + 46+5;                             // the third's
+        switch (how) {
+        case 0:
+            put32(c+42, get32(b+42));  // where the second begins
+            break;
+        case 1:
+            put32(c+42, get32(c+42)-1);  // within the second
+            break;
+        case 2:
+            put16(c+10, 99);  // a method not planned for
+            break;
+        case 3:
+            put16(c+28, 6+10);  // its name reaching into the end record
+            break;
+        case 4:
+            put16(c+28, 5+10);  // its name longer, its extra field in it
+            put16(c+30, 0);
+            break;
+        }
+        mfs_reset(ctx);
+        put_archive(ctx, "a.zip", z);
+        ctx->when    = FAULT_CHANGE;
+        ctx->rewrite = w;
+        UNZIP(ctx, how<2 ? 12 : 3, "-q", "a.zip");
+        TEST(output_has(ctx, 3, how<2 ?
+            "error: invalid zip file with overlapped components (possible "
+            "zip bomb)\n" : "error:  zipfile read error\n"));
+        TEST(equals(file_data(ctx, "a.txt"), "a\n"));
+        TEST(equals(file_data(ctx, "b.txt"), "b\n"));
+        TEST(!mfs_get(ctx, "c.txt"));
+        free(w.s);
+    }
+    free(z.s);
+}
+
 // Damaged entries are not kept, but the others are: a bad CRC, stored
 // or deflated, invalid deflated data, and more data than its size
 static void test_damaged(os *ctx)
@@ -1238,6 +1294,7 @@ int main(void)
     test_prompt(ctx);
     test_links(ctx);
     test_bomb(ctx);
+    test_changed(ctx);
     test_damaged(ctx);
     test_faults(ctx);
     test_windows(ctx);

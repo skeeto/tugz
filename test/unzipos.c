@@ -14,9 +14,9 @@
 // (names that differ only in ASCII case are one, links are made as files
 // holding their targets, no umask) are set per run; local time is UTC.
 //
-// Faults to inject: the archive shrinking to a length, or its reads
-// failing past an offset, from when it is opened or from the first
-// change to the file system; writes to extracted files failing past a
+// Faults to inject: the archive shrinking to a length, its reads
+// failing past an offset, or its bytes rewritten in place, from when it
+// is opened or from the first change to the file system; writes to extracted files failing past a
 // total; the nth directory, file, or keep failing; attributes failing;
 // links failing.
 //
@@ -38,6 +38,11 @@
 // Every call that changes the file system is checked to be to the -d
 // directory (unzipos's dest), or below it reached through no link and
 // no "." or ".." component, as unzip must never write elsewhere.
+//
+// The central directory is read again through a window as small as its
+// longest header, so that every archive's is read as a large one's is,
+// re-read for each entry, its reads subject to the faults injected.
+#define UZ_CDWIN 1
 #include "../src/base.c"
 #include "../src/crc32.c"
 #include "../src/inflate.c"
@@ -160,7 +165,8 @@ struct os {
 
     // Faults: from when, the archive (the file so named, or standard
     // input) shrinks to a length, and reads of it past an offset fail
-    // (-1 for neither); writes to created files past a total fail (-1
+    // (-1 for neither), or the file's bytes are rewritten in place, as
+    // by another process, by those of rewrite (if not null); writes to created files past a total fail (-1
     // for none); the nth mkdir, create, or keep fails (0 for none);
     // os_setattrs and os_setdirattrs fail for the OS_A* flags given;
     // links fail; writes to standard output fail
@@ -168,6 +174,7 @@ struct os {
     i32     when;
     i64     shrinkto;
     i64     failreadat;
+    s8      rewrite;
     i64     failwriteat;
     i32     failmkdir;
     i32     failcreate;
@@ -411,6 +418,11 @@ static void mfs_arm(os *ctx, i32 when)
             }
             ctx->inlen = ctx->stdinfile ? MIN(ctx->inlen, (iz)ctx->shrinkto)
                                         : ctx->inlen;
+            ctx->faulted = 1;
+        }
+        mfile *f = ctx->rewrite.s ? mfs_lookup(ctx, cstrs8(ctx->archive)) : 0;
+        if (f && f->type==FT_FILE) {
+            bytecopy(f->data, ctx->rewrite.s, MIN(f->len, ctx->rewrite.len));
             ctx->faulted = 1;
         }
     }
@@ -1078,6 +1090,7 @@ static void mfs_reset(os *ctx)
     ctx->when        = 0;
     ctx->shrinkto    = -1;
     ctx->failreadat  = -1;
+    ctx->rewrite     = (s8){0};
     ctx->failwriteat = -1;
     ctx->failmkdir   = 0;
     ctx->failcreate  = 0;
