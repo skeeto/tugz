@@ -4,10 +4,10 @@
 
 A from-specification implementation of gzip ([RFC 1952][]), zlib ([RFC
 1950][]), and DEFLATE ([RFC 1951][]) in C11 with C23 attributes, for GCC
-or Clang, as a drop-in `gzip` command, a streaming library, and an
-Info-ZIP compatible `zip`. It compresses faster than zlib at every level
-with equal or better ratios, and validates input exactly as strictly as
-zlib.
+or Clang, as a drop-in `gzip` command, a streaming library, and Info-ZIP
+compatible `zip` and `unzip`. It compresses faster than zlib at every
+level with equal or better ratios, and validates input exactly as
+strictly as zlib.
 
 The core has no dependencies, no global state, no platform conditionals,
 and does no I/O. Each program is a unity build: a platform layer
@@ -26,20 +26,24 @@ Windows, CRT-free (w64devkit):
 Hardware CRC-32 is used automatically: PCLMULQDQ on x86 (detected at run
 time), and the CRC instructions on ARMv8 targets that have them.
 
-The zip program builds the same way from `platform/zip_posix.c` and
-`platform/zip_windows.c`.
+The zip and unzip programs build the same way from
+`platform/zip_posix.c` and `platform/zip_windows.c`, and from
+`platform/unzip_posix.c` and `platform/unzip_windows.c`:
 
-CMake builds the library, both programs, and the tests (see
-Development):
+    $ cc -O2 -o unzip platform/unzip_posix.c
+    $ cc -O2 -fno-builtin -nostartfiles -o unzip.exe platform/unzip_windows.c -lmemory -lshell32 -lkernel32
+
+CMake builds the library, the programs, and the tests (see Development):
 
     $ cmake -B build && cmake --build build
 
-Each release also carries `gzip.c` and `zip.c`, the Windows builds as
-single source files with their build commands in the header, which
-`cmake -P cmake/amalgamate.cmake` writes from a source tree:
+Each release also carries `gzip.c`, `zip.c`, and `unzip.c`, the Windows
+builds as single source files with their build commands in the header,
+which `cmake -P cmake/amalgamate.cmake` writes from a source tree:
 
     $ cc -O2 -nostartfiles -o gzip.exe gzip.c -lmemory
     $ cc -O2 -nostartfiles -o zip.exe zip.c -lmemory
+    $ cc -O2 -nostartfiles -o unzip.exe unzip.c -lmemory
 
 ## Library
 
@@ -94,7 +98,7 @@ C11 alone lacks the C23 attributes. Options:
 | Option | Default | Builds |
 |---|---|---|
 | `TUGZ_BUILD_LIBRARY` | ON | the library |
-| `TUGZ_BUILD_GZIP`, `TUGZ_BUILD_ZIP` | top level | the programs |
+| `TUGZ_BUILD_GZIP`, `TUGZ_BUILD_ZIP`, `TUGZ_BUILD_UNZIP` | top level | the programs |
 | `TUGZ_BUILD_TESTS` | top level, not cross | the tests (CTest) |
 | `TUGZ_BUILD_FUZZ` | OFF | the libFuzzer harnesses (LLVM clang) |
 | `TUGZ_BUILD_BENCH` | OFF | the benchmark |
@@ -104,10 +108,11 @@ C11 alone lacks the C23 attributes. Options:
 | `TUGZ_LIBMEMORY` | AUTO | Windows programs with w64devkit's `-lmemory` |
 
 A plain `cmake --install` installs whatever was built: the library, its
-header, and the package, and the programs as `gzip` and `zip` in the
-prefix's `bin`, where they can serve as the system's own. Configure with
-`-DTUGZ_BUILD_GZIP=OFF -DTUGZ_BUILD_ZIP=OFF` to install the library
-alone, or install with `--component programs` for the programs alone.
+header, and the package, and the programs as `gzip`, `zip`, and `unzip`
+in the prefix's `bin`, where they can serve as the system's own.
+Configure with `-DTUGZ_BUILD_GZIP=OFF -DTUGZ_BUILD_ZIP=OFF
+-DTUGZ_BUILD_UNZIP=OFF` to install the library alone, or install with
+`--component programs` for the programs alone.
 
 ## Usage
 
@@ -236,6 +241,107 @@ streaming (adding `-`, which `-d` takes as an entry's name, or to
 standard output without an archive name), `-T`, `-m`, `-n`, `--out`, and
 logging.
 
+## unzip
+
+A subset of Info-ZIP UnZip 6.0 with busybox unzip's features, such as
+`unzip -q release-1.2.3.zip -d dist`:
+
+    unzip [-opts[modifiers]] file[.zip] [list] [-x xlist] [-d exdir]
+
+| Option | Meaning |
+|---|---|
+| `-l`, `-v` | list entries, briefly or verbosely (`-v` alone: version) |
+| `-t` | test entries' data |
+| `-p`, `-c` | extract to standard output, silently, or naming each entry |
+| `-z` | show only the archive comment |
+| `-d` | extract into the directory that follows (or `-dDIR`) |
+| `-x` | exclude the members that follow |
+| `-n`, `-o` | never, or always, replace existing files |
+| `-f`, `-u` | freshen existing files only; update them and add new ones |
+| `-j` | junk paths: extract every entry into one directory |
+| `-C` | match member names ignoring case |
+| `-D`, `-DD` | restore no directory times, or no times at all |
+| `-V` | keep a `;N` version suffix |
+| `-K`, `-X` | keep set-ID and sticky bits; restore owners (POSIX only) |
+| `-q`, `-qq` | quiet, quieter |
+| `-h`, `-hh` | usage, more help |
+
+Options follow Info-ZIP's grammar: letters combine (`-qo`), a `-` before
+one negates it (`--q` cancels a `-q` from the environment), `-d` may
+come anywhere, and `-x` takes the members after it. Options in `UNZIP`,
+or if it has none `UNZIPOPT`, apply first. As in busybox, an argument
+after the archive made only of option letters is taken for options
+(`unzip a.zip -o`), and an archive of `-` is read from standard input, a
+file in place and a pipe into memory, never replacing a file unless
+`-o`, as a prompt's answers would come from the archive. The archive is
+tried as named, then with `.zip` and `.ZIP` added, and a name with
+wildcards processes each match, in name order, with Info-ZIP's summary.
+Members are wildcards, matched against entries' names as Info-ZIP
+matches them: `*` matches `/` too, `[...]` is a set, and `\` escapes,
+except on Windows, where it separates, as `/` does.
+
+Extraction makes directories as needed, and the `-d` directory one level
+deep, as Info-ZIP does. An existing file is never replaced under `-n`,
+always under `-o`, and otherwise only once Info-ZIP's question, `replace
+NAME? [y]es, [n]o, [A]ll, [N]one, [r]ename: `, is answered on standard
+input: `A` and `N` answer for the rest of the run, and the end of input
+answers `N`, with a warning (1). `-f` and `-u` compare times as Info-ZIP
+does. A file is replaced by removing it, then creating a new one.
+Symbolic links are made last, once the files are extracted, and nothing
+is written through a link on disk, whether from the archive or already
+there: an entry whose path passes through one fails ("exists but is not
+directory", 2), and one in the way of a file is removed, not followed.
+Only the `-d` directory, and the path to it, may be links. A file whose
+data is damaged (a bad CRC, invalid data, more than its size) or cannot
+be written is not kept. Modes, times (from extended timestamps, else the
+DOS time, local), and under `-X` owners are restored as Info-ZIP
+restores them, directories' once their files are in.
+
+Names become paths as Info-ZIP's make them, with its warnings: leading
+`/` and `..` components are dropped, `\` separates in a name from MS-DOS
+that has no `/`, control characters are dropped, and so is a `;N`
+version, unless `-V`. A name is UTF-8 if flag bit 11 says so, or if it
+comes from a Unicode path field whose CRC checks out. Otherwise its
+bytes are used as they are, except on Windows, where, as Info-ZIP's port
+reads them, a name made on MS-DOS (as Explorer's zip folder makes them),
+OS/2, or by WinZip on NTFS is decoded from the OEM code page, and any
+other that is not UTF-8 from the ANSI code page. Names are shown in
+UTF-8, with control characters as `^X`.
+
+On Windows, names are also mapped as Info-ZIP's port maps them: `:`,
+`\`, `<`, `>`, `|`, `"`, `?`, and `*` become `_`, and a device's name
+(`aux.txt`, `com1`) gets a `_` before it, while trailing dots and spaces
+are dropped, and paths may be of any length. Links become files holding
+their targets, as in the port, and junctions count as links. Read-only,
+hidden, and system attributes are restored, and DOS times are local by
+each year's own daylight saving rules. `-K` and `-X` are refused (10).
+The console is read and written in UTF-16, so a new name typed at the
+prompt may be any Unicode.
+
+Listings show dates as `YYYY-MM-DD`, as Debian's UnZip does; otherwise
+messages, the streams they go to, and listing formats are Info-ZIP's, as
+are exit statuses: 0 success, 1 warnings, 2 errors in some entries, 3 a
+damaged archive, 4 out of memory, 9 no archive found, 10 bad or
+unsupported options, 11 no matching entries, 50 a failed write, 51 an
+archive cut short, and 81 entries skipped, plus Debian's 12 for
+overlapped entries, a zip bomb. Encrypted entries, and those compressed
+by methods other than stored and deflated (Deflate64, bzip2, LZMA, ...),
+are skipped (81).
+
+Deliberate departures from Info-ZIP, all listed in
+[docs/notes.md](docs/notes.md#departures-from-info-zip-unzip), include
+busybox's options after the archive and `-`, overlapped entries found
+before any is read, links never followed below the `-d` directory,
+damaged and failed files removed rather than kept as written, output
+that stops at an entry's size, control characters in comments shown as
+`^X`, a new name from the prompt mapped as entry names are, below the
+`-d` directory, and on Windows, links made last and junctions never
+followed. UnZip's other options are refused (10) rather than ignored:
+`-a`, `-B`, `-E`, `-F`, `-i`, `-I`, `-J`, `-L`, `-M`, `-N`, `-O`, `-P`,
+`-Q`, `-s`, `-S`, `-T`, `-U`, `-W`, `-Y`, `-Z`, `-$`, `-:`, `-^`, `-2`,
+and `-/`, among them text conversion, passwords, ZipInfo mode, and
+`-:`'s paths outside the destination.
+
 ## Performance
 
 Silesia corpus on Apple M-series, compression ratio @ MB/s:
@@ -249,23 +355,32 @@ Silesia corpus on Apple M-series, compression ratio @ MB/s:
 ## Development
 
     $ cmake -B build && cmake --build build
-    $ ctest --test-dir build   # unit, library, and in-memory zip tests
-                               # (ASan/UBSan), then gzip and zip end to end
+    $ ctest --test-dir build   # unit, library, and in-memory zip and
+                               # unzip tests (ASan/UBSan), then gzip,
+                               # zip, and unzip end to end
 
-Options add the libFuzzer harnesses, including differential ones
-(`-DTUGZ_BUILD_FUZZ=ON`, with LLVM clang as `CMAKE_C_COMPILER`), and a
-benchmark against zlib and libdeflate (`-DTUGZ_BUILD_BENCH=ON`).
+unzip's tests are `tests-unzip`, its rules against tables recorded from
+UnZip 6.0, `tests-unzipcli`, the program in memory (with Windows
+conventions too), and `unzip-cli`, which runs `test/unzip.sh` to compare
+its statuses, output, and extracted trees with Info-ZIP's (`REF=unzip sh
+test/unzip.sh build/unzip`); on Windows, `unzip-windows` runs
+`test/unzip_windows.sh` under w64devkit instead (`TUGZ_ZIP=zip.exe sh
+test/unzip_windows.sh unzip.exe`), comparing with Explorer, .NET, and
+tar. Options add the libFuzzer harnesses, `fuzz-unzip` among them, and
+differential ones (`-DTUGZ_BUILD_FUZZ=ON`, with LLVM clang as
+`CMAKE_C_COMPILER`), and a benchmark against zlib and libdeflate
+(`-DTUGZ_BUILD_BENCH=ON`).
 
 Tests and benchmarks use zlib and libdeflate as references, and zip
 archives are verified with unzip, Python's zipfile, and on Windows with
 Explorer, .NET, and tar. So the full test run needs zlib, libdeflate, a
 reference gzip (`/usr/bin/gzip`, or `-DTUGZ_REF_GZIP=...`), and
-Info-ZIP's `unzip` and `zipinfo`, while Python (through `uv` if
-installed) adds checks. Configuring warns of a test skipped or disabled
-for want of one. Tested on macOS,
-Linux (x86-64, i386, aarch64, big-endian PowerPC), and Windows (x86-64,
-i686). See [docs/notes.md](docs/notes.md) for design decisions, test
-coverage, and the optimization log.
+Info-ZIP's `unzip` (`-DTUGZ_UNZIP=...`) and `zipinfo`, while Python
+(through `uv` if installed) adds checks, and crafts most of unzip's
+archives. Configuring warns of a test skipped or disabled for want of
+one. Tested on macOS, Linux (x86-64, i386, aarch64, big-endian PowerPC),
+and Windows (x86-64, i686). See [docs/notes.md](docs/notes.md) for
+design decisions, test coverage, and the optimization log.
 
 [RFC 1950]: https://www.rfc-editor.org/rfc/rfc1950
 [RFC 1951]: https://www.rfc-editor.org/rfc/rfc1951
