@@ -527,6 +527,12 @@ grep -q '^2 archives were successfully processed\.$' err ||
 "$UNZIP" -l 'wz/*.*' >out 2>err || fail "*.*: status $?"
 grep -q '^3 archives were successfully processed\.$' err ||
     fail "*.*: $(cat err)"
+# ...after a device prefix too, whose ? is no wildcard
+for p in "//?/$(pwd)/wz/W?.ZIP" "\\\\?\\$(pwd | tr / '\\')\\wz\\w?.zip"; do
+    "$UNZIP" -l "$p" >out 2>err || fail "wildcard $p: status $?"
+    grep -q '^2 archives were successfully processed\.$' err ||
+        fail "wildcard $p: $(cat err)"
+done
 expect_status 9 "$UNZIP" -l 'wz/none*.zip'
 "$UNZIP" -l 'wz/none*.zip' 2>err || true
 grep -q '^No zipfiles found\.$' err || fail "no match: $(cat err)"

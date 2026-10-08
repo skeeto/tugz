@@ -588,6 +588,20 @@ if [ -n "$windows" ]; then
     "$GZIP" -d 'wild/*.none' 2>none.err || true
     grep -qx 'gzip: wild/\*\.none\.gz: No such file or directory' none.err ||
         fail "-d wildcard matching nothing: $(cat none.err)"
+    # ...after a device prefix, whose ? is no wildcard, and a drive
+    here=$(pwd)  # C:/...
+    win=$(printf %s "$here" | tr / '\\')
+    drive=$(printf %s "$here" | cut -c1-2)
+    for p in "//?/$here/wild/*.txt" "\\\\?\\$win\\wild\\*.txt" \
+             "//./$here/wild/*.txt" "${drive}wild\\*.txt"; do
+        [ "$("$GZIP" -c "$p" | "$GZIP" -dc)" = Ba ] || fail "wildcard: $p"
+    done
+    unc="\\\\?\\UNC\\localhost\\$(printf %s "$drive" | cut -c1)\$$(
+        printf %s "$win" | cut -c3-)\\wild"
+    if "$GZIP" -c "$unc\\a.txt" >/dev/null 2>&1; then  # admin share
+        [ "$("$GZIP" -c "$unc\\*.txt" | "$GZIP" -dc)" = Ba ] ||
+            fail "wildcard: $unc\\*.txt"
+    fi
     "$GZIP" 'wild/*.txt'
     for f in a.txt.gz B.TXT.gz c.txtx h.txt s.txt; do
         [ -e wild/$f ] || fail "in place wildcard: no $f"

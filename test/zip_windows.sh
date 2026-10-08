@@ -165,6 +165,16 @@ list w2.zip >got
 printf 'TREE/a.txt\ntree/sub/random\ntree/sub/text\n' >want.txt
 cmp -s got want.txt || fail "wildcard case and separators: $(cat got)"
 expect_status 12 "$ZIP" w3.zip 'tree/*.none'
+# ...after a device prefix too, whose ? is no wildcard
+here=$(pwd)
+win=$(printf %s "$here" | tr / '\\')
+for p in "//?/$here/tree/*.txt" "\\\\?\\$win\\tree\\*.txt"; do
+    rm -f w6.zip
+    "$ZIP" -q w6.zip "$p" || fail "wildcard $p: status $?"
+    list w6.zip | grep -v caf | sed 's|.*/tree/|tree/|' | sort >got
+    printf 'tree/a.txt\ntree/b.txt\ntree/literals.txt\n' >want.txt
+    cmp -s got want.txt || fail "wildcard $p: $(cat got)"
+done
 
 # ...as Info-ZIP's dosmatch does: a name without a period matches as if
 # it ended in one, so *.* matches every (unhidden) name

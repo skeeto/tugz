@@ -164,13 +164,21 @@ static iz expand_wild(os *ctx, s8 path, b32 all, i32 flags,
 {
     // Find the first component with a wildcard. With Windows rules
     // (ZIP_DOS), '\' separates them too, and a drive ends one: "C:*.c"
-    // lists the drive's current directory, "C:".
+    // lists the drive's current directory, "C:". A device prefix, "\\?\"
+    // or "\\.\" with either slash, is no component: its '?' is no
+    // wildcard.
     b32 win   = flags & ZIP_DOS;
     b32 colon = win && path.len>=2 && path.s[1]==':';
     u8  drive = colon ? (u8)(path.s[0] | 0x20) : 0;
+    b32 dev   = win && path.len>=4 &&
+                (path.s[0]=='/' || path.s[0]=='\\') &&
+                (path.s[1]=='/' || path.s[1]=='\\') &&
+                (path.s[2]=='?' || path.s[2]=='.') &&
+                (path.s[3]=='/' || path.s[3]=='\\');
     iz  beg   = 0;
     iz  end   = 0;
-    for (iz i = drive>='a' && drive<='z' ? 2 : 0;; i = end + 1) {
+    iz  first = dev ? 4 : drive>='a' && drive<='z' ? 2 : 0;
+    for (iz i = first;; i = end + 1) {
         beg = i;
         for (end = i; end<path.len && path.s[end]!='/' &&
                       (!win || path.s[end]!='\\'); end++) {}
