@@ -235,12 +235,18 @@ typedef struct {
     osattrs attrs;   // the owner, with -X
     u64     dev;     // the placeholder's identity
     u64     ino[2];
+    b32     gone;    // its placeholder was replaced by a later entry
 } xlink;
 
+// The links, and an index of their placeholders' identities: a table
+// of 1 + a link's position (0 for none), open addressed, at most half
+// full
 typedef struct {
     xlink *data;
     iz     len;
     iz     cap;
+    iz    *index;
+    iz     mask;
 } xlinks;
 
 // A directory created by its own entry, to be given its attributes once
@@ -1703,6 +1709,42 @@ static u8 *kept(unzip *u, iz n)
     return p;
 }
 
+// Where a placeholder's identity begins its search in the links' index.
+static iz link_slot(xlinks *ls, u64 dev, u64 const ino[2])
+{
+    u64 h = (dev*0x9e3779b97f4a7c15u ^ ino[0]) * 0xbf58476d1ce4e5b9u;
+    h = (h ^ ino[1]) * 0x94d049bb133111ebu;
+    return (iz)((h ^ h>>32) & (u64)ls->mask);
+}
+
+// Index a link by its placeholder's identity.
+static void index_link(xlinks *ls, xlink *k)
+{
+    iz i = link_slot(ls, k->dev, k->ino);
+    for (; ls->index[i]; i = (i + 1) & ls->mask) {}
+    ls->index[i] = k - ls->data + 1;
+}
+
+// A file of that identity, just removed so that a later entry of its
+// name can replace it, makes no link of any whose placeholder it was:
+// UnZip finds its placeholder replaced, and its link "invalid", as the
+// file that a file system may give the same identity would otherwise
+// not be (a link replaced by a link then leaves the later). An identity
+// unknown (zero, as on some Windows file systems) is no placeholder's.
+static void replaced_placeholder(xlinks *ls, os_info *st)
+{
+    if (!ls->len || st->type!=FT_FILE || st->size ||
+        (!st->ino[0] && !st->ino[1])) {
+        return;  // no placeholder
+    }
+    for (iz i = link_slot(ls, st->dev, st->ino); ls->index[i];
+         i = (i + 1) & ls->mask) {
+        xlink *k = ls->data + ls->index[i] - 1;
+        k->gone |= k->dev==st->dev && k->ino[0]==st->ino[0] &&
+                   k->ino[1]==st->ino[1];
+    }
+}
+
 // Extract an entry, its local header found at l, its name as name, as
 // extract.c's extract_or_test_entrylist and extract_or_test_member.
 // Returns a status, with *stop set when a write failed and the user does
@@ -1866,12 +1908,18 @@ static i32 extract_member(unzip *u, zarchive *ar, zentry *e, s8 name,
     // Replace what is there, removing it, as open_outfile does, so as
     // never to write through a link, then creating the file anew, or for
     // a link, an empty file to hold its place until links are made
+    os_info old = {0};
+    if (have!=DOES_NOT_EXIST && !os_stat(ctx, full, 0, &old, scratch)) {
+        old.type = FT_OTHER;  // gone already, or not to be known
+    }
     if (have!=DOES_NOT_EXIST && !os_remove(ctx, full, scratch) &&
         !os_missing(ctx)) {
         info(u, MSG_STDERR, JOIN(&scratch, S("error:  cannot delete old "),
              shown(u, full, &scratch), S("\n        "), os_error(ctx),
              S("\n")));
         return MAX(err, PK_DISK);
+    } else if (have != DOES_NOT_EXIST) {
+        replaced_placeholder(&u->links, &old);
     }
     i32 fd = os_open(ctx, full, OS_CREATE, scratch);
     if (fd < 0) {
@@ -1925,6 +1973,7 @@ static i32 extract_member(unzip *u, zarchive *ar, zentry *e, s8 name,
         k->dev    = id.dev;
         k->ino[0] = id.ino[0];
         k->ino[1] = id.ino[1];
+        index_link(&u->links, k);
         if (u->Xflag && (ux.flags & UZ_OWNER)) {
             k->attrs.uid   = ux.uid;
             k->attrs.gid   = ux.gid;
@@ -1992,7 +2041,8 @@ static i32 finish_links(unzip *u, arena scratch)
         xlink  *k    = u->links.data + i;
         s8      none = {0};
         os_info st   = {0};
-        b32 ok = linkless(ctx, k->path, u->root.len, &none, tmp) &&
+        b32 ok = !k->gone &&
+                 linkless(ctx, k->path, u->root.len, &none, tmp) &&
                  os_stat(ctx, k->path, 0, &st, tmp) && st.type==FT_FILE &&
                  !st.size && st.dev==k->dev && st.ino[0]==k->ino[0] &&
                  st.ino[1]==k->ino[1];
@@ -2216,7 +2266,10 @@ static zspans plan(unzip *u, zarchive *ar, arena *scratch)
         if (keep > (iz)((uz)-1>>1)) {
             os_oom(u->ctx);  // larger than the address space
         }
-        u->links    = (xlinks){new(scratch, nlinks, xlink), 0, nlinks};
+        iz slots = 1;
+        for (; slots < 2*nlinks; slots *= 2) {}
+        u->links    = (xlinks){new(scratch, nlinks, xlink), 0, nlinks,
+                               new(scratch, slots, iz), slots-1};
         u->dirs     = (xdirs){new(scratch, ndirs, xdir), 0, ndirs};
         u->nlinks   = nlinks;
         u->ndirs    = ndirs;

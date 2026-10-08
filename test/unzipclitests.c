@@ -400,10 +400,10 @@ static s8 six_files(void)
 }
 
 // Whether a file is the one given, unreplaced.
-static b32 same_file(os *ctx, char const *name, u64 ino)
+static b32 same_file(os *ctx, char const *name, u64 id)
 {
     mfile *f = mfs_get(ctx, name);
-    return f && f->ino==ino;
+    return f && f->id==id;
 }
 
 // Existing files: kept by -n, all replaced by -o, the older replaced and
@@ -431,11 +431,11 @@ static void test_overwrite(os *ctx)
         mfs_put(ctx, "out", FT_DIR, 0, 0, 0);
         mfs_put(ctx, "out/p", FT_DIR, 0, 0, 0);
         u64 a = mfs_put(ctx, "out/p/a.txt", FT_FILE, "old", 3,
-                        1500000000)->ino;
+                        1500000000)->id;
         u64 b = mfs_put(ctx, "out/p/b.txt", FT_FILE, "new", 3,
-                        1700000000)->ino;
+                        1700000000)->id;
         u64 d = mfs_put(ctx, "out/p/d.txt", FT_FILE, "now", 3,
-                        1600000000)->ino;
+                        1600000000)->id;
         UNZIP(ctx, 0, cases[k].opts, "a.zip", "p/[abcd].txt", "-d", "out");
         TEST(same_file(ctx, "out/p/a.txt", a) != cases[k].replaced[0]);
         TEST(same_file(ctx, "out/p/b.txt", b) != cases[k].replaced[1]);
@@ -462,11 +462,11 @@ static void test_prompt(os *ctx)
     mfs_reset(ctx);
     put_archive(ctx, "a.zip", z);
     UNZIP(ctx, 0, "-q", "a.zip");
-    u64 ino[6];
+    u64 id[6];
     for (i32 i = 0; i < 6; i++) {
         char name[8];
         snprintf(name, sizeof(name), "p/%c.txt", 'a'+i);
-        ino[i] = mfs_get(ctx, name)->ino;
+        id[i] = mfs_get(ctx, name)->id;
     }
 
     put_stdin(ctx, "y\nn\nwhat\n\nr\n\n\nren/x.txt\nA\n");
@@ -487,15 +487,15 @@ static void test_prompt(os *ctx)
         " extracting: p/d.txt                 \n"
         " extracting: p/e.txt                 \n"
         " extracting: p/f.txt                 \n"));
-    TEST(!same_file(ctx, "p/a.txt", ino[0]));
-    TEST(same_file(ctx, "p/b.txt", ino[1]));
-    TEST(same_file(ctx, "p/c.txt", ino[2]));
+    TEST(!same_file(ctx, "p/a.txt", id[0]));
+    TEST(same_file(ctx, "p/b.txt", id[1]));
+    TEST(same_file(ctx, "p/c.txt", id[2]));
     TEST(equals(file_data(ctx, "ren/x.txt"), "ccc\n"));
     for (i32 i = 3; i < 6; i++) {
         char name[8];
         snprintf(name, sizeof(name), "p/%c.txt", 'a'+i);
-        TEST(!same_file(ctx, name, ino[i]));
-        ino[i] = mfs_get(ctx, name)->ino;
+        TEST(!same_file(ctx, name, id[i]));
+        id[i] = mfs_get(ctx, name)->id;
     }
 
     put_stdin(ctx, "n\nN\n");
@@ -506,7 +506,7 @@ static void test_prompt(os *ctx)
     for (i32 i = 3; i < 6; i++) {
         char name[8];
         snprintf(name, sizeof(name), "p/%c.txt", 'a'+i);
-        TEST(same_file(ctx, name, ino[i]));
+        TEST(same_file(ctx, name, id[i]));
     }
 
     put_stdin(ctx, "");
@@ -515,22 +515,22 @@ static void test_prompt(os *ctx)
         "Archive:  a.zip\n"
         "replace p/e.txt? [y]es, [n]o, [A]ll, [N]one, [r]ename: "
         " NULL\n(EOF or read error, treating as \"[N]one\" ...)\n"));
-    TEST(same_file(ctx, "p/e.txt", ino[4]));
-    TEST(same_file(ctx, "p/f.txt", ino[5]));
+    TEST(same_file(ctx, "p/e.txt", id[4]));
+    TEST(same_file(ctx, "p/f.txt", id[5]));
 
     // A new name as a directory makes one; the end of input when asked
     // for one keeps the name, as UnZip, and so asks again
     put_stdin(ctx, "r\nnew/dir/\n");
     UNZIP(ctx, 0, "-q", "a.zip", "p/f.txt");
     TEST(mfs_get(ctx, "new/dir")->type == FT_DIR);
-    TEST(same_file(ctx, "p/f.txt", ino[5]));
+    TEST(same_file(ctx, "p/f.txt", id[5]));
     put_stdin(ctx, "r\n");
     UNZIP(ctx, 1, "-q", "a.zip", "p/f.txt");
     TEST(output_is(ctx, 2,
         "replace p/f.txt? [y]es, [n]o, [A]ll, [N]one, [r]ename: new name: "
         "replace p/f.txt? [y]es, [n]o, [A]ll, [N]one, [r]ename: "
         " NULL\n(EOF or read error, treating as \"[N]one\" ...)\n"));
-    TEST(same_file(ctx, "p/f.txt", ino[5]));
+    TEST(same_file(ctx, "p/f.txt", id[5]));
 
     // Many empty new names, each asked for again, need no more memory
     static char many[4096];
@@ -730,6 +730,60 @@ static void test_links(os *ctx)
     TEST(output_is(ctx, 3, "warning:  symbolic link (far) failed: target "
                            "too long\n"));
     TEST(!mfs_get(ctx, "far"));
+    free(d.s);
+
+    // A placeholder replaced by a later entry makes no link, though the
+    // file system gives the later file its inode, as ext4 does (and
+    // unzipos.c): a later link is made, and an empty file left, as by
+    // UnZip, whose placeholder holds the target
+    xspec linklink[] = {
+        {.name="x", .data="first-target", .extattr=LINKM},
+        {.name="x", .data="second-target", .extattr=LINKM},
+    };
+    d = build(linklink, countof(linklink), 0);
+    mfs_reset(ctx);
+    put_archive(ctx, "ll.zip", d);
+    UNZIP(ctx, 0, "-o", "ll.zip");
+    TEST(output_is(ctx, 3,
+        "Archive:  ll.zip\n"
+        "    linking: x                       -> first-target \n"
+        "    linking: x                       -> second-target \n"
+        "finishing deferred symbolic links:\n"
+        "warning:  deferred symlink (x) failed:\n"
+        "          invalid placeholder file\n"
+        "  x                      -> second-target\n"));
+    f = mfs_get(ctx, "x");
+    TEST(f->type==FT_LINK && equals((s8){f->data, f->len}, "second-target"));
+    free(d.s);
+    xspec linkempty[] = {
+        {.name="x", .data="first-target", .extattr=LINKM},
+        {.name="x", .data=""},
+    };
+    d = build(linkempty, countof(linkempty), 0);
+    mfs_reset(ctx);
+    put_archive(ctx, "le.zip", d);
+    UNZIP(ctx, 0, "-o", "le.zip");
+    TEST(output_is(ctx, 3,
+        "Archive:  le.zip\n"
+        "    linking: x                       -> first-target \n"
+        " extracting: x                       \n"
+        "finishing deferred symbolic links:\n"
+        "warning:  deferred symlink (x) failed:\n"
+        "          invalid placeholder file\n"));
+    TEST(mfs_get(ctx, "x")->type == FT_FILE);
+    TEST(equals(file_data(ctx, "x"), ""));
+    // Not its name but its identity: on Windows, a name in another case
+    linkempty[1].name = "X";
+    free(d.s);
+    d = build(linkempty, countof(linkempty), 0);
+    mfs_reset(ctx);
+    ctx->windows = 1;
+    put_archive(ctx, "le.zip", d);
+    UNZIP(ctx, 0, "-qo", "le.zip");
+    TEST(output_is(ctx, 3,
+        "warning:  deferred symlink (x) failed:\n"
+        "          invalid placeholder file\n"));
+    TEST(equals(file_data(ctx, "x"), ""));
     free(d.s);
     free(z.s);
 }
@@ -1468,7 +1522,7 @@ static void test_stdin(os *ctx)
     for (i32 file = 0; file < 2; file++) {
         mfs_reset(ctx);
         mfs_put(ctx, "p", FT_DIR, 0, 0, 0);
-        u64 a = mfs_put(ctx, "p/a.txt", FT_FILE, "old", 3, 1)->ino;
+        u64 a = mfs_put(ctx, "p/a.txt", FT_FILE, "old", 3, 1)->id;
         ctx->in        = z.s;
         ctx->inlen     = z.len;
         ctx->stdinfile = file;

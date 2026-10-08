@@ -352,7 +352,7 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
             }
             mfile *old = 0;
             for (i32 k = 0; k<before.n && !old; k++) {
-                old = before.files[k].ino==f->ino ? before.files+k : 0;
+                old = before.files[k].id==f->id ? before.files+k : 0;
             }
             if (old) {
                 // Not written over, though attributes may be set

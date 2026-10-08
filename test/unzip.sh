@@ -636,13 +636,17 @@ xsame ../deflate64.zip
 # dropped, absolute paths made relative, '\' from MS-DOS, control
 # characters, ";N" (-V); and links that later entries would write
 # through: those entries fail, as in UnZip
-for z in traversal linkfile linkabs linkdir linkdup; do
+for z in traversal linkfile linkabs linkdir linkdup linklink linkempty; do
     xsame ../$z.zip
     xsame -q ../$z.zip
 done
 xsame -j ../traversal.zip
 xsame -V ../traversal.zip
 [ $apple = 1 ] || xsame -o ../linkdup.zip  # (Apple's: status 2)
+# A placeholder replaced: the later link made, or the empty file left
+# (Apple's: status 2, as above)
+[ $apple = 1 ] || xsame -o ../linklink.zip
+[ $apple = 1 ] || xsame -o ../linkempty.zip
 mkdir outside
 [ -z "$(ls outside)" ] || fail "written outside: $(ls outside)"
 

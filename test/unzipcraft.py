@@ -483,6 +483,16 @@ write("linkdup.zip", build([
     unix("same", b"a target", kind=LINK, mode=0o777),
     unix("same", b"a file\n"),
 ]))
+# A link replaced by a later link, or by an empty file, which a file
+# system such as ext4 gives the placeholder's inode
+write("linklink.zip", build([
+    unix("x", b"first-target", kind=LINK, mode=0o777),
+    unix("x", b"second-target", kind=LINK, mode=0o777),
+]))
+write("linkempty.zip", build([
+    unix("x", b"first-target", kind=LINK, mode=0o777),
+    unix("x"),
+]))
 write("plain.zip", build([unix("pre/x.txt", b"x\n"), unix("f", b"f\n")]))
 
 # Sizes and offsets in Zip64 fields of each entry

@@ -1210,7 +1210,20 @@ for entries.
   symbolic links:"), each placeholder still there, reached through no
   link, empty, and the same file, is removed and the link made in its
   place (with `-X`, given its owner by `lchown`); otherwise "invalid
-  placeholder file".
+  placeholder file". A later entry that replaces a placeholder (by its
+  name, or on Windows in another case) leaves its link invalid too, as
+  UnZip finds a replaced placeholder's content changed, though a file
+  system such as ext4 gives the later file the placeholder's freed
+  inode: what an entry removes is known by its identity, looked up among
+  the links' (in a table claimed with them, twice their number), so that
+  a link replaced by a link leaves the later, and a link replaced by an
+  empty file leaves the file (`unzip.sh`, `linklink.zip` and
+  `linkempty.zip`, compared on ext4 too; `test_links`, over
+  `test/unzipos.c`, which gives a new file the inode last freed).
+- A run that ends early, out of memory (4) or at a read error (3),
+  leaves the placeholders of links not yet made, as UnZip does, and
+  directories without the attributes they were to be given at the end:
+  a later run with `-n` keeps those empty files.
 - Discarding: extracted files are opened as gzip's outputs are, to be
   removed unless kept (on Windows, delete-pending), and kept only once
   their data has been checked and their attributes set. A bad CRC,
@@ -1385,13 +1398,15 @@ ones as invariants. Those that no test asserts are marked untested.
   `unzip_windows.sh`'s junction).
 - Deferred links: a placeholder is an empty file, known by its identity,
   where UnZip's holds the target, known by its size and content
-  (`test_links`, a link and a file of one name). A target longer than
-  4096 bytes is refused, making neither link nor file, with a warning
-  that ends the line naming it, where UnZip makes the link: status 1,
-  though UnZip's own failures to keep or make a link leave the status
-  alone (`test_links`). A link's mode is not set, where UnZip's builds
-  with `lchmod`, such as macOS's, set it (untested: `unzip.sh`'s tree
-  listings leave links' modes out).
+  (`test_links`, a link and a file of one name), and one that a later
+  entry replaces is known so as it is removed, whatever identity the
+  replacement gets (`test_links`; `unzip.sh`, `linklink.zip`). A target
+  longer than 4096 bytes is refused, making neither link nor file, with
+  a warning that ends the line naming it, where UnZip makes the link:
+  status 1, though UnZip's own failures to keep or make a link leave the
+  status alone (`test_links`). A link's mode is not set, where UnZip's
+  builds with `lchmod`, such as macOS's, set it (untested: `unzip.sh`'s
+  tree listings leave links' modes out).
 - The prompt: a new name is mapped as entry names are, below the `-d`
   directory, where UnZip takes it relative to the current directory,
   ignoring `-d` (and Apple's build takes a leading `/` as absolute)
@@ -1513,8 +1528,9 @@ Fuzzers:
   `-v`, `-t`, `-p`), with POSIX or Windows conventions, the umask, the
   prompt's answers, and faults (the archive shrinking or failing to
   read, as it is opened or once extraction began, and directories,
-  files, keeps, attributes, or links failing), over a tree with a
-  sentinel outside the `-d` directory and links within it that lead
+  files, keeps, attributes, or links failing), on a file system that
+  gives a new file the inode last freed, as ext4 does, over a tree with
+  a sentinel outside the `-d` directory and links within it that lead
   there. It must exit with a status UnZip may, change nothing outside
   the `-d` directory and write over no file there, leave every file it
   extracts equal to an entry of that name as `src/zip.c`'s parser and

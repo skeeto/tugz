@@ -13,6 +13,9 @@
 // The umask, which descriptors are terminals, and Windows conventions
 // (names that differ only in ASCII case are one, links are made as files
 // holding their targets, no umask) are set per run; local time is UTC.
+// A new file takes the inode number last freed, as ext4 gives it (unless
+// reuseino is cleared), each file also having an id never reused, by
+// which the tests tell files apart.
 //
 // Faults to inject: the archive shrinking to a length, its reads
 // failing past an offset, or its bytes rewritten in place, from when it
@@ -104,7 +107,8 @@ typedef struct {
     i64 mtime;
     i64 atime;
     i64 ctime;    // creation time, set only with Windows conventions
-    u64 ino;
+    u64 ino;      // as stat reports it, perhaps a freed file's (reuseino)
+    u64 id;       // never reused: which file it is, to the tests
     i32 opens;    // open descriptors, which keep a removed file's slot
     b32 live;
 } mfile;
@@ -130,6 +134,10 @@ struct os {
     i32     nfiles;  // slots ever used
     mfile   top;     // the root directory, ""
     u64     nextino;
+    u64     nextid;
+    b32     reuseino;  // a new file takes the inode last freed, as ext4's
+    u64     freed[MFS_FILES];  // inodes freed, the last on top
+    i32     nfreed;
     i64     now;     // the time given new files
 
     struct {
@@ -264,7 +272,9 @@ static mfile *mfs_new(os *ctx, s8 name, i32 type)
     f->dosattr = 0;
     f->uid     = f->gid = 1000;
     f->mtime   = f->atime = f->ctime = ctx->now;
-    f->ino     = ++ctx->nextino;
+    f->ino     = ctx->reuseino && ctx->nfreed ? ctx->freed[--ctx->nfreed]
+                                              : ++ctx->nextino;
+    f->id      = ++ctx->nextid;
     f->live    = 1;
     return f;
 }
@@ -543,9 +553,18 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
     return fd;
 }
 
-static void mfs_unlink(mfile *f)
+// A file removed and no longer open frees its inode.
+static void mfs_free(os *ctx, mfile *f)
+{
+    if (!f->live && !f->opens && ctx->nfreed<MFS_FILES) {
+        ctx->freed[ctx->nfreed++] = f->ino;
+    }
+}
+
+static void mfs_unlink(os *ctx, mfile *f)
 {
     f->live = 0;
+    mfs_free(ctx, f);
 }
 
 static b32 os_close(os *ctx, i32 fd)
@@ -554,7 +573,9 @@ static b32 os_close(os *ctx, i32 fd)
     ctx->fds[fd].open = 0;
     f->opens--;
     if (ctx->fds[fd].created && !ctx->fds[fd].kept && f->live) {
-        mfs_unlink(f);  // discarded, as never kept
+        mfs_unlink(ctx, f);  // discarded, as never kept
+    } else {
+        mfs_free(ctx, f);
     }
     return 1;
 }
@@ -638,7 +659,7 @@ static b32 os_remove(os *ctx, s8 path, arena scratch)
     } else if (r->f->type == FT_DIR) {
         mfs_fail(ctx, "Is a directory", 0);  // unlink(2), as Linux
     } else {
-        mfs_unlink(r->f);
+        mfs_unlink(ctx, r->f);
         ok = 1;
     }
     free(r);
@@ -1074,6 +1095,8 @@ static void mfs_reset(os *ctx)
         ctx->fds[i].open = 0;
     }
     ctx->nfiles      = 0;
+    ctx->nfreed      = 0;
+    ctx->reuseino    = 1;
     ctx->top         = (mfile){0};
     ctx->top.type    = FT_DIR;
     ctx->top.perm    = 0755;
@@ -1235,7 +1258,7 @@ static b32 mfs_within(os *ctx, s8 name, s8 dir)
             continue;
         }
         mfile *f = mfs_lookup(ctx, o->name);
-        if (!f || f->type!=o->type || f->ino!=o->ino || f->len!=o->len ||
+        if (!f || f->type!=o->type || f->id!=o->id || f->len!=o->len ||
             (f->len && memcmp(f->data, o->data, (uz)f->len)) ||
             f->perm!=o->perm || f->dosattr!=o->dosattr ||
             f->uid!=o->uid || f->gid!=o->gid || f->mtime!=o->mtime ||
@@ -1246,10 +1269,10 @@ static b32 mfs_within(os *ctx, s8 name, s8 dir)
     }
     for (i32 i = 0; i < ctx->nfiles; i++) {
         mfile *f = ctx->files + i;
-        if (f->live && !mfs_within(ctx, f->name, dir) && f->ino>0) {
+        if (f->live && !mfs_within(ctx, f->name, dir) && f->id>0) {
             b32 found = 0;
             for (i32 k = 0; k<s.n && !found; k++) {
-                found = s.files[k].ino == f->ino;
+                found = s.files[k].id == f->id;
             }
             if (!found) {
                 fprintf(stderr, "added: %.*s\n", (int)f->name.len, f->name.s);
