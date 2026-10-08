@@ -18,6 +18,7 @@ fuzz/
 /tests-zip
 /tests-zipcli
 /tests-unzip
+/tests-unzipcli
 /unzip
 /unzip-debug
 /unzip.exe
