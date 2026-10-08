@@ -1093,6 +1093,7 @@ typedef struct {
     u8 *target;  // or a link's target, room for its size, or null
     b32 link;
     b32 goon;    // after a failed write, the next entry is wanted
+    iz  len;     // the data decoded, up to its size
 } xout;
 
 // Read and decode an entry's data, its local header found at l, to
@@ -1205,6 +1206,9 @@ static i32 test_member(unzip *u, zarchive *ar, zentry *e, zlocal *l,
         }
     }
     b32 overrun = out > usize;  // more than it says it holds
+    if (disk) {
+        disk->len = (iz)MIN(out, usize);  // perhaps less
+    }
     bad |= overrun && crc==e->crc;
 
     if (bad) {
@@ -1718,7 +1722,7 @@ static i32 extract_member(unzip *u, zarchive *ar, zentry *e, xentry *x,
         return MAX(err, PK_DISK);
     }
 
-    xout out = {fd, link ? x->target : 0, link, 0};
+    xout out = {fd, link ? x->target : 0, link, 0, 0};
     i32  r   = test_member(u, ar, e, l, usize, full, &out, scratch);
     if (r > PK_WARN) {
         os_close(ctx, fd);  // discarded
@@ -1740,7 +1744,7 @@ static i32 extract_member(unzip *u, zarchive *ar, zentry *e, xentry *x,
             *stop = !out.goon;
             return MAX(err, PK_DISK);
         }
-        s8 target = {out.target, (iz)usize};
+        s8 target = {out.target, out.len};  // not its size, if less
         if (!u->qflag) {
             info(u, 0, JOIN(&scratch, S("-> "), shown(u, target, &scratch),
                             S(" ")));
