@@ -359,15 +359,22 @@ mkdir craft
 cd craft
 : >none
 
-# Archives that tugz reads as UnZip does, in every mode
+# Archives that tugz reads as UnZip does, in every mode, among them end
+# records that UnZip reads past: counts other than the headers there, a
+# count wrapped past 65,535, Zip64 records after unadjusted data, and
+# comments that the file cuts short
 for z in basic nocomment sfx sfxok zip64 desc empty emptycomment emptysfx \
          multi many badcrc baddata truncdata storedsize localname badextra \
-         truncated badcdoff badheader badlocal deflate64; do
+         truncated badcdoff badheader badlocal deflate64 \
+         count2 count4 count5 count0 sfx64 sfx64ok nosig64 cmtcut cmtnone \
+         cmtcut64 cdjunk; do
     for mode in -l -v -t -tq -tqq -p -pq -z -zq -c -cq; do
         [ $apple = 1 ] && [ "$mode" = -c ] && continue  # Apple's names
         same $mode $z.zip
     done
 done
+same -l wrap.zip                              # 65,539 entries, a count of 3
+same -t wrap.zip
 same -l basic                                 # with .zip
 same -t basic dir/text.txt
 same -l methods.zip
@@ -617,7 +624,8 @@ xsame ../implicit.zip
 # Archives as for listing and testing, including Zip64 fields in each
 # entry, data descriptors, and offsets shifted
 for z in basic sfx sfxok zip64 zip64entries desc storedsize localname \
-         badextra truncated badcdoff badheader badlocal multi empty plain; do
+         badextra truncated badcdoff badheader badlocal multi empty plain \
+         count2 count5 count0 sfx64 sfx64ok cmtnone cdjunk; do
     xsame ../$z.zip
 done
 xsame ../basic.zip -x 'dir/*'

@@ -1227,6 +1227,48 @@ open(sys.argv[1], "wb").write(loc + cen + end)' noname.zip
     cmp -s out want || fail "unnamed entry: $(cat out)"
     cmp -s noname.zip noname0.zip || fail "an unnamed entry changed the archive"
 
+    # End records that unzip reads past, as UnZip does, and zip refuses,
+    # as Info-ZIP's does: counts of entries other than the headers there,
+    # even past what the directory holds (3), and a comment running past
+    # the end of the file (no end record); and Zip64 records after data
+    # their offsets do not account for, whose record is found just before
+    # its locator, as Info-ZIP's finds it, but which zip refuses (3), as
+    # it does without Zip64
+    $PY -c 'import struct, sys
+loc = cen = b""
+for n in b"a", b"b", b"c":
+    o = len(loc)
+    loc += struct.pack("<IHHHHHIIIHH", 0x04034b50, 10, 0, 0, 0, 0x5021, 0,
+                       0, 0, len(n), 0) + n
+    cen += struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 0x31e, 10, 0, 0, 0,
+                       0x5021, 0, 0, 0, len(n), 0, 0, 0, 0, 0x81a40000, o) + n
+def end(k, clen=0):
+    return struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, k, k, len(cen),
+                       len(loc), clen)
+for k in 2, 5:
+    open("count%d.zip" % k, "wb").write(loc + cen + end(k))
+open("cut.zip", "wb").write(loc + cen + end(3, 10) + b"12345")
+e64 = struct.pack("<IQHHIIQQQQ", 0x06064b50, 44, 45, 45, 0, 0, 3, 3,
+                  len(cen), len(loc))
+l64 = struct.pack("<IIQI", 0x07064b50, 0, len(loc) + len(cen), 1)
+sat = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 0xffff, 0xffff,
+                  0xffffffff, 0xffffffff, 0)
+open("sfx64.zip", "wb").write(b"#!/bin/sh\n" + loc + cen + e64 + l64 + sat)'
+    for z in count2 count5 cut sfx64; do
+        cp $z.zip ${z}0.zip
+        exits 3 "$ZIP" $z.zip tree/a.txt >out 2>&1
+        case $z in
+        cut)   w='missing end signature--probably not a zip file' ;;
+        sfx64) w='offsets do not account for data before the archive' ;;
+        *)     w= ;;
+        esac
+        { [ -z "$w" ] || echo "zip warning: $w"
+          printf '\nzip error: Zip file structure invalid (%s)\n' $z.zip
+        } >want
+        cmp -s out want || fail "$z.zip: $(cat out)"
+        cmp -s $z.zip ${z}0.zip || fail "$z.zip changed"
+    done
+
     # Archives made by other tools: entries a streaming writer gave data
     # descriptors lose them when copied, their sizes now known, and the
     # comments of entries and of the archive are kept

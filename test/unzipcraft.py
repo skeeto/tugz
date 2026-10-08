@@ -137,9 +137,10 @@ class Entry:
 
 
 def build(entries, comment=b"", prefix=b"", shifted=True, zip64=False,
-          disk=0):
+          disk=0, count=None, clen=None):
     """An archive of entries after prefix, whose offsets account for the
-    prefix if shifted, with Zip64 end records if zip64."""
+    prefix if shifted, with Zip64 end records if zip64, its count of
+    entries (modulo 65536 without Zip64) and comment length as given."""
     out = bytearray(prefix)
     base = len(prefix) if shifted else 0
     offsets = []
@@ -166,16 +167,18 @@ def build(entries, comment=b"", prefix=b"", shifted=True, zip64=False,
     cdoff = len(out) - len(prefix) + base
     end = len(out) - len(prefix) + base + len(cd)
     out += cd
-    count = len(entries)
+    count = len(entries) if count is None else count
+    clen = len(comment) if clen is None else clen
     if zip64:
         out += struct.pack("<IQHHIIQQQQ", 0x06064B50, 44, 45, 45, 0, 0,
                            count, count, len(cd), cdoff)
         out += struct.pack("<IIQI", 0x07064B50, 0, end, 1)
         out += struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 0xFFFF, 0xFFFF,
-                           0xFFFFFFFF, 0xFFFFFFFF, len(comment)) + comment
+                           0xFFFFFFFF, 0xFFFFFFFF, clen) + comment
     else:
+        count &= 0xFFFF
         out += struct.pack("<IHHHHIIH", 0x06054B50, disk, disk, count, count,
-                           len(cd), cdoff, len(comment)) + comment
+                           len(cd), cdoff, clen) + comment
     return bytes(out)
 
 
@@ -283,6 +286,37 @@ write("localsizes.zip", build([
 ]))
 write("badextra.zip", build([Entry("x.txt", b"x\n",
                                    lextra=b"UT\x09\x00\x01")]))
+
+# End records that UnZip reads past: counts of entries other than the
+# headers there (fewer, more, more than the directory could hold, none),
+# which UnZip reads while they parse, then reports; a count wrapped past
+# 65,535 entries, as writers without Zip64 leave it, which it accepts; a
+# Zip64 end record just before its locator, not where that says, as data
+# prepended to a Zip64 archive leaves it, and in neither place; and
+# comments that run past the end of the file, which it shows cut short
+abc = [Entry(c, (c * 3 + "\n").encode(), method=0) for c in "abc"]
+write("count2.zip", build(abc, count=2))
+write("count4.zip", build(abc, count=4))
+write("count5.zip", build(abc, count=5))
+write("count0.zip", build(abc, count=0))
+write("wrap.zip", build([Entry("%x" % i, method=0) for i in range(65539)]))
+write("sfx64.zip", build(basic(), prefix=b"#!/usr/bin/env python3\n",
+                         shifted=False, zip64=True))
+write("sfx64ok.zip", build(basic(), prefix=b"#!/usr/bin/env python3\n",
+                           zip64=True))
+nosig = bytearray(build(basic(), prefix=b"#!/bin/sh\n", shifted=False,
+                        zip64=True))
+nosig[nosig.rindex(b"PK\x06\x06") + 3] = 0
+write("nosig64.zip", bytes(nosig))
+write("cmtcut.zip", build(basic(), comment=b"12345", clen=10))
+write("cmtnone.zip", build(basic(), clen=65535))
+write("cmtcut64.zip", build(basic(), comment=b"12345", clen=10, zip64=True))
+# ...and a count that matches, but no end record after the headers
+junk = bytearray(build(abc))
+at = junk.rindex(b"PK\x05\x06")
+cdsize = struct.unpack("<I", junk[at + 12:at + 16])[0]
+junk[at + 12:at + 16] = struct.pack("<I", cdsize + 6)
+write("cdjunk.zip", bytes(junk[:at] + b"junk!\n" + junk[at:]))
 
 # Damaged structure
 good = build(basic())
