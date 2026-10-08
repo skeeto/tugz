@@ -1445,15 +1445,19 @@ static i32 check_for_newer(unzip *u, s8 full, uzizux *ux, u32 dostime,
     return existing>=archive ? EXISTS_AND_NEWER : EXISTS_AND_OLDER;
 }
 
+// The longest new name read at the prompt, a line of UnZip's FILNAMSIZ
+enum { UZ_NEWNAME = 4096 };
+
 // Ask whether to replace the file at full, as extract.c does, reading
 // the answer from standard input. Returns 'y' to replace it, 'n' to
-// skip the entry, or 'r' with *rename the name to extract it as, or
-// with none read, path. A or N answers the rest of the run too.
-static u8 ask_replace(unzip *u, s8 full, s8 path, i32 *err, s8 *rename,
-                      arena *scratch)
+// skip the entry, or 'r' with *rename the name to extract it as, read
+// into buf (UZ_NEWNAME bytes), or with none read, a null string, for
+// the name it had. A or N answers the rest of the run too.
+static u8 ask_replace(unzip *u, s8 full, i32 *err, s8 *rename, u8 *buf,
+                      arena scratch)
 {
     for (;;) {
-        arena tmp = *scratch;
+        arena tmp = scratch;
         info(u, MSG_STDERR, JOIN(&tmp, S("replace "), shown(u, full, &tmp),
              S("? [y]es, [n]o, [A]ll, [N]one, [r]ename: ")));
         u8 answer[10];  // as UnZip's answerbuf, a longer answer split
@@ -1468,12 +1472,10 @@ static u8 ask_replace(unzip *u, s8 full, s8 path, i32 *err, s8 *rename,
         case 'r':
         case 'R':
             for (;;) {
-                iz  cap = 4096;  // UnZip's FILNAMSIZ
-                u8 *buf = newstr(scratch, cap);
                 info(u, MSG_STDERR, S("new name: "));
-                iz  len = read_answer(u, buf, cap);
+                iz len = read_answer(u, buf, UZ_NEWNAME);
                 if (len < 0) {
-                    *rename = path;  // where UnZip keeps the name it had
+                    *rename = (s8){0};  // UnZip keeps the name it had
                     return 'r';
                 }
                 len -= buf[len-1] == '\n';
@@ -1572,6 +1574,8 @@ static i32 extract_member(unzip *u, zarchive *ar, zentry *e, xentry *x,
     uzpath mp   = x->map;
     s8     full = x->full;  // planned for a directory with its '/'
     i32    have = DOES_NOT_EXIST;
+    u8    *newname = newstr(&scratch, UZ_NEWNAME);  // from the prompt
+    arena  mark    = scratch;  // reset for each new name's path
     full.len -= full.s && (mp.flags & UZ_DIR);
     for (b32 renamed = 0;; renamed = 1) {
         if (renamed || !full.s) {
@@ -1678,9 +1682,14 @@ static i32 extract_member(unzip *u, zarchive *ar, zentry *e, xentry *x,
         }
         if (query) {
             s8 rename = {0};
-            u8 a = ask_replace(u, full, mp.path, &err, &rename, &scratch);
-            if (a == 'r') {
+            u8 a = ask_replace(u, full, &err, &rename, newname, scratch);
+            if (a=='r' && rename.s) {
+                // Each new name in the same room, however many are given
+                scratch = mark;
                 mp = uz_mapname(rename, e->made, opts, &scratch);
+                continue;
+            } else if (a == 'r') {
+                mp.flags &= ~UZ_DOTDOT;  // the name it had, warned of
                 continue;
             }
             skip = a == 'n';
