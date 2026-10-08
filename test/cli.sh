@@ -239,6 +239,80 @@ expect_status 2 "$GZIP" -k kk
 "$GZIP" --force --keep kk || fail "--force"
 expect_status 1 "$GZIP" --bogus kk
 expect_status 1 "$GZIP" -x kk
+
+# As with GNU's getopt_long, a long option may be abbreviated to a prefix
+# meaning only it, while an exact name wins over a longer one
+same_output o9.gz "$GZIP" --be --std text || fail "--be --std"
+same_output o1.gz "$GZIP" --fa --to text || fail "--fa --to"
+same_output text "$GZIP" --de --st o9.gz || fail "--de --st"
+same_output text "$GZIP" --u -c o1.gz || fail "--u"
+expect_status 0 "$GZIP" --te o9.gz
+same_output o9.gz "$GZIP" -9c --no --q --si --silent text ||
+    fail "--no --q --si --silent"
+for opt in --h --hel; do
+    "$GZIP" $opt >opt.out 2>opt.err || fail "$opt status"
+    [ -s opt.out ] && [ ! -s opt.err ] || fail "$opt output"
+done
+
+# Usage errors are GNU gzip's: getopt's message, then a pointer to
+# --help; and options tugz lacks are refused as GNU refuses -Z
+try='Try `gzip --help'"' for more information."
+set -f  # for -?
+while IFS='|' read -r args want; do
+    set +e
+    "$GZIP" $args one >/dev/null 2>opt.err
+    st=$?
+    set -e
+    if [ -n "$want" ]; then
+        printf '%s\n%s\n' "gzip: $want" "$try" >opt.want
+    else
+        printf '%s\n' "$try" >opt.want
+    fi
+    [ $st = 1 ] && cmp -s opt.err opt.want ||
+        fail "usage error for $args: $st $(cat opt.err)"
+done <<'EOF'
+--bogus|unrecognized option '--bogus'
+--BEST|unrecognized option '--BEST'
+-j|invalid option -- 'j'
+-dj|invalid option -- 'j'
+-k-|invalid option -- '-'
+-?|
+--s|option '--s' is ambiguous; possibilities: '--stdout' '--silent' '--synchronous' '--suffix'
+--n=1|option '--n=1' is ambiguous; possibilities: '--no-name' '--name'
+--k=1|option '--keep' doesn't allow an argument
+--recursive|--recursive not supported in this version
+--rec|--recursive not supported in this version
+--rsyncable|--rsyncable not supported in this version
+-r|-r not supported in this version
+-9a|-a not supported in this version
+EOF
+set +f
+
+# ...as GNU gzip has them
+if [ -n "$gnu" ]; then
+    mkdir gnubin
+    ln -s "$REF" gnubin/gzip  # its getopt messages name argv[0]
+    set -f
+    for args in --bogus --x ----x --BEST -j -xj -dj -jd -k- -1- -? \
+                --s --n --l --li=3 --=x --t --v --f --b --keep=1 \
+                --k=1 --he=x --quiet= --stdout=x '-j -h' \
+                '--bogus --help' '--he --bogus' '-h -j' '-V -j' \
+                --st --dec --hel --h --no --q --si --silent --fa --fo \
+                --be --to --u -H -m; do
+        set +e
+        "$GZIP" -k $args one >opt.out 2>opt.err
+        st=$?
+        rm -f one.gz
+        (PATH="$PWD/gnubin:$PATH" gzip -k $args one >ref.out 2>ref.err)
+        ref=$?
+        set -e
+        rm -f one.gz
+        [ $st = $ref ] && cmp -s opt.err ref.err ||
+            fail "$args: $st/$ref: $(cat opt.err ref.err)"
+    done
+    set +f
+fi
+
 for opt in -h --help -V --version; do
     "$GZIP" $opt >opt.out 2>opt.err || fail "$opt status"
     [ -s opt.out ] && [ ! -s opt.err ] || fail "$opt output"

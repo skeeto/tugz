@@ -474,39 +474,136 @@ static void print(arena scratch, i32 fd, s8 s)
     writer_flush(w);
 }
 
-// Map a long option to its short equivalent, or 0 if unknown.
-static i32 parse_long(s8 arg, arena scratch)
+// Report a usage error as GNU gzip does: a message (if any), then a
+// pointer to --help.
+static i32 usage_error(arena scratch, s8 msg)
 {
-    static struct {
-        s8  name;
-        i32 which;
-    } const longopts[] = {
-        {S8("--best"),       '9'},
-        {S8("--decompress"), 'd'},
-        {S8("--fast"),       '1'},
-        {S8("--force"),      'f'},
-        {S8("--help"),       'h'},
-        {S8("--keep"),       'k'},
-        {S8("--no-name"),    'n'},
-        {S8("--quiet"),      'q'},
-        {S8("--stdout"),     'c'},
-        {S8("--test"),       't'},
-        {S8("--to-stdout"),  'c'},
-        {S8("--uncompress"), 'd'},
-        {S8("--version"),    'V'},
-    };
-    for (iz i = 0; i < countof(longopts); i++) {
-        if (s8equals(arg, longopts[i].name)) {
-            return longopts[i].which;
-        }
+    writer *w = newwriter(&scratch, 2, 512);
+    if (msg.len) {
+        writer_s8(w, S("gzip: "));
+        writer_s8(w, msg);
+        writer_byte(w, '\n');
     }
-    message(scratch, (s8){0}, s8concat(&scratch, S("unknown option: "), arg));
-    return 0;
+    writer_s8(w, S("Try `gzip --help' for more information.\n"));
+    writer_flush(w);
+    return EXIT_ERR;
 }
 
-// Apply a single-letter option. Returns -1 to continue, or exit status.
-static i32 apply_option(options *o, i32 c, arena scratch)
+// Options GNU gzip has without a letter
+enum {
+    OPT_PRESUME = 0x100,
+    OPT_SYNCHRONOUS,
+    OPT_RSYNCABLE,
+};
+
+// GNU gzip's long options, in its order, which ambiguity messages
+// follow, whether or not tugz supports them, so that a prefix means
+// what it means there. "-presume-input-tty" is GNU's, hidden (---pre).
+static struct {
+    s8  name;
+    i32 which;  // letter, or OPT_*
+    b32 arg;    // takes an argument
+} const longopts[] = {
+    {S8("ascii"),             'a',             0},
+    {S8("to-stdout"),         'c',             0},
+    {S8("stdout"),            'c',             0},
+    {S8("decompress"),        'd',             0},
+    {S8("uncompress"),        'd',             0},
+    {S8("force"),             'f',             0},
+    {S8("help"),              'h',             0},
+    {S8("keep"),              'k',             0},
+    {S8("list"),              'l',             0},
+    {S8("license"),           'L',             0},
+    {S8("no-name"),           'n',             0},
+    {S8("name"),              'N',             0},
+    {S8("-presume-input-tty"), OPT_PRESUME,    0},
+    {S8("quiet"),             'q',             0},
+    {S8("silent"),            'q',             0},
+    {S8("synchronous"),       OPT_SYNCHRONOUS, 0},
+    {S8("recursive"),         'r',             0},
+    {S8("suffix"),            'S',             1},
+    {S8("test"),              't',             0},
+    {S8("verbose"),           'v',             0},
+    {S8("version"),           'V',             0},
+    {S8("fast"),              '1',             0},
+    {S8("best"),              '9',             0},
+    {S8("lzw"),               'Z',             0},
+    {S8("bits"),              'b',             1},
+    {S8("rsyncable"),         OPT_RSYNCABLE,   0},
+};
+
+// Map a long option (--name, or --name=value) to its letter or code as
+// GNU's getopt_long does: an exact name, or else a prefix of names that
+// all mean the same option. Sets *name to the option's full name, for
+// messages. Returns 0 after reporting an error.
+static i32 parse_long(s8 arg, s8 *name, arena scratch)
 {
+    s8 key = {arg.s+2, 0};
+    while (key.len<arg.len-2 && key.s[key.len]!='=') {
+        key.len++;
+    }
+    b32 hasarg = key.len < arg.len-2;
+
+    i32 found = -1;
+    b32 ambiguous = 0;
+    for (i32 i = 0; i < countof(longopts); i++) {
+        s8 full = longopts[i].name;
+        s8 head = {full.s, MIN(full.len, key.len)};
+        if (full.len<key.len || !s8equals(head, key)) {
+            continue;
+        } else if (full.len == key.len) {
+            found = i;  // an exact match wins
+            ambiguous = 0;
+            break;
+        } else if (found < 0) {
+            found = i;
+        } else if (longopts[i].which != longopts[found].which) {
+            ambiguous = 1;
+        }
+    }
+
+    if (found < 0) {
+        s8 m = s8concat(&scratch, S("unrecognized option '"), arg);
+        usage_error(scratch, s8concat(&scratch, m, S("'")));
+        return 0;
+    } else if (ambiguous) {
+        s8 m = s8concat(&scratch, S("option '"), arg);
+        m = s8concat(&scratch, m, S("' is ambiguous; possibilities:"));
+        i32 which = longopts[found].which;
+        for (i32 i = found; i < countof(longopts); i++) {
+            s8 full = longopts[i].name;
+            s8 head = {full.s, MIN(full.len, key.len)};
+            if (full.len>key.len && s8equals(head, key) &&
+                (i==found || longopts[i].which!=which)) {
+                m = s8concat(&scratch, m, S(" '--"));
+                m = s8concat(&scratch, m, full);
+                m = s8concat(&scratch, m, S("'"));
+            }
+        }
+        usage_error(scratch, m);
+        return 0;
+    }
+
+    *name = longopts[found].name;
+    if (hasarg && !longopts[found].arg) {
+        s8 m = s8concat(&scratch, S("option '--"), *name);
+        m = s8concat(&scratch, m, S("' doesn't allow an argument"));
+        usage_error(scratch, m);
+        return 0;
+    }
+    return longopts[found].which;
+}
+
+// Apply an option, by letter or OPT_* code, given by its letter or else
+// by its long name (without "--"). Returns -1 to continue, or exit status.
+static i32 apply_option(options *o, i32 c, s8 longname, arena scratch)
+{
+    u8 letter[2] = {'-', (u8)c};
+    s8 name = (s8){letter, 2};
+    if (longname.len) {
+        name = s8concat(&scratch, S("--"), longname);
+    }
+
     switch (c) {
     case '1': case '2': case '3': case '4': case '5':
     case '6': case '7': case '8': case '9':
@@ -515,18 +612,27 @@ static i32 apply_option(options *o, i32 c, arena scratch)
     case 'd': o->decompress = 1;       return -1;
     case 'f': o->force      = 1;       return -1;
     case 'k': o->keep       = 1;       return -1;
+    case 'm':                          return -1;  // no time: as always
     case 'n':                          return -1;  // nothing to save
     case 'q': o->quiet      = 1;       return -1;
     case 't': o->test       = 1;       return -1;
-    case 'h':
+    case 'h': case 'H':
         print(scratch, 1, usage_text);
         return EXIT_OK;
     case 'V':
         print(scratch, 1, S("gzip (tugz) " TUGZ_VERSION "\n"));
         return EXIT_OK;
+    case '?':
+        return usage_error(scratch, (s8){0});  // GNU's, without a message
+    case 'a': case 'b': case 'l': case 'r': case 'v':
+    case 'L': case 'M': case 'N': case 'S': case 'Z':
+    case OPT_PRESUME: case OPT_SYNCHRONOUS: case OPT_RSYNCABLE:
+        // GNU gzip's wording for its own -Z
+        name = s8concat(&scratch, name, S(" not supported in this version"));
+        return usage_error(scratch, name);
     }
-    print(scratch, 2, usage_text);
-    return EXIT_ERR;
+    s8 m = s8concat(&scratch, S("invalid option -- '"), (s8){letter+1, 1});
+    return usage_error(scratch, s8concat(&scratch, m, S("'")));
 }
 
 static b32 ascii_iprefix(s8 s, s8 prefix)
@@ -566,13 +672,18 @@ static i32 gzip_main(config *conf)
         } else if (s8equals(arg, S("--"))) {
             endopts = 1;
         } else if (arg.s[1] == '-') {
-            i32 r = apply_option(&o, parse_long(arg, *perm), *perm);
+            s8 name = {0};
+            i32 c = parse_long(arg, &name, *perm);
+            if (!c) {
+                return EXIT_ERR;
+            }
+            i32 r = apply_option(&o, c, name, *perm);
             if (r >= 0) {
                 return r;
             }
         } else {
             for (iz j = 1; j < arg.len; j++) {
-                i32 r = apply_option(&o, arg.s[j], *perm);
+                i32 r = apply_option(&o, arg.s[j], (s8){0}, *perm);
                 if (r >= 0) {
                     return r;
                 }

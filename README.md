@@ -131,7 +131,9 @@ Configure with `-DTUGZ_BUILD_GZIP=OFF -DTUGZ_BUILD_ZIP=OFF
 | `-t` | test compressed file integrity |
 | `-h`, `-V` | help, version |
 
-Long forms (`--stdout`, `--decompress`, `--best`, ...) are accepted.
+Long forms (`--stdout`, `--decompress`, `--best`, `--silent`, ...) are
+accepted, and as in GNU gzip abbreviated to any prefix that is not
+ambiguous (`--dec --std`).
 Installed (or linked) as `gunzip` it decompresses, and as `zcat` or
 `gzcat` it decompresses to standard output. On Windows, where `cmd` and
 PowerShell pass wildcards on as they are, arguments with them are
@@ -149,9 +151,11 @@ unless `-f`, and special and set-ID files always, and it reads a header
 before replacing a file.
 
 Headers record no file name or time, as GNU gzip's do under `-n`, which
-is therefore accepted (as in `gzip -9n`). Not yet supported: `-r`, `-l`,
-`-v`, `-S`, `-N`, the `GZIP` environment variable, and GNU gzip's other
-input formats (compress, pack, LZH, zip).
+is therefore accepted (as in `gzip -9n`). Not yet supported, and refused
+rather than ignored: `-r` (`--recursive`), `-l` (`--list`), `-v`
+(`--verbose`), `-S` (`--suffix`), `-N` (`--name`), `-a` (`--ascii`), `-L`
+(`--license`), `--rsyncable`, `--synchronous`, the `GZIP` environment
+variable, and GNU gzip's other input formats (compress, pack, LZH, zip).
 
 ## zip
 

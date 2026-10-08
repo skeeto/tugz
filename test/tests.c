@@ -3009,6 +3009,33 @@ static void test_cli(os *ctx, arena a)
     TEST(run(ctx, a, "--decompress --stdout l.gz") == EXIT_OK);
     TEST(equals(mfs_get(ctx, "<stdout>"), text, 1000));
 
+    // ...abbreviated as GNU's getopt_long allows, with its messages
+    TEST(run(ctx, a, "--dec --std --si l.gz") == EXIT_OK);
+    TEST(equals(mfs_get(ctx, "<stdout>"), text, 1000));
+    static struct {
+        char *args;
+        char *err;
+    } const usage[] = {
+        {"--bogus l", "gzip: unrecognized option '--bogus'\n"},
+        {"-dj l",     "gzip: invalid option -- 'j'\n"},
+        {"-?",        ""},
+        {"--n l",     "gzip: option '--n' is ambiguous; possibilities: "
+                      "'--no-name' '--name'\n"},
+        {"--st=x l",  "gzip: option '--stdout' doesn't allow an argument\n"},
+        {"--rec l",   "gzip: --recursive not supported in this version\n"},
+        {"-r l",      "gzip: -r not supported in this version\n"},
+        {"--rsync l", "gzip: --rsyncable not supported in this version\n"},
+    };
+    for (i32 i = 0; i < countof(usage); i++) {
+        TEST(run(ctx, a, usage[i].args) == EXIT_ERR);
+        char want[128];
+        snprintf(want, sizeof(want), "%s%s", usage[i].err,
+                 "Try `gzip --help' for more information.\n");
+        s8 e = mfs_get(ctx, "<stderr>");
+        TEST(equals(e, (u8 *)want, (iz)strlen(want)));
+        TEST(!mfs_get(ctx, "<stdout>").len);
+    }
+
     // Headers never carry a name or time, as GNU gzip's under -n, which
     // is accepted, but -N, which asks for them, is not
     TEST(run(ctx, a, "-c l") == EXIT_OK);

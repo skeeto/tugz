@@ -1679,6 +1679,31 @@ Fuzzers:
   with `un` or `gun` decompress, and `zcat` or `gzcat` decompress to
   standard output (case-insensitive; Windows drops `.exe`). Platform
   layers pass the name in `config.name`.
+- Options are read as GNU gzip's `getopt_long` reads them, in order,
+  anywhere among the files until `--`: a long option may be abbreviated
+  to a prefix of names that mean only it (`--dec --std`), while an exact
+  name wins, and the table holds all of GNU's long options, those tugz
+  lacks included, so that a prefix means what it means there (`--s` is
+  ambiguous among `--stdout`, `--silent`, `--synchronous`, and
+  `--suffix`; `--rec` is `--recursive`). Usage errors print GNU's
+  messages, `unrecognized option '--bogus'`, `invalid option -- 'j'`,
+  `option '--s' is ambiguous; possibilities: ...`, and `option '--keep'
+  doesn't allow an argument`, then ``Try `gzip --help' for more
+  information.``, status 1; as there, `-h` and `-V` (and GNU's hidden
+  `-H`, help) act at once, before later options are read. The program
+  name in them is always `gzip`, as in tugz's other messages, where
+  getopt's is `argv[0]` as invoked. An option of GNU's that tugz lacks
+  (`-a`, `-b`, `-l`, `-L`, `-M`, `-N`, `-r`, `-S`, `-v`, `-Z`, and the
+  long forms, `--synchronous`, `--rsyncable`, and the hidden
+  `---presume-input-tty`) is refused as GNU refuses `-Z` in builds
+  without LZW, `gzip: -r not supported in this version` and the same
+  pointer to `--help`, status 1, rather than ignored: as with `-n`
+  (below), an option is accepted only when tugz already does what it
+  asks. `--rsyncable` asks for different output, `--synchronous` for
+  `fsync` calls tugz does not make, and `-a`, though GNU ignores it with
+  a warning on POSIX, converts line ends on Windows, where tugz runs
+  too. GNU's hidden `-m` (no time saved or restored) is accepted, as
+  `-n` is.
 - Names follow GNU gzip's default suffixes, in any case: `.gz`, `.z`,
   `-gz`, `-z`, `_z`, and `.tgz` and `.taz`, which stand for `.tar`.
   Decompressing in place drops one; compressing in place leaves a file
