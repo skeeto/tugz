@@ -164,6 +164,7 @@ FAT=20        # version 2.0, made on MS-DOS (FAT)
 NTFS=2836     # 0x0b14, made on NTFS (Windows NT)
 UNIX=798      # 0x031e, made on Unix
 FILE=$((0100644 << 16))
+DIR=$((040755 << 16))
 d2020=$(dos 2020 1 2 3 4 6)
 
 # Names: in the OEM code page (437 here, where 0x82 is e-acute), flag
@@ -345,11 +346,21 @@ mkdir link
 grep -q '^finishing deferred symbolic links:' out || fail "link: $(cat out)"
 
 # Nothing is written through a junction or a directory link in the
-# destination: an entry within one is refused, and one named as one
-# is not replaced, though the -d directory may be one
+# destination: an entry within one is refused, as is a directory entry
+# named as one, and a file entry named as one replaces it, as a link is
+# replaced on POSIX, removing the junction alone, never its target nor
+# what is in it, though the -d directory may be one
 mkdir -p jd outside
-ps "New-Item -ItemType Junction -Path jd\\j -Target (Resolve-Path outside).Path |
-    Out-Null"
+printf keep >outside/keep
+junction() {  # path target
+    ps "New-Item -ItemType Junction -Path $1 -Target (Resolve-Path $2).Path |
+        Out-Null"
+}
+untouched() {  # what
+    [ "$(ls outside)" = keep ] && [ "$(cat outside/keep)" = keep ] ||
+        fail "written through a junction ($1): $(ls outside)"
+}
+junction jd\\j outside
 entry 'j/evil.txt' 0 $UNIX $FILE $d2020 '' 'hello\n' 909783072
 entry 'j' 0 $UNIX $FILE $d2020 '' 'hello\n' 909783072
 entry 'ok.txt' 0 $UNIX $FILE $d2020 '' 'hello\n' 909783072
@@ -358,24 +369,48 @@ set +e
 (cd jd && "$UNZIP" -o ../evil.zip >../out 2>../err)
 st=$?
 set -e
-[ $st = 50 ] || fail "junction: status $st: $(cat err)"
+[ $st = 2 ] || fail "junction: status $st: $(cat err)"
 grep -q 'checkdir error:  j exists but is not directory' err ||
     fail "junction: $(cat err)"
-grep -q 'error:  cannot delete old j' err || fail "junction: $(cat err)"
-[ -z "$(ls outside)" ] || fail "written through a junction: $(ls outside)"
+! grep -q 'cannot delete old' err || fail "junction: $(cat err)"
+[ -f jd/j ] && [ "$(cat jd/j)" = hello ] || fail "junction not replaced"
+untouched "file entry"
 [ "$(cat jd/ok.txt)" = hello ] || fail "junction: ok.txt"
+rm jd/j
+junction jd\\j outside
 expect_status 0 sh -c "cd jd && '$UNZIP' -n ../evil.zip j"
-[ -z "$(ls outside)" ] || fail "written through a junction (-n)"
+untouched "-n"
+attrs jd/j | grep -q ReparsePoint || fail "-n replaced a junction"
+entry 'j/' 0 $UNIX $DIR $d2020 '' '' 0
+finish evildir.zip
+expect_status 2 sh -c "cd jd && '$UNZIP' -o ../evildir.zip"
+untouched "directory entry"
+attrs jd/j | grep -q ReparsePoint || fail "directory entry replaced a junction"
 "$UNZIP" -q evil.zip ok.txt -d jd/j || fail "-d junction: status $?"
 [ "$(cat outside/ok.txt)" = hello ] || fail "-d junction"
 rm outside/ok.txt
+cmd /c 'rmdir jd\j'
+untouched "rmdir"
+
 if ps "New-Item -ItemType SymbolicLink -Path jd\\s
            -Target (Resolve-Path outside).Path | Out-Null" 2>/dev/null; then
     entry 's/evil.txt' 0 $UNIX $FILE $d2020 '' 'hello\n' 909783072
+    entry 's' 0 $UNIX $FILE $d2020 '' 'hello\n' 909783072
     finish evil2.zip
     expect_status 2 sh -c "cd jd && '$UNZIP' -o ../evil2.zip"
-    [ -z "$(ls outside)" ] || fail "written through a directory link"
+    untouched "directory link"
+    [ -f jd/s ] && [ "$(cat jd/s)" = hello ] || fail "directory link kept"
 fi
+
+# An empty directory where a file goes is not removed, as in UnZip
+mkdir -p ed/j
+set +e
+(cd ed && "$UNZIP" -o ../evil.zip j >../out 2>../err)
+st=$?
+set -e
+[ $st = 50 ] || fail "empty directory: status $st: $(cat err)"
+grep -q 'error:  cannot delete old j' err || fail "empty directory: $(cat err)"
+[ -d ed/j ] || fail "empty directory removed"
 
 # Long paths, beyond MAX_PATH, in names and in -d
 long=$(printf '%0100d' 0 | tr 0 d)/$(printf '%0100d' 0 | tr 0 e)/$(printf '%0100d' 0 | tr 0 f)
