@@ -988,7 +988,7 @@ static void os_extend(os *ctx, arena *a, iz need)
             byte *p = end ? at+want-ends : at;
             memset(p, 0, (uz)ends);
             for (iz i = 7 - (iz)((uptr)p & 7); i < ends; i += 8) {
-                p[i] = 0x80;
+                p[i] = (byte)0x80;
             }
         }
         if (a->down) {
