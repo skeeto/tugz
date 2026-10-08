@@ -1009,6 +1009,15 @@ static void test_windows(os *ctx)
     UNZIP(ctx, 0, "-p", "six.zip", "p/*", "-x", "p\\[a-e]*");
     TEST(output_is(ctx, 1, "fff\n"));
     UNZIP(ctx, 11, "-p", "six.zip", "\\p*");
+
+    // A wildcard archive name matches hidden and system files too, as
+    // the port's Readdir lists them
+    put_archive(ctx, "hid.zip", six);
+    put_archive(ctx, "sys.zip", six);
+    mfs_get(ctx, "hid.zip")->dosattr = 0x22;
+    mfs_get(ctx, "sys.zip")->dosattr = 0x24;
+    UNZIP(ctx, 0, "-p", "[hs][iy][ds].zip", "p/a.txt");
+    TEST(output_is(ctx, 1, "aaa\naaa\n"));
     free(six.s);
 
     // Answers typed at a console end in CRLF, the CR dropped

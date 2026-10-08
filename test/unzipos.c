@@ -793,12 +793,13 @@ static s8 os_upcase(os *ctx, s8 name, arena *a)
 }
 
 // The entries directly within a directory, "." for the top, left for
-// os_stat to examine.
+// os_stat to examine, under Windows conventions without hidden and
+// system files unless all.
 static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
                              arena *a)
 {
-    (void)all;
-    mpath *r = malloc(sizeof(*r));
+    u32    skip = ctx->windows && !all ? 0x06 : 0;
+    mpath *r    = malloc(sizeof(*r));
     CHECK(r);
     mfs_resolve(ctx, path, 1, r);
     if (r->err || !r->f || r->f->type!=FT_DIR) {
@@ -815,7 +816,7 @@ static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
         for (i32 i = 0; i < ctx->nfiles; i++) {
             mfile *f  = ctx->files + i;
             s8     s  = f->name;
-            b32    in = f->live && s.len>pre &&
+            b32    in = f->live && s.len>pre && !(f->dosattr & skip) &&
                         (!pre || (mfs_eq(ctx, (s8){s.s, dir.len}, dir) &&
                                   s.s[dir.len]=='/'));
             for (iz j = pre; in && j < s.len; j++) {

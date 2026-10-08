@@ -996,8 +996,9 @@ for entries.
   POSIX as UnZip's `do_wild` matches (case matters, `[sets]` and escapes
   work, and a name starting with `.` matches only a pattern that does),
   on Windows as zip and gzip expand arguments there (ignoring case, by
-  DOS rules, with either separator, leaving out hidden and system
-  files), and the matches are processed in name order. An archive of
+  DOS rules, with either separator), but with hidden and system files,
+  which they leave out, as UnZip's port lists them (`win32/win32.c`'s
+  `Readdir`), and the matches are processed in name order. An archive of
   `-`, as in busybox, is standard input: a regular file is read in place
   (and left open), anything else read whole into memory first
   (`zin_memory`, one window that never moves), and `-n` is implied
@@ -1192,13 +1193,11 @@ ones as invariants. Those that no test asserts are marked untested.
   usage and `-hh` are tugz's own (`unzip.sh`, "Usage"). UnZip's options
   that tugz lacks are refused (10) rather than taken (`unzip.sh`).
 - Archives: the matches of a wildcard are processed in name order,
-  rather than the directory's (`unzip.sh`, "w/*.zip order"). On Windows,
-  hidden and system files are left out of the matches, as zip and gzip
-  leave them out, where the port, by its sources, lists them (untested).
-  A split archive that Zip64 records describe is refused (11), where
-  UnZip reads on as though its parts were concatenated (untested), and
-  an entry made on VMS is extracted without UnZip's question "stored in
-  VMS format.  Extract anyway? (y/n)" (untested).
+  rather than the directory's (`unzip.sh`, "w/*.zip order"). A split
+  archive that Zip64 records describe is refused (11), where UnZip reads
+  on as though its parts were concatenated (untested), and an entry made
+  on VMS is extracted without UnZip's question "stored in VMS format.
+  Extract anyway? (y/n)" (untested).
 - Zip bombs: overlapped components, and data reaching into the central
   directory, which Debian's UnZip does not check, are found before any
   entry is read, so that none is extracted, nor the `-d` directory made,

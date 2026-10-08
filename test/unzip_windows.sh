@@ -437,6 +437,17 @@ expect_status 9 "$UNZIP" -l 'wz/none*.zip'
 "$UNZIP" -l 'wz/none*.zip' 2>err || true
 grep -q '^No zipfiles found\.$' err || fail "no match: $(cat err)"
 
+# ...hidden and system files among them, as UnZip's port lists them
+cp p.zip wz/w4.zip
+cp p.zip wz/w5.zip
+attrib +h wz\\w4.zip
+attrib +s wz\\w5.zip
+"$UNZIP" -l 'wz/w?.zip' >out 2>err || fail "hidden: status $?"
+grep -q '^4 archives were successfully processed\.$' err ||
+    fail "hidden: $(cat err)"
+grep -q '^Archive:  wz/w4\.zip' out || fail "hidden: $(cat out)"
+grep -q '^Archive:  wz/w5\.zip' out || fail "system: $(cat out)"
+
 # Exit statuses
 cp p.zip arc.zip
 expect_status 0 "$UNZIP" -t arc

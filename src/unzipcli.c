@@ -2474,10 +2474,12 @@ static i32 process_zipfiles(unzip *u, arena scratch)
         return r==IZ_DIR ? PK_NOZIP : r;
     }
 
+    // On Windows hidden and system files match too, as the port's
+    // Readdir (win32/win32.c) lists them, unlike zip's
     b32 wild = zip_haswild(spec, ZIP_SETS);
     if (wild) {
         i32 flags = ZIP_SETS | (u->windows ? WILD_WINDOWS : WILD_NODOTS);
-        expand_wild(u->ctx, spec, 0, flags, add_match, u, scratch);
+        expand_wild(u->ctx, spec, 1, flags, add_match, u, scratch);
     }
     if (!u->matches.len) {
         *push(&u->perm, &u->matches) = spec;  // tried as it is
