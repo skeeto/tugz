@@ -1190,15 +1190,20 @@ for entries.
   `os_keep` then clears, trying times and attributes apart should that
   fail, to tell which failed. Directories get times only, as in the
   port, through a handle opened with `FILE_FLAG_OPEN_REPARSE_POINT` that
-  refuses a reparse point. Junctions, like links, count as links on the
-  way to an entry, and a junction at an entry's own name cannot be
-  removed ("cannot delete old", 50), so nothing is written through it. A
-  link becomes a regular file holding its target, as in the port, made
-  last, as on POSIX. DOS times are local by each year's own daylight
-  saving rules (`TzSpecificLocalTimeToSystemTime`), as zip writes them
-  there. There is no umask (access control is inherited), and `-K` and
-  `-X` are refused. Explorer, `tar`, and .NET's `Expand-Archive` extract
-  the archives of tugz's zip as unzip does, and Explorer and `tar`
+  refuses a reparse point. Times include a local `UT` field's creation
+  time, as the port's `SetFileTime` sets it (`win32.c`, `getNTfiletime`,
+  `close_outfile`, `set_direc_attribs`): only along with the field's
+  modification time, for files and directories, `-D` and `-DD` skipping
+  it with the others (`test_ctime`; `unzip_windows.sh`, "Times").
+  Junctions, like links, count as links on the way to an entry, and a
+  junction at an entry's own name cannot be removed ("cannot delete
+  old", 50), so nothing is written through it. A link becomes a regular
+  file holding its target, as in the port, made last, as on POSIX. DOS
+  times are local by each year's own daylight saving rules
+  (`TzSpecificLocalTimeToSystemTime`), as zip writes them there. There
+  is no umask (access control is inherited), and `-K` and `-X` are
+  refused. Explorer, `tar`, and .NET's `Expand-Archive` extract the
+  archives of tugz's zip as unzip does, and Explorer and `tar`
   Explorer's own, while `Expand-Archive` decodes those OEM names from
   the ANSI code page.
 
@@ -1296,10 +1301,9 @@ ones as invariants. Those that no test asserts are marked untested.
   (`test_windows`; `unzip_windows.sh`, "Names mapped for Windows"). DOS
   times are local by each year's own daylight saving rules, where the
   port applies the current year's (`unzip_windows.sh`, a date in March
-  2006). A `UT` field's creation time is not set, where the port sets it
-  (untested). Paths may exceed `MAX_PATH` (`unzip_windows.sh`, "Long
-  paths"), and the console is read and written in UTF-16
-  (`unzip_windows.sh`, the prompt in a pseudo console).
+  2006). Paths may exceed `MAX_PATH` (`unzip_windows.sh`, "Long paths"),
+  and the console is read and written in UTF-16 (`unzip_windows.sh`, the
+  prompt in a pseudo console).
 
 ## Workflow
 
