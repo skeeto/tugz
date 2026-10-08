@@ -967,6 +967,18 @@ static void test_windows(os *ctx)
     UNZIP(ctx, 0, "-q", "a.zip", "CASE.txt");
     TEST(output_is(ctx, 2, "replace CASE.txt? [y]es, [n]o, [A]ll, [N]one, "
                            "[r]ename: "));
+
+    // Answers typed at a console end in CRLF, the CR dropped
+    put_stdin(ctx, "what\r\n\r\nr\r\nren\\y.txt\r\n");
+    UNZIP(ctx, 0, "-q", "a.zip", "CASE.txt");
+    TEST(output_is(ctx, 2,
+        "replace CASE.txt? [y]es, [n]o, [A]ll, [N]one, [r]ename: "
+        "error:  invalid response [what]\n"
+        "replace CASE.txt? [y]es, [n]o, [A]ll, [N]one, [r]ename: "
+        "error:  invalid response [{ENTER}]\n"
+        "replace CASE.txt? [y]es, [n]o, [A]ll, [N]one, [r]ename: "
+        "new name: "));
+    TEST(equals(file_data(ctx, "ren_y.txt"), "8\n"));
     free(z.s);
 }
 

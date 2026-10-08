@@ -1062,13 +1062,18 @@ static s8 const bomb_msg = S8(
 // Read a line of standard input as C's fgets reads one into a buffer of
 // cap bytes, as UnZip reads answers: up to cap-1 bytes, through a
 // newline. Returns its length, or -1 at the end of the input, or where
-// the input is the archive.
+// the input is the archive. With Windows conventions, as there in text
+// mode, a CR before the newline is dropped: a console's lines end in
+// CRLF.
 static iz read_answer(unzip *u, u8 *buf, iz cap)
 {
     reader *r = u->answers;
     iz      n = 0;
     while (r && n<cap-1 && reader_fill(r)) {
         u8 c = r->buf[r->off++];
+        if (c=='\n' && n && buf[n-1]=='\r' && u->windows) {
+            n--;
+        }
         buf[n++] = c;
         if (c == '\n') {
             break;
