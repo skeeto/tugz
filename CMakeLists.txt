@@ -350,13 +350,19 @@ if(TUGZ_BUILD_TESTS)
     endif()
 
     # unzip end to end, sanitized, compared with Info-ZIP's, and reading
-    # archives from tugz's zip too
+    # archives from tugz's zip too, with the out-of-memory tests run by a
+    # build without AddressSanitizer
     if(tugz_unzip_port)
         add_test(NAME unzip-cli
             COMMAND ${TUGZ_SH} ${PROJECT_SOURCE_DIR}/test/unzip.sh
                     $<TARGET_FILE:tugz_unzip_debug>)
-        set_tests_properties(unzip-cli PROPERTIES ENVIRONMENT
+        set(tugz_unzip_env
             "REF=${TUGZ_UNZIP};TUGZ_ZIP=$<TARGET_FILE:tugz_zip_debug>")
+        if(TARGET tugz_unzip)
+            string(APPEND tugz_unzip_env ";UNZIPOOM=$<TARGET_FILE:tugz_unzip>")
+        endif()
+        set_tests_properties(unzip-cli PROPERTIES ENVIRONMENT
+            "${tugz_unzip_env}")
         if(NOT tugz_have_unzip)
             message(WARNING
                 "tugz: unzip-cli disabled: it needs Info-ZIP's unzip")
