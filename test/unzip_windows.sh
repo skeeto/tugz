@@ -279,7 +279,10 @@ attrib +r attr\\plain.txt
 # modification and access times in UTC, for directories too, set once
 # their files are in them; -D skips directories', -DD all of them. Its
 # creation time is set too, as Info-ZIP's port sets it, only along with
-# its modification time
+# its modification time. As in the port, its times count only along
+# with its modification time, the DOS time otherwise both modification
+# and access time, and without its access time, the access time is left
+# as the file was made: not earlier than its creation, nor than now
 ut() {  # flags time...: a UT field, the times its flags announce
     printf 'UT'; f16 $((1 + 4*($# - 1))); printf '\\%03o' $1
     shift
@@ -295,7 +298,16 @@ entry 'ct.txt' 0 $UNIX $FILE $d2020 "$(ut 7 1000000000 1100000000 900000000)"
 entry 'noct.txt' 0 $UNIX $FILE $d2020 "$(ut 6 1100000000 850000000)"
 entry 'cd/' 0 $UNIX $((040755 << 16 | 16)) $d2020 \
     "$(ut 5 1200000000 950000000)"
+entry 'mt.txt' 0 $UNIX $FILE $d2020 "$(ut 1 1000000000)"
 finish times.zip
+# Whether a file's access time is as it was made: not before its
+# creation, nor after now
+fresh_atime() {  # file
+    ps "\$f = Get-Item -Force -LiteralPath '$1'
+        \$a = \$f.LastAccessTimeUtc
+        if (\$a -lt \$f.CreationTimeUtc -or
+            \$a -gt (Get-Date).ToUniversalTime()) { exit 1 }"
+}
 for D in '' -D -DD; do
     rm -rf times
     mkdir times
@@ -313,6 +325,15 @@ for D in '' -D -DD; do
             fail "UT access time: $(atimeutc times/ut.txt)"
         [ "$(ctimeutc times/ct.txt)" = 1998-07-09T16:00:00 ] ||
             fail "UT creation time: $(ctimeutc times/ct.txt)"
+        [ "$(mtime times/noct.txt)" = 2020-01-02T03:04:06 ] ||
+            fail "UT without a modification time: $(mtime times/noct.txt)"
+        [ "$(atimeutc times/noct.txt)" = "$(mtimeutc times/noct.txt)" ] ||
+            fail "UT without a modification time: access time" \
+                 "$(atimeutc times/noct.txt)"
+        [ "$(mtimeutc times/mt.txt)" = 2001-09-09T01:46:40 ] ||
+            fail "UT modification time alone: $(mtimeutc times/mt.txt)"
+        fresh_atime times/mt.txt ||
+            fail "UT without an access time: $(atimeutc times/mt.txt)"
     else
         [ "$(mtime times/winter.txt)" != 2006-01-15T12:00:00 ] ||
             fail "-DD set a time"

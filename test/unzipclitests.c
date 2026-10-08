@@ -1098,12 +1098,17 @@ static void test_windows(os *ctx)
     free(z.s);
 }
 
-// A local UT field's creation time, set with Windows conventions, as
-// Info-ZIP's port sets it (win32.c, getNTfiletime): only with the
-// field's modification time, for files and directories, which -D skips
-// for directories and -DD for both; never from a central UT field,
-// which holds none; and on POSIX, never
-static void test_ctime(os *ctx)
+// Times with Windows conventions, as Info-ZIP's port sets them (win32.c,
+// getNTfiletime, close_outfile, set_direc_attribs), against POSIX's
+// (unix.c, get_extattribs). A local UT field's times count only with
+// its modification time, else the DOS time is both modification and
+// access time; without its access time, the access time is left
+// unchanged; and its creation time is set, which a central UT field
+// never holds. All for files and directories, -D skipping them for
+// directories and -DD for both. On POSIX, the field's times count
+// alone, the access time defaulting to the modification time, never a
+// creation time.
+static void test_wintimes(os *ctx)
 {
     xspec spec[] = {
         {.name="d/", .extattr=DIRM(0755),
@@ -1116,6 +1121,9 @@ static void test_ctime(os *ctx)
          .lextra=utf(6, 0, 1600000100, 1100000000)},
         {.name="central.txt", .data="d\n", .lextra=utl(1600000000, 0),
          .cextra=utf(7, 1600000000, 1600000100, 1000000000)},
+        {.name="dos.txt", .data="e\n"},
+        {.name="m/", .extattr=DIRM(0755), .lextra=utf(1, 1500000000, 0, 0)},
+        {.name="a/", .extattr=DIRM(0755), .lextra=utf(2, 0, 1500000100, 0)},
     };
     s8 z = build(spec, countof(spec), 0);
     char *D[] = {"-o", "-oD", "-oDD"};
@@ -1125,17 +1133,34 @@ static void test_ctime(os *ctx)
         put_archive(ctx, "a.zip", z);
         UNZIP(ctx, 0, "-q", D[i%3], "a.zip");
         TEST(output_is(ctx, 3, ""));
-        b32 files = ctx->windows && i<2;
-        b32 dirs  = ctx->windows && i<1;
+        b32 win   = ctx->windows;
+        b32 files = i<2 || !win;
+        b32 dirs  = i<1 || !win;
+        i64 dos   = mfs_get(ctx, "dos.txt")->mtime;
+        TEST(files == (dos < 1900000000));
+
         mfile *f = mfs_get(ctx, "d");
-        TEST(dirs ? f->ctime==1400000000 : f->ctime>=1900000000);
+        TEST(dirs&&win ? f->ctime==1400000000 : f->ctime>=1900000000);
         TEST(!dirs || (f->mtime==1500000000 && f->atime==1500000100));
+        f = mfs_get(ctx, "m");
+        TEST(!dirs || f->mtime==1500000000);
+        TEST(!dirs || (win ? f->atime==f->ctime && f->atime>=1900000000
+                           : f->atime==1500000000));
+        f = mfs_get(ctx, "a");
+        TEST(!dirs || (win ? f->mtime==dos && f->atime==dos
+                           : f->mtime==dos && f->atime==1500000100));
+
         f = mfs_get(ctx, "d/all.txt");
-        TEST(files ? f->ctime==1300000000 : f->ctime>=1900000000);
-        TEST(i>=2 || (f->mtime==1600000000 && f->atime==1600000100));
+        TEST(files&&win ? f->ctime==1300000000 : f->ctime>=1900000000);
+        TEST(!files || (f->mtime==1600000000 && f->atime==1600000100));
         f = mfs_get(ctx, "noatime.txt");
-        TEST(files ? f->ctime==1200000000 : f->ctime>=1900000000);
-        TEST(mfs_get(ctx, "nomtime.txt")->ctime >= 1900000000);
+        TEST(files&&win ? f->ctime==1200000000 : f->ctime>=1900000000);
+        TEST(!files || f->mtime==1600000000);
+        TEST(!files || (win ? f->atime>=1900000000 : f->atime==1600000000));
+        f = mfs_get(ctx, "nomtime.txt");
+        TEST(f->ctime >= 1900000000);
+        TEST(!files || (win ? f->mtime==dos && f->atime==dos
+                            : f->mtime==dos && f->atime==1600000100));
         TEST(mfs_get(ctx, "central.txt")->ctime >= 1900000000);
     }
     free(z.s);
@@ -1203,7 +1228,7 @@ int main(void)
     test_damaged(ctx);
     test_faults(ctx);
     test_windows(ctx);
-    test_ctime(ctx);
+    test_wintimes(ctx);
     test_stdin(ctx);
     test_local_name(ctx);
     unzipos_free(ctx);

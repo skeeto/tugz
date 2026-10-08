@@ -885,7 +885,9 @@ static i32 mfs_setattrs(os *ctx, mfile *f, osattrs *a, s8 *why)
     }
     if (ok & OS_ATIMES) {
         f->mtime = a->mtime;
-        f->atime = a->atime;
+        if (!ctx->windows || !(a->flags & OS_AKEEPA)) {
+            f->atime = a->atime;  // as POSIX, ignoring OS_AKEEPA
+        }
         if (ctx->windows && (a->flags & OS_ACTIME)) {
             f->ctime = a->ctime;  // as POSIX, which has none, ignores it
         }

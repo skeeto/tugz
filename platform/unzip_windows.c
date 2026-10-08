@@ -82,8 +82,9 @@ static i64 filetime(i64 t)
 }
 
 // The times and attributes of attrs as one FILE_BASIC_INFO, its zero
-// fields unchanged. Times include the creation time with OS_ACTIME, as
-// the port's SetFileTime gives a UT field's (win32.c, close_outfile and
+// fields unchanged. Times include the creation time with OS_ACTIME, and
+// leave the access time unchanged with OS_AKEEPA, as the port's
+// SetFileTime gives a UT field's (win32.c, close_outfile and
 // set_direc_attribs). Attributes, for a file only, are read-only,
 // hidden, system, and archive, as Info-ZIP's port sets them (win32.c,
 // close_outfile, through mapattr), without the others of the low byte
@@ -93,7 +94,9 @@ static basic_info basic(osattrs *attrs, i32 flags)
     basic_info info = {0};
     if (flags & OS_ATIMES) {
         info.written  = filetime(attrs->mtime);
-        info.accessed = filetime(attrs->atime);
+        if (!(attrs->flags & OS_AKEEPA)) {
+            info.accessed = filetime(attrs->atime);
+        }
         if (attrs->flags & OS_ACTIME) {
             info.created = filetime(attrs->ctime);
         }

@@ -72,6 +72,7 @@ enum {
     OS_ALINK  = 1 << 3,  // the link itself (os_symlink)
     OS_ASGID  = 1 << 4,  // keep a directory's set-group-ID bit (POSIX)
     OS_ACTIME = 1 << 5,  // with OS_ATIMES, creation time too (Windows)
+    OS_AKEEPA = 1 << 6,  // with OS_ATIMES, access time unchanged (Windows)
     OS_AWHY   = 4,
 };
 typedef struct {
@@ -1453,17 +1454,25 @@ static i64 dos_unix(unzip *u, u32 dostime)
 
 // Give attrs an entry's times, from its local extra fields (ux), else
 // its DOS time, the access time defaulting to the modification time, as
-// UnZip's get_extattribs (unix.c). A UT field's creation time, which
-// only Windows sets, comes only with the field's modification time, as
-// the port's getNTfiletime (win32.c) takes the field's times only then,
-// and its close_outfile and set_direc_attribs set it, for files and
-// directories alike.
+// UnZip's get_extattribs (unix.c). With Windows conventions, as the
+// port's getNTfiletime (win32.c) has them: the field's times only along
+// with its modification time, else the DOS time for both; without its
+// access time, the access time left unchanged, as close_outfile and
+// set_direc_attribs pass SetFileTime none; and its creation time, which
+// only Windows sets, for files and directories alike.
 static void entry_times(unzip *u, osattrs *a, uzizux *ux, u32 dost)
 {
-    a->mtime  = ux->flags & UZ_MTIME ? ux->mtime : dos_unix(u, dost);
-    a->atime  = ux->flags & UZ_ATIME ? ux->atime : a->mtime;
+    i32 have = ux->flags;
+    if (u->windows && !(have & UZ_MTIME)) {
+        have = 0;
+    }
+    a->mtime  = have & UZ_MTIME ? ux->mtime : dos_unix(u, dost);
+    a->atime  = have & UZ_ATIME ? ux->atime : a->mtime;
     a->flags |= OS_ATIMES;
-    if ((ux->flags & UZ_MTIME) && (ux->flags & UZ_CTIME)) {
+    if (u->windows && (have & UZ_MTIME) && !(have & UZ_ATIME)) {
+        a->flags |= OS_AKEEPA;
+    }
+    if ((have & UZ_MTIME) && (have & UZ_CTIME)) {
         a->ctime  = ux->ctime;
         a->flags |= OS_ACTIME;
     }
