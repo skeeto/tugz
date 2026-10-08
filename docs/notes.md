@@ -1190,11 +1190,16 @@ for entries.
   `os_keep` then clears, trying times and attributes apart should that
   fail, to tell which failed. Directories get times only, as in the
   port, through a handle opened with `FILE_FLAG_OPEN_REPARSE_POINT` that
-  refuses a reparse point. Times include a local `UT` field's creation
-  time, as the port's `SetFileTime` sets it (`win32.c`, `getNTfiletime`,
-  `close_outfile`, `set_direc_attribs`): only along with the field's
-  modification time, for files and directories, `-D` and `-DD` skipping
-  it with the others (`test_ctime`; `unzip_windows.sh`, "Times").
+  refuses a reparse point. Times are the port's (`win32.c`,
+  `getNTfiletime`, `close_outfile`, `set_direc_attribs`), for files and
+  directories alike, `-D` skipping directories' and `-DD` all: a local
+  `UT` field counts only with its modification time, else the DOS time
+  is both modification and access time, where POSIX takes the field's
+  access time alone; without its access time, the access time is left
+  as the file was made (`OS_AKEEPA`, a zero `LastAccessTime`), as the
+  port passes `SetFileTime` none, where POSIX copies the modification
+  time; and its creation time is set, as `SetFileTime` sets it
+  (`test_wintimes`; `unzip_windows.sh`, "Times").
   Junctions, like links, count as links on the way to an entry, and a
   junction or a directory link at a file entry's own name is replaced,
   as a link is on POSIX: removed by a handle to the link itself, opened
@@ -1204,14 +1209,17 @@ for entries.
   a link, even an empty one, stays ("cannot delete old", 50, as in
   UnZip). At a directory entry's own name, a junction is "exists but is
   not directory" (2), as a link is on POSIX. A link becomes a regular
-  file holding its target, as in the port, made last, as on POSIX. DOS
-  times are local by each year's own daylight saving rules
+  file holding its target, as in the port, made last, as on POSIX, and
+  given the attributes and times of any file, as the port's
+  `close_outfile` gives them, by `os_symlink` before it is kept
+  (`test_wintimes`; `unzip_windows.sh`, "Links"). DOS times are local
+  by each year's own daylight saving rules
   (`TzSpecificLocalTimeToSystemTime`), as zip writes them there. There
   is no umask (access control is inherited), and `-K` and `-X` are
   refused. Explorer, `tar`, and .NET's `Expand-Archive` extract the
-  archives of tugz's zip as unzip does, and Explorer and `tar`
-  Explorer's own, while `Expand-Archive` decodes those OEM names from
-  the ANSI code page.
+  archives of tugz's zip as unzip does, and Explorer and `tar` extract
+  Explorer's own as unzip does too, while `Expand-Archive` decodes their
+  OEM names from the ANSI code page (`unzip_windows.sh`, last).
 
 ### Departures from Info-ZIP UnZip
 
@@ -1298,8 +1306,9 @@ ones as invariants. Those that no test asserts are marked untested.
   "comments.zip"). A name is shown in Unicode whenever a Unicode path
   field gives it, as Debian's UnZip shows it in a UTF-8 locale
   (`unzip.sh`, "names.zip"). Listings' dates are ISO, as Debian's.
-- Windows: a link becomes a file holding its target, as in the port, but
-  made last, as on POSIX (`unzip_windows.sh`, "Links"; `test_windows`).
+- Windows: a link becomes a file holding its target, with a file's
+  attributes and times, as in the port, but made last, as on POSIX
+  (`unzip_windows.sh`, "Links"; `test_windows`).
   Junctions and directory links are never followed, but replaced at a
   file entry's own name, as links are on POSIX (`unzip_windows.sh`,
   which also finds an empty directory there left in place, 50).
