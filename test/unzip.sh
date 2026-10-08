@@ -905,13 +905,13 @@ fi
 # claimed before anything is extracted, so that running out (status 4)
 # leaves nothing, not even the -d directory. Systems limit address space
 # (ulimit -v), and Linux also private writable memory (ulimit -d). A
-# small run fits under each, while the central directory of 60,000
-# entries with names of 1,000 bytes, whose local headers (sparse) are
-# never reached, needs well over 60 MB. macOS's shell sets neither
-# limit, and builds with sanitizers that reserve shadow memory cannot
-# run under them, nor can emulators, which the probe finds. UNZIPOOM
-# names another build for these tests, as ctest, whose $U is sanitized,
-# gives one.
+# small run fits under each, while 20,000 links, whose targets of 4,096
+# bytes are held to the end in room claimed beforehand, need over 80 MB
+# (their local headers, sparse, are never reached). macOS's shell sets
+# neither limit, and builds with sanitizers that reserve shadow memory
+# cannot run under them, nor can emulators, which the probe finds.
+# UNZIPOOM names another build for these tests, as ctest, whose $U is
+# sanitized, gives one.
 oomunzip=${UNZIPOOM:-$U}
 oomskip=
 if LC_ALL=C grep -aq -e __asan_ -e __hwasan_ -e __msan_ -e __tsan_ \
@@ -922,14 +922,14 @@ elif ! (ulimit -v 60000) 2>/dev/null; then
 else
     $PY - oombig.zip <<'EOF'
 import struct, sys
-n, size = 60000, 1000
-local = 30 + size
+n, size = 20000, 4096
+local = 30 + 10 + size
 cd = bytearray()
 for i in range(n):
-    name = b"d/%0*d" % (size - 2, i)
+    name = b"d/%08d" % i
     cd += struct.pack("<IHHHHIIIIHHHHHII", 0x02014B50, 3 << 8 | 30, 20, 0,
-                      0, 0, 0, 0, 0, size, 0, 0, 0, 0, 0o100644 << 16,
-                      i * local) + name
+                      0, 0, 0, size, size, len(name), 0, 0, 0, 0,
+                      0o120777 << 16, i * local) + name
 f = open(sys.argv[1], "wb")
 f.truncate(n * local)
 f.seek(n * local)
