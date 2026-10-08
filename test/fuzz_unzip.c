@@ -129,6 +129,9 @@ static xentries read_entries(os *ctx, s8 z, b32 windows, arena *a)
     xentries r = {0};
     r.data = new(a, z.len/ZIP_CENTRAL_LEN + 1, xentry_);
     r.at   = new(a, z.len/ZIP_LOCAL_LEN + 1, i64);
+    // Names decode through scratch apart from where they are kept, as
+    // the test layer's os_fromcp checks (a 64 KiB name as UTF-16, twice)
+    arena scratch = subarena(a, (iz)1 << 19);
     for (iz i = 0; i+4 <= z.len; i++) {
         zentry e = {0};
         u32    sig = get32(z.s+i);
@@ -139,7 +142,7 @@ static xentries read_entries(os *ctx, s8 z, b32 windows, arena *a)
                    zip_parse_header(z.s+i, z.len-i, (i64)1<<60, &e)) {
             xentry_ *x = r.data + r.len++;
             s8 stale = {0};
-            s8 un    = zar_uname(ctx, &e, windows, &(i32){0}, &stale, a, *a);
+            s8 un    = zar_uname(ctx, &e, windows, &(i32){0}, &stale, a, scratch);
             x->e    = e;
             x->name = un.s ? un : e.name;
         }
