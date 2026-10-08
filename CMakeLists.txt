@@ -153,14 +153,7 @@ endif()
 if(TUGZ_BUILD_ZIP)
     tugz_program(tugz_zip zip zip)
 endif()
-# unzip has no Windows layer yet
-set(tugz_unzip_port ON)
-if(WIN32)
-    set(tugz_unzip_port OFF)
-endif()
-if(TUGZ_BUILD_UNZIP AND NOT tugz_unzip_port)
-    message(STATUS "tugz: unzip is not yet ported to Windows")
-elseif(TUGZ_BUILD_UNZIP)
+if(TUGZ_BUILD_UNZIP)
     tugz_program(tugz_unzip unzip unzip)
 endif()
 
@@ -286,14 +279,10 @@ if(TUGZ_BUILD_TESTS)
     tugz_sanitize(tugz_gzip_debug)
     tugz_program(tugz_zip_debug zip zip-debug NOSTRIP)
     tugz_sanitize(tugz_zip_debug)
+    tugz_program(tugz_unzip_debug unzip unzip-debug NOSTRIP)
+    tugz_sanitize(tugz_unzip_debug)
     set_property(GLOBAL APPEND PROPERTY tugz_test_targets
-                 tugz_gzip_debug tugz_zip_debug)
-    if(tugz_unzip_port)
-        tugz_program(tugz_unzip_debug unzip unzip-debug NOSTRIP)
-        tugz_sanitize(tugz_unzip_debug)
-        set_property(GLOBAL APPEND PROPERTY tugz_test_targets
-                     tugz_unzip_debug)
-    endif()
+                 tugz_gzip_debug tugz_zip_debug tugz_unzip_debug)
 
     find_program(TUGZ_SH sh)
     if(EXISTS /usr/bin/gzip)
@@ -352,8 +341,9 @@ if(TUGZ_BUILD_TESTS)
 
     # unzip end to end, sanitized, compared with Info-ZIP's, and reading
     # archives from tugz's zip too, with the out-of-memory tests run by a
-    # build without AddressSanitizer
-    if(tugz_unzip_port)
+    # build without AddressSanitizer, but not on Windows, whose
+    # conventions differ.
+    if(NOT WIN32)
         add_test(NAME unzip-cli
             COMMAND ${TUGZ_SH} ${PROJECT_SOURCE_DIR}/test/unzip.sh
                     $<TARGET_FILE:tugz_unzip_debug>)
