@@ -281,13 +281,16 @@ static i32 decoder_run(decoder *z, zbuf *b)
             return GZ_OK;
 
         case DEC_BODY: {
-            u8 *out = b->out;
+            // Lengths come from the counts: both pointers may be null
+            u8 *out   = b->out;
+            iz  avail = b->outlen;
             i32 r = inflate_stream(z->inf, b);
+            iz  n = avail - b->outlen;
             if (z->format != FMT_RAW) {
-                z->check = check_update(z->format, z->check, out,
-                                        b->out-out, &z->cpu);
+                z->check = check_update(z->format, z->check, out, n,
+                                        &z->cpu);
             }
-            z->total += (u64)(b->out - out);
+            z->total += (u64)n;
             if (r != GZ_OK) {
                 return r;
             }
@@ -388,12 +391,13 @@ static i32 encoder_run(encoder *e, zbuf *b, i32 flush)
 {
     deflator *d  = e->def;
     u8 const *in = b->in;
+    iz avail = b->inlen;
     i32 r = deflate_stream(d, b, flush);
+    iz n = avail - b->inlen;  // not b->in-in: both may be null
     if (e->format != FMT_RAW) {
-        e->check = check_update(e->format, e->check, in, b->in-in,
-                                &e->cpu);
+        e->check = check_update(e->format, e->check, in, n, &e->cpu);
     }
-    e->total += (u64)(b->in - in);
+    e->total += (u64)n;
 
     if (d->flushing==DEF_FINISH && d->flushed && !e->done) {
         u8 trailer[8];
