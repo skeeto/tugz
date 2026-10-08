@@ -589,23 +589,30 @@ static b32 remove_file(c16 *wpath)
 // (gzip), or by zip's os_commit, which clears it just before renaming.
 static i32 open_output(os *ctx, i32 fd, c16 *wpath, i32 mode)
 {
-    if (mode & OS_FORCE) {
-        remove_file(wpath);  // replace rather than write through a link
+    u32 kept = 0;  // why a name to replace could not be removed
+    if (mode & OS_FORCE && !remove_file(wpath)) {
+        // Replace rather than write through a link
+        kept = GetLastError();
+        kept = kept==ERROR_FILE_NOT_FOUND ? 0 : kept;
     }
     iptr h = CreateFileW(wpath, GENERIC_WRITE|DELETE, 0, 0, CREATE_NEW,
                          FILE_ATTRIBUTE_NORMAL, 0);
     i32 unsure = ctx->unsure;
     ctx->unsure = 0;
     if (h == INVALID_HANDLE_VALUE) {
-        // Forced, a name that could not be replaced is an error. Else a
-        // name that another process holds delete-pending (its output
-        // not yet kept) refuses access rather than reporting that it
-        // exists, and so does checking for it. But where the directory
-        // refuses that check for any name (no traverse rights), every
-        // name looks taken, so after a run of 64 such names give up
-        // rather than let a caller seeking a free name try them all.
+        // Forced, a name that could not be replaced is an error, for
+        // the reason it could not be removed. Else a name that another
+        // process holds delete-pending (its output not yet kept)
+        // refuses access rather than reporting that it exists, and so
+        // does checking for it. But where the directory refuses that
+        // check for any name (no traverse rights), every name looks
+        // taken, so after a run of 64 such names give up rather than
+        // let a caller seeking a free name try them all.
         u32 err = GetLastError();
         if (mode & OS_FORCE) {
+            if (err==ERROR_FILE_EXISTS && kept) {
+                SetLastError(kept);
+            }
             return OS_ERR;
         } else if (err==ERROR_ACCESS_DENIED || err==ERROR_SHARING_VIOLATION) {
             b32 found = GetFileAttributesW(wpath) != INVALID_FILE_ATTRIBUTES;

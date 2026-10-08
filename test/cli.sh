@@ -683,6 +683,29 @@ EOF
         fail "-f delete-pending output: $st2 $(cat err2)"
     [ $st3 = 1 ] && [ -s err3 ] || fail "-qf delete-pending output: $st3"
     "$GZIP" -kf pend || fail "-f once no longer delete-pending"
+
+    # ...and one held open without sharing is an error for the reason
+    # it could not be removed, not that it exists
+    rm -f held done
+    printf h >hold
+    printf old >hold.gz
+    powershell -NoProfile -NonInteractive -Command "
+        \$f = [IO.File]::Open('hold.gz', 'Open', 'ReadWrite', 'None')
+        Set-Content held ''
+        for (\$i = 0; \$i -lt 600 -and !(Test-Path done); \$i++) {
+            Start-Sleep -Milliseconds 50
+        }
+        \$f.Close()" &
+    pid=$!
+    for i in 1 2 3 4 5 6 7 8 9 10; do [ -e held ] && break; sleep 1; done
+    set +e
+    "$GZIP" -kf hold 2>err1; st1=$?
+    set -e
+    : >done
+    wait $pid || true
+    [ $st1 = 1 ] && grep -q '^gzip: hold.gz: Permission denied' err1 ||
+        fail "-f over a held output: $st1 $(cat err1)"
+    [ "$(cat hold.gz)" = old ] || fail "-f over a held output: changed"
 fi
 
 # As in GNU gzip, a read error ends the run, and leaves the stream
