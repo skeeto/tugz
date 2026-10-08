@@ -1925,13 +1925,16 @@ static i32 do_member(unzip *u, zarchive *ar, zentry *e, xentry *x,
     }
 
     // The names compare as Debian's UnZip compares them, each in Unicode
-    // where its own extra fields give that
-    s8 lname = l.name;
-    if (!(e->flags & ZIP_FLAG_UTF8)) {
-        u32 crc = crc32_update(0, l.name.s, l.name.len, &u->crccpu);
-        s8  un  = zip_extra_upath(l.extra, crc);
-        lname = un.s && zip_utf8(un)>=0 && !zip_has(un, 0) ? un : lname;
-    }
+    // where its own extra fields give that, or, as the central one, its
+    // code page (Windows)
+    arena  lt    = scratch;
+    zentry le    = *e;
+    s8     stale = {0};
+    le.name   = l.name;
+    le.cextra = l.extra;
+    s8 lname = zar_uname(u->ctx, &le, u->windows, &u->crccpu, &stale, &lt,
+                         lt);
+    lname = lname.s ? lname : l.name;
     if (!zequals(lname, name)) {
         arena tmp = scratch;
         info(u, MSG_STDERR, JOIN(&tmp, shown(u, name, &tmp),
