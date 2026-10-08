@@ -968,6 +968,16 @@ static void test_windows(os *ctx)
     TEST(output_is(ctx, 2, "replace CASE.txt? [y]es, [n]o, [A]ll, [N]one, "
                            "[r]ename: "));
 
+    // Member names separate with either slash, so '\' escapes nothing
+    s8 six = six_files();
+    put_archive(ctx, "six.zip", six);
+    UNZIP(ctx, 0, "-p", "six.zip", "p\\b.txt");
+    TEST(output_is(ctx, 1, "bbb\n"));
+    UNZIP(ctx, 0, "-p", "six.zip", "p/*", "-x", "p\\[a-e]*");
+    TEST(output_is(ctx, 1, "fff\n"));
+    UNZIP(ctx, 11, "-p", "six.zip", "\\p*");
+    free(six.s);
+
     // Answers typed at a console end in CRLF, the CR dropped
     put_stdin(ctx, "what\r\n\r\nr\r\nren\\y.txt\r\n");
     UNZIP(ctx, 0, "-q", "a.zip", "CASE.txt");

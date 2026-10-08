@@ -713,6 +713,14 @@ static i32 unzip_args(unzip *u, unzipconfig *conf, arena scratch)
                 return r;
             }
         } else {
+            // With Windows conventions, '\' separates, as UnZip's port
+            // takes it in member names (unzip.c), so escapes nothing
+            if (u->windows && zip_has(arg, '\\')) {
+                arg = JOIN(&u->perm, arg);
+                for (iz k = 0; k < arg.len; k++) {
+                    arg.s[k] = arg.s[k]=='\\' ? '/' : arg.s[k];
+                }
+            }
             *push(&u->perm, u->xlist ? &u->xspecs : &u->fspecs) = arg;
         }
     }
