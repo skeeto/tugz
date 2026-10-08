@@ -47,6 +47,19 @@ static b32 output_is(os *ctx, i32 fd, char const *want)
     return 1;
 }
 
+// Whether output holds a string.
+static b32 output_has(os *ctx, i32 fd, char const *want)
+{
+    s8 got = unzipos_output(ctx, fd);
+    s8 w   = cstrs8(want);
+    for (iz i = 0; i+w.len <= got.len; i++) {
+        if (s8equals((s8){got.s+i, w.len}, w)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void put_stdin(os *ctx, char const *text)
 {
     ctx->in    = (u8 *)text;
@@ -928,6 +941,8 @@ static void test_windows(os *ctx)
     };
     s8 z = build(spec, countof(spec), 0);
     mfs_reset(ctx);
+    UNZIP(ctx, 0, "-hh");  // elsewhere, '\' escapes
+    TEST(output_has(ctx, 1, "[...] a set, and \\ escapes."));
     ctx->windows = 1;
     put_archive(ctx, "a.zip", z);
     UNZIP(ctx, 1, "-o", "a.zip");
@@ -968,7 +983,11 @@ static void test_windows(os *ctx)
     TEST(output_is(ctx, 2, "replace CASE.txt? [y]es, [n]o, [A]ll, [N]one, "
                            "[r]ename: "));
 
-    // Member names separate with either slash, so '\' escapes nothing
+    // Member names separate with either slash, so '\' escapes nothing,
+    // as the help says
+    UNZIP(ctx, 0, "-hh");
+    TEST(output_has(ctx, 1, "A \\\nseparates directories, as / does."));
+    TEST(!output_has(ctx, 1, "escapes"));
     s8 six = six_files();
     put_archive(ctx, "six.zip", six);
     UNZIP(ctx, 0, "-p", "six.zip", "p\\b.txt");

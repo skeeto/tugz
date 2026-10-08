@@ -170,7 +170,15 @@ static s8 const unzip_help = S8(
     "-o is given.\n"
     "\n"
     "Member names in list and xlist are wildcards: * matches any run of\n"
+);
+static s8 const unzip_help_posix = S8(
     "characters, / included, ? one character, [...] a set, and \\ escapes.\n"
+);
+static s8 const unzip_help_windows = S8(
+    "characters, / included, ? one character, and [...] a set. A \\\n"
+    "separates directories, as / does.\n"
+);
+static s8 const unzip_help_tail = S8(
     "\n"
     "Listings show dates as YYYY-MM-DD. Entries compressed by methods other\n"
     "than stored and deflated, and encrypted entries, are skipped.\n"
@@ -728,7 +736,9 @@ static i32 unzip_args(unzip *u, unzipconfig *conf, arena scratch)
 
     if (u->showhelp) {
         if (u->showhelp == 2) {
-            info(u, 0, JOIN(&u->perm, unzip_usage, S("\n"), unzip_help));
+            info(u, 0, JOIN(&u->perm, unzip_usage, S("\n"), unzip_help,
+                            u->windows ? unzip_help_windows : unzip_help_posix,
+                            unzip_help_tail));
             return PK_OK;
         }
         return show_usage(u, 0);
