@@ -22,6 +22,7 @@ elif command -v python3 >/dev/null 2>&1; then
     PY=python3
 else
     PY=
+    echo "zip.sh: skipping the checks that need Python" >&2
 fi
 for tool in unzip zipinfo; do
     if ! command -v $tool >/dev/null 2>&1; then
