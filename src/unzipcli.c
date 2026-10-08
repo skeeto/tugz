@@ -497,15 +497,17 @@ static void show_text(unzip *u, s8 text, b32 cut, arena scratch)
             t.s[t.len++] = c;
         }
     }
-    s8 r = {0};
+    // Each piece between newlines and tabs shown as it is made, in room
+    // used again for the next, so as to take memory and time in
+    // proportion to the text
     for (iz i = 0; i < t.len;) {
-        iz j = i;
+        arena tmp = scratch;
+        iz    j   = i;
         for (; j<t.len && t.s[j]!='\n' && t.s[j]!='\t'; j++) {}
-        s8 part = shown(u, (s8){t.s+i, j-i}, &scratch);
-        r = JOIN(&scratch, r, part, j<t.len ? (s8){t.s+j, 1} : S(""));
+        info(u, 0, shown(u, (s8){t.s+i, j-i}, &tmp));
+        info(u, 0, j<t.len ? (s8){t.s+j, 1} : S(""));
         i = j + 1;
     }
-    info(u, 0, r);
     if (!cut) {
         info(u, MSG_TNEWLN, S(""));
     }

@@ -91,6 +91,7 @@ typedef struct {
     i64  offset;        // a central offset, if not 0, else its own
     b32  nolocal;       // no local header or data of its own
     i32  datalen;       // data's length, if not by NUL
+    s8   comment;
 } xspec;
 
 static s8 deflated(s8 data)
@@ -191,13 +192,14 @@ static s8 build(xspec const *spec, i32 n, char const *comment)
         zput32(&z, (u32)sizes[i]);
         zput16(&z, (u32)name.len);
         zput16(&z, (u32)e->cextra.len);
-        zput16(&z, 0);
+        zput16(&z, (u32)e->comment.len);
         zput16(&z, 0);
         zput16(&z, 0);
         zput32(&z, e->extattr ? e->extattr : 0100644u<<16);
         zput32(&z, (u32)offs[i]);
         zput(&z, name.s, name.len);
         zput(&z, e->cextra.s, e->cextra.len);
+        zput(&z, e->comment.s, e->comment.len);
     }
     i64 cdsize = z.len - cdoff;
     s8  c = comment ? cstrs8(comment) : (s8){0};
@@ -1516,6 +1518,57 @@ static void test_local_name(os *ctx)
     free(z.s);
 }
 
+// Memory committed by the last run, perm's and scratch's.
+static iz committed(os *ctx)
+{
+    return (ctx->lo - ctx->mem) + (ctx->mem + ctx->cap - ctx->hi);
+}
+
+// Comments of many lines and tabs, the longest an archive's can be, and
+// an entry's, are shown in memory in proportion to their length, where
+// joining each piece to those before took memory in proportion to its
+// square (2 GB for this archive comment)
+static void test_comments(os *ctx)
+{
+    enum { N = 65535 };
+    static char comment[N+1];
+    static char shown[2*N+1];
+    iz len = 0;
+    for (iz i = 0; i < N; i++) {
+        static char const pattern[] = "\n\ta\x01\r\n\t";
+        comment[i] = pattern[i % (countof(pattern)-1)];
+        switch (comment[i]) {
+        case '\r': break;
+        case 0x01: shown[len++] = '^'; shown[len++] = 'A'; break;
+        default:   shown[len++] = comment[i];
+        }
+    }
+    xspec spec[] = {
+        {.name="a", .data="a\n", .comment={(u8 *)comment, N}},
+    };
+    s8 z = build(spec, countof(spec), comment);
+    mfs_reset(ctx);
+    put_archive(ctx, "c.zip", z);
+    spec[0].comment = (s8){0};
+    s8 plain = build(spec, countof(spec), 0);
+    put_archive(ctx, "p.zip", plain);
+    UNZIP(ctx, 0, "-l", "p.zip");
+    iz base = committed(ctx);  // and each comment's length, three times
+    UNZIP(ctx, 0, "-z", "c.zip");
+    s8 out = unzipos_output(ctx, 3);
+    s8 head = S("Archive:  c.zip\n");
+    TEST(out.len == head.len+len+(shown[len-1]!='\n'));
+    TEST(s8equals((s8){out.s, head.len}, head));
+    TEST(s8equals((s8){out.s+head.len, len}, (s8){(u8 *)shown, len}));
+    TEST(committed(ctx) < base + 4*N);
+    UNZIP(ctx, 0, "-l", "c.zip");  // both comments
+    out = unzipos_output(ctx, 3);
+    TEST(out.len > 2*len);
+    TEST(committed(ctx) < base + 4*N);
+    free(plain.s);
+    free(z.s);
+}
+
 static void test_stdin(os *ctx)
 {
     s8 z = six_files();
@@ -1556,6 +1609,7 @@ int main(void)
     test_windows(ctx);
     test_wintimes(ctx);
     test_stdin(ctx);
+    test_comments(ctx);
     test_local_name(ctx);
     unzipos_free(ctx);
     puts("all unzip program tests pass");

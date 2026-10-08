@@ -1051,17 +1051,20 @@ for entries.
   (and left open), anything else read whole into memory first
   (`zin_memory`, one window that never moves), and `-n` is implied
   unless `-o` is given, as no prompt could read its answers.
-- End records: the comment is shown, and `-z` stops, once the end
-  record is found, before the central directory is read, as UnZip's
-  `find_ecrec` does. An end record whose comment runs past the end of
-  the file, which the shared parser takes only when no other's fits (as
-  UnZip takes the last, whatever its comment), is used, its comment
-  shown as far as the file goes, without a newline, then UnZip's
-  "caution:  zipfile comment truncated" (1, only where the comment is
-  shown); zip refuses it. A Zip64 end record that is not where its
-  locator says is looked for just before the locator, as UnZip's
-  `find_ecrec64` and Info-ZIP's zip look for it (data prepended to a
-  Zip64 archive leaves it there), with UnZip's "End-of-centdir-64
+- End records: the comment is shown, and `-z` stops, once the end record
+  is found, before the central directory is read, as UnZip's
+  `find_ecrec` does, a piece at a time between newlines and tabs, as
+  entries' comments are by `-l` and `-v`, in memory in proportion to its
+  length (`tests-unzipcli`, `test_comments`, with 65,535 newlines and
+  tabs; `unzip.sh`, `cmtlines.zip`). An end record whose comment runs
+  past the end of the file, which the shared parser takes only when no
+  other's fits (as UnZip takes the last, whatever its comment), is used,
+  its comment shown as far as the file goes, without a newline, then
+  UnZip's "caution:  zipfile comment truncated" (1, only where the
+  comment is shown); zip refuses it. A Zip64 end record that is not
+  where its locator says is looked for just before the locator, as
+  UnZip's `find_ecrec64` and Info-ZIP's zip look for it (data prepended
+  to a Zip64 archive leaves it there), with UnZip's "End-of-centdir-64
   signature not where expected (prepended bytes?)", and its offsets are
   shifted as below; in neither place, it is UnZip's fatal "read failure
   while seeking for End-of-centdir-64 signature", and, as for no end

@@ -321,6 +321,11 @@ at = junk.rindex(b"PK\x05\x06")
 cdsize = struct.unpack("<I", junk[at + 12:at + 16])[0]
 junk[at + 12:at + 16] = struct.pack("<I", cdsize + 6)
 write("cdjunk.zip", bytes(junk[:at] + b"junk!\n" + junk[at:]))
+# Comments of many lines and tabs, the longest an archive's can be, and
+# an entry's
+lines = (b"\n\ta\r\n\t" * 10923)[:65535]
+write("cmtlines.zip", build([Entry("a.txt", b"a\n", comment=lines)],
+                            comment=lines))
 
 # Damaged structure
 good = build(basic())
