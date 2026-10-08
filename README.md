@@ -228,8 +228,9 @@ through links is not followed. A hard-linked archive is replaced by a
 new file, so its other names keep the old archive. Entries select only
 files within the current directory, never by absolute names, `..`, or
 linked directories, so that refreshing an untrusted archive cannot read
-other files. A file that cannot be read to its end is left out (18),
-where Info-ZIP stores what it read (0).
+other files, and an archive whose entries overlap, as in a zip bomb, is
+refused rather than copied. A file that cannot be read to its end is
+left out (18), where Info-ZIP stores what it read (0).
 
 Output is deterministic: entries within each directory are sorted by
 name, and with `-X` an archive depends only on file contents, names,

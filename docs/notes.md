@@ -756,7 +756,9 @@ ignores case). It needs neither inflate nor the gzip container.
   strings (41 bytes), a 24-byte item, a slot in the table that finds
   entries by name (8 to 16 bytes: open addressing over entry indexes, at
   most half full, where a hash trie took a 56-byte node), and while
-  writing, a pointer for the central directory. Unicode names, which few
+  writing, a pointer for the central directory and, for one to be
+  copied, its offset, sorted in place to find overlaps (`zar_spans`) and
+  bound each entry's data by the next one's. Unicode names, which few
   entries have, are listed sparsely by index rather than given every
   entry a slot. A replacement is written over its entry, which is
   restored if the file cannot be read, so that only added files take new
@@ -962,6 +964,20 @@ race allows).
   An archive whose Zip64 locator gives a total of zero disks, as
   Microsoft's writers make them, is read as on one disk, where Info-ZIP
   asks for the next part of a split archive (`Could not find: x.z01`).
+  Entries to be copied (those kept, and those to be replaced, which are
+  kept should their files fail) must not overlap, as tugz's unzip and
+  Debian's UnZip refuse them (12) but Info-ZIP's zip copies them, the
+  shared data once for each, so that a zip bomb of many central headers
+  sharing one entry's data grew by the copies (one 10,000-byte entry
+  under 50 headers, 12 KB, became 504 KB on adding a file). Before
+  anything is written, no two may begin at once, and each must hold a
+  local header and its data, by its central header's size, before the
+  next begins, or the archive is refused (3, warning "entry overlaps
+  another (possible zip bomb)" with the first such entry's name), and
+  as each is copied, its local header's name and extra fields must fit
+  there too, or it fails ("Zip file structure invalid", naming the
+  entry, 3). Entries being deleted are not checked, so `-d` can remove
+  the overlapping ones.
 - Replacing the archive: a hard-linked archive is replaced by a new
   file, which its other names do not share (Info-ZIP copies into it).
   The temporary file goes beside the file that links at the archive path

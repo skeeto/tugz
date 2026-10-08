@@ -1970,6 +1970,35 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     zentry **cd    = new(&scratch, items->len, zentry *);
     zentry  *fresh = new(&scratch, nadd, zentry);
 
+    // The entries that may be copied (replaced ones too, which are kept
+    // should their files fail) must not overlap, as UnZip finds them out
+    // (Info-ZIP's zip does not), so that a small archive whose central
+    // headers share their data cannot grow by copying it for each. Each
+    // must hold its local header and data, as its central header gives
+    // its size, before the next begins, and then, as copy_entry finds its
+    // local header, what that takes too (zar_local).
+    if (ar) {
+        ar->spans  = new(&scratch, items->len - nadd, i64);
+        ar->nspans = 0;
+        for (iz i = 0; i < items->len; i++) {
+            zitem *it = items->data + i;
+            if (it->old && it->kind!=ITEM_DELETE) {
+                ar->spans[ar->nspans++] = it->old->offset;
+            }
+        }
+        zar_spans(ar);
+        for (iz i = 0; i < items->len; i++) {
+            zentry *old  = items->data[i].old;
+            b32     kept = old && items->data[i].kind!=ITEM_DELETE;
+            if (kept && zar_overlaps(ar, old)) {
+                warn(z, S("entry overlaps another (possible zip bomb): "),
+                     shown_name(ar, old), scratch);
+                return fail(z, ZE_FORM, S("Zip file structure invalid"),
+                            z->archive, scratch);
+            }
+        }
+    }
+
     zout w = {0};
     w.ctx  = z->ctx;
     w.perm = &z->perm;

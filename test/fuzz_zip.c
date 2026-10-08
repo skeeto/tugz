@@ -224,7 +224,9 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     zparsed new = {0};
     CHECK(parse_zip(in, &old, 0, &a));
     CHECK(parse_zip(now, &new, 1, &a));
-    iz i = 0;
+    iz  i      = 0;
+    iz *copied = new(&a, new.n, iz);
+    iz  ncopy  = 0;
     for (iz j = 0; j < new.n; j++) {
         iz k = i;
         for (; k<old.n && !is_copy(&old, k, &new, j); k++) {
@@ -234,6 +236,7 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
             }
         }
         if (k < old.n) {
+            copied[ncopy++] = k;
             i = k + 1;
         } else {
             CHECK(is_written(ctx, &new, j, windows, links));
@@ -241,6 +244,18 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
         }
     }
     CHECK(i==old.n || deletes(mode));
+
+    // Entries copied did not overlap, each its local header and data, so
+    // that none was copied twice
+    for (iz x = 0; x < ncopy; x++) {
+        for (iz y = x+1; y < ncopy; y++) {
+            zentry *p = old.e + copied[x];
+            zentry *q = old.e + copied[y];
+            i64     pe = old.data[copied[x]].s - in.s + p->csize;
+            i64     qe = old.data[copied[y]].s - in.s + q->csize;
+            CHECK(pe<=q->offset || qe<=p->offset);
+        }
+    }
 
     // Which zip reads back, every entry, finding none to delete (unless
     // one is named as such)

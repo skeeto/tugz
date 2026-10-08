@@ -1272,6 +1272,47 @@ open("loc64.zip", "wb").write(loc + cen + e64 + l64 + sat)'
         cmp -s $z.zip ${z}0.zip || fail "$z.zip changed"
     done
 
+    # Entries that would be copied must not overlap, as UnZip refuses
+    # them, unlike Info-ZIP's zip, which copies shared data once for
+    # each: central headers that share a local header (a zip bomb), and
+    # one whose local header reaches, with its data, into the next entry.
+    # Deleting all but one of those sharing leaves nothing to refuse.
+    $PY -c 'import struct, zlib
+def local(n, d, xlen=0):
+    return struct.pack("<IHHHHHIIIHH", 0x04034b50, 10, 0, 0, 0, 0x5021,
+                       zlib.crc32(d), len(d), len(d), len(n), xlen) + n
+def central(n, d, o):
+    return struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 0x31e, 10, 0, 0, 0,
+                       0x5021, zlib.crc32(d), len(d), len(d), len(n), 0, 0, 0,
+                       0, 0x81a40000, o) + n
+def write(name, loc, cen, k):
+    end = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, k, k, len(cen),
+                      len(loc), 0)
+    open(name, "wb").write(loc + cen + end)
+d = b"A" * 1000
+write("share.zip", local(b"s0", d) + d,
+      b"".join(central(b"s%d" % i, d, 0) for i in range(3)), 3)
+# a takes 35 bytes, a local header and its data, as its central header
+# tells, but its local header declares 20 bytes of extra fields
+loc = local(b"a", b"alpha", 20) + b"\0" * 4 + local(b"b", b"bravo") + b"bravo"
+write("reach.zip", loc, central(b"a", b"alpha", 0) +
+      central(b"b", b"bravo", 35), 2)'
+    for z in share reach; do
+        cp $z.zip ${z}0.zip
+        exits 3 "$ZIP" $z.zip tree/a.txt >out 2>&1
+        case $z in
+        share) printf '%s\n' \
+                   'zip warning: entry overlaps another (possible zip bomb): s0' \
+                   '' 'zip error: Zip file structure invalid (share.zip)' ;;
+        reach) printf '\nzip error: Zip file structure invalid (a)\n' ;;
+        esac >want
+        cmp -s out want || fail "$z.zip: $(cat out)"
+        cmp -s $z.zip ${z}0.zip || fail "$z.zip changed"
+    done
+    "$ZIP" -q -d share.zip s1 s2 || fail "deleting shared entries"
+    verify share.zip
+    [ "$(names share.zip)" = s0 ] || fail "shared entries: $(names share.zip)"
+
     # Archives made by other tools: entries a streaming writer gave data
     # descriptors lose them when copied, their sizes now known, and the
     # comments of entries and of the archive are kept

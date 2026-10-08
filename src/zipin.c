@@ -280,6 +280,8 @@ typedef struct {
     i64     cdlim;   // entries' data lies before this, as offsets read
     iz      maxhdr;  // the longest central header read
     zin     cd;      // the central directory's own window (zar_reread)
+    i64    *spans;   // where entries to be copied begin, ascending (zip's,
+    iz      nspans;  // zar_spans), or null: all may reach to cdoff
 
     // Reading as UnZip does, for unzip (zar_open, zar_check)
     b32     unzip;   // set by the caller: read as UnZip reads
@@ -671,6 +673,74 @@ static i32 zar_read(zarchive *ar, os *ctx, i32 fd, i64 size, arena *perm,
     return u.s ? u : e->name;
 }
 
+// Sift a[k] down the heap of the first n offsets, largest at the root.
+static void zar_sift(i64 *a, iz k, iz n)
+{
+    for (iz c = 2*k + 1; c < n; k = c, c = 2*k + 1) {
+        c += c+1<n && a[c+1]>a[c];
+        if (a[k] >= a[c]) {
+            return;
+        }
+        i64 t = a[k];
+        a[k]  = a[c];
+        a[c]  = t;
+    }
+}
+
+// The index of the first span that begins past off, or nspans.
+static iz zar_after(zarchive *ar, i64 off)
+{
+    iz lo = 0;
+    for (iz hi = ar->nspans; lo < hi;) {
+        iz mid = lo + (hi - lo)/2;
+        if (ar->spans[mid] <= off) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+// Where the data of the entry whose local header is at off must end: the
+// next span (zar_spans), else the central directory.
+static i64 zar_limit(zarchive *ar, i64 off)
+{
+    iz k = zar_after(ar, off);
+    return k<ar->nspans ? ar->spans[k] : ar->end.cdoff;
+}
+
+// Given ar->spans, where each of the nspans entries to be copied begins,
+// sort them, in place, needing no more memory (a heap sort), and from
+// then on bound each entry's data by the next one (zar_limit, zar_local).
+// So that an entry is not copied twice, as by many central headers that
+// point at one local header (a zip bomb), each entry must then be
+// checked as zar_overlaps checks it, before any is copied.
+[[maybe_unused]] static void zar_spans(zarchive *ar)
+{
+    i64 *a = ar->spans;
+    iz   n = ar->nspans;
+    for (iz k = n/2; k > 0;) {
+        zar_sift(a, --k, n);
+    }
+    for (iz end = n; end > 1;) {
+        i64 t  = a[0];
+        a[0]   = a[--end];
+        a[end] = t;
+        zar_sift(a, 0, end);
+    }
+}
+
+// Whether one of zar_spans's entries, e, overlaps another: they begin at
+// once, or it cannot hold the least it takes, a local header and its
+// data, before the next.
+[[maybe_unused]] static b32 zar_overlaps(zarchive *ar, zentry *e)
+{
+    iz k = zar_after(ar, e->offset);
+    return (k>=2 && ar->spans[k-2]==e->offset) ||
+           e->csize > zar_limit(ar, e->offset) - e->offset - ZIP_LOCAL_LEN;
+}
+
 // An entry's local header, as zar_local finds it.
 typedef struct {
     u8  fixed[ZIP_LOCAL_LEN];
@@ -680,8 +750,9 @@ typedef struct {
 } zlocal;
 
 // Find an entry's local header and its data, which must lie, at the
-// entry's compressed size, before the central directory. Returns a ZAR
-// code: ZAR_EFORMAT for data out of bounds.
+// entry's compressed size, before the central directory, and given
+// zar_spans, before the next entry. Returns a ZAR code: ZAR_EFORMAT for
+// data out of bounds.
 static i32 zar_local(zarchive *ar, zentry *e, zlocal *l)
 {
     zin *r     = &ar->in;
@@ -694,7 +765,8 @@ static i32 zar_local(zarchive *ar, zentry *e, zlocal *l)
     iz  varlen = zip_local_varlen(l->fixed);
     iz  nlen   = get16(l->fixed+26);
     i64 data   = e->offset + ZIP_LOCAL_LEN + varlen;
-    if (varlen<0 || data>ar->end.cdoff || e->csize>ar->end.cdoff-data) {
+    i64 limit  = zar_limit(ar, e->offset);
+    if (varlen<0 || data>limit || e->csize>limit-data) {
         return ZAR_EFORMAT;
     }
     u8 *var = 0;
