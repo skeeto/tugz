@@ -48,6 +48,7 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
 
     status = fuzz_gunzip(env, data, (iz)size);
     CHECK(status>=GZ_OK && status<=GZ_EWRITE && status!=GZ_EREAD);
+    CHECK(status!=GZ_EWRITE || env->ctx.overflow);
 
     if (size) {
         deflate64_pieces(env, data[0], data+1, (iz)size-1);
