@@ -266,7 +266,10 @@ for zip in "$TUGZ_ZIP" "$(command -v zip || true)"; do
         same $mode z.zip -x 'tree/sub/*'
     done
     xsame ../z.zip                            # extracted
+    # tree/ is made, not extracted, so has the time it was made
+    TIMES=files
     xsame -q ../z.zip 'tree/*.txt' -x tree/b.txt
+    TIMES=all
     same -t z.zip tree/a.txt nomatch          # caution, status 11
     same -l z.zip nomatch                     # 11, silently
     same -t z.zip -x nomatch                  # caution, status 0
