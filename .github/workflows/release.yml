@@ -1,7 +1,8 @@
 # On a version tag (v1.2.3, which must equal TUGZ_VERSION in src/base.c),
-# test, then publish a release: a deterministic source tarball, the
-# single-file sources (tugz.c with tugz.h, gzip.c, zip.c, unzip.c). GitHub
-# records each asset's SHA-256 digest.
+# test, then publish a release of two assets: a deterministic source
+# tarball, and a zip of the single-file sources (tugz.c with tugz.h,
+# gzip.c, zip.c, unzip.c), made by the tag's own zip, as deterministic.
+# GitHub records each asset's SHA-256 digest.
 name: release
 
 on:
@@ -46,8 +47,16 @@ jobs:
           git -c tar.umask=0022 archive --format=tar --prefix="tugz-$V/" \
               "$GITHUB_SHA" | ./gz -9 >"dist/tugz-$V.tar.gz"
 
-      - name: Single-file sources
-        run: cmake -DTUGZ_OUTPUT_DIR=dist -P cmake/amalgamate.cmake
+      # Under one directory, as in the tarball, with every time the
+      # commit's and no extra fields
+      - name: Single-file sources, zipped
+        run: |
+          d="tugz-amalgams-$V"
+          cmake -DTUGZ_OUTPUT_DIR="amalgams/$d" -P cmake/amalgamate.cmake
+          cc -O2 -o zp platform/zip_posix.c
+          (cd amalgams &&
+           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct "$GITHUB_SHA") \
+               ../zp -qX9r "../dist/$d.zip" "$d")
 
       - name: Smoke test, FetchContent from the tarball
         run: |

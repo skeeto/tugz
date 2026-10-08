@@ -37,9 +37,10 @@ CMake builds the library, the programs, and the tests (see Development):
 
     $ cmake -B build && cmake --build build
 
-Each release also carries `gzip.c`, `zip.c`, and `unzip.c`, the Windows
-builds as single source files with their build commands in the header,
-which `cmake -P cmake/amalgamate.cmake` writes from a source tree:
+Each release also carries `tugz-amalgams-VERSION.zip`, which holds
+`gzip.c`, `zip.c`, and `unzip.c`, the Windows builds as single source
+files with their build commands in the header, which `cmake -P
+cmake/amalgamate.cmake` writes from a source tree:
 
     $ cc -O2 -nostartfiles -o gzip.exe gzip.c -lmemory
     $ cc -O2 -nostartfiles -o zip.exe zip.c -lmemory
@@ -68,10 +69,10 @@ about 4x faster. One in 2,048 of the resets and FULL flushes that follow
 a longer history still clears as init does. Inflate init and
 `tugz_inflate_reset` both take a small constant time. Build
 `platform/libtugz.c` as an object (`cc -c -O2 platform/libtugz.c`), or
-use a release's `tugz.c` (or `cmake -DTUGZ_ARTIFACT=tugz -P
-cmake/amalgamate.cmake`), a single-file amalgamation with the header
-inlined. Define `TUGZ_API` as `static` before including it to embed the
-library in another program.
+use the `tugz.c` in a release's amalgams zip (or `cmake
+-DTUGZ_ARTIFACT=tugz -P cmake/amalgamate.cmake`), a single-file
+amalgamation with the header inlined. Define `TUGZ_API` as `static`
+before including it to embed the library in another program.
 
 ### Using the library from CMake
 
