@@ -702,6 +702,22 @@ done
 IN=
 SETUP=
 
+# Standard input as the archive (busybox's): -n, unless -o, as the
+# answers to a prompt would come from the archive
+IN=basic.zip
+printf 'Archive:  -\nThe archive comment.\n   creating: dir/\n' >want.dir
+printf '  inflating: %-22s  \n extracting: %-22s  \n extracting: %-22s  \n  inflating: %-22s  \n' \
+    dir/text.txt dir/stored.txt empty ut.txt >want.files
+cat want.dir want.files >want
+xours 0 want none -
+SETUP='"$U" -q ../basic.zip'
+head -n 2 want.dir >want.none
+xours 0 want.none none -
+cat want.none want.files >want
+xours 0 want none -o -
+IN=
+SETUP=
+
 # The names that the Unicode path field or UTF-8 give (Apple's has no
 # Unicode support, and others name files in a UTF-8 locale alone), and
 # owners (-X, as Apple's does not restore them)
