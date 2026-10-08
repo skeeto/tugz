@@ -11,7 +11,8 @@
 // The run is staged so that each archive's memory is claimed before its
 // output: options, then per archive the central directory, then the
 // mode, which decodes each entry through one inflator claimed at the
-// start. Extraction to disk shares the test's selection, checks, and
+// start, or a Deflate64 one claimed with an archive that has entries by
+// it. Extraction to disk shares the test's selection, checks, and
 // decoding, its paths and the room for what it finishes at the end (links,
 // then directories' attributes) planned beforehand.
 //
@@ -180,8 +181,9 @@ static s8 const unzip_help_windows = S8(
 );
 static s8 const unzip_help_tail = S8(
     "\n"
-    "Listings show dates as YYYY-MM-DD. Entries compressed by methods other\n"
-    "than stored and deflated, and encrypted entries, are skipped.\n"
+    "Listings show dates as YYYY-MM-DD. Encrypted entries, and entries\n"
+    "compressed by methods other than stored, deflated, and Deflate64, are\n"
+    "skipped.\n"
     "Options UNZIP, or if it has none, UNZIPOPT, apply first.\n"
     "\n"
     "Exit status: 0 success, 1 warnings, 2 errors in some entries, 3 a\n"
@@ -285,7 +287,8 @@ typedef struct {
 
     // The run
     inflator *inf;
-    u8     *window;   // decoded data, UZ_WSIZE bytes at a time
+    inflator *inf64;  // Deflate64's, for an archive with entries by it
+    u8       *window; // decoded data, UZ_WSIZE bytes at a time
     s8s     matches;  // wildcard archive names
     b32     noecrec;  // an archive tried had no end record
     s8      zipfn;    // the archive being processed
@@ -869,7 +872,7 @@ static s8 method_name(arena *a, zentry *e)
     } else {
         return JOIN(a, S("Unk:"), unum(a, m, 3, 1));
     }
-    if (m==ZIP_DEFLATE || m==9) {
+    if (m==ZIP_DEFLATE || m==ZIP_DEFLATE64) {
         r.s[5] = (u8)"NXFS"[e->flags>>1 & 3];
     }
     return r;
@@ -961,14 +964,20 @@ enum { DIR_BLKSIZ = 16384 };  // entries checked, then processed
 // Zip64, and VMS_UNZIP_VERSION.
 enum { UZ_CANDO = 45, UZ_CANDO_VMS = 42 };
 
+// Whether an entry's method is one unzip decodes.
+static b32 decodes(zentry *e)
+{
+    return e->method==ZIP_STORE || e->method==ZIP_DEFLATE ||
+           e->method==ZIP_DEFLATE64;
+}
+
 // Whether an entry's version, method, and encryption let it be read.
 static b32 readable(zentry *e)
 {
     u32 ver  = e->needed & 0xff;
     u32 host = e->needed >> 8;
     u32 can  = host==UZ_VMS ? UZ_CANDO_VMS : UZ_CANDO;
-    return ver<=can && !(e->flags & ZIP_FLAG_ENCRYPTED) &&
-           (e->method==ZIP_STORE || e->method==ZIP_DEFLATE);
+    return ver<=can && !(e->flags & ZIP_FLAG_ENCRYPTED) && decodes(e);
 }
 
 // Whether an entry can be decoded, else saying why it is skipped, as
@@ -993,7 +1002,7 @@ static b32 store_info(unzip *u, zentry *e, s8 name, arena scratch)
         return 0;
     }
 
-    if (e->method!=ZIP_STORE && e->method!=ZIP_DEFLATE) {
+    if (!decodes(e)) {
         static struct { u16 id; char const *name; } const methods[] = {
             {0, "store"}, {1, "shrink"}, {2, "reduce"}, {3, "reduce"},
             {4, "reduce"}, {5, "reduce"}, {6, "implode"}, {7, "tokenize"},
@@ -1166,7 +1175,7 @@ static i32 test_member(unzip *u, zarchive *ar, zentry *e, zlocal *l,
     u32  crc   = 0;
     b32  bad   = 0;  // invalid compressed data
     zbuf b     = {0};
-    inflator *s = u->inf;
+    inflator *s = e->method==ZIP_DEFLATE64 ? u->inf64 : u->inf;
     inflate_reset(s);
     b.out    = u->window;
     b.outlen = UZ_WSIZE;
@@ -2447,6 +2456,13 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
     if (u->vflag && !u->tflag && !u->cflag) {
         r = list_files(u, &ar, scratch);
     } else {
+        // Deflate64's larger inflator only for an archive that needs it
+        u->inf64 = 0;
+        for (i64 i = 0; i<u->nentries && u->inf && !u->inf64; i++) {
+            if (ar.entries[i].method == ZIP_DEFLATE64) {
+                u->inf64 = inflate64_new(&u->perm);
+            }
+        }
         r = extract_or_test(u, &ar, scratch);
     }
     err = MAX(err, r);

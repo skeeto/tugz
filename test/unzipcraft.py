@@ -15,6 +15,79 @@ def deflate(data):
     return c.compress(data) + c.flush()
 
 
+class Bits:
+    """A DEFLATE bit stream: fields least significant bit first."""
+
+    def __init__(self):
+        self.out = bytearray()
+        self.acc = 0
+        self.n = 0
+
+    def put(self, v, n):
+        self.acc |= v << self.n
+        self.n += n
+        while self.n >= 8:
+            self.out.append(self.acc & 0xFF)
+            self.acc >>= 8
+            self.n -= 8
+
+    def code(self, c, n):  # a Huffman code, most significant bit first
+        self.put(int(format(c, "0%db" % n)[::-1], 2), n)
+
+    def fixed(self, sym):
+        if sym < 144:
+            self.code(0x30 + sym, 8)
+        elif sym < 256:
+            self.code(0x190 + sym - 144, 9)
+        elif sym < 280:
+            self.code(sym - 256, 7)
+        else:
+            self.code(0xC0 + sym - 280, 8)
+
+    def bytes(self):
+        return bytes(self.out) + (bytes([self.acc]) if self.n else b"")
+
+
+LBASE = [3]
+for i in range(27):
+    LBASE.append(LBASE[-1] + (1 << max(0, i // 4 - 1)))
+DBASE = [1]
+for i in range(31):
+    DBASE.append(DBASE[-1] + (1 << max(0, i // 2 - 1)))
+
+
+def deflate64(tokens):
+    """A Deflate64 stream (ZIP method 9) of one block of fixed codes, and
+    the data it decodes to, from tokens: bytes, literals, or (length,
+    distance), a match. Length code 285 carries 16 extra bits (lengths 3
+    to 65538), and distance codes 30 and 31 reach back 65536."""
+    b = Bits()
+    data = bytearray()
+    b.put(1, 1)
+    b.put(1, 2)
+    for t in tokens:
+        if isinstance(t, bytes):
+            for c in t:
+                b.fixed(c)
+            data += t
+            continue
+        length, dist = t
+        if length > 258:
+            b.fixed(285)
+            b.put(length - 3, 16)
+        else:
+            s = max(i for i in range(28) if LBASE[i] <= length)
+            b.fixed(257 + s)
+            b.put(length - LBASE[s], max(0, s // 4 - 1))
+        d = max(i for i in range(32) if DBASE[i] <= dist)
+        b.code(d, 5)
+        b.put(dist - DBASE[d], max(0, d // 2 - 1))
+        for _ in range(length if dist <= len(data) else 0):  # else invalid
+            data.append(data[-dist])
+    b.fixed(256)
+    return b.bytes(), bytes(data)
+
+
 def ut(mtime):
     """An extended timestamp field ("UT") with a modification time."""
     return struct.pack("<HHBI", 0x5455, 5, 1, mtime)
@@ -134,12 +207,19 @@ write("emptysfx.zip", struct.pack("<16s", b"#!/bin/sh\nexit\n") +
       struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 0, 0, 0, 0, 0))
 write("multi.zip", build(basic(), disk=1))
 
-# Entries that cannot be read: encrypted, and methods other than stored
-# and deflated, among others that can
+
+def d64entry(name, tokens, **kw):
+    comp, data = deflate64(tokens)
+    return Entry(name, data, method=9, comp=comp, needed=21, **kw)
+
+
+# Entries that cannot be read: encrypted, and methods other than stored,
+# deflated, and Deflate64, among others that can
+SHORT64 = [b"Deflate64 ", (20, 10), b"\n"]
 write("methods.zip", build([
     Entry("ok.txt", TEXT),
     Entry("enc.txt", method=8, comp=b"\x00" * 30, crc=1, usize=20, flags=1),
-    Entry("d64.bin", method=9, comp=b"\x00" * 10, crc=2, usize=20),
+    d64entry("d64.bin", SHORT64),
     Entry("bzip2.bin", method=12, comp=b"BZh9" + b"\x00" * 10, crc=3,
           usize=20),
     Entry("lzma.bin", method=14, comp=b"\x00" * 10, crc=4, usize=20),
@@ -151,8 +231,23 @@ write("methods.zip", build([
 write("encrypted.zip", build([
     Entry("enc.txt", method=8, comp=b"\x00" * 30, crc=1, usize=20, flags=1),
 ]))
+
+# Deflate64, as Explorer's zip folder writes it for large files: the
+# longest match, distances past 32 KiB (codes 30 and 31), and a level in
+# the flags (listed as Def64X, as Defl:X)
+LINE64 = b"Deflate64: matches up to 65538 bytes, 64 KiB back.\n"
 write("deflate64.zip", build([
-    Entry("d64.bin", method=9, comp=b"\x00" * 10, crc=2, usize=20),
+    d64entry("d64.txt", [LINE64, (65538, len(LINE64)), b"tail\n",
+                         (300, 40000), (1000, 65536), (258, 1), b"end\n"],
+             flags=2),
+    d64entry("short.bin", SHORT64),
+    Entry("last.txt", b"last\n", method=0),
+]))
+# ...and a match from before the entry's start, invalid, where UnZip's
+# own inflate copies from its window as it was
+write("deflate64bad.zip", build([
+    d64entry("bad.bin", [b"abc", (10, 65536)]),
+    d64entry("short.bin", SHORT64),
 ]))
 
 # More entries than one of UnZip's blocks (16384), one skipped in each,

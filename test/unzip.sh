@@ -362,7 +362,7 @@ cd craft
 # Archives that tugz reads as UnZip does, in every mode
 for z in basic nocomment sfx sfxok zip64 desc empty emptycomment emptysfx \
          multi many badcrc baddata truncdata storedsize localname badextra \
-         truncated badcdoff badheader badlocal; do
+         truncated badcdoff badheader badlocal deflate64; do
     for mode in -l -v -t -tq -tqq -p -pq -z -zq -c -cq; do
         [ $apple = 1 ] && [ "$mode" = -c ] && continue  # Apple's names
         same $mode $z.zip
@@ -373,6 +373,15 @@ same -t basic dir/text.txt
 same -l methods.zip
 same -v methods.zip
 same -t overrun.zip
+
+# Departure: a Deflate64 match from before the entry's start is invalid
+# data, as a deflated one is (zlib's check), where UnZip's own inflate
+# copies from its window as it was, then finds a bad CRC
+{ printf 'Archive:  deflate64bad.zip\n    testing: %-22s  \n' bad.bin
+  printf '  error:  invalid compressed data to inflate\n'
+  printf '    testing: %-22s   OK\n' short.bin
+  printf 'At least one error was detected in deflate64bad.zip.\n'; } >want
+ours 2 want none -t deflate64bad.zip
 
 # Wildcard archive names: each match, in name order, then a summary,
 # leaving out names starting with a dot unless the pattern does
@@ -438,27 +447,27 @@ grep -q 'End-of-central-directory signature not found' got || fail "- notzip"
 : | { exits 9 "$U" -t - >/dev/null 2>&1; }
 
 # Entries skipped, as by an UnZip without decryption or the methods:
-# encrypted, Deflate64, and others (UnZip builds that have them, as REF,
-# decode them)
+# encrypted, and others (UnZip builds that have them, as REF, decode
+# them), but for Deflate64, which tugz decodes too
 cat >want <<EOF
 Archive:  methods.zip
    skipping: enc.txt                 encrypted (not supported)
-   skipping: d64.bin                 \`deflate64' method not supported
    skipping: bzip2.bin               \`bzip2' method not supported
    skipping: lzma.bin                \`LZMA' method not supported
    skipping: shrunk.bin              \`shrink' method not supported
    skipping: aes.bin                 unsupported compression method 99
    skipping: new.bin                 need PK compat. v6.3 (can do v4.5)
     testing: ok.txt                   OK
+    testing: d64.bin                  OK
     testing: last.txt                 OK
-No errors detected in methods.zip for the 2 files tested.
-7 files skipped because of unsupported compression or encoding.
+No errors detected in methods.zip for the 3 files tested.
+6 files skipped because of unsupported compression or encoding.
 EOF
 ours 81 want none -t methods.zip
 grep '^   skipping' want >want.err
-"$U" -p methods.zip ok.txt last.txt >want.out
+"$REF" -p methods.zip ok.txt d64.bin last.txt >want.out
 ours 81 want.out none -p methods.zip           # -p says nothing
-"$U" -c methods.zip ok.txt last.txt >want.out
+"$U" -c methods.zip ok.txt d64.bin last.txt >want.out
 ours 81 want.out want.err -c methods.zip
 cat >want <<EOF
 Archive:  encrypted.zip
@@ -471,11 +480,6 @@ printf 'Archive:  encrypted.zip\n' >want
 printf '   skipping: enc.txt                 encrypted (not supported)\n' >want.err
 ours 81 want want.err -c encrypted.zip
 ours 81 none none -pq encrypted.zip
-printf '   skipping: d64.bin                 `deflate64'"'"' method not supported\n' >want.err
-ours 81 none none -p deflate64.zip
-printf 'Archive:  deflate64.zip\n' >want
-ours 81 want want.err -c deflate64.zip
-ours 81 none none -qqt deflate64.zip
 
 # Overlapped components, a zip bomb's: found before any entry is read
 # (Debian's UnZip finds them as it reads the second), with Debian's
@@ -606,6 +610,7 @@ for z in basic sfx sfxok zip64 zip64entries desc storedsize localname \
 done
 xsame ../basic.zip -x 'dir/*'
 xsame ../basic.zip 'dir/*' nomatch
+xsame ../deflate64.zip
 
 # Names that would reach outside the destination, or name nothing: ".."
 # dropped, absolute paths made relative, '\' from MS-DOS, control
@@ -750,13 +755,13 @@ for z in badcrc baddata truncdata overrun; do
     grep -v ' ./good.txt ' ref.tree | grep -q . || fail "$z.zip: REF's"
 done
 
-# Entries skipped: encrypted, and methods other than stored and deflated
-# (which REF decodes)
-printf 'Archive:  ../methods.zip\n  inflating: %-22s  \n extracting: %-22s  \n' \
-    ok.txt last.txt >want
+# Entries skipped: encrypted, and methods other than stored, deflated,
+# and Deflate64 (which REF decodes)
+{ printf 'Archive:  ../methods.zip\n'
+  printf '  inflating: %-22s  \n' ok.txt d64.bin
+  printf ' extracting: %-22s  \n' last.txt; } >want
 cat >want.err <<EOF
    skipping: enc.txt                 encrypted (not supported)
-   skipping: d64.bin                 \`deflate64' method not supported
    skipping: bzip2.bin               \`bzip2' method not supported
    skipping: lzma.bin                \`LZMA' method not supported
    skipping: shrunk.bin              \`shrink' method not supported
@@ -764,7 +769,8 @@ cat >want.err <<EOF
    skipping: new.bin                 need PK compat. v6.3 (can do v4.5)
 EOF
 xours 81 want want.err ../methods.zip
-[ "$(cut -d' ' -f1-2 ours.tree)" = "F ./last.txt
+[ "$(cut -d' ' -f1-2 ours.tree)" = "F ./d64.bin
+F ./last.txt
 F ./ok.txt" ] || fail "methods.zip: $(cat ours.tree)"
 printf 'Archive:  ../encrypted.zip\n' >want
 printf '   skipping: enc.txt                 encrypted (not supported)\n' \

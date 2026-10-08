@@ -131,17 +131,18 @@ dos() {
 count=0
 : >local.bin
 : >central.bin
-# name flags made-by external-attributes dostime [extra data crc method]
+# name flags made-by external-attributes dostime
+# [extra data crc method size]: size if not the data's own
 entry() {
     nlen=$(printf "$1" | wc -c)
     elen=$(printf "${6:-}" | wc -c)
     dlen=$(printf "${7:-}" | wc -c)
     off=$(wc -c <local.bin)
     { printf 'PK\003\004'; le16 20; le16 $2; le16 ${9:-0}; le32 $5
-      le32 ${8:-0}; le32 $dlen; le32 $dlen; le16 $nlen; le16 $elen
+      le32 ${8:-0}; le32 $dlen; le32 ${10:-$dlen}; le16 $nlen; le16 $elen
       printf "$1"; printf "${6:-}"; printf "${7:-}"; } >>local.bin
     { printf 'PK\001\002'; le16 $3; le16 20; le16 $2; le16 ${9:-0}; le32 $5
-      le32 ${8:-0}; le32 $dlen; le32 $dlen; le16 $nlen; le16 $elen
+      le32 ${8:-0}; le32 $dlen; le32 ${10:-$dlen}; le16 $nlen; le16 $elen
       le16 0; le16 0; le16 0; le32 $4; le32 $off
       printf "$1"; printf "${6:-}"; } >>central.bin
     count=$((count + 1))
@@ -463,12 +464,19 @@ expect_status 2 "$UNZIP" -t badcrc.zip
 mkdir bc
 expect_status 2 sh -c "cd bc && '$UNZIP' ../badcrc.zip"
 [ ! -e bc/bad.txt ] || fail "bad CRC: file kept"
-entry 'd64.bin' 0 $NTFS 32 $d2020 '' 'hello\n' 909783072 9
+# Deflate64, as Explorer writes it for large files: "hello\n", then
+# matches of 65538 bytes (length code 285) and from 40000 and 65536 back
+# (distance codes 30 and 31), 65744 bytes in all
+entry 'd64.bin' 0 $NTFS 32 $d2020 '' \
+    '\313H\315\311\311\347\032\375\377\047\351\361\1768z\374\377\037\000' \
+    717187254 9 65744
 finish d64.zip
-expect_status 81 "$UNZIP" -t d64.zip
+expect_status 0 "$UNZIP" -t d64.zip
 mkdir d64
-expect_status 81 sh -c "cd d64 && '$UNZIP' ../d64.zip"
-[ ! -e d64/d64.bin ] || fail "Deflate64 entry extracted"
+expect_status 0 sh -c "cd d64 && '$UNZIP' -q ../d64.zip"
+[ "$(wc -c <d64/d64.bin)" -eq 65744 ] || fail "Deflate64 entry's size"
+[ "$(head -c 12 d64/d64.bin)" = "hello
+hello" ] || fail "Deflate64 entry's data"
 head -c 30 p.zip >trunc.zip
 expect_status 9 "$UNZIP" -t trunc.zip
 printf 'MZ stub\n' | cat - p.zip >sfx.zip

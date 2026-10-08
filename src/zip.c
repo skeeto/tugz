@@ -21,8 +21,9 @@
 #define ZIP_LOC64_LEN    20
 
 enum {
-    ZIP_STORE    = 0,
-    ZIP_DEFLATE  = 8,
+    ZIP_STORE     = 0,
+    ZIP_DEFLATE   = 8,
+    ZIP_DEFLATE64 = 9,  // read by unzip, never written
 };
 
 enum {
