@@ -411,16 +411,20 @@ unc="/$tmp/tree/a.txt"
 [ "$(names unc.zip)" = "${unc#//*/*/}" ] || fail "//host/share/: $(names unc.zip)"
 
 # ...even from a share root without its separator, which Info-ZIP adds
-# to a directory before naming it
-share=$(mktemp -d /tmp/zipshare.XXXXXX)
-mkdir "$share/d"
-printf s >"$share/d/s.txt"
-st=0
-"$ZIP" -qr share.zip "/$share" || st=$?
-rm -rf "$share"
-[ $st = 0 ] || fail "//host/share: status $st"
-[ "$(names share.zip)" = "$(printf 'd/\nd/s.txt')" ] ||
-    fail "//host/share: $(names share.zip)"
+# to a directory before naming it. The directory is in /tmp, not $tmp,
+# as //host/share is two components, here //tmp/zipshare.XXXXXX.
+if share=$(mktemp -d /tmp/zipshare.XXXXXX 2>/dev/null); then
+    mkdir "$share/d"
+    printf s >"$share/d/s.txt"
+    st=0
+    "$ZIP" -qr share.zip "/$share" || st=$?
+    rm -rf "$share"
+    [ $st = 0 ] || fail "//host/share: status $st"
+    [ "$(names share.zip)" = "$(printf 'd/\nd/s.txt')" ] ||
+        fail "//host/share: $(names share.zip)"
+else
+    echo "zip.sh: skipping //host/share: can't make a directory in /tmp" >&2
+fi
 
 # The same path reached twice is added once, as in Info-ZIP, while
 # different paths for one name are an error
