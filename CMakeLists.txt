@@ -342,8 +342,8 @@ if(TUGZ_BUILD_TESTS)
 
     # unzip end to end, sanitized, compared with Info-ZIP's, and reading
     # archives from tugz's zip too, with the out-of-memory tests run by a
-    # build without AddressSanitizer, but not on Windows, whose
-    # conventions differ.
+    # build without AddressSanitizer. On Windows, where its conventions
+    # differ, unzip-windows tests it instead.
     if(NOT WIN32)
         add_test(NAME unzip-cli
             COMMAND ${TUGZ_SH} ${PROJECT_SOURCE_DIR}/test/unzip.sh
@@ -371,6 +371,16 @@ if(TUGZ_BUILD_TESTS)
         add_test(NAME zip-windows
             COMMAND ${TUGZ_SH} ${PROJECT_SOURCE_DIR}/test/zip_windows.sh
                     $<TARGET_FILE:${zip}>)
+        if(TARGET tugz_unzip)
+            set(unzip tugz_unzip)
+        else()
+            set(unzip tugz_unzip_debug)
+        endif()
+        add_test(NAME unzip-windows
+            COMMAND ${TUGZ_SH} ${PROJECT_SOURCE_DIR}/test/unzip_windows.sh
+                    $<TARGET_FILE:${unzip}>)
+        set_tests_properties(unzip-windows PROPERTIES
+            ENVIRONMENT "TUGZ_ZIP=$<TARGET_FILE:${zip}>")
     endif()
 
     # The single-file library, compiled alone, and embedded in a program
