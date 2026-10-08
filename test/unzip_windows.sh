@@ -7,6 +7,8 @@
 # compared with what Windows' own readers extract: Explorer, .NET's
 # Expand-Archive, and tar (libarchive).
 # Usage: TUGZ_ZIP=./zip.exe sh test/unzip_windows.sh ./unzip.exe
+# Set UNZIP_D64 to a directory of Explorer's large Deflate64 archives to
+# include them (see the end).
 set -e
 
 unset UNZIP UNZIPOPT ZIPOPT ZIP  # options for unzip and zip
@@ -625,6 +627,36 @@ diff -r t2 u2 >/dev/null || fail "explorer.zip: tar differs"
 shell_extract explorer.zip e2 $nfiles
 diff -r e2 u2 >/dev/null || fail "explorer.zip: Explorer differs"
 "$UNZIP" -t explorer.zip >/dev/null || fail "explorer.zip: -t"
+
+# Deflate64, which Explorer writes for large files, in archives too big
+# to make here each run: with UNZIP_D64 naming a directory of Explorer's
+# mid.txt.zip (2.2 GiB of text in 446 MB) and big.txt.zip (4.5 GiB, so
+# Zip64, in 912 MB), and gen.exe, which wrote their text, both are
+# tested, and mid.txt.zip is extracted and compared with its text
+# written anew, both then deleted.
+d64=${UNZIP_D64:-}
+if [ -z "$d64" ]; then
+    echo "unzip_windows.sh: Deflate64 archives skipped (UNZIP_D64 unset)" >&2
+elif [ ! -e "$d64/mid.txt.zip" ] || [ ! -e "$d64/big.txt.zip" ] ||
+     [ ! -e "$d64/gen.exe" ]; then
+    echo "unzip_windows.sh: Deflate64 archives skipped:" \
+         "$d64 lacks mid.txt.zip, big.txt.zip, or gen.exe" >&2
+else
+    for z in mid big; do
+        "$UNZIP" -v "$d64/$z.txt.zip" >d64.out || fail "$z.txt.zip: -v"
+        grep -q " Def64[NXFS] .* $z\.txt\$" d64.out ||
+            fail "$z.txt.zip: not Deflate64: $(cat d64.out)"
+        "$UNZIP" -tq "$d64/$z.txt.zip" >d64.out ||
+            fail "$z.txt.zip: -t: $(cat d64.out)"
+    done
+    mkdir explorer64
+    (cd explorer64 && "$UNZIP" -q "$d64/mid.txt.zip") ||
+        fail "mid.txt.zip: status $?"
+    "$d64/gen.exe" 2362232012 explorer64/want.txt || fail "gen.exe"
+    cmp -s explorer64/want.txt explorer64/mid.txt ||
+        fail "mid.txt.zip: contents differ"
+    rm -rf explorer64
+fi
 
 [ ! -e "$tmp/FAILED" ] || exit 1
 echo "windows unzip tests pass"
