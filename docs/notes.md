@@ -1516,7 +1516,7 @@ ones as invariants. Those that no test asserts are marked untested.
     build-fuzz/fuzz-diff-deflate -fork=3 -max_len=1200000 fuzz/corpus/diff-deflate
     build-fuzz/fuzz-zipread -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zipread
     build-fuzz/fuzz-zip -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zip
-    build-fuzz/fuzz-unzip -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/unzip
+    build-fuzz/fuzz-unzip -jobs=6 -workers=6 -max_len=70000 fuzz/corpus/unzip
     cmake -B build -DTUGZ_BUILD_BENCH=ON && cmake --build build
     build/bench -l 1,6,9 bench_corpus/silesia/*
     cmake -P cmake/amalgamate.cmake    # gzip.c, zip.c, unzip.c, tugz.c (and
@@ -1593,6 +1593,10 @@ Fuzzers:
   run again with `-n`, change nothing. Its central directory is read
   again for each entry through a window no larger than its longest
   header (`test/unzipos.c`'s `UZ_CDWIN`), as a large archive's is.
+  Its inputs need more than 64 KiB (`-max_len=70000`) to reach comments
+  and names of their full 65,535 bytes, and headers that long: at 8192,
+  it missed unzip's memory growing quadratically with their comments'
+  lengths, since fixed.
 
 ## Cross-platform verification
 
