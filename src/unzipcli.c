@@ -11,9 +11,14 @@
 // The run is staged so that each archive's memory is claimed before its
 // output: options, then per archive the central directory, then the
 // mode, which decodes each entry through one inflator claimed at the
-// start. Extraction to disk (not yet supported) is a mode beside the
-// listing and the test, sharing the test's selection, checks, and
-// decoding, with its own hooks marked "extraction".
+// start. Extraction to disk shares the test's selection, checks, and
+// decoding, its paths and the room for what it finishes at the end (links,
+// then directories' attributes) planned beforehand.
+//
+// Nothing is written through a link: no directory on an entry's path,
+// below the -d directory, may be one, and a file there is replaced by
+// removing it and creating the new one exclusively. Between the check
+// and the creation, another process could still put a link in the way.
 
 // Exit statuses, UnZip's PK_* (unzip.h)
 enum {
@@ -40,6 +45,55 @@ static b32  os_isatty(os *, i32 fd);
 // Why the last failed system call failed, in the words of the C
 // library's strerror, or an empty string if unknown.
 static s8   os_error(os *);
+
+// Extraction. Paths are those the driver has checked: no directory on
+// the way to one, beyond the -d directory, is a link (src/zipin.c's
+// linkless), and none of these follows a link at its end.
+
+// Create a directory, with the defaults for a new one (umask, inherited
+// access control). Returns false on failure, os_error saying why.
+static b32  os_mkdir(os *, s8 path, arena scratch);
+// The process's umask (POSIX), or zero.
+static u32  os_umask(os *);
+// Unix seconds from a broken-down local time {year, month 1-12, day,
+// hour, minute, second}, fields out of range carried over, as for an
+// MS-DOS time: the inverse of os_localtime, daylight saving time taken
+// as the zone had it then.
+static i64  os_mktime(os *, i32 const tm[6]);
+
+// Attributes to give an extracted file, directory, or link: those of
+// flags, each failure reported by its own flag, with the reason in
+// why[], indexed by the flag's bit (OS_AWHY reasons in all).
+enum {
+    OS_AOWNER = 1 << 0,  // uid and gid (POSIX)
+    OS_AMODE  = 1 << 1,  // mode (POSIX) or attributes (Windows)
+    OS_ATIMES = 1 << 2,  // modification and access times
+    OS_ALINK  = 1 << 3,  // the link itself (os_symlink)
+    OS_ASGID  = 1 << 4,  // keep a directory's set-group-ID bit (POSIX)
+    OS_AWHY   = 4,
+};
+typedef struct {
+    i64 mtime;
+    i64 atime;
+    u32 mode;     // permission bits, 07777, umask already applied
+    u32 dosattr;  // read-only, hidden, system, archive (Windows)
+    u32 uid;
+    u32 gid;
+    i32 flags;
+} osattrs;
+// Give a created file, still open and not yet kept, its attributes: on
+// POSIX, its owner, then mode, then times. Returns the flags that
+// failed, their reasons copied into the arena.
+static i32  os_setattrs(os *, i32 fd, osattrs *, s8 *why, arena *);
+// As os_setattrs, for a directory, through a handle that refuses a link
+// at its end: its owner, then times, then mode, as UnZip orders them.
+static i32  os_setdirattrs(os *, s8 path, osattrs *, s8 *why, arena *);
+// Create a symbolic link to target, which must not exist, and, given
+// OS_AOWNER, give the link its owner. On Windows, where links need
+// privileges, a regular file holding the target. Returns the flags that
+// failed, OS_ALINK for the link itself.
+static i32  os_symlink(os *, s8 target, s8 path, osattrs *, s8 *why,
+                       arena *);
 
 static void os_oom(os *ctx)
 {
@@ -139,6 +193,50 @@ enum {
 // The output written at a time, as UnZip's slide with Deflate64
 enum { UZ_WSIZE = 1 << 16 };
 
+// UnZip's overwrite modes (G.overwrite_mode), for the whole run
+enum { OVERWRT_QUERY, OVERWRT_ALWAYS, OVERWRT_NEVER };
+
+// The longest link target held for its link, PATH_MAX on Linux, beyond
+// which no system takes one
+enum { UZ_LINKMAX = 4096 };
+
+// A link, deferred until the files are extracted, with the empty file
+// that holds its place meanwhile, as UnZip's slinkentry with the file
+// holding its target
+typedef struct {
+    s8      path;
+    s8      target;
+    osattrs attrs;   // the owner, with -X
+    u64     dev;     // the placeholder's identity
+    u64     ino[2];
+} xlink;
+
+typedef struct {
+    xlink *data;
+    iz     len;
+    iz     cap;
+} xlinks;
+
+// A directory created by its own entry, to be given its attributes once
+// the files are in it, as UnZip's uxdirattr
+typedef struct {
+    s8      path;
+    osattrs attrs;
+} xdir;
+
+typedef struct {
+    xdir *data;
+    iz    len;
+    iz    cap;
+} xdirs;
+
+// An entry's extraction, planned before any output
+typedef struct {
+    uzpath map;     // its path below the -d directory
+    s8     full;    // that with the -d directory, for a link or directory
+    u8    *target;  // room for a link's target, or null
+} xentry;
+
 typedef struct {
     os     *ctx;
     arena   perm;
@@ -183,6 +281,18 @@ typedef struct {
     s8s     matches;  // wildcard archive names
     b32     noecrec;  // an archive tried had no end record
     s8      zipfn;    // the archive being processed
+
+    // Extraction
+    i32     overwrite; // OVERWRT_*: -o, -n, or the prompt's A or N
+    reader *answers;   // the prompt's, standard input, unless the archive
+    u32     umask;
+    s8      root;      // the -d directory and a '/'
+    b32     rooted;    // which is there
+    s8      checked;   // known to be directories, through its last '/'
+    iz      checkcap;  // room for that
+    b32     slashed;   // the archive's backslashes were warned of
+    xlinks  links;     // links to create once the files are extracted
+    xdirs   dirs;      // directories to give attributes after that
 
     // The archive being processed
     i64     nentries; // entries read from its central directory
@@ -948,11 +1058,49 @@ static s8 const bomb_msg = S8(
     "error: invalid zip file with overlapped components (possible zip bomb)\n"
 );
 
+// Read a line of standard input as C's fgets reads one into a buffer of
+// cap bytes, as UnZip reads answers: up to cap-1 bytes, through a
+// newline. Returns its length, or -1 at the end of the input, or where
+// the input is the archive.
+static iz read_answer(unzip *u, u8 *buf, iz cap)
+{
+    reader *r = u->answers;
+    iz      n = 0;
+    while (r && n<cap-1 && reader_fill(r)) {
+        u8 c = r->buf[r->off++];
+        buf[n++] = c;
+        if (c == '\n') {
+            break;
+        }
+    }
+    return n ? n : -1;
+}
+
+// A write to an extracted file failed: ask, as UnZip's disk_error does,
+// whether to go on with the next entry.
+static b32 disk_error(unzip *u, s8 sname, arena scratch)
+{
+    info(u, MSG_STDERR|MSG_LNEWLN, JOIN(&scratch, sname,
+         S(":  write error (disk full?).  Continue? (y/n/^C) ")));
+    u8 answer[10];
+    return read_answer(u, answer, countof(answer))>0 && answer[0]=='y';
+}
+
+// Where an entry's data goes when extracted to disk.
+typedef struct {
+    i32 fd;      // a file, or -1
+    u8 *target;  // or a link's target, room for its size, or null
+    b32 link;
+    b32 goon;    // after a failed write, the next entry is wanted
+} xout;
+
 // Read and decode an entry's data, its local header found at l, to
-// standard output with -c and -p, or nowhere with -t, as extract.c's
-// extract_or_test_member. Returns a status, PK_DISK if output failed.
+// standard output with -c and -p, nowhere with -t, or to disk, out,
+// as extract.c's extract_or_test_member, name being, on disk, its path.
+// That leaves the line naming it unfinished. Returns a status, PK_DISK
+// if output failed.
 static i32 test_member(unzip *u, zarchive *ar, zentry *e, zlocal *l,
-                       i64 usize, s8 name, arena scratch)
+                       i64 usize, s8 name, xout *disk, arena scratch)
 {
     s8  sname = shown(u, name, &scratch);
     b32 named = u->qflag != 0;  // the name precedes errors
@@ -963,9 +1111,10 @@ static i32 test_member(unzip *u, zarchive *ar, zentry *e, zlocal *l,
                             lj(&scratch, sname, 22), S("  ")));
         }
     } else if (!u->qflag) {
-        info(u, 0, JOIN(&scratch, store ? S(" extracting: ") :
-                                          S("  inflating: "),
-                        lj(&scratch, sname, 22), S("  \n")));
+        s8 verb = disk && disk->link && store ? S("    linking: ") :
+                  store ? S(" extracting: ") : S("  inflating: ");
+        info(u, 0, JOIN(&scratch, verb, lj(&scratch, sname, 22),
+                        disk ? S("  ") : S("  \n")));
     }
 
     // Local extra fields are checked under -t before the data moves the
@@ -974,7 +1123,7 @@ static i32 test_member(unzip *u, zarchive *ar, zentry *e, zlocal *l,
     u32 efrem = 0;
     for (iz i = 0; l->extra.len-i >= 4;) {
         u32 len = get16(l->extra.s+i+2);
-        if (len > l->extra.len-i-4) {
+        if ((iz)len > l->extra.len-i-4) {
             eflen = len;
             efrem = (u32)(l->extra.len-i-4);
             break;
@@ -1046,6 +1195,12 @@ static i32 test_member(unzip *u, zarchive *ar, zentry *e, zlocal *l,
                      S(":  write error (disk full?).\n")));
                 return PK_DISK;
             }
+        } else if (disk && disk->target) {
+            bytecopy(disk->target+out-data.len, data.s, keep);
+        } else if (disk && keep && disk->fd>=0 &&
+                   !os_write(u->ctx, disk->fd, data.s, keep)) {
+            disk->goon = disk_error(u, sname, scratch);
+            return PK_DISK;
         }
     }
     b32 overrun = out > usize;  // more than it says it holds
@@ -1088,7 +1243,7 @@ static i32 test_member(unzip *u, zarchive *ar, zentry *e, zlocal *l,
         if (!u->qflag) {
             info(u, 0, S(" OK\n"));
         }
-    } else if (!u->qflag) {
+    } else if (!u->qflag && !disk) {
         info(u, 0, S("\n"));
     }
     return PK_OK;
@@ -1157,11 +1312,590 @@ static i32 find_local(unzip *u, zarchive *ar, zentry *e, i64 filnum,
     }
 }
 
+// Extracting to disk (extract.c's extract_or_test_entrylist, and
+// unix/unix.c's mapname, checkdir, and close_outfile)
+
+// Results of making an entry's directories, as UnZip's MPN_*
+enum { MPN_OK, MPN_INF_SKIP, MPN_ERR_SKIP };
+
+// Write a message as C's perror writes it, straight to standard error,
+// as UnZip's do for a few failures.
+static void perror_(unzip *u, s8 what, s8 why, arena scratch)
+{
+    writer_flush(u->out);
+    s8 msg = JOIN(&scratch, what, S(": "), why, S("\n"));
+    os_write(u->ctx, 2, msg.s, msg.len);
+}
+
+// Make the directories along full, a path below the -d directory: those
+// before its last '/', and given all, full itself, as UnZip's checkdir
+// makes them (APPEND_DIR), or with create false, find a missing one to
+// skip the entry, silently. A link is not a directory, though one leads
+// to a directory (a departure: UnZip follows it), so that no entry is
+// written through one, but for the -d directory itself. Those found are
+// remembered (u->checked), as by linkless, so that a run of entries in
+// one directory examines it once. Sets *made if one was made. Returns
+// MPN_*, an error reported, naming the entry by name.
+static i32 make_dirs(unzip *u, s8 full, b32 all, b32 create, b32 *made,
+                     s8 name, arena scratch)
+{
+    os *ctx  = u->ctx;
+    s8  path = all ? JOIN(&scratch, full, S("/")) : full;
+    iz  from = u->root.len;
+    s8  done = u->checked;
+    *made = 0;
+    if (!linkless(ctx, path, from, &done, scratch)) {
+        for (iz k = 0; k<path.len && k<done.len && path.s[k]==done.s[k]; k++) {
+            from = path.s[k]=='/' ? MAX(k+1, from) : from;
+        }
+        for (iz k = from; k < path.len; k++) {
+            if (path.s[k] != '/') {
+                continue;
+            }
+            arena   tmp  = scratch;
+            s8      dir  = {path.s, k};
+            os_info st   = {0};
+            if (os_stat(ctx, dir, 0, &st, tmp)) {
+                if (st.type == FT_DIR) {
+                    continue;
+                }
+                info(u, MSG_STDERR, JOIN(&tmp, S("checkdir error:  "),
+                     shown(u, dir, &tmp), S(" exists but is not directory\n"
+                     "                 unable to process "),
+                     shown(u, name, &tmp), S(".\n")));
+                return MPN_ERR_SKIP;
+            } else if (!create) {
+                return MPN_INF_SKIP;  // freshening: nothing there to freshen
+            } else if (!os_mkdir(ctx, dir, tmp)) {
+                s8 why = JOIN(&tmp, os_error(ctx));
+                if (os_stat(ctx, dir, 0, &st, tmp) && st.type==FT_DIR) {
+                    continue;  // made meanwhile
+                }
+                info(u, MSG_STDERR, JOIN(&tmp, S("checkdir error:  cannot "
+                     "create "), shown(u, dir, &tmp), S("\n                 "),
+                     why, S("\n                 unable to process "),
+                     shown(u, name, &tmp), S(".\n")));
+                return MPN_ERR_SKIP;
+            }
+            *made = 1;
+        }
+        iz last = 0;
+        for (iz k = 0; k < path.len; k++) {
+            last = path.s[k]=='/' ? k+1 : last;
+        }
+        done = (s8){path.s, last};
+    }
+
+    // Remember them, where the room planned for that holds them
+    u->checked.len = 0;
+    if (done.len <= u->checkcap) {
+        bytemove(u->checked.s, done.s, done.len);
+        u->checked.len = done.len;
+    }
+    return MPN_OK;
+}
+
+// An MS-DOS time as Unix seconds, in local time, as UnZip's
+// dos_to_unix_time.
+static i64 dos_unix(unzip *u, u32 dostime)
+{
+    i32 tm[6];
+    uz_dosdate(dostime, tm);
+    return os_mktime(u->ctx, tm);
+}
+
+// Results of check_for_newer
+enum { DOES_NOT_EXIST = -1, EXISTS_AND_OLDER, EXISTS_AND_NEWER };
+
+// Whether a file is at full, and if so, whether it is as new as the
+// entry, as fileio.c's check_for_newer: by the entry's local extended
+// timestamp, else its DOS time, to which the file's time is rounded up.
+// A link, whose time does not count, is older, with a note.
+static i32 check_for_newer(unzip *u, s8 full, uzizux *ux, u32 dostime,
+                           arena scratch)
+{
+    os     *ctx  = u->ctx;
+    os_info st   = {0};
+    os_info lst  = {0};
+    b32     note = !u->qflag && u->overwrite!=OVERWRT_ALWAYS;
+    if (!os_stat(ctx, full, 1, &st, scratch)) {
+        if (!os_stat(ctx, full, 0, &lst, scratch)) {
+            return DOES_NOT_EXIST;
+        }
+        if (note) {
+            info(u, 0, JOIN(&scratch, shown(u, full, &scratch),
+                 S(" exists and is a symbolic link with no real file.\n")));
+        }
+        return EXISTS_AND_OLDER;
+    }
+    if (os_stat(ctx, full, 0, &lst, scratch) && lst.type==FT_LINK) {
+        if (note) {
+            info(u, 0, JOIN(&scratch, shown(u, full, &scratch),
+                            S(" exists and is a symbolic link.\n")));
+        }
+        return EXISTS_AND_OLDER;
+    }
+    i64 existing = st.mtime;
+    i64 archive  = ux->mtime;
+    if (!(ux->flags & UZ_MTIME)) {
+        existing += existing & 1;  // to MS-DOS's two seconds
+        archive   = dos_unix(u, dostime);
+    }
+    return existing>=archive ? EXISTS_AND_NEWER : EXISTS_AND_OLDER;
+}
+
+// Ask whether to replace the file at full, as extract.c does, reading
+// the answer from standard input. Returns 'y' to replace it, 'n' to
+// skip the entry, or 'r' with *rename the name to extract it as, or
+// with none read, path. A or N answers the rest of the run too.
+static u8 ask_replace(unzip *u, s8 full, s8 path, i32 *err, s8 *rename,
+                      arena *scratch)
+{
+    for (;;) {
+        arena tmp = *scratch;
+        info(u, MSG_STDERR, JOIN(&tmp, S("replace "), shown(u, full, &tmp),
+             S("? [y]es, [n]o, [A]ll, [N]one, [r]ename: ")));
+        u8 answer[10];  // as UnZip's answerbuf, a longer answer split
+        iz n = read_answer(u, answer, countof(answer));
+        if (n < 0) {
+            info(u, MSG_STDERR, S(" NULL\n(EOF or read error, treating as "
+                                  "\"[N]one\" ...)\n"));
+            *err = MAX(*err, PK_WARN);  // not extracted: a warning
+            answer[0] = 'N';
+        }
+        switch (answer[0]) {
+        case 'r':
+        case 'R':
+            for (;;) {
+                iz  cap = 4096;  // UnZip's FILNAMSIZ
+                u8 *buf = newstr(scratch, cap);
+                info(u, MSG_STDERR, S("new name: "));
+                iz  len = read_answer(u, buf, cap);
+                if (len < 0) {
+                    *rename = path;  // where UnZip keeps the name it had
+                    return 'r';
+                }
+                len -= buf[len-1] == '\n';
+                if (len) {
+                    *rename = (s8){buf, len};
+                    return 'r';
+                }
+            }
+        case 'A':
+            u->overwrite = OVERWRT_ALWAYS;
+            return 'y';
+        case 'y':
+        case 'Y':
+            return 'y';
+        case 'N':
+            u->overwrite = OVERWRT_NEVER;
+            return 'n';
+        case 'n':
+            return 'n';
+        }
+        s8 bad = {answer, n};
+        if (answer[0]=='\n' || answer[0]=='\r') {
+            bad = S("{ENTER}");
+        } else {
+            bad.len -= bad.s[bad.len-1] == '\n';
+        }
+        info(u, MSG_STDERR, JOIN(&tmp, S("error:  invalid response ["),
+                                 shown(u, bad, &tmp), S("]\n")));
+    }
+}
+
+// Report the attributes that os_setattrs, os_setdirattrs, or os_symlink
+// failed to give the file at full, as UnZip words each: within the line
+// naming it, with an item that is (inline), else alone. Returns a
+// status, a warning for any failure but a file's mode, which UnZip only
+// reports.
+static i32 attr_failures(unzip *u, i32 failed, s8 full, osattrs *a, s8 *why,
+                         b32 dir, b32 inline_, arena scratch)
+{
+    i32 err  = PK_OK;
+    s8  name = shown(u, full, &scratch);
+    if (failed & OS_AOWNER) {
+        s8 ids = JOIN(&scratch, S("cannot set UID "),
+                      unum(&scratch, a->uid, 0, 0), S(" and/or GID "),
+                      unum(&scratch, a->gid, 0, 0));
+        info(u, MSG_STDERR, inline_
+             ? JOIN(&scratch, S(" (warning) "), ids, S("\n          "),
+                    why[0])
+             : JOIN(&scratch, S("warning:  "), ids, S(" for "), name,
+                    S("\n          "), why[0], S("\n")));
+        err = dir ? PK_WARN : err;
+    }
+    if (dir && (failed & OS_ATIMES)) {
+        info(u, MSG_STDERR, JOIN(&scratch, S("warning:  cannot set modif./"
+             "access times for "), name, S("\n          "), why[2],
+             S("\n")));
+        err = PK_WARN;
+    }
+    if (failed & OS_AMODE) {
+        if (dir) {
+            info(u, MSG_STDERR, JOIN(&scratch, S("warning:  cannot set "
+                 "permissions for "), name, S("\n          "), why[1],
+                 S("\n")));
+            err = PK_WARN;
+        } else {
+            perror_(u, S("fchmod (file attributes) error"), why[1], scratch);
+        }
+    }
+    if (!dir && (failed & OS_ATIMES)) {
+        info(u, MSG_STDERR, inline_
+             ? JOIN(&scratch, S(" (warning) cannot set modif./access times"
+                                "\n          "), why[2])
+             : JOIN(&scratch, S("warning:  cannot set modif./access times "
+                    "for "), name, S("\n          "), why[2], S("\n")));
+    }
+    return err;
+}
+
+// Extract an entry, its local header found at l, its extraction planned
+// in x, as extract.c's extract_or_test_entrylist and
+// extract_or_test_member. Returns a status, with *stop set when a write
+// failed and the user does not go on.
+static i32 extract_member(unzip *u, zarchive *ar, zentry *e, xentry *x,
+                          zlocal *l, i64 usize, b32 *stop, arena scratch)
+{
+    os    *ctx  = u->ctx;
+    i32    err  = PK_OK;
+    u32    dost = get32(l->fixed+10);  // the local header's, as UnZip's
+    uzizux ux   = uz_extra_izux(l->extra, 0, dost);  // (the window moves)
+    uzmode um   = uz_mode(e->extattr, e->made, e->name, e->cextra,
+                          u->Kflag);
+    b32    link = um.symlink && usize>0;
+    i32    opts = (u->windows ? UZ_WINDOWS : 0) | (u->jflag ? UZ_JUNK : 0) |
+                  (u->Vflag ? UZ_KEEPVER : 0);
+    u32    mask = um.umask ? u->umask : 0;
+    uzpath mp   = x->map;
+    s8     full = x->full;  // planned for a directory with its '/'
+    i32    have = DOES_NOT_EXIST;
+    full.len -= full.s && (mp.flags & UZ_DIR);
+    for (b32 renamed = 0;; renamed = 1) {
+        if (renamed || !full.s) {
+            full = JOIN(&scratch, u->root, mp.path);
+        }
+
+        // A name from MS-DOS may separate with '\', and leading '/' are
+        // dropped, as extract.c warns
+        if ((mp.flags & UZ_BACKSLASH) && !u->slashed) {
+            info(u, MSG_STDERR|MSG_LNEWLN, JOIN(&scratch, S("warning:  "),
+                 u->zipfn, S(" appears to use backslashes as path "
+                             "separators\n")));
+            u->slashed = 1;
+            err = MAX(err, PK_WARN);
+        }
+        if (!renamed && (mp.flags & UZ_ABSOLUTE)) {
+            info(u, MSG_STDERR, JOIN(&scratch, S("warning:  stripped absolute"
+                 " path spec from "), shown(u, mp.full, &scratch), S("\n")));
+            err = MAX(err, PK_WARN);
+        }
+
+        // Its directories, as mapname makes them, then its warning of
+        // ".." dropped, then a directory entry is done
+        b32 isdir = (mp.flags & UZ_DIR) != 0;
+        b32 made  = 0;
+        s8  dirs  = full;
+        b32 all   = isdir;
+        b32 walk  = !isdir || mp.path.len;
+        if (mp.flags & UZ_FAILED) {
+            // A name that maps to nothing still has its directories
+            s8 pre = mp.name;
+            for (; pre.len && pre.s[pre.len-1]!='/'; pre.len--) {}
+            uzpath dp = uz_mapname(pre, e->made, opts, &scratch);
+            dirs = JOIN(&scratch, u->root, dp.path);
+            all  = 1;
+            walk = dp.path.len > 0;
+        }
+        if (walk) {
+            i32 r = make_dirs(u, dirs, all, !u->fflag || renamed, &made,
+                              mp.name, scratch);
+            if (r == MPN_ERR_SKIP) {
+                return MAX(err, PK_ERR);
+            } else if (r == MPN_INF_SKIP) {
+                return err;
+            }
+        }
+        if ((mp.flags & UZ_DOTDOT) && !u->qflag) {
+            info(u, 0, JOIN(&scratch, S("warning:  skipped \"../\" path "
+                 "component(s) in "), shown(u, mp.name, &scratch), S("\n")));
+            err = MAX(err, PK_WARN);
+        }
+        if (isdir) {
+            if (!made) {
+                return err;  // it was there: nothing to do
+            }
+            s8 path = !renamed && x->full.s ? x->full :
+                                              JOIN(&u->perm, full, S("/"));
+            if (!u->qflag) {
+                info(u, 0, JOIN(&scratch, S("   creating: "),
+                                shown(u, path, &scratch), S("\n")));
+            }
+            xdir *d = push(&u->perm, &u->dirs);
+            d->path = path;
+            d->attrs.mode   = um.mode & 07777 & ~mask;
+            d->attrs.flags  = OS_AMODE;
+            d->attrs.flags |= uz_host(e->made)!=UZ_UNIX ||
+                              !(u->Xflag || u->Kflag) ? OS_ASGID : 0;
+            if (u->Dflag <= 0) {
+                d->attrs.mtime  = ux.flags & UZ_MTIME ? ux.mtime :
+                                                        dos_unix(u, dost);
+                d->attrs.atime  = ux.flags & UZ_ATIME ? ux.atime :
+                                                        d->attrs.mtime;
+                d->attrs.flags |= OS_ATIMES;
+            }
+            if (u->Xflag && (ux.flags & UZ_OWNER)) {
+                d->attrs.uid    = ux.uid;
+                d->attrs.gid    = ux.gid;
+                d->attrs.flags |= OS_AOWNER;
+            }
+            return err;
+        }
+        if (mp.flags & UZ_FAILED) {
+            info(u, MSG_STDERR, JOIN(&scratch, S("mapname:  conversion of "),
+                 shown(u, mp.name, &scratch), S(" failed\n")));
+            return MAX(err, PK_ERR);
+        }
+
+        // What is there already, and what to do about it
+        have = check_for_newer(u, full, &ux, dost, scratch);
+        b32 query = 0;
+        b32 skip  = 0;
+        switch (have) {
+        case DOES_NOT_EXIST:
+            skip = u->fflag && !renamed;  // freshening creates nothing
+            break;
+        case EXISTS_AND_OLDER:
+            skip  = u->overwrite == OVERWRT_NEVER;
+            query = !skip && u->overwrite!=OVERWRT_ALWAYS;
+            break;
+        case EXISTS_AND_NEWER:
+            skip  = u->overwrite==OVERWRT_NEVER || (u->uflag && !renamed);
+            query = !skip && u->overwrite!=OVERWRT_ALWAYS;
+            break;
+        }
+        if (query) {
+            s8 rename = {0};
+            u8 a = ask_replace(u, full, mp.path, &err, &rename, &scratch);
+            if (a == 'r') {
+                mp = uz_mapname(rename, e->made, opts, &scratch);
+                continue;
+            }
+            skip = a == 'n';
+        }
+        if (skip) {
+            return err;
+        }
+        break;
+    }
+
+    // Replace what is there, removing it, as open_outfile does, so as
+    // never to write through a link, then creating the file anew, or for
+    // a link, an empty file to hold its place until links are made
+    if (have!=DOES_NOT_EXIST && !os_remove(ctx, full, scratch) &&
+        !os_missing(ctx)) {
+        info(u, MSG_STDERR, JOIN(&scratch, S("error:  cannot delete old "),
+             shown(u, full, &scratch), S("\n        "), os_error(ctx),
+             S("\n")));
+        return MAX(err, PK_DISK);
+    }
+    i32 fd = os_open(ctx, full, OS_CREATE, scratch);
+    if (fd < 0) {
+        info(u, MSG_STDERR, JOIN(&scratch, S("error:  cannot create "),
+             shown(u, full, &scratch), S("\n        "), os_error(ctx),
+             S("\n")));
+        return MAX(err, PK_DISK);
+    }
+
+    xout out = {fd, link ? x->target : 0, link, 0};
+    i32  r   = test_member(u, ar, e, l, usize, full, &out, scratch);
+    if (r > PK_WARN) {
+        os_close(ctx, fd);  // discarded
+        *stop = r==PK_DISK && !out.goon;
+        return MAX(err, r);
+    }
+
+    if (link && !out.target) {
+        os_close(ctx, fd);
+        info(u, MSG_STDERR, JOIN(&scratch, S("warning:  symbolic link ("),
+             shown(u, full, &scratch), S(") failed: target too long\n")));
+    } else if (link) {
+        // The placeholder is kept, and known by its identity
+        os_info id = {0};
+        b32 ok = os_fstat(ctx, fd, &id) && os_keep(ctx, fd);
+        if (!os_close(ctx, fd) || !ok) {
+            os_remove(ctx, full, scratch);
+            out.goon = disk_error(u, shown(u, full, &scratch), scratch);
+            *stop = !out.goon;
+            return MAX(err, PK_DISK);
+        }
+        s8 target = {out.target, (iz)usize};
+        if (!u->qflag) {
+            info(u, 0, JOIN(&scratch, S("-> "), shown(u, target, &scratch),
+                            S(" ")));
+        }
+        xlink *k = push(&u->perm, &u->links);
+        k->path   = full.s==x->full.s ? full : JOIN(&u->perm, full);
+        k->target = target;
+        k->dev    = id.dev;
+        k->ino[0] = id.ino[0];
+        k->ino[1] = id.ino[1];
+        if (u->Xflag && (ux.flags & UZ_OWNER)) {
+            k->attrs.uid   = ux.uid;
+            k->attrs.gid   = ux.gid;
+            k->attrs.flags = OS_AOWNER;
+        }
+    } else {
+        // Its attributes, then it is kept, as close_outfile gives them
+        osattrs a = {0};
+        a.mode    = um.mode & 07777 & ~mask;
+        a.dosattr = uz_dosattr(e->extattr);
+        a.flags   = OS_AMODE;
+        if (u->Dflag <= 1) {
+            a.mtime  = ux.flags & UZ_MTIME ? ux.mtime : dos_unix(u, dost);
+            a.atime  = ux.flags & UZ_ATIME ? ux.atime : a.mtime;
+            a.flags |= OS_ATIMES;
+        }
+        if (u->Xflag && (ux.flags & UZ_OWNER)) {
+            a.uid    = ux.uid;
+            a.gid    = ux.gid;
+            a.flags |= OS_AOWNER;
+        }
+        s8  why[OS_AWHY] = {0};
+        i32 failed = os_setattrs(ctx, fd, &a, why, &scratch);
+        attr_failures(u, failed, full, &a, why, 0, !u->qflag, scratch);
+
+        // A failed close may have lost data
+        b32 kept = os_keep(ctx, fd);
+        if (!kept || !os_close(ctx, fd)) {
+            if (kept) {
+                os_remove(ctx, full, scratch);
+            } else {
+                os_close(ctx, fd);
+            }
+            out.goon = disk_error(u, shown(u, full, &scratch), scratch);
+            *stop = !out.goon;
+            return MAX(err, PK_DISK);
+        }
+    }
+    if (!u->qflag) {
+        info(u, 0, S("\n"));
+    }
+    return err;
+}
+
+// Create the links deferred (extract.c's set_deferred_symlink), each
+// where its placeholder still is, reached through no link. Returns a
+// status, which, as UnZip's, failures leave alone.
+static i32 finish_links(unzip *u, arena scratch)
+{
+    os *ctx = u->ctx;
+    if (u->links.len && !u->qflag) {
+        info(u, 0, S("finishing deferred symbolic links:\n"));
+    }
+    for (iz i = 0; i < u->links.len; i++) {
+        arena   tmp  = scratch;
+        xlink  *k    = u->links.data + i;
+        s8      none = {0};
+        os_info st   = {0};
+        b32 ok = linkless(ctx, k->path, u->root.len, &none, tmp) &&
+                 os_stat(ctx, k->path, 0, &st, tmp) && st.type==FT_FILE &&
+                 !st.size && st.dev==k->dev && st.ino[0]==k->ino[0] &&
+                 st.ino[1]==k->ino[1];
+        if (!ok) {
+            info(u, MSG_STDERR, JOIN(&tmp, S("warning:  deferred symlink ("),
+                 shown(u, k->path, &tmp), S(") failed:\n          invalid "
+                 "placeholder file\n")));
+            continue;
+        }
+        os_remove(ctx, k->path, tmp);
+        if (!u->qflag) {
+            info(u, 0, JOIN(&tmp, S("  "), lj(&tmp, shown(u, k->path, &tmp),
+                 22), S(" -> "), shown(u, k->target, &tmp), S("\n")));
+        }
+        s8  why[OS_AWHY] = {0};
+        i32 failed = os_symlink(ctx, k->target, k->path, &k->attrs, why,
+                                &tmp);
+        if (failed & OS_ALINK) {
+            perror_(u, S("symlink error"), why[3], tmp);
+        } else if (failed) {
+            attr_failures(u, failed, k->path, &k->attrs, why, 0, 0, tmp);
+        }
+    }
+    return PK_OK;
+}
+
+// Order paths as strcmp does, descending.
+static b32 path_after(s8 a, s8 b)
+{
+    iz n = MIN(a.len, b.len);
+    for (iz i = 0; i < n; i++) {
+        if (a.s[i] != b.s[i]) {
+            return a.s[i] > b.s[i];
+        }
+    }
+    return a.len > b.len;
+}
+
+// Give the directories created by their own entries their attributes,
+// deepest first, as extract.c does (SET_DIR_ATTRIB): their paths sorted
+// in reverse, each with its '/'. Returns a status.
+static i32 finish_dirs(unzip *u, arena scratch)
+{
+    os   *ctx = u->ctx;
+    iz    n   = u->dirs.len;
+    xdir *d   = u->dirs.data;
+    xdir *t   = new(&scratch, n, xdir);
+    for (iz w = 1; w < n; w *= 2) {  // a stable bottom-up merge sort
+        for (iz lo = 0; lo < n; lo += 2*w) {
+            iz mid = MIN(lo+w, n);
+            iz hi  = MIN(lo+2*w, n);
+            iz i = lo, j = mid, k = lo;
+            while (i<mid || j<hi) {
+                b32 right = i==mid || (j<hi && path_after(d[j].path,
+                                                          d[i].path));
+                t[k++] = right ? d[j++] : d[i++];
+            }
+        }
+        bytecopy(d, t, n*(iz)sizeof(*d));
+    }
+
+    i32 err   = PK_OK;
+    u64 nfail = 0;
+    for (iz i = 0; i < n; i++) {
+        arena tmp  = scratch;
+        s8    path = {d[i].path.s, d[i].path.len-1};  // without its '/'
+        s8    none = {0};
+        s8    why[OS_AWHY] = {0};
+        i32   failed = 0;
+        if (!linkless(ctx, path, u->root.len, &none, tmp)) {
+            failed = d[i].attrs.flags & (OS_AOWNER|OS_AMODE|OS_ATIMES);
+            why[0] = why[1] = why[2] = S("Not a directory");
+        } else {
+            failed = os_setdirattrs(ctx, path, &d[i].attrs, why, &tmp);
+        }
+        if (failed) {
+            i32 r = attr_failures(u, failed, d[i].path, &d[i].attrs, why, 1,
+                                  0, tmp);
+            err = err ? err : r;
+            nfail++;
+            info(u, MSG_STDERR, JOIN(&tmp, S("warning:  set times/attribs "
+                 "failed for "), shown(u, d[i].path, &tmp), S("\n")));
+        }
+    }
+    if (nfail && !u->qflag) {
+        info(u, 0, JOIN(&scratch, S("     failed setting times/attribs for "),
+                        unum(&scratch, nfail, 0, 0), S(" dir entries")));
+    }
+    return err;
+}
+
 // Find, check, and process one entry, the filnum'th, as extract.c's
 // extract_or_test_entrylist. Returns a status, with *stop set for one
 // that ends the archive's processing.
-static i32 do_member(unzip *u, zarchive *ar, zentry *e, i64 filnum,
-                     zspans *spans, b32 *stop, arena scratch)
+static i32 do_member(unzip *u, zarchive *ar, zentry *e, xentry *x,
+                     i64 filnum, zspans *spans, b32 *stop, arena scratch)
 {
     s8     name = entry_name(ar, e);
     zlocal l    = {0};
@@ -1202,27 +1936,119 @@ static i32 do_member(unzip *u, zarchive *ar, zentry *e, i64 filnum,
         err   = PK_WARN;
     }
 
-    // (extraction: the entry's path, and what to do about a file there)
-
-    i32 r = test_member(u, ar, e, &l, usize, name, scratch);
+    i32 r = 0;
+    if (u->extract) {
+        r = extract_member(u, ar, e, x, &l, usize, stop, scratch);
+        return MAX(err, r);
+    }
+    r = test_member(u, ar, e, &l, usize, name, 0, scratch);
     *stop = r == PK_DISK;
     return MAX(err, r);
 }
 
-// Test the selected entries, or extract them to standard output, as
-// extract.c's extract_or_test_files.
+// Plan the extraction of the selected entries, before any output: their
+// paths, room for the paths of links and directories, kept to finish
+// them at the end, and for links' targets, and lists for those.
+static xentry *plan_extract(unzip *u, zarchive *ar, arena *scratch)
+{
+    i64     count   = u->nentries;
+    xentry *xs      = new(scratch, (iz)count, xentry);
+    i32     opts    = (u->windows ? UZ_WINDOWS : 0) |
+                      (u->jflag ? UZ_JUNK : 0) | (u->Vflag ? UZ_KEEPVER : 0);
+    iz      nlinks  = 0;
+    iz      ndirs   = 0;
+    iz      longest = 0;
+    iz      maxname = 0;
+    for (i64 i = 0; i < count; i++) {
+        zentry *e    = ar->entries + i;
+        xentry *x    = xs + i;
+        s8      name = entry_name(ar, e);
+        if (!readable(e) || !wanted(u, name, 0, 0)) {
+            continue;
+        }
+        maxname = MAX(maxname, name.len);
+        x->map  = uz_mapname(name, e->made, opts, scratch);
+        longest = MAX(longest, u->root.len + x->map.path.len + 1);
+        if (x->map.flags & UZ_DIR) {
+            if (x->map.path.len) {
+                x->full = JOIN(scratch, u->root, x->map.path, S("/"));
+                ndirs++;
+            }
+            continue;
+        } else if (x->map.flags & UZ_FAILED) {
+            continue;
+        }
+        uzmode um   = uz_mode(e->extattr, e->made, e->name, e->cextra,
+                              u->Kflag);
+        i64    size = e->method==ZIP_STORE ? e->csize : e->usize;
+        if (um.symlink && size>0) {
+            x->full   = JOIN(scratch, u->root, x->map.path);
+            x->target = size<=UZ_LINKMAX ? newstr(scratch, (iz)size) : 0;
+            nlinks++;
+        }
+    }
+    u->links    = (xlinks){new(scratch, nlinks, xlink), 0, nlinks};
+    u->dirs     = (xdirs){new(scratch, ndirs, xdir), 0, ndirs};
+    u->checked  = (s8){newstr(scratch, longest), 0};
+    u->checkcap = longest;
+    u->slashed  = 0;
+
+    // Claim the room that extracting an entry takes, its messages and
+    // paths, a new name asked for, and sorting the directories, so that
+    // none is claimed once files are written. (Only a new name for a
+    // link or directory, kept to the end, is then claimed.)
+    arena probe = *scratch;
+    newbytes(&probe, 16*(longest + maxname) + (1<<16) +
+                     ndirs*(iz)sizeof(xdir));
+    return xs;
+}
+
+// Make the -d directory, if not there, as UnZip's checkdir (ROOT) makes
+// it, once, in one level, unless freshening (a departure: UnZip then
+// freshens the current directory). Returns a status.
+static i32 make_root(unzip *u, arena scratch)
+{
+    s8      dir  = {u->root.s, u->root.len-1};  // as UnZip, without a '/'
+    os_info st   = {0};
+    if (u->rooted || dir.len<=0 || u->fflag) {
+        return PK_OK;
+    } else if (!os_stat(u->ctx, dir, 1, &st, scratch) ||
+               st.type!=FT_DIR) {
+        if (!os_mkdir(u->ctx, dir, scratch)) {
+            info(u, MSG_STDERR, JOIN(&scratch, S("checkdir:  cannot create "
+                 "extraction directory: "), shown(u, dir, &scratch),
+                 S("\n           "), os_error(u->ctx), S("\n")));
+            return PK_ERR;
+        }
+    }
+    u->rooted = 1;
+    return PK_OK;
+}
+
+// Test the selected entries, or extract them, to disk or standard
+// output, as extract.c's extract_or_test_files.
 static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
 {
     i64 count = u->nentries;
     u8 *fm    = new(&scratch, u->fspecs.len, u8);
     u8 *xm    = new(&scratch, u->xspecs.len, u8);
 
+    // Extraction, planned, then its directory made
+    xentry *xs = 0;
+    if (u->extract) {
+        xs = plan_extract(u, ar, &scratch);
+        i32 r = make_root(u, scratch);
+        if (r) {
+            return r;
+        }
+    }
+
     // The entries to be read must not overlap, nor reach into the
     // central directory, as Debian's UnZip finds them out: here, before
     // any are read, the least each could take, a local header and its
     // data, and once each local header is read, what it does take
-    zspans spans = {new(&scratch, count, i64), 0};
-    i64   *ends  = new(&scratch, count, i64);
+    zspans spans = {new(&scratch, (iz)count, i64), 0};
+    i64   *ends  = new(&scratch, (iz)count, i64);
     for (i64 i = 0; i < count; i++) {
         zentry *e = ar->entries + i;
         if (readable(e) && wanted(u, entry_name(ar, e), 0, 0)) {
@@ -1267,10 +2093,19 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
         }
         for (iz k = 0; k<nblock && !stop; k++) {
             zentry *e = ar->entries + block[k];
-            i32     r = do_member(u, ar, e, ++filnum, &spans, &stop, scratch);
+            i32     r = do_member(u, ar, e, xs ? xs+block[k] : 0, ++filnum,
+                                      &spans, &stop, scratch);
             err = MAX(err, r);
         }
         nblock = 0;
+    }
+
+    // Links, deferred, then directories' attributes, even when stopped
+    if (u->extract) {
+        i32 r = finish_links(u, scratch);
+        err = MAX(err, r);
+        r = finish_dirs(u, scratch);
+        err = MAX(err, r);
     }
     if (stop) {
         return err;  // no summary, as when UnZip stops early
@@ -1279,8 +2114,6 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
         info(u, MSG_STDERR, JOIN(&scratch, end_sig_msg, report_msg));
         err = MAX(err, PK_WARN);
     }
-
-    // (extraction: deferred links, then directories' attributes)
 
     for (iz i = 0; i < u->fspecs.len; i++) {
         if (!fm[i]) {
@@ -1703,20 +2536,26 @@ static i32 unzip_main(unzipconfig *conf)
 
     i32 r = unzip_args(u, conf, scratch);
     if (r < 0) {
-        if (u->extract) {
-            // (extraction: not yet supported)
-            info(u, MSG_STDERR, S("error:  extracting to disk is not "
-                 "supported yet; use -l, -v, -t, -p, -c, or -z\n"));
-            r = PK_PARAM;
-        } else {
-            u->dup = u->tflag && !os_isatty(u->ctx, 1) &&
-                     os_isatty(u->ctx, 2);
-            if (u->tflag || u->cflag) {
-                u->inf    = inflate_new(&u->perm);
-                u->window = newbytes(&u->perm, UZ_WSIZE);
-            }
-            r = process_zipfiles(u, scratch);
+        u->dup = u->tflag && !os_isatty(u->ctx, 1) && os_isatty(u->ctx, 2);
+        if (u->tflag || u->cflag || u->extract) {
+            u->inf    = inflate_new(&u->perm);
+            u->window = newbytes(&u->perm, UZ_WSIZE);
         }
+        if (u->extract) {
+            // The prompts' answers, unless standard input is the archive;
+            // the -d directory (as UnZip's checkdir ROOT, dropping a '/')
+            u->overwrite = u->ovnone ? OVERWRT_NEVER :
+                           u->ovall  ? OVERWRT_ALWAYS : OVERWRT_QUERY;
+            if (!zequals(u->zipspec, S("-"))) {
+                u->answers = newreader(&u->perm, 0, 1<<12);
+            }
+            u->umask = os_umask(u->ctx);
+            s8 dir = u->exdir;
+            dir.len -= dir.len && dir.s[dir.len-1]=='/';
+            u->root = u->hasexdir && u->exdir.len ? JOIN(&u->perm, dir, S("/"))
+                                                  : S("");
+        }
+        r = process_zipfiles(u, scratch);
     }
     writer_flush(u->out);
     return r;

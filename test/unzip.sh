@@ -237,8 +237,7 @@ for zip in "$TUGZ_ZIP" "$(command -v zip || true)"; do
     unset UNZIP
 done
 
-# tugz's own: options after the archive, as busybox takes them; this
-# extracts nothing as yet
+# tugz's own: options after the archive, as busybox takes them
 if [ -n "$TUGZ_ZIP" ] || command -v zip >/dev/null 2>&1; then
     "$U" -l z.zip >want 2>&1
     ours 0 want none z.zip -l
@@ -249,8 +248,6 @@ if [ -n "$TUGZ_ZIP" ] || command -v zip >/dev/null 2>&1; then
     ours 0 want none z.zip tree/a.txt -x tree/b.txt -t
     "$U" -lq z.zip tree/a.txt >want 2>&1
     ours 0 want none z.zip -q tree/a.txt -l    # among members
-    printf 'error:  extracting to disk is not supported yet; use -l, -v, -t, -p, -c, or -z\n' >want
-    ours 10 none want z.zip
 fi
 
 # ---- Archives -------------------------------------------------------
