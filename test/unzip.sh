@@ -1,16 +1,24 @@
 #!/bin/sh
-# End-to-end tests of an unzip binary's listing and testing modes (-l,
-# -v, -t, -p, -c, -z), comparing its status, standard output, and
-# standard error with Info-ZIP's UnZip, REF, on archives from Python
-# (test/unzipcraft.py, via uv when available), printf, tugz's zip
-# (TUGZ_ZIP), and Info-ZIP's zip if present. Where tugz departs from
-# UnZip, as documented, its output is checked on its own.
+# End-to-end tests of an unzip binary: listing, testing (-l, -v, -t, -p,
+# -c, -z), and extracting, comparing its status, standard output, and
+# standard error, and the trees it extracts, with Info-ZIP's UnZip, REF,
+# on archives from Python (test/unzipcraft.py, via uv when available),
+# printf, tugz's zip (TUGZ_ZIP), and Info-ZIP's zip if present. Where
+# tugz departs from UnZip, as documented, its output is checked on its
+# own, as is what it must never do: write outside the destination.
 # Usage: REF=/usr/bin/unzip sh test/unzip.sh ./unzip
+# Set UNZIPOOM to another build for the out-of-memory tests, as ctest
+# does, its own build being sanitized.
+# Set SLOW=1 to include Zip64 tests: entries of 4 GiB and more, which
+# need about 13 GiB free in TMPDIR.
 set -e
 
 unset UNZIP UNZIPOPT ZIPOPT ZIP  # options from the environment
 export TZ=UTC LC_ALL=C           # listings' times, and REF's names
 U=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+if [ -n "$UNZIPOOM" ]; then  # another build for the out-of-memory tests
+    UNZIPOOM=$(cd "$(dirname "$UNZIPOOM")" && pwd)/$(basename "$UNZIPOOM")
+fi
 REF=${REF:-unzip}
 # Info-ZIP's, and not another that mentions it, as tugz's own does
 if ! "$REF" -v 2>/dev/null | head -n 1 | grep -q '^UnZip .*Info-ZIP'; then
@@ -38,7 +46,7 @@ fi
 version=$(sed -n 's/^#define TUGZ_VERSION "\(.*\)"$/\1/p' \
               "$(dirname "$0")/../src/base.c")
 tmp=$(mktemp -d)
-trap 'cd / && rm -rf "$tmp"' EXIT
+trap 'cd / && chmod -R u+rwx "$tmp" && rm -rf "$tmp"' EXIT
 cd "$tmp"
 
 # A failure is reported on the original standard error, and marked, so
@@ -131,6 +139,78 @@ ours() {
 
 : >none
 
+# A listing of an extracted tree: each path's type and permissions, a
+# file's content, a link's target, and modification times, of files and
+# directories, of files alone (TIMES=files: directories that no entry
+# made, or that -D leaves alone, have the time they were made), or of
+# none (TIMES=none)
+if stat -c %a . >/dev/null 2>&1; then
+    perms() { stat -c %a "$1"; }
+    mtime() { stat -c %Y "$1"; }
+else
+    perms() { stat -f %Lp "$1"; }
+    mtime() { stat -f %m "$1"; }
+fi
+tree() {
+    (cd "$1" && find . ! -name . | LC_ALL=C sort | while IFS= read -r f; do
+        t=
+        if [ -L "$f" ]; then
+            echo "L $f -> $(readlink "$f")"
+        elif [ -d "$f" ]; then
+            [ "${TIMES:-all}" != all ] || t=$(mtime "$f")
+            echo "D $f $(perms "$f") $t"
+        else
+            [ "${TIMES:-all}" = none ] || t=$(mtime "$f")
+            echo "F $f $(perms "$f") $t $(cksum <"$f" 2>/dev/null || true)"
+        fi
+    done)
+}
+
+# Extract with ours and REF on the same arguments, each in a directory of
+# its own, x.ours and x.ref, made anew and set up by the shell commands
+# $SETUP, with standard input from $IN, leaving their status, output,
+# errors, and trees in ours.* and ref.*. Apple's REF names a few paths in
+# full, and leaves the '/' off a directory it creates: those are made as
+# other builds have them.
+xboth() {
+    for d in x.ours x.ref; do
+        [ ! -e $d ] || chmod -R u+rwx $d
+        rm -rf $d
+        mkdir $d
+        [ -z "$SETUP" ] || (cd $d && eval "$SETUP") || fail "setup: $SETUP"
+    done
+    set +e
+    (cd x.ours && exec "$U" "$@") <"${IN:-/dev/null}" >ours.out 2>ours.err
+    echo $? >ours.st
+    (cd x.ref && exec "$REF" "$@") <"${IN:-/dev/null}" >ref.out 2>ref.err
+    echo $? >ref.st
+    set -e
+    [ "$(cat ours.st)" != 99 ] || fail "sanitizer: $*: $(cat ours.err)"
+    if [ $apple = 1 ]; then
+        for f in out err; do
+            sed -e "s|$(cd x.ref && pwd -P)/||g" -e "s|$(cd x.ref && pwd)/||g" \
+                -e 's|^   creating: \(.*[^/]\)$|   creating: \1/|' \
+                ref.$f >ref.tmp
+            mv ref.tmp ref.$f
+        done
+    fi
+    tree x.ours >ours.tree
+    tree x.ref >ref.tree
+}
+
+# The same status, output, errors, and tree as REF's.
+xsame() {
+    xboth "$@"
+    cmp -s ours.st ref.st ||
+        fail "status $(cat ours.st), REF's $(cat ref.st): $*: $(cat ours.err)"
+    cmp -s ours.out ref.out ||
+        fail "output differs from REF's: $*: $(diff ref.out ours.out)"
+    cmp -s ours.err ref.err ||
+        fail "errors differ from REF's: $*: $(diff ref.err ours.err)"
+    cmp -s ours.tree ref.tree ||
+        fail "tree differs from REF's: $*: $(diff ref.tree ours.tree)"
+}
+
 # ---- Options --------------------------------------------------------
 
 # Usage: alone to standard output, as after an error to standard error;
@@ -185,6 +265,8 @@ for zip in "$TUGZ_ZIP" "$(command -v zip || true)"; do
         same $mode z.zip 'tree/*.txt'
         same $mode z.zip -x 'tree/sub/*'
     done
+    xsame ../z.zip                            # extracted
+    xsame -q ../z.zip 'tree/*.txt' -x tree/b.txt
     same -t z.zip tree/a.txt nomatch          # caution, status 11
     same -l z.zip nomatch                     # 11, silently
     same -t z.zip -x nomatch                  # caution, status 0
@@ -462,5 +544,348 @@ tab	here^[[1m bold
         2                     1 file
 EOF
 ours 0 want none -l comments.zip
+
+# ---- Extraction -----------------------------------------------------
+
+# Ours alone, as xboth runs it, with its status, output, and errors
+# exactly: status, a file of the expected output, a file of the expected
+# errors, then the arguments, leaving its tree in ours.tree.
+xours() {
+    want=$1
+    wout=$2
+    werr=$3
+    shift 3
+    [ ! -e x.ours ] || chmod -R u+rwx x.ours
+    rm -rf x.ours
+    mkdir x.ours
+    [ -z "$SETUP" ] || (cd x.ours && eval "$SETUP") || fail "setup: $SETUP"
+    set +e
+    (cd x.ours && exec "$U" "$@") <"${IN:-/dev/null}" >ours.out 2>ours.err
+    got=$?
+    set -e
+    [ "$got" = "$want" ] ||
+        fail "expected status $want, got $got: $*: $(cat ours.err)"
+    cmp -s "$wout" ours.out || fail "output: $*: $(diff "$wout" ours.out)"
+    cmp -s "$werr" ours.err || fail "errors: $*: $(diff "$werr" ours.err)"
+    tree x.ours >ours.tree
+}
+
+# Trees of directories, files, and links: modes from Unix (as they are)
+# and MS-DOS (taking the umask), set-ID and sticky bits (-K), times from
+# extended timestamps and DOS times (local time, in a zone with daylight
+# saving time too), and the options that change them
+SETUP=
+IN=
+for mask in 022 077; do
+    umask $mask
+    for opts in "" -q -qq -K -j -D -DD -n -o -V; do
+        case $opts in
+        -D) TIMES=files;;   # directories' times are left
+        -DD) TIMES=none;;
+        *) TIMES=all;;
+        esac
+        xsame $opts ../tree.zip
+    done
+done
+umask 022
+TIMES=all
+export TZ='EST5EDT,M3.2.0,M11.1.0'
+xsame ../tree.zip
+xsame -K ../tree.zip
+export TZ=UTC
+# From here, directories that no entry makes have the time they were made,
+# which may differ between the runs
+TIMES=files
+xsame ../implicit.zip
+
+# Archives as for listing and testing, including Zip64 fields in each
+# entry, data descriptors, and offsets shifted
+for z in basic sfx sfxok zip64 zip64entries desc storedsize localname \
+         badextra truncated badcdoff badheader badlocal multi empty plain; do
+    xsame ../$z.zip
+done
+xsame ../basic.zip -x 'dir/*'
+xsame ../basic.zip 'dir/*' nomatch
+
+# Names that would reach outside the destination, or name nothing: ".."
+# dropped, absolute paths made relative, '\' from MS-DOS, control
+# characters, ";N" (-V); and links that later entries would write
+# through: those entries fail, as in UnZip
+for z in traversal linkfile linkabs linkdir linkdup; do
+    xsame ../$z.zip
+    xsame -q ../$z.zip
+done
+xsame -j ../traversal.zip
+xsame -V ../traversal.zip
+[ $apple = 1 ] || xsame -o ../linkdup.zip  # (Apple's: status 2)
+mkdir outside
+[ -z "$(ls outside)" ] || fail "written outside: $(ls outside)"
+
+# Departure: nothing is written through a link already in the
+# destination, where UnZip follows it to a directory, but for the -d
+# directory and its ancestors; a link where a file goes is replaced
+# (with -o), as by UnZip
+SETUP='ln -s ../outside pre'
+printf 'Archive:  ../plain.zip\n  inflating: f                       \n' >want
+cat >want.err <<EOF
+checkdir error:  pre exists but is not directory
+                 unable to process pre/x.txt.
+EOF
+xours 2 want want.err ../plain.zip
+chmod -R u+rwx x.ours && rm -rf x.ours
+mkdir -p x.ours/top
+ln -s ../../outside x.ours/top/sub
+set +e
+(cd x.ours && exec "$U" -q ../tree.zip) >ours.out 2>ours.err </dev/null
+st=$?
+set -e
+[ $st = 2 ] &&
+    grep -q '^checkdir error:  top/sub exists but is not directory$' ours.err ||
+    fail "tree.zip with a link inside: $st $(cat ours.err)"
+SETUP='mkdir real && ln -s real lnk'
+xsame ../plain.zip -d lnk
+xsame ../plain.zip -d lnk/new
+echo keep >outside/f
+SETUP='ln -s ../outside/f f'
+xsame -o ../plain.zip
+xsame -n ../plain.zip
+SETUP='ln -s nowhere f'
+xsame -o ../plain.zip
+[ "$(ls outside)" = f ] && [ "$(cat outside/f)" = keep ] ||
+    fail "written through a link: $(ls outside)"
+SETUP=
+
+# The -d directory: made, a level at most; a '/' after it dropped (as
+# Apple's does not); none with -f (UnZip freshens the current directory)
+xsame ../plain.zip -d new
+xsame ../plain.zip -dnew
+xsame ../plain.zip -d new/two
+[ $apple = 1 ] || xsame ../plain.zip -d new/
+xsame -f ../plain.zip -d new
+SETUP=': >file && touch -t 202001010000 file'
+[ $apple = 1 ] || xsame ../plain.zip -d file  # (Apple's says nothing)
+
+# What is in the way: a directory unwritable (unless root), a directory
+# where a file goes, a file where a directory goes
+SETUP='mkdir p && chmod 555 p'
+xsame ../prompt.zip
+SETUP='mkdir -p p/a.txt/x'
+xsame -o ../prompt.zip
+SETUP=': >p && touch -t 202001010000 p'
+xsame ../prompt.zip
+
+# Overwriting: the prompt, its answers read as UnZip reads them (y, n, A
+# for all, N for none, r to rename, asking again for an empty name, and
+# answers it does not take, a long one in pieces), and its end ("None"),
+# with -f, -u, -n, and -o deciding first by the files' times
+SETUP='"$REF" -qo ../prompt.zip && touch -t 202001010000 p/b.txt &&
+       touch -t 203001010000 p/c.txt && printf old >p/e.txt &&
+       touch -t 202501010000 p/e.txt'
+n=0
+for answers in 'y\nn\nA\n' 'n\ny\nN\n' 'r\nrenamed.txt\nN\n' \
+               'r\n\n\nsub/new.txt\nA\n' 'x\nyes\nno\n' \
+               '\nmaybe-not-valid-answer\nN\n' 'y\n' '' 'A' \
+               'r\n../up/a.txt\nN\n' 'r\n/abs/a.txt\nN\n' 'r\n'; do
+    n=$((n + 1))
+    printf "$answers" >answers.$n
+    IN=answers.$n
+    opts='"" -q'
+    [ $n -gt 2 ] || opts='"" -q -f -u -n -o -fo -uo -j'
+    eval "set -- $opts"
+    for opt; do
+        # (Apple's takes a new name of "/abs" as absolute, and with none
+        # read, renames the file to its own full path)
+        [ $apple = 1 ] && [ $n -ge 11 ] && continue
+        xsame $opt ../prompt.zip
+    done
+done
+IN=
+SETUP=
+
+# The names that the Unicode path field or UTF-8 give (Apple's has no
+# Unicode support, and others name files in a UTF-8 locale alone), and
+# owners (-X, as Apple's does not restore them)
+utf8=$(locale -a 2>/dev/null | grep -i '^c\.utf-*8$' | head -n 1 || true)
+if [ $apple = 1 ] || [ -z "$utf8" ]; then
+    xboth ../names.zip
+    grep -q '^F ./café.txt ' ours.tree || fail "names.zip: $(cat ours.tree)"
+fi
+if [ $apple = 0 ]; then
+    if [ -n "$utf8" ]; then
+        export LC_ALL=$utf8
+        xsame ../names.zip
+        export LC_ALL=C
+    fi
+    xsame -X ../owners.zip
+    xsame -qX ../owners.zip
+fi
+
+# Departure: a bad CRC, invalid data, or data beyond an entry's size
+# leaves no file (UnZip keeps what it wrote); the messages and statuses
+# are UnZip's (Apple's adds a CRC to the invalid data's)
+for z in badcrc baddata truncdata overrun; do
+    xboth ../$z.zip
+    cmp -s ours.st ref.st && cmp -s ours.out ref.out ||
+        fail "$z.zip: $(cat ours.st ours.out ours.err)"
+    [ $apple = 1 ] || cmp -s ours.err ref.err ||
+        fail "$z.zip errors: $(diff ref.err ours.err)"
+    ! grep -v ' ./good.txt ' ours.tree | grep -q . ||
+        fail "$z.zip kept: $(cat ours.tree)"
+    grep -v ' ./good.txt ' ref.tree | grep -q . || fail "$z.zip: REF's"
+done
+
+# Entries skipped: encrypted, and methods other than stored and deflated
+# (which REF decodes)
+printf 'Archive:  ../methods.zip\n  inflating: %-22s  \n extracting: %-22s  \n' \
+    ok.txt last.txt >want
+cat >want.err <<EOF
+   skipping: enc.txt                 encrypted (not supported)
+   skipping: d64.bin                 \`deflate64' method not supported
+   skipping: bzip2.bin               \`bzip2' method not supported
+   skipping: lzma.bin                \`LZMA' method not supported
+   skipping: shrunk.bin              \`shrink' method not supported
+   skipping: aes.bin                 unsupported compression method 99
+   skipping: new.bin                 need PK compat. v6.3 (can do v4.5)
+EOF
+xours 81 want want.err ../methods.zip
+[ "$(cut -d' ' -f1-2 ours.tree)" = "F ./last.txt
+F ./ok.txt" ] || fail "methods.zip: $(cat ours.tree)"
+printf 'Archive:  ../encrypted.zip\n' >want
+printf '   skipping: enc.txt                 encrypted (not supported)\n' \
+    >want.err
+xours 81 want want.err ../encrypted.zip
+[ ! -s ours.tree ] || fail "encrypted.zip: $(cat ours.tree)"
+
+# Overlapped components, a zip bomb's, found before anything is written
+for z in overlap inner overlapcd; do
+    printf 'Archive:  ../%s.zip\n' $z >want
+    echo 'error: invalid zip file with overlapped components (possible zip bomb)' >want.err
+    xours 12 want want.err ../$z.zip
+    [ ! -s ours.tree ] || fail "$z.zip: $(cat ours.tree)"
+done
+
+# A write that fails, here past a limit on file sizes (its signal
+# ignored), asks as UnZip does whether to go on (y), else stops, the
+# file discarded (a departure: UnZip keeps what it wrote), status 50
+printf 'Archive:  ../large.zip\n  inflating: large.txt               ' >want
+printf '\nlarge.txt:  write error (disk full?).  Continue? (y/n/^C) ' \
+    >want.err
+for answer in n y; do
+    chmod -R u+rwx x.ours && rm -rf x.ours
+    mkdir x.ours
+    printf '%s\n' $answer >answers
+    set +e
+    (trap '' XFSZ; ulimit -f 16 && cd x.ours && exec "$U" ../large.zip) \
+        <answers >ours.out 2>ours.err
+    st=$?
+    set -e
+    [ $st = 50 ] && cmp -s want.err ours.err ||
+        fail "write error ($answer): $st $(cat ours.err)"
+    [ ! -e x.ours/large.txt ] || fail "write error: file kept"
+    if [ $answer = n ]; then
+        cmp -s want ours.out || fail "write error: $(cat ours.out)"
+        [ ! -e x.ours/after.txt ] || fail "write error: went on"
+    else
+        [ -e x.ours/after.txt ] || fail "write error: stopped"
+    fi
+done
+
+# Out of memory: an archive's memory, its planned paths included, is
+# claimed before anything is extracted, so that running out (status 4)
+# leaves nothing, not even the -d directory. Systems limit address space
+# (ulimit -v), and Linux also private writable memory (ulimit -d). A
+# small run fits under each, while the central directory of 60,000
+# entries with names of 1,000 bytes, whose local headers (sparse) are
+# never reached, needs well over 60 MB. macOS's shell sets neither
+# limit, and builds with sanitizers that reserve shadow memory cannot
+# run under them, nor can emulators, which the probe finds. UNZIPOOM
+# names another build for these tests, as ctest, whose $U is sanitized,
+# gives one.
+oomunzip=${UNZIPOOM:-$U}
+oomskip=
+if LC_ALL=C grep -aq -e __asan_ -e __hwasan_ -e __msan_ -e __tsan_ \
+                     "$oomunzip"; then
+    oomskip="sanitized"
+elif ! (ulimit -v 60000) 2>/dev/null; then
+    oomskip="ulimit -v unsupported"
+else
+    $PY - oombig.zip <<'EOF'
+import struct, sys
+n, size = 60000, 1000
+local = 30 + size
+cd = bytearray()
+for i in range(n):
+    name = b"d/%0*d" % (size - 2, i)
+    cd += struct.pack("<IHHHHIIIIHHHHHII", 0x02014B50, 3 << 8 | 30, 20, 0,
+                      0, 0, 0, 0, 0, size, 0, 0, 0, 0, 0o100644 << 16,
+                      i * local) + name
+f = open(sys.argv[1], "wb")
+f.truncate(n * local)
+f.seek(n * local)
+f.write(cd)
+f.write(struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, n, n, len(cd),
+                    n * local, 0))
+EOF
+fi
+printf 'error:  not enough memory\n' >want.err
+for limit in "-v 60000" "-d 30000"; do
+    [ -z "$oomskip" ] || break
+    [ "$limit" != "-d 30000" ] || [ "$(uname -s)" = Linux ] || continue
+    set +e
+    (ulimit $limit && exec "$oomunzip" -v) >out 2>err
+    st=$?
+    set -e
+    if [ $st != 0 ] && [ $st != 4 ] && [ $st -lt 128 ]; then
+        oomskip="no start under ulimit $limit: $(head -n 1 err)"
+        break
+    fi
+    grep -q '^tugz unzip' out ||
+        fail "unzip -v under ulimit $limit: $st $(cat err)"
+    for run in "0 ../tree.zip" "4 ../oombig.zip -d new"; do
+        chmod -R u+rwx x.ours && rm -rf x.ours
+        mkdir x.ours
+        set +e
+        (ulimit $limit && cd x.ours && exec "$oomunzip" -q ${run#* }) \
+            >out 2>err </dev/null
+        st=$?
+        set -e
+        [ $st = "${run%% *}" ] ||
+            fail "ulimit $limit, ${run#* }: status $st $(cat err)"
+    done
+    cmp -s want.err err || fail "ulimit $limit: $(cat err)"
+    [ -z "$(ls x.ours)" ] || fail "ulimit $limit left: $(ls x.ours)"
+done
+[ -z "$oomskip" ] || echo "unzip.sh: out-of-memory tests skipped: $oomskip" >&2
+rm -f oombig.zip
+
+if [ -n "$SLOW" ]; then
+    # Zip64: entries of 4 GiB and a MiB, stored, pushing the entry after
+    # it past 4 GiB, and deflated, extracted one at a time
+    $PY - big.zip <<'EOF' || fail "big.zip"
+import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1], "w")
+chunk = bytes(1 << 20)
+for name, method in (("stored.bin", zipfile.ZIP_STORED),
+                     ("deflated.bin", zipfile.ZIP_DEFLATED)):
+    info = zipfile.ZipInfo(name, (2020, 1, 2, 3, 4, 6))
+    info.compress_type = method
+    info.external_attr = 0o100644 << 16
+    with z.open(info, "w", force_zip64=True) as f:
+        for i in range(4097):
+            f.write(chunk)
+z.writestr(zipfile.ZipInfo("after.txt", (2020, 1, 2, 3, 4, 6)), b"after\n")
+z.close()
+EOF
+    for member in stored.bin deflated.bin; do
+        chmod -R u+rwx x.ours && rm -rf x.ours
+        mkdir x.ours
+        (cd x.ours && exec "$U" -q ../big.zip $member after.txt) ||
+            fail "big.zip $member"
+        [ "$(wc -c <x.ours/$member | tr -d ' ')" = 4296015872 ] ||
+            fail "big.zip $member: $(ls -l x.ours)"
+        [ "$(cat x.ours/after.txt)" = after ] || fail "big.zip after.txt"
+    done
+    chmod -R u+rwx x.ours && rm -rf x.ours big.zip
+fi
 
 [ ! -e "$tmp/FAILED" ] || exit 1

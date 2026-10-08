@@ -43,10 +43,17 @@ class Entry:
         self.desc = kw.get("desc", False)  # data descriptor, bit 3
         self.offset = kw.get("offset")  # a central offset, else its own
         self.local = kw.get("local", True)  # write its local header
+        self.z64 = kw.get("z64", False)  # sizes and offset in Zip64 fields
+        if self.z64:
+            self.needed = 45
+            self.lextra = struct.pack("<HHQQ", 1, 16, self.usize,
+                                      self.csize) + self.lextra
 
     def local_header(self):
         flags = self.flags | (8 if self.desc else 0)
         crc, csize, usize = self.crc, self.csize, self.usize
+        if self.z64:
+            csize = usize = 0xFFFFFFFF
         if self.desc:
             crc = csize = usize = 0
         return struct.pack(
@@ -73,11 +80,15 @@ def build(entries, comment=b"", prefix=b"", shifted=True, zip64=False,
     for e, off in zip(entries, offsets):
         off = e.offset if e.offset is not None else off
         flags = e.flags | (8 if e.desc else 0)
+        csize, usize, cextra = e.csize, e.usize, e.cextra
+        if e.z64:
+            cextra = struct.pack("<HHQQQ", 1, 24, usize, csize, off) + cextra
+            csize = usize = off = 0xFFFFFFFF
         cd += struct.pack(
             "<IHHHHIIIIHHHHHII", 0x02014B50, e.made, e.needed, flags,
-            e.method, e.dostime, e.crc, e.csize, e.usize, len(e.name),
-            len(e.cextra), len(e.comment), 0, 0, e.extattr, off)
-        cd += e.name + e.cextra + e.comment
+            e.method, e.dostime, e.crc, csize, usize, len(e.name),
+            len(cextra), len(e.comment), 0, 0, e.extattr, off)
+        cd += e.name + cextra + e.comment
     cdoff = len(out) - len(prefix) + base
     end = len(out) - len(prefix) + base + len(cd)
     out += cd
@@ -225,3 +236,116 @@ write("names.zip", build([
 write("comments.zip", build(
     [Entry("c.txt", b"c\n", comment=b"tab\there\x1b[1m bold\r\n")],
     comment=b"line one\r\nline\x1b[31m two\x07\x00hidden"))
+
+# Extraction: trees with directories, modes, times, owners, and links
+
+# 2020-07-04 12:34:56, in summer where it has daylight saving time
+SUMMER = (40 << 25 | 7 << 21 | 4 << 16) | (12 << 11 | 34 << 5 | 28)
+DIR, LINK, FILE = 0o40000, 0o120000, 0o100000
+
+
+def utl(mtime, atime=None):
+    """A local extended timestamp ("UT"): modification, access times."""
+    if atime is None:
+        return struct.pack("<HHBI", 0x5455, 5, 1, mtime)
+    return struct.pack("<HHBII", 0x5455, 9, 3, mtime, atime)
+
+
+def owner(uid, gid):
+    """A Unix owner field ("ux", version 1, with 4-byte IDs)."""
+    return struct.pack("<HHBBIBI", 0x7875, 11, 1, 4, uid, 4, gid)
+
+
+def unix(name, data=b"", mode=0o644, kind=FILE, method=None, **kw):
+    """An entry made on Unix, of a type and mode."""
+    if method is None:
+        method = 8 if data else 0
+    dos = 0x10 if kind == DIR else 0
+    return Entry(name, data, method=method,
+                 extattr=(kind | mode) << 16 | dos, **kw)
+
+
+def fat(name, data=b"", attr=0x20, **kw):
+    """An entry made on MS-DOS, with its attributes."""
+    return Entry(name, data, method=0, made=0 << 8 | 20, extattr=attr, **kw)
+
+
+write("tree.zip", build([
+    unix("top/", kind=DIR, mode=0o755, lextra=utl(1500000000),
+         cextra=ut(1500000000)),
+    unix("top/a.txt", TEXT, lextra=utl(1600000000, 1600000100),
+         cextra=ut(1600000000)),
+    unix("top/exec.sh", b"#!/bin/sh\necho hi\n", mode=0o755),
+    unix("top/private", b"secret\n", mode=0o600, dostime=SUMMER),
+    unix("top/setuid", b"s\n", mode=0o4755),
+    unix("top/group/", kind=DIR, mode=0o2775),
+    unix("top/sticky/", kind=DIR, mode=0o1777),
+    unix("top/empty", mode=0o640),
+    unix("top/link", b"a.txt", kind=LINK, mode=0o777),
+    unix("top/dlink", b"sub/deep/f.txt", kind=LINK, mode=0o755, method=8),
+    unix("top/dangling", b"nowhere", kind=LINK, mode=0o777),
+    unix("top/zerolink", kind=LINK, mode=0o777),  # empty: a file
+    unix("top/sub/", kind=DIR, mode=0o700, dostime=SUMMER),
+    unix("top/sub/deep/", kind=DIR, mode=0o555),
+    unix("top/sub/deep/f.txt", TEXT, mode=0o444),
+    fat("fat/", attr=0x10),
+    fat("fat/RO.TXT", b"ro\r\n", attr=0x21),
+    fat("fat/RW.TXT", b"rw\r\n", dostime=SUMMER),
+    fat("fat/SUB/", attr=0x10),
+]))
+write("implicit.zip", build([unix("implicit/dir/file.txt", b"implicit\n")]))
+write("owners.zip", build([
+    unix("own/", kind=DIR, mode=0o755, lextra=owner(0, 0)),
+    unix("own/root.txt", b"root\n", lextra=owner(0, 0)),
+]))
+write("prompt.zip", build([
+    unix("p/%s.txt" % c, (c * 3 + "\n").encode(), lextra=utl(1600000000))
+    for c in "abcdef"
+]))
+
+# Names that would reach outside, or that name nothing, or that UnZip
+# maps: "..", absolute paths, backslashes from MS-DOS, controls, ";N"
+write("traversal.zip", build([
+    unix("../evil1.txt", b"1\n"),
+    unix("a/../../evil2.txt", b"2\n"),
+    unix("/abs/evil3.txt", b"3\n"),
+    unix("//abs/evil4.txt", b"4\n"),
+    fat(b"..\\..\\evil5.txt", b"5\n"),
+    fat(b"dir\\sub\\fat6.txt", b"6\n"),
+    unix(b"ctl\x01\x1b[1mx\x7f.txt", b"7\n"),
+    unix("./dot/./x.txt", b"8\n"),
+    unix("..", b"9\n"),
+    unix("dd/..", b"10\n"),
+    unix("../", kind=DIR, mode=0o755),
+    unix("ver.txt;1", b"11\n"),
+    unix("semi;x", b"12\n"),
+    unix("a/b/;1", b"13\n"),
+]))
+
+# Links that a later entry would write through, and a link that a file
+# of the same name follows
+write("linkfile.zip", build([
+    unix("lnk", b"../outside", kind=LINK, mode=0o777),
+    unix("lnk/pwned.txt", b"pwned\n"),
+]))
+write("linkabs.zip", build([
+    unix("abs", b"/", kind=LINK, mode=0o777),
+    unix("abs/tmp/pwned.txt", b"pwned\n"),
+]))
+write("linkdir.zip", build([
+    unix("d/", kind=DIR, mode=0o755),
+    unix("d/up", b"../..", kind=LINK, mode=0o777),
+    unix("d/up/pwned.txt", b"pwned\n"),
+]))
+write("linkdup.zip", build([
+    unix("same", b"a target", kind=LINK, mode=0o777),
+    unix("same", b"a file\n"),
+]))
+write("plain.zip", build([unix("pre/x.txt", b"x\n"), unix("f", b"f\n")]))
+
+# Sizes and offsets in Zip64 fields of each entry
+write("zip64entries.zip", build([Entry("big.txt", TEXT, z64=True),
+                                 Entry("small", b"s\n", method=0, z64=True)],
+                                zip64=True))
+write("large.zip", build([unix("large.txt", TEXT * 100),
+                          unix("after.txt", b"after\n")]))
