@@ -950,6 +950,14 @@ race allows).
   or a wrong Zip64 record size, directory size, or locator offset. No
   writer is known to make them, and tugz refuses them (3), as layouts
   that do not add up are how unadjusted data before the archive shows.
+  One such layout is recognized: a Zip64 end record that its locator
+  misses, just before the locator, as data prepended to a Zip64 archive
+  leaves it, which is looked for there, as Info-ZIP and UnZip look, and
+  refused as such data is (3, with the warning), where Info-ZIP finds
+  an entry missing (3). An end record whose comment runs past the end
+  of the file, which UnZip shows cut short, is no end record ("missing
+  end signature", 3), where Info-ZIP finds the file ending early
+  ("Unexpected end of zip file", 2).
   An archive whose Zip64 locator gives a total of zero disks, as
   Microsoft's writers make them, is read as on one disk, where Info-ZIP
   asks for the next part of a split archive (`Could not find: x.z01`).
@@ -1042,25 +1050,58 @@ for entries.
   (and left open), anything else read whole into memory first
   (`zin_memory`, one window that never moves), and `-n` is implied
   unless `-o` is given, as no prompt could read its answers.
-- Data before the archive: the comment is shown, and `-z` stops, once
-  the end record is found, before the central directory is read, as
-  UnZip's `find_ecrec` does. Data before the archive that its offsets do
-  not account for (a self-extractor's stub), the distance from where the
-  central directory ends by its offset and size to where the Zip64 end
-  record, or failing one the end record, begins, shifts every entry's
-  offset, with UnZip's "extra bytes at beginning or within zipfile"
-  warning (1); a negative distance is its "missing N bytes in zipfile"
-  (2), and an offset of 0 for a directory that is not empty its "NULL
-  central directory offset" (2). Where the first entry's local header is
-  not found so shifted, the shift is undone ("attempting to
+- End records: the comment is shown, and `-z` stops, once the end
+  record is found, before the central directory is read, as UnZip's
+  `find_ecrec` does. An end record whose comment runs past the end of
+  the file, which the shared parser takes only when no other's fits (as
+  UnZip takes the last, whatever its comment), is used, its comment
+  shown as far as the file goes, without a newline, then UnZip's
+  "caution:  zipfile comment truncated" (1, only where the comment is
+  shown); zip refuses it. A Zip64 end record that is not where its
+  locator says is looked for just before the locator, as UnZip's
+  `find_ecrec64` and Info-ZIP's zip look for it (data prepended to a
+  Zip64 archive leaves it there), with UnZip's "End-of-centdir-64
+  signature not where expected (prepended bytes?)", and its offsets are
+  shifted as below; in neither place, it is UnZip's fatal "read failure
+  while seeking for End-of-centdir-64 signature", and, as for no end
+  record, the next name is tried (9). No distance is reckoned from
+  fields that defer to a Zip64 record not used.
+- Data before the archive: data that its offsets do not account for (a
+  self-extractor's stub, a zipapp's `#!` line), the distance from where
+  the central directory ends by its offset and size to where the Zip64
+  end record, or failing one the end record, begins, shifts every
+  entry's offset, with UnZip's "extra bytes at beginning or within
+  zipfile" warning (1); a negative distance is its "missing N bytes in
+  zipfile" (2), and an offset of 0 for a directory that is not empty its
+  "NULL central directory offset" (2). Where the first entry's local
+  header is not found so shifted, the shift is undone ("attempting to
   re-compensate"), and redone should a later entry then not be found, as
-  UnZip does; only the entries read are shifted. A central directory
-  invalid after some entries is processed up to there, then reported, as
-  UnZip finds the fault only once it gets there. Disk numbers in the end
+  UnZip does; only the entries read are shifted. Disk numbers in the end
   record alone are taken, as UnZip takes them, for the parts of an
   archive concatenated, with its warning; a split that Zip64 records
   describe is refused (11). The shared parser takes a Zip64 locator's
   total of zero disks for one (see Merging, under zip).
+- The central directory is read as UnZip's `extract.c` and `list.c` read
+  it: header by header while they parse (`zar_check`), within the
+  directory, whatever the end record's count, which then must be the
+  number read, or without Zip64 records that number modulo 65,536, as
+  writers without Zip64 wrap it past 65,535 entries (Java's old
+  `ZipOutputStream`). Otherwise the entries read are processed, then
+  reported as UnZip finds the fault once it gets there ("expected
+  central file header signature not found (file #N)", 3): a count of
+  more or fewer entries than there are, even of more than the directory
+  could hold, or a directory invalid after some entries. A count that
+  matches with no end record after the headers is UnZip's warning
+  "didn't find end-of-central-dir signature" (1, not checked with Zip64
+  records), and no header where the directory begins its "start of
+  central directory not found" (3), even for a count of 0 (the empty
+  archive, at offset 0, aside). The count sizes nothing: what unzip
+  keeps for each entry is claimed by the headers read. Zip refuses a
+  count other than the headers', as Info-ZIP's zip does. `unzip.sh`
+  compares these, and the end records above, with UnZip (`count*.zip`,
+  `wrap.zip`, `sfx64.zip`, `nosig64.zip`, `cmt*.zip`, `cdjunk.zip`),
+  `tests-unzipcli` checks them in memory (`test_directory`), and
+  `zip.sh` that zip refuses them.
 - Overlapped components (zip bombs): before any entry's data is read, by
   `-t`, `-p`, `-c`, or extraction (listings read none), the least that
   each selected, readable entry takes, a local header's fixed 30 bytes
@@ -1816,6 +1857,12 @@ Fuzzers:
   archive from it; and in inflate, a null input pointer with no input
   offset by zero, which C leaves undefined (UBSan under Linux clang,
   from the first `fuzz-unzip` campaign in WSL)
+- unzip, found by the 0.3.0 review against UnZip's source: a central
+  directory read by its count, so that a count wrapped past 65,535
+  entries cut the archive short and one larger than the directory lost
+  it all; a Zip64 archive after unadjusted data refused as "missing"
+  billions of bytes, reckoned from saturated fields; and an end record
+  whose comment the file cuts short not found at all
 
 ## Performance log
 
