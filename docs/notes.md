@@ -897,9 +897,12 @@ race allows).
   names select files only within the current directory, so that
   refreshing an untrusted archive reads nothing beyond it: names zip
   would make (but for leading `./`), without `..` components, through
-  directories that are not links (on Windows, nor junctions); a link the
-  name ends in is followed, as for any path, unless `-y`. Info-ZIP reads
-  them all, absolute names included. Other entries are refreshed only by
+  directories that are not links (on Windows, nor junctions), and not
+  ending in one either, which is not followed, as it would be for a path
+  named on the command line, but only stored, with `-y`: without it,
+  "not following link that an entry names" warns, and the entry is left
+  as for a missing file. Info-ZIP reads them all, absolute names
+  included, and follows links. Other entries are refreshed only by
   naming their files as paths (`zip -u a.zip ../f`), and as when their
   files are missing, `-FS` deletes them unless so named. A file named as
   the archive is left out before repeats are looked for, as an excluded

@@ -227,9 +227,10 @@ stores only small ones), and none is marked as text. A directory loop
 through links is not followed. A hard-linked archive is replaced by a
 new file, so its other names keep the old archive. Entries select only
 files within the current directory, never by absolute names, `..`, or
-linked directories, so that refreshing an untrusted archive cannot read
-other files, and an archive whose entries overlap, as in a zip bomb, is
-refused rather than copied. A file that cannot be read to its end is
+links, which they do not follow (with `-y`, a link is stored as one), so
+that refreshing an untrusted archive cannot read other files, and an
+archive whose entries overlap, as in a zip bomb, is refused rather than
+copied. A file that cannot be read to its end is
 left out (18), where Info-ZIP stores what it read (0).
 
 Output is deterministic: entries within each directory are sorted by

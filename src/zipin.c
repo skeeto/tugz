@@ -151,8 +151,8 @@ static s8s env_args(arena *perm, s8 env, b32 windows)
 
 // Whether the directories along an entry's relative path are just that,
 // none a link (on Windows, nor a junction), through which its name would
-// reach beyond the current directory; a link at its end is followed, as
-// for any path, unless -y. Those of the path checked before, through its
+// reach beyond the current directory; a link at its end is the caller's
+// (zip's scan_entries). Those of the path checked before, through its
 // last slash, are known to be directories, so that a run of entries in
 // one directory examines it once, as are those ending before from, the
 // length of a prefix the caller trusts (zip trusts none: 0).

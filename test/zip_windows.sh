@@ -191,25 +191,42 @@ grep -c '^freshening: ' out | grep -qx 2 || fail "-f '*.txt': $(cat out)"
 list fr.zip | grep -q want.txt && fail "-f added a file"
 
 # Departure: entries select files only within the current directory,
-# not by .. components nor through a junction, which Info-ZIP's port
-# follows (by its sources), though their files can be named as paths
+# not by .. components nor through a junction, nor by a junction or
+# link at their end, which is not followed, with a warning, all of which
+# Info-ZIP's port follows (by its sources), though their files can be
+# named as paths (making links needs Developer Mode or elevation)
 mkdir -p esc/w/d esc/out
 printf secret >esc/secret
 printf key >esc/out/key
 printf g >esc/w/d/g
 ps "New-Item -ItemType Junction -Path esc\\w\\junc -Target (Resolve-Path esc\\out).Path |
+    Out-Null
+    New-Item -ItemType Junction -Path esc\\w\\jd -Target (Resolve-Path esc\\out).Path |
     Out-Null"
-(cd esc/w && "$ZIP" -q e.zip ../secret junc/key d/g)
+links=jd
+if (cd esc/w && cmd /c 'mklink fl ..\secret') >/dev/null 2>&1; then
+    links="jd fl"
+fi
+(cd esc/w && "$ZIP" -q e.zip ../secret junc/key d/g $links)
 ps "foreach (\$f in 'esc\\secret', 'esc\\out\\key', 'esc\\w\\d\\g') {
         (Get-Item \$f).LastWriteTime = '2030-01-01' }"
-(cd esc/w && "$ZIP" -u e.zip >../log) || fail "-u of escaping names"
+(cd esc/w && "$ZIP" -u e.zip >../log 2>../err) || fail "-u of escaping names"
 [ "$(cat esc/log)" = "updating: d/g (stored 0%)" ] ||
     fail "-u of escaping names: $(cat esc/log)"
-(cd esc/w && "$ZIP" -f e.zip '*' >../log) || fail "-f of escaping names"
+for l in $links; do
+    grep -qx "zip warning: not following link that an entry names: $l" \
+        esc/err || fail "-u of a final link $l: $(cat esc/err)"
+done
+(cd esc/w && "$ZIP" -f e.zip '*' >../log 2>../err) ||
+    fail "-f of escaping names"
 [ ! -s esc/log ] || fail "-f '*' of escaping names: $(cat esc/log)"
-(cd esc/w && "$ZIP" -u e.zip ../secret junc/key >../log) ||
-    fail "-u of named paths"
-[ "$(grep -c '^updating: ' esc/log)" = 2 ] || fail "-u of named paths"
+[ "$(grep -c 'not following link' esc/err)" = "$(set -- $links; echo $#)" ] ||
+    fail "-f '*' of final links: $(cat esc/err)"
+named="../secret junc/key"
+case $links in *fl*) named="$named fl" ;; esac
+(cd esc/w && "$ZIP" -u e.zip $named >../log) || fail "-u of named paths"
+[ "$(grep -c '^updating: ' esc/log)" = "$(set -- $named; echo $#)" ] ||
+    fail "-u of named paths: $(cat esc/log)"
 
 # -nw leaves ? a wildcard, as in Info-ZIP
 "$ZIP" -q -nw nw.zip 'tree/?.txt'

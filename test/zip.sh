@@ -941,9 +941,10 @@ grep -q 'file and directory with the same name: d1/b.log' err ||
 
 # Departure: entry names select files only within the current
 # directory, so that an untrusted archive cannot select any file beyond
-# it: not by an absolute name, by .. components, or through a linked
-# directory (Info-ZIP reads them all). Leading ./, as bsdtar writes it,
-# leads nowhere else, so such entries are refreshed, as in Info-ZIP.
+# it: not by an absolute name, by .. components, through a linked
+# directory, nor by a link at its end, which without -y is not followed,
+# with a warning (Info-ZIP reads them all). Leading ./, as bsdtar writes
+# it, leads nowhere else, so such entries are refreshed, as in Info-ZIP.
 if [ -n "$PY" ]; then
     entries() {  # archive: each entry's name and contents
         $PY -c 'import sys, zipfile as z
@@ -962,25 +963,44 @@ a = z.ZipFile(sys.argv[1], "w"); a.writestr(z.ZipInfo(sys.argv[2]), "x")' \
     printf new >esc/top/work/sub/f
     printf new >esc/top/work/sub/d/g
     ln -s ../../../out esc/top/work/sub/link 2>/dev/null || :
+    ln -s ../../secret esc/top/work/sub/fl 2>/dev/null || :
     $PY -c 'import sys, zipfile as z
 a = z.ZipFile(sys.argv[1], "w")
 for n in sys.argv[2:]: a.writestr(z.ZipInfo(n), "" if n == "./" else "x")' \
         esc/top/work/sub/e.zip ./ ../../secret d/../../../secret \
-        ./../../secret .//./f link/key d/g d/./g f
+        ./../../secret .//./f link/key d/g d/./g f fl
     cp esc/top/work/sub/e.zip esc/e0.zip
     (cd esc/top/work/sub && "$ZIP" -u e.zip >../../../log 2>&1) ||
         fail "-u of escaping names: $(cat esc/log)"
     grep -qx 'updating: \./ (stored 0%)' esc/log || fail "./: $(cat esc/log)"
+    if [ -L esc/top/work/sub/fl ]; then
+        grep -qx 'zip warning: not following link that an entry names: fl' \
+            esc/log || fail "final link: $(cat esc/log)"
+    fi
     entries esc/top/work/sub/e.zip >got
     printf '%s\n' './ ' '../../secret x' 'd/../../../secret x' \
         './../../secret x' './/./f new' 'link/key x' 'd/g new' 'd/./g new' \
-        'f new' >want
+        'f new' 'fl x' >want
     cmp -s got want || fail "escaping names: $(cat got)"
     cp esc/e0.zip esc/top/work/sub/e.zip
     (cd esc/top/work/sub && "$ZIP" -f e.zip '*' >../../../log 2>&1) ||
         fail "-f of escaping names: $(cat esc/log)"
     entries esc/top/work/sub/e.zip >got
     cmp -s got want || fail "escaping names by pattern: $(cat got)"
+    # With -y, that link is stored as one, as a path names it; named as a
+    # path, it is followed, as in Info-ZIP
+    if [ -L esc/top/work/sub/fl ]; then
+        cp esc/e0.zip esc/top/work/sub/e.zip
+        (cd esc/top/work/sub && "$ZIP" -quy e.zip) ||
+            fail "-uy of escaping names"
+        entries esc/top/work/sub/e.zip | grep -qx 'fl \.\./\.\./secret' ||
+            fail "-uy of a final link: $(entries esc/top/work/sub/e.zip)"
+        cp esc/e0.zip esc/top/work/sub/e.zip
+        (cd esc/top/work/sub && "$ZIP" -q e.zip fl) ||
+            fail "a final link named as a path"
+        entries esc/top/work/sub/e.zip | grep -qx 'fl secret' ||
+            fail "a link named: $(entries esc/top/work/sub/e.zip)"
+    fi
 
     # Every entry of a name that entries select is refreshed, as Info-ZIP
     # examines the file of each entry it selects, while a path names only

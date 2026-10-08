@@ -2484,12 +2484,14 @@ static s8 entry_path(zip *z, s8 name, arena scratch)
 // for -u and -f without paths, taking every entry (a null pattern). The
 // file that a selected entry names is examined, without recursion, -D,
 // or -j, if the name passes -i and -x, no path named it already, and it
-// reaches no further than the current directory. A missing file leaves
-// its entry as it is (deleted, under -FS). As in Info-ZIP, which looks
-// up a path's entry by name, but examines the file of every entry it
-// selects, every entry of a name is so refreshed: the first by a file
-// recorded to add, the others by files of their own, in also. Returns
-// whether any entry matched.
+// reaches no further than the current directory: through no link (on
+// Windows, nor junction), not even one at its end, which unlike Info-ZIP
+// is not followed, but only stored, with -y. A missing file, or such a
+// link (with a warning), leaves its entry as it is (deleted, under -FS).
+// As in Info-ZIP, which looks up a path's entry by name, but examines
+// the file of every entry it selects, every entry of a name is so
+// refreshed: the first by a file recorded to add, the others by files
+// of their own, in also. Returns whether any entry matched.
 static b32 scan_entries(zip *z, zarchive *ar, iz n, zindex *old, s8 pattern,
                         b32 *taken, zfile **also, arena scratch)
 {
@@ -2516,8 +2518,14 @@ static b32 scan_entries(zip *z, zarchive *ar, iz n, zindex *old, s8 pattern,
         taken[i] = 1;
 
         os_info info = {0};
-        if (!os_stat(z->ctx, path, !z->symlinks, &info, iter) ||
+        if (!os_stat(z->ctx, path, 0, &info, iter) ||
             is_archive(z, path, &info, iter)) {
+            continue;
+        } else if (info.type==FT_LINK && !z->symlinks) {
+            // Not followed, unlike Info-ZIP, nor stored without -y: its
+            // entry is left as for a missing file
+            warn(z, S("not following link that an entry names: "), path,
+                 iter);
             continue;
         } else if (info.type == FT_OTHER) {
             // Left out as a special file named or met while recursing is,
