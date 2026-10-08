@@ -6,6 +6,11 @@ set -e
 
 GZIP=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 REF=${REF:-/usr/bin/gzip}
+# Any other gzip is an independent codec, but tugz would test itself
+if "$REF" --version 2>/dev/null | head -n 1 | grep -q '(tugz)'; then
+    echo "cli.sh: REF, $REF, is tugz's gzip; it must be another" >&2
+    exit 1
+fi
 LIBDEFLATE=${LIBDEFLATE:-$(command -v libdeflate-gzip || true)}
 gnu=  # whether REF is GNU gzip, for tests of GNU's particular behavior
 "$REF" --version 2>/dev/null | grep -q 'Free Software Foundation' && gnu=1
