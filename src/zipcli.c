@@ -2486,7 +2486,9 @@ static s8 entry_path(zip *z, s8 name, arena scratch)
 // or -j, if the name passes -i and -x, no path named it already, and it
 // reaches no further than the current directory: through no link (on
 // Windows, nor junction), not even one at its end, which unlike Info-ZIP
-// is not followed, but only stored, with -y. A missing file, or such a
+// is not followed, but only stored, with -y. On Windows, it is looked up
+// by a ./ path, so a name like COM1 never opens a DOS device, unlike in
+// Info-ZIP (a path argument so named still does). A missing file, or such a
 // link (with a warning), leaves its entry as it is (deleted, under -FS).
 // As in Info-ZIP, which looks up a path's entry by name, but examines
 // the file of every entry it selects, every entry of a name is so
@@ -2511,7 +2513,15 @@ static b32 scan_entries(zip *z, zarchive *ar, iz n, zindex *old, s8 pattern,
         if (taken[i] || !included(z, name)) {
             continue;
         }
-        s8 path = entry_path(z, name, iter);
+        s8  path   = entry_path(z, name, iter);
+        s8  shown  = path;  // in messages
+        b32 dotted = path.s && z->windows && !zequals(path, S("."));
+        if (dotted) {
+            // A file in the current directory, never the DOS device that
+            // a bare name like COM1 or NUL would be, at the end or as a
+            // directory along the way
+            path = JOIN(&iter, S("./"), path);
+        }
         if (!path.s || !linkless(z->ctx, path, 0, &checked, iter)) {
             continue;
         }
@@ -2524,16 +2534,18 @@ static b32 scan_entries(zip *z, zarchive *ar, iz n, zindex *old, s8 pattern,
         } else if (info.type==FT_LINK && !z->symlinks) {
             // Not followed, unlike Info-ZIP, nor stored without -y: its
             // entry is left as for a missing file
-            warn(z, S("not following link that an entry names: "), path,
+            warn(z, S("not following link that an entry names: "), shown,
                  iter);
             continue;
         } else if (info.type == FT_OTHER) {
             // Left out as a special file named or met while recursing is,
             // its entry left as for a missing file (Info-ZIP would block
             // reading a FIFO)
-            ignore_special(z, path, &info, iter);
+            ignore_special(z, shown, &info, iter);
             continue;
-        } else if (zindex_find(old, name) != i) {
+        }
+        path = dotted ? JOIN(&z->perm, path) : path;  // kept, as name is
+        if (zindex_find(old, name) != i) {
             also[i] = new_file(z, path, name, &info);
             continue;
         }

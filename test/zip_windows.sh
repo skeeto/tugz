@@ -238,6 +238,43 @@ case $links in *fl*) named="$named fl" ;; esac
 [ "$(grep -c '^updating: ' esc/log)" = "$(set -- $named; echo $#)" ] ||
     fail "-u of named paths: $(cat esc/log)"
 
+# Departure: an entry named like a DOS device (NUL, COM1) names a file
+# in the current directory, never the device, which Info-ZIP's port
+# would open, though a path so named is the device, as in any program
+win=$(pwd | tr / '\\')
+devs="NUL CON COM1 AUX CONIN\$ NUL.txt"
+mkdev() {  # name data
+    ps "Set-Content -NoNewline -LiteralPath '\\\\?\\$win\\dev\\$1' '$2'"
+}
+mkdir dev
+for n in $devs; do
+    mkdev "$n" "$n"
+done
+(cd dev && "$ZIP" -q ../dev.zip $(printf './%s ' $devs)) ||
+    fail "zip of device names: status $?"
+[ "$(list dev.zip | sort | tr '\n' ' ')" = \
+  "AUX COM1 CON CONIN\$ NUL NUL.txt " ] || fail "device names: $(list dev.zip)"
+ps "Remove-Item -LiteralPath '\\\\?\\$win\\dev' -Recurse -Force"
+mkdir dev
+cp dev.zip dev0.zip
+for o in -u -f; do
+    expect_status 12 sh -c "cd dev && \"\$0\" $o ../dev.zip" "$ZIP"
+    (cd dev && "$ZIP" $o ../dev.zip >../log 2>&1) || true
+    [ ! -s log ] || fail "zip $o of device names: $(cat log)"
+    cmp -s dev.zip dev0.zip || fail "zip $o of device names changed it"
+done
+mkdev COM1 new1
+mkdev NUL.txt new2
+ps "foreach (\$f in 'COM1', 'NUL.txt') {
+        [IO.File]::SetLastWriteTime('\\\\?\\$win\\dev\\' + \$f, '2030-01-01') }"
+(cd dev && "$ZIP" -f ../dev.zip >../log 2>&1) || fail "-f of device names"
+[ "$(grep -c '^freshening: \(COM1\|NUL\.txt\) ' log)" = 2 ] &&
+    [ "$(wc -l <log)" = 2 ] || fail "-f of device names: $(cat log)"
+(cd dev && "$ZIP" -u ../dev.zip NUL >../log 2>&1) && fail "-u NUL: status 0"
+grep -qx 'zip warning: ignoring special file: NUL' log ||
+    fail "-u NUL: $(cat log)"
+ps "Remove-Item -LiteralPath '\\\\?\\$win\\dev' -Recurse -Force"
+
 # -nw leaves ? a wildcard, as in Info-ZIP
 "$ZIP" -q -nw nw.zip 'tree/?.txt'
 list nw.zip | sort >got

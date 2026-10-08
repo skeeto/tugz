@@ -901,8 +901,11 @@ race allows).
   ending in one either, which is not followed, as it would be for a path
   named on the command line, but only stored, with `-y`: without it,
   "not following link that an entry names" warns, and the entry is left
-  as for a missing file. Info-ZIP reads them all, absolute names
-  included, and follows links. Other entries are refreshed only by
+  as for a missing file. On Windows, a name is looked up as `./NAME`, so
+  that `NUL` or `COM1` names a file in the current directory, never the
+  DOS device that the bare name opens, as a path so named still does.
+  Info-ZIP reads them all, absolute names included, follows links, and
+  opens devices. Other entries are refreshed only by
   naming their files as paths (`zip -u a.zip ../f`), and as when their
   files are missing, `-FS` deletes them unless so named. A file named as
   the archive is left out before repeats are looked for, as an excluded
