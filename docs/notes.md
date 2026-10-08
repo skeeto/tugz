@@ -1277,7 +1277,8 @@ ones as invariants. Those that no test asserts are marked untested.
   UnZip, writing data there as messages, ignores it and exits 0
   (`unzip.sh`, to `/dev/full` where there is one; `test_faults`). An
   interrupted run removes the file being written and dies by the signal,
-  as gzip and zip do, where UnZip exits 80 (untested here).
+  as gzip and zip do, where UnZip exits 80 (`unzip.sh`, "an interrupt
+  (SIGINT)", POSIX only).
 - Links on disk: nothing is written through a link below the `-d`
   directory, whether from the archive or there before: an entry under
   one fails with UnZip's "exists but is not directory" (2), where UnZip

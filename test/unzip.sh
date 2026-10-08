@@ -851,6 +851,56 @@ if [ -w /dev/full ]; then
     done
 fi
 
+# Departure: an interrupt (SIGINT) removes the file being written, and
+# unzip dies by the signal, as gzip and zip do, where UnZip exits 80.
+# A non-interactive shell's background jobs ignore SIGINT, so unzip runs
+# in the foreground, writing 256 MiB of zeros, and a background watcher
+# stops it once the file appears, notes its size, and interrupts it.
+# (When unzip ends too soon to be stopped, or this shell was started
+# ignoring SIGINT, there is nothing to check.)
+if [ -n "$(sh -c 'kill -INT $$; echo ignored' 2>/dev/null)" ]; then
+    echo "unzip.sh: SIGINT is ignored here; interrupt test skipped" >&2
+else
+    $PY - intr.zip <<'EOF' || fail "intr.zip"
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
+    info = zipfile.ZipInfo("zeros", (2020, 1, 2, 3, 4, 6))
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = 0o100644 << 16
+    with z.open(info, "w") as f:
+        for i in range(256):
+            f.write(bytes(1 << 20))
+EOF
+    chmod -R u+rwx x.ours && rm -rf x.ours
+    mkdir x.ours
+    rm -f intr.pid intr.seen
+    { n=0
+      while [ ! -s intr.pid ] || [ ! -e x.ours/zeros ]; do
+          n=$((n + 1))
+          [ $n -lt 1000000 ] || exit 0
+      done
+      read pid <intr.pid
+      kill -STOP $pid 2>/dev/null || exit 0
+      wc -c <x.ours/zeros | tr -d ' ' >intr.seen
+      kill -INT $pid
+      kill -CONT $pid; } &
+    watcher=$!
+    set +e
+    (cd x.ours && exec sh -c 'echo $$ >../intr.pid && exec "$@"' sh \
+        "$U" -q ../intr.zip) >ours.out 2>ours.err </dev/null
+    st=$?
+    set -e
+    wait $watcher
+    if [ -e intr.seen ] && [ "$(cat intr.seen)" -lt 268435456 ]; then
+        [ $st = 130 ] || fail "not interrupted: $st $(cat ours.err)"
+        [ -z "$(ls x.ours)" ] ||
+            fail "partial output left on interrupt: $(ls -l x.ours)"
+    else
+        echo "unzip.sh: unzip finished before it could be interrupted" >&2
+    fi
+    chmod -R u+rwx x.ours && rm -rf x.ours intr.zip
+fi
+
 # Out of memory: an archive's memory, its planned paths included, is
 # claimed before anything is extracted, so that running out (status 4)
 # leaves nothing, not even the -d directory. Systems limit address space
