@@ -230,6 +230,43 @@ static i32 fuzz_decode(fuzzenv *env, i32 format, u8 const *in, iz len,
     }
 }
 
+// As fuzz_decode, but a raw Deflate64 stream.
+static i32 fuzz_decode64(fuzzenv *env, u8 const *in, iz len, iz inpiece,
+                         iz outpiece, iz cap, iz *used)
+{
+    fuzz_io(env, 0, 0);
+    arena a = env->perm;
+    inflator *s = inflate64_new(&a);
+    cap = MIN(cap, env->ctx.outcap);
+    *used = 0;
+    for (;;) {
+        iz inleft  = len - *used;
+        iz outleft = cap - env->ctx.outlen;
+        zbuf b = {0};
+        b.in     = in + *used;
+        b.inlen  = inpiece  ? MIN(inpiece, inleft)   : inleft;
+        b.out    = env->ctx.out + env->ctx.outlen;
+        b.outlen = outpiece ? MIN(outpiece, outleft) : outleft;
+        iz inlen  = b.inlen;
+        iz outlen = b.outlen;
+        i32 status = inflate_stream(s, &b);
+        *used += inlen - b.inlen;
+        env->ctx.outlen += outlen - b.outlen;
+        if (status == GZ_NEEDIN) {
+            CHECK(!b.inlen);
+            if (*used < len) {
+                continue;
+            }
+        } else if (status == GZ_NEEDOUT) {
+            CHECK(!b.outlen);
+            if (env->ctx.outlen < cap) {
+                continue;
+            }
+        }
+        return status;
+    }
+}
+
 // Encode in memory, feeding input and taking output in pieces (0 for
 // unlimited). A nonzero seed splits input into segments, each ending in
 // a flush chosen from NONE, SYNC, or FULL, and sometimes moves on to the
