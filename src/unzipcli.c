@@ -545,6 +545,11 @@ static i32 apply_options(unzip *u, s8 *args, i32 nargs, i32 *i, b32 *error,
     i32 neg = 0;
     for (iz k = 1; k < arg.len; k++) {
         u8 c = arg.s[k];
+        if (unsupported(u, c)) {  // even -K and -X, on Windows
+            info(u, MSG_STDERR, JOIN(&scratch, S("error:  -"),
+                 (s8){&arg.s[k], 1}, S(" option not supported\n")));
+            return PK_PARAM;
+        }
         switch (c) {
         case '-':
             neg++;
@@ -650,11 +655,6 @@ static i32 apply_options(unzip *u, s8 *args, i32 nargs, i32 *i, b32 *error,
             neg = 0;
             break;
         default:
-            if (unsupported(u, c)) {
-                info(u, MSG_STDERR, JOIN(&scratch, S("error:  -"),
-                     (s8){&arg.s[k], 1}, S(" option not supported\n")));
-                return PK_PARAM;
-            }
             *error = 1;
         }
     }
