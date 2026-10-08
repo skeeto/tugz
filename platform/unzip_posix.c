@@ -56,7 +56,8 @@ static b32 os_mkdir(os *ctx, s8 path, arena scratch)
 
 // Apply attributes to an open file or directory: the owner first, as
 // changing it may clear set-ID bits, then for a file its mode and times,
-// for a directory its times and mode.
+// for a directory its times and mode. There is no creation time to set
+// (OS_ACTIME), as UnZip's Unix port sets none.
 static i32 setattrs(int fd, osattrs *attrs, b32 dir, s8 *why, arena *a)
 {
     i32 failed = 0;

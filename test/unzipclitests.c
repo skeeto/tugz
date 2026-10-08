@@ -242,6 +242,27 @@ static s8 utl(u32 mtime, u32 atime)
     return (s8){p, 13};
 }
 
+// A local extended timestamp ("UT") with the times its flags announce:
+// modification, access, and creation, in that order
+static s8 utf(u32 flags, u32 mtime, u32 atime, u32 ctime)
+{
+    static u8 buf[16][17];
+    static i32 next;
+    u8 *p = buf[next++ % countof(buf)];
+    u32 t[] = {mtime, atime, ctime};
+    iz  len = 5;
+    p[4] = (u8)flags;
+    for (i32 k = 0; k < 3; k++) {
+        if (flags & 1u<<k) {
+            put32(p+len, t[k]);
+            len += 4;
+        }
+    }
+    put16(p, 0x5455);
+    put16(p+2, (u32)(len - 4));
+    return (s8){p, len};
+}
+
 // A Unix owner field ("ux", version 1, 4-byte IDs)
 static s8 owner(u32 uid, u32 gid)
 {
@@ -1077,6 +1098,49 @@ static void test_windows(os *ctx)
     free(z.s);
 }
 
+// A local UT field's creation time, set with Windows conventions, as
+// Info-ZIP's port sets it (win32.c, getNTfiletime): only with the
+// field's modification time, for files and directories, which -D skips
+// for directories and -DD for both; never from a central UT field,
+// which holds none; and on POSIX, never
+static void test_ctime(os *ctx)
+{
+    xspec spec[] = {
+        {.name="d/", .extattr=DIRM(0755),
+         .lextra=utf(7, 1500000000, 1500000100, 1400000000)},
+        {.name="d/all.txt", .data="a\n",
+         .lextra=utf(7, 1600000000, 1600000100, 1300000000)},
+        {.name="noatime.txt", .data="b\n",
+         .lextra=utf(5, 1600000000, 0, 1200000000)},
+        {.name="nomtime.txt", .data="c\n",
+         .lextra=utf(6, 0, 1600000100, 1100000000)},
+        {.name="central.txt", .data="d\n", .lextra=utl(1600000000, 0),
+         .cextra=utf(7, 1600000000, 1600000100, 1000000000)},
+    };
+    s8 z = build(spec, countof(spec), 0);
+    char *D[] = {"-o", "-oD", "-oDD"};
+    for (i32 i = 0; i < 4; i++) {
+        mfs_reset(ctx);
+        ctx->windows = i < 3;
+        put_archive(ctx, "a.zip", z);
+        UNZIP(ctx, 0, "-q", D[i%3], "a.zip");
+        TEST(output_is(ctx, 3, ""));
+        b32 files = ctx->windows && i<2;
+        b32 dirs  = ctx->windows && i<1;
+        mfile *f = mfs_get(ctx, "d");
+        TEST(dirs ? f->ctime==1400000000 : f->ctime>=1900000000);
+        TEST(!dirs || (f->mtime==1500000000 && f->atime==1500000100));
+        f = mfs_get(ctx, "d/all.txt");
+        TEST(files ? f->ctime==1300000000 : f->ctime>=1900000000);
+        TEST(i>=2 || (f->mtime==1600000000 && f->atime==1600000100));
+        f = mfs_get(ctx, "noatime.txt");
+        TEST(files ? f->ctime==1200000000 : f->ctime>=1900000000);
+        TEST(mfs_get(ctx, "nomtime.txt")->ctime >= 1900000000);
+        TEST(mfs_get(ctx, "central.txt")->ctime >= 1900000000);
+    }
+    free(z.s);
+}
+
 // An archive on standard input, a regular file read in place, or else
 // read whole, never overwriting unless -o
 // A local name decoded through its Unicode path field, unlike the
@@ -1139,6 +1203,7 @@ int main(void)
     test_damaged(ctx);
     test_faults(ctx);
     test_windows(ctx);
+    test_ctime(ctx);
     test_stdin(ctx);
     test_local_name(ctx);
     unzipos_free(ctx);

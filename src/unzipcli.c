@@ -71,11 +71,13 @@ enum {
     OS_ATIMES = 1 << 2,  // modification and access times
     OS_ALINK  = 1 << 3,  // the link itself (os_symlink)
     OS_ASGID  = 1 << 4,  // keep a directory's set-group-ID bit (POSIX)
+    OS_ACTIME = 1 << 5,  // with OS_ATIMES, creation time too (Windows)
     OS_AWHY   = 4,
 };
 typedef struct {
     i64 mtime;
     i64 atime;
+    i64 ctime;    // creation time, with OS_ACTIME (failing as OS_ATIMES)
     u32 mode;     // permission bits, 07777, umask already applied
     u32 dosattr;  // read-only, hidden, system, archive (Windows)
     u32 uid;
@@ -1449,6 +1451,24 @@ static i64 dos_unix(unzip *u, u32 dostime)
     return os_mktime(u->ctx, tm);
 }
 
+// Give attrs an entry's times, from its local extra fields (ux), else
+// its DOS time, the access time defaulting to the modification time, as
+// UnZip's get_extattribs (unix.c). A UT field's creation time, which
+// only Windows sets, comes only with the field's modification time, as
+// the port's getNTfiletime (win32.c) takes the field's times only then,
+// and its close_outfile and set_direc_attribs set it, for files and
+// directories alike.
+static void entry_times(unzip *u, osattrs *a, uzizux *ux, u32 dost)
+{
+    a->mtime  = ux->flags & UZ_MTIME ? ux->mtime : dos_unix(u, dost);
+    a->atime  = ux->flags & UZ_ATIME ? ux->atime : a->mtime;
+    a->flags |= OS_ATIMES;
+    if ((ux->flags & UZ_MTIME) && (ux->flags & UZ_CTIME)) {
+        a->ctime  = ux->ctime;
+        a->flags |= OS_ACTIME;
+    }
+}
+
 // Results of check_for_newer
 enum { DOES_NOT_EXIST = -1, EXISTS_AND_OLDER, EXISTS_AND_NEWER };
 
@@ -1688,11 +1708,7 @@ static i32 extract_member(unzip *u, zarchive *ar, zentry *e, xentry *x,
             d->attrs.flags |= uz_host(e->made)!=UZ_UNIX ||
                               !(u->Xflag || u->Kflag) ? OS_ASGID : 0;
             if (u->Dflag <= 0) {
-                d->attrs.mtime  = ux.flags & UZ_MTIME ? ux.mtime :
-                                                        dos_unix(u, dost);
-                d->attrs.atime  = ux.flags & UZ_ATIME ? ux.atime :
-                                                        d->attrs.mtime;
-                d->attrs.flags |= OS_ATIMES;
+                entry_times(u, &d->attrs, &ux, dost);
             }
             if (u->Xflag && (ux.flags & UZ_OWNER)) {
                 d->attrs.uid    = ux.uid;
@@ -1811,9 +1827,7 @@ static i32 extract_member(unzip *u, zarchive *ar, zentry *e, xentry *x,
         a.dosattr = uz_dosattr(e->extattr);
         a.flags   = OS_AMODE;
         if (u->Dflag <= 1) {
-            a.mtime  = ux.flags & UZ_MTIME ? ux.mtime : dos_unix(u, dost);
-            a.atime  = ux.flags & UZ_ATIME ? ux.atime : a.mtime;
-            a.flags |= OS_ATIMES;
+            entry_times(u, &a, &ux, dost);
         }
         if (u->Xflag && (ux.flags & UZ_OWNER)) {
             a.uid    = ux.uid;

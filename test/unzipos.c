@@ -98,6 +98,7 @@ typedef struct {
     u32 gid;
     i64 mtime;
     i64 atime;
+    i64 ctime;    // creation time, set only with Windows conventions
     u64 ino;
     i32 opens;    // open descriptors, which keep a removed file's slot
     b32 live;
@@ -255,7 +256,7 @@ static mfile *mfs_new(os *ctx, s8 name, i32 type)
     f->perm    = type==FT_DIR ? 0755 : type==FT_LINK ? 0777 : 0644;
     f->dosattr = 0;
     f->uid     = f->gid = 1000;
-    f->mtime   = f->atime = ctx->now;
+    f->mtime   = f->atime = f->ctime = ctx->now;
     f->ino     = ++ctx->nextino;
     f->live    = 1;
     return f;
@@ -885,6 +886,9 @@ static i32 mfs_setattrs(os *ctx, mfile *f, osattrs *a, s8 *why)
     if (ok & OS_ATIMES) {
         f->mtime = a->mtime;
         f->atime = a->atime;
+        if (ctx->windows && (a->flags & OS_ACTIME)) {
+            f->ctime = a->ctime;  // as POSIX, which has none, ignores it
+        }
     }
     return failed;
 }
@@ -1218,7 +1222,7 @@ static b32 mfs_within(os *ctx, s8 name, s8 dir)
             (f->len && memcmp(f->data, o->data, (uz)f->len)) ||
             f->perm!=o->perm || f->dosattr!=o->dosattr ||
             f->uid!=o->uid || f->gid!=o->gid || f->mtime!=o->mtime ||
-            f->atime!=o->atime) {
+            f->atime!=o->atime || f->ctime!=o->ctime) {
             fprintf(stderr, "changed: %.*s\n", (int)o->name.len, o->name.s);
             return 0;
         }
