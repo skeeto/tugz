@@ -517,6 +517,33 @@ if [ -n "$windows" ]; then
     attrib -r ro.link
 fi
 
+# Windows: -f replaces a junction at the output's name, as unlinking a
+# link does on POSIX, removing the junction alone, never its target nor
+# what is in it, and without -f it is refused; a real directory there,
+# even an empty one, is never removed
+if [ -n "$windows" ]; then
+    mkdir jt
+    printf keep >jt/keep
+    printf data >jx
+    cmd /c 'mklink /J jx.gz jt' >/dev/null
+    expect_status 2 "$GZIP" -k jx
+    [ "$(cat jt/keep)" = keep ] || fail "junction output: target changed"
+    "$GZIP" -kf jx || fail "-f over a junction"
+    [ -f jx.gz ] || fail "-f over a junction: not replaced"
+    "$GZIP" -dc jx.gz | cmp -s - jx || fail "-f over a junction: contents"
+    [ "$(ls jt)" = keep ] && [ "$(cat jt/keep)" = keep ] ||
+        fail "-f over a junction: target changed: $(ls jt)"
+    mv jx.gz jy.gz
+    cmd /c 'mklink /J jy jt' >/dev/null
+    "$GZIP" -df jy.gz || fail "-df over a junction"
+    [ -f jy ] && [ "$(cat jy)" = data ] || fail "-df over a junction: jy"
+    [ "$(ls jt)" = keep ] && [ "$(cat jt/keep)" = keep ] ||
+        fail "-df over a junction: target changed: $(ls jt)"
+    mkdir jx.gz
+    expect_status 1 "$GZIP" -kf jx
+    [ -d jx.gz ] || fail "-f removed an empty directory"
+fi
+
 # Windows: an output name that another process holds delete-pending, as
 # gzip holds its own until done, is refused, an error under -f
 if [ -n "$windows" ]; then
