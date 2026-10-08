@@ -1137,7 +1137,8 @@ for entries.
   each selected, readable entry takes, a local header's fixed 30 bytes
   and its compressed data, must end by where the next one begins, or
   the central directory: where each begins is sorted (in place, a heap
-  sort), no two may begin at once, and the central directory is read
+  sort, as zip sorts those it copies: `zar_spans`), no two may begin at
+  once, and the central directory is read
   again to check where each ends. Each entry is checked again once its
   local header is read, by its real length, against the next one's
   offset, and as its central header is read again to process it, it

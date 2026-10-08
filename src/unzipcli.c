@@ -1101,71 +1101,12 @@ static b32 store_info(unzip *u, zentry *e, s8 name, arena scratch)
     return 1;
 }
 
-// Where the entries to be read begin, sorted, for the overlap check, and
-// which of them have been read.
-typedef struct {
-    i64 *beg;   // ascending
-    u8  *read;  // a bit for each
-    iz   len;
-} zspans;
-
-// Sift a[k] down the heap of the first n offsets, largest at the root.
-static void sift(i64 *a, iz k, iz n)
+// The index of the entry to be read that begins at off (zar_spans), or
+// -1.
+static iz span_index(zarchive *ar, i64 off)
 {
-    for (iz c = 2*k + 1; c < n; k = c, c = 2*k + 1) {
-        c += c+1<n && a[c+1]>a[c];
-        if (a[k] >= a[c]) {
-            return;
-        }
-        i64 t = a[k];
-        a[k]  = a[c];
-        a[c]  = t;
-    }
-}
-
-// Sort offsets ascending, in place, needing no more memory: a heap sort.
-static void sort_offsets(i64 *a, iz n)
-{
-    for (iz k = n/2; k > 0;) {
-        sift(a, --k, n);
-    }
-    for (iz end = n; end > 1;) {
-        i64 t  = a[0];
-        a[0]   = a[--end];
-        a[end] = t;
-        sift(a, 0, end);
-    }
-}
-
-// The index of the entry to be read that begins at off, or -1.
-static iz span_index(zspans *s, i64 off)
-{
-    iz lo = 0;
-    for (iz hi = s->len; lo < hi;) {
-        iz mid = lo + (hi - lo)/2;
-        if (s->beg[mid] < off) {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    return lo<s->len && s->beg[lo]==off ? lo : -1;
-}
-
-// The offset of the first entry to be read past off, or the central
-// directory's, which none may reach into.
-static i64 next_span(zarchive *ar, zspans *s, i64 off)
-{
-    iz lo = 0;
-    for (iz hi = s->len; lo < hi;) {
-        iz mid = lo + (hi - lo)/2;
-        if (s->beg[mid] <= off) {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    return lo<s->len ? s->beg[lo] : ar->end.cdoff;
+    iz k = zar_after(ar, off) - 1;
+    return k>=0 && ar->spans[k]==off ? k : -1;
 }
 
 static s8 const bomb_msg = S8(
@@ -1381,10 +1322,10 @@ static i32 test_member(unzip *u, zarchive *ar, zentry *e, zlocal *l,
 
 // Shift the offsets of the entries, as read from now on, of e, read
 // already, and of the spans, as UnZip changes its extra_bytes.
-static void reshift(zarchive *ar, zentry *e, zspans *spans, i64 by)
+static void reshift(zarchive *ar, zentry *e, i64 by)
 {
-    for (iz i = 0; i < spans->len; i++) {
-        spans->beg[i] += by;
+    for (iz i = 0; i < ar->nspans; i++) {
+        ar->spans[i] += by;
     }
     e->offset += by;
     ar->shift += by;
@@ -1397,7 +1338,7 @@ static void reshift(zarchive *ar, zentry *e, zspans *spans, i64 by)
 // header found, else a status, with *stop set for one that ends the
 // archive's processing.
 static i32 find_local(unzip *u, zarchive *ar, zentry *e, i64 filnum,
-                      zspans *spans, zlocal *l, b32 *stop, arena scratch)
+                      zlocal *l, b32 *stop, arena scratch)
 {
     i32 err = PK_OK;
     for (b32 again = 0;; again = 1) {
@@ -1415,7 +1356,8 @@ static i32 find_local(unzip *u, zarchive *ar, zentry *e, i64 filnum,
             break;
         default:
             if (get32(l->fixed) == ZIP_LOCAL_SIG) {
-                // Its data reaches into the central directory
+                // Its data reaches into the next entry, or the central
+                // directory
                 info(u, MSG_STDERR, bomb_msg);
                 *stop = 1;
                 return PK_BOMB;
@@ -1432,9 +1374,9 @@ static i32 find_local(unzip *u, zarchive *ar, zentry *e, i64 filnum,
         info(u, MSG_STDERR, S("  (attempting to re-compensate)\n"));
         if (ar->shift) {
             u->oldshift = ar->shift;
-            reshift(ar, e, spans, -ar->shift);
+            reshift(ar, e, -ar->shift);
         } else {
-            reshift(ar, e, spans, u->oldshift);
+            reshift(ar, e, u->oldshift);
         }
         err = PK_ERR;
     }
@@ -2148,28 +2090,23 @@ static i32 finish_dirs(unzip *u, arena scratch)
 // extract.c's extract_or_test_entrylist. Returns a status, with *stop set
 // for one that ends the archive's processing.
 static i32 do_member(unzip *u, zarchive *ar, zentry *e, s8 name, i64 filnum,
-                     zspans *spans, b32 *stop, arena scratch)
+                     u8 *read, b32 *stop, arena scratch)
 {
     // As its central header is read again, it must be one that the
     // overlap check found, and read only once, lest the archive have
     // changed since
-    iz k = span_index(spans, e->offset);
-    if (k<0 || spans->read[k>>3]>>(k&7) & 1) {
+    iz k = span_index(ar, e->offset);
+    if (k<0 || read[k>>3]>>(k&7) & 1) {
         info(u, MSG_STDERR, bomb_msg);
         *stop = 1;
         return PK_BOMB;
     }
-    spans->read[k>>3] |= (u8)(1 << (k&7));
+    read[k>>3] |= (u8)(1 << (k&7));
 
     zlocal l    = {0};
-    i32    err  = find_local(u, ar, e, filnum, spans, &l, stop, scratch);
+    i32    err  = find_local(u, ar, e, filnum, &l, stop, scratch);
     if (*stop || err>PK_ERR || (err && !l.data)) {
         return err;
-    }
-    if (l.data+e->csize > next_span(ar, spans, e->offset)) {
-        info(u, MSG_STDERR, bomb_msg);  // reaches into the next entry
-        *stop = 1;
-        return PK_BOMB;
     }
 
     // The names compare as Debian's UnZip compares them, each in Unicode
@@ -2222,10 +2159,9 @@ static i32 do_member(unzip *u, zarchive *ar, zentry *e, s8 name, i64 filnum,
 // to extract them, the longest of their names and paths, and room for
 // the paths of links and directories, kept to finish them at the end,
 // and for links' targets, and lists for those.
-static zspans plan(unzip *u, zarchive *ar, arena *scratch)
+static void plan(unzip *u, zarchive *ar, arena *scratch)
 {
     i64    count = u->nentries;
-    zspans spans = {new(scratch, (iz)count, i64), 0, 0};
     i32    opts  = (u->windows ? UZ_WINDOWS : 0) |
                    (u->jflag ? UZ_JUNK : 0) | (u->Vflag ? UZ_KEEPVER : 0);
     b32    def64   = 0;
@@ -2235,6 +2171,8 @@ static zspans plan(unzip *u, zarchive *ar, arena *scratch)
     iz     maxname = 0;
     i64    keep    = 0;
     i64    off     = ar->end.cdoff;
+    ar->spans  = new(scratch, (iz)count, i64);
+    ar->nspans = 0;
     for (i64 i = 0; i < count; i++) {
         arena  tmp  = *scratch;
         zentry e    = {0};
@@ -2244,7 +2182,7 @@ static zspans plan(unzip *u, zarchive *ar, arena *scratch)
         if (!readable(&e) || !wanted(u, name, 0, 0)) {
             continue;
         }
-        spans.beg[spans.len++] = e.offset;
+        ar->spans[ar->nspans++] = e.offset;
         if (!u->extract) {
             continue;
         }
@@ -2297,7 +2235,6 @@ static zspans plan(unzip *u, zarchive *ar, arena *scratch)
         u->room = 16*(longest + maxname + ar->maxhdr) + (1<<16) +
                   ndirs*(iz)sizeof(xdir);
     }
-    return spans;
 }
 
 // Make the -d directory, if not there, as UnZip's checkdir (ROOT) makes
@@ -2335,12 +2272,12 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
     // any are read, the least each could take, a local header and its
     // data, and once each local header is read, what it does take. No
     // two begin at once, and each ends by where the next one begins.
-    zspans spans = plan(u, ar, &scratch);
-    b32    bomb  = 0;
-    sort_offsets(spans.beg, spans.len);
-    spans.read = new(&scratch, (spans.len+7)/8, u8);
-    for (iz k = 1; k < spans.len; k++) {
-        bomb |= spans.beg[k-1] == spans.beg[k];
+    plan(u, ar, &scratch);
+    zar_spans(ar);
+    u8 *read = new(&scratch, (ar->nspans+7)/8, u8);  // a bit for each
+    b32 bomb = 0;
+    for (iz k = 1; k < ar->nspans; k++) {
+        bomb |= ar->spans[k-1] == ar->spans[k];
     }
     i64 off = ar->end.cdoff;
     for (i64 i = 0; i<count && !bomb; i++) {
@@ -2348,12 +2285,9 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
         zentry e    = {0};
         next_entry(u, ar, &off, &e, &tmp);
         s8     name = entry_name(u, &e, &tmp);
-        if (readable(&e) && wanted(u, name, 0, 0)) {
-            // (a compressed size, which listings take as it is, may
-            // reach anywhere, up to 2^63)
-            i64 room = next_span(ar, &spans, e.offset) - e.offset;
-            bomb = e.csize > room - ZIP_LOCAL_LEN;
-        }
+        // (a compressed size, which listings take as it is, may reach
+        // anywhere, up to 2^63: zar_overlaps subtracts)
+        bomb = readable(&e) && wanted(u, name, 0, 0) && zar_overlaps(ar, &e);
     }
     if (bomb) {
         info(u, MSG_STDERR, bomb_msg);
@@ -2368,9 +2302,8 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
     // its length each, which on Windows, decoded from a code page, may be
     // three times the name's
     i64 span = 0;
-    for (iz k = 0; k < spans.len; k++) {
-        i64 next = k+1<spans.len ? spans.beg[k+1] : ar->end.cdoff;
-        span = MAX(span, next - spans.beg[k]);
+    for (iz k = 0; k < ar->nspans; k++) {
+        span = MAX(span, zar_limit(ar, ar->spans[k]) - ar->spans[k]);
     }
     iz local = (iz)MIN(MAX(span+ar->shift-ZIP_LOCAL_LEN, 0), ZIP_MAX16);
     u->room += (u->windows ? 3+12 : 3+4)*local + (1<<8);
@@ -2429,7 +2362,7 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
                 (e.method==ZIP_DEFLATE64 && !u->inf64)) {
                 reread_failed(u);
             }
-            i32 r = do_member(u, ar, &e, name, ++filnum, &spans, &stop, tmp);
+            i32 r = do_member(u, ar, &e, name, ++filnum, read, &stop, tmp);
             err = MAX(err, r);
         }
         nblock = 0;

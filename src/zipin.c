@@ -281,8 +281,8 @@ typedef struct {
                      // data, lie before this, as offsets read
     iz      maxhdr;  // the longest central header read
     zin     cd;      // the central directory's own window (zar_reread)
-    i64    *spans;   // where entries to be copied begin, ascending (zip's,
-    iz      nspans;  // zar_spans), or null: all may reach to cdoff
+    i64    *spans;   // where entries to be read begin, ascending
+    iz      nspans;  // (zar_spans), or null: all may reach to cdoff
 
     // Reading as UnZip does, for unzip (zar_open, zar_check)
     b32     unzip;   // set by the caller: read as UnZip reads
@@ -713,12 +713,13 @@ static i64 zar_limit(zarchive *ar, i64 off)
     return k<ar->nspans ? ar->spans[k] : ar->end.cdoff;
 }
 
-// Given ar->spans, where each of the nspans entries to be copied begins,
-// sort them, in place, needing no more memory (a heap sort), and from
-// then on bound each entry's data by the next one (zar_limit, zar_local).
-// So that an entry is not copied twice, as by many central headers that
-// point at one local header (a zip bomb), each entry must then be
-// checked as zar_overlaps checks it, before any is copied.
+// Given ar->spans, where each of the nspans entries to be read begins
+// (by zip, to copy them, or unzip, to test or extract them), sort them,
+// in place, needing no more memory (a heap sort), and from then on bound
+// each entry's data by the next one (zar_limit, zar_local). So that an
+// entry is not read twice, as by many central headers that point at one
+// local header (a zip bomb), each entry must then be checked as
+// zar_overlaps checks it, before any is read.
 [[maybe_unused]] static void zar_spans(zarchive *ar)
 {
     i64 *a = ar->spans;
