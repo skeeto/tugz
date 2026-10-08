@@ -12,6 +12,12 @@ on:
 permissions:
   contents: write
 
+# Explicitly bash, which runs steps with -e and pipefail, so that a
+# failing git archive fails its step
+defaults:
+  run:
+    shell: bash
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -54,9 +60,8 @@ jobs:
           d="tugz-amalgams-$V"
           cmake -DTUGZ_OUTPUT_DIR="amalgams/$d" -P cmake/amalgamate.cmake
           cc -O2 -o zp platform/zip_posix.c
-          (cd amalgams &&
-           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct "$GITHUB_SHA") \
-               ../zp -qX9r "../dist/$d.zip" "$d")
+          t=$(git log -1 --format=%ct "$GITHUB_SHA")
+          (cd amalgams && SOURCE_DATE_EPOCH=$t ../zp -qX9r "../dist/$d.zip" "$d")
 
       - name: Smoke test, FetchContent from the tarball
         run: |
