@@ -214,7 +214,7 @@ enum { ZIN_CAP = 1<<20, ZIN_PAGE = 1<<12 };
 static i32 zin_fill(zin *r, i64 off, iz need)
 {
     b32 onward = off>=r->pos && off-r->pos<=r->len+r->ahead;
-    r->ahead = onward ? MIN(2*r->ahead, r->cap) : ZIN_PAGE;
+    r->ahead = onward ? MIN(2*r->ahead, r->cap) : MIN(ZIN_PAGE, r->cap);
     i64 left = MAX(r->limit-off, 0);
     iz  n    = MAX(need, (iz)MIN(r->ahead, left));
     i32 got  = os_readat(r->ctx, r->fd, r->buf, n, off);
@@ -277,6 +277,9 @@ typedef struct {
     i64     noname;  // the entry that ZAR_ENONAME refused
     i64     bad;     // the header that ZAR_EFORMAT refused, or -1
     i64     shift;   // added to entries' offsets (unzip's extra bytes)
+    i64     cdlim;   // entries' data lies before this, as offsets read
+    iz      maxhdr;  // the longest central header read
+    zin     cd;      // the central directory's own window (zar_reread)
 } zarchive;
 
 // Results of reading an archive (zar_open, zar_entries, zar_local)
@@ -396,14 +399,47 @@ static i32 zar_open(zarchive *ar, os *ctx, i32 fd, i64 size, arena *perm)
     return ZAR_EFORMAT;
 }
 
-// Read the central directory that zar_open found, keeping its entries,
-// all in perm. Given a shift (ar->shift), the end record's offset of the
-// central directory is the caller's, already shifted, and entries'
-// offsets are shifted as much. Entries' Unicode names are left to the
-// caller (zar_uname). Returns a ZAR code: for ZAR_EFORMAT, the header
-// that failed is ar->bad, the count of entries for a directory that does
-// not end where it should.
-static i32 zar_entries(zarchive *ar, arena *perm, arena scratch)
+// Read the central header at off, of a directory ending at cdend, for
+// an entry whose data lies before cdoff (as offsets read), through the
+// window, no longer than max bytes. Its name, extra fields (with Zip64,
+// unfiltered), and comment point into the window, valid until its next
+// use. Returns a ZAR code, and its length in *len.
+static i32 zar_header(zin *in, i64 off, i64 cdend, i64 cdoff, iz max,
+                      zentry *e, iz *len)
+{
+    // Its fixed part tells its length, at most 192 KiB
+    u8 *h   = 0;
+    iz  n   = (iz)MIN(cdend-off, ZIP_CENTRAL_LEN);
+    i32 got = zin_get(in, off, n, &h);
+    if (got>0 && n==ZIP_CENTRAL_LEN) {
+        iz var = zip_central_varlen(h);
+        n += (iz)MIN(MAX(var, 0), cdend-off-n);
+        if (n > max) {
+            return ZAR_EFORMAT;
+        }
+        got = zin_get(in, off, n, &h);
+    }
+    if (got <= 0) {
+        return zar_failed(got);
+    }
+    *len = zip_parse_header(h, n, cdoff, e);
+    if (*len && !e->name.len) {
+        // Refused, as by Info-ZIP, rather than kept for readers that
+        // cannot name it
+        return ZAR_ENONAME;
+    }
+    return *len ? ZAR_OK : ZAR_EFORMAT;
+}
+
+// Read the central directory that zar_open found, given perm keeping its
+// entries there, else only checking them, as unzip does before reading
+// them again (zar_reread). Given a shift (ar->shift), the end record's
+// offset of the central directory is the caller's, already shifted, and
+// entries' offsets are shifted as much. Entries' Unicode names are left
+// to the caller (zar_uname). Returns a ZAR code: for ZAR_EFORMAT, the
+// header that failed is ar->bad, the count of entries for a directory
+// that does not end where it should.
+static i32 zar_walk(zarchive *ar, arena *perm, arena scratch)
 {
     // The central directory is read through the window, whole if it
     // fits, else a window at a time, and parsed a header at a time,
@@ -433,37 +469,34 @@ static i32 zar_entries(zarchive *ar, arena *perm, arena scratch)
     } else if ((u64)count > (uz)-1>>1) {
         os_oom(in->ctx);  // larger than the address space (32-bit hosts)
     }
-    iz each = sizeof(zentry);
-    ar->entries = alloc(perm, (iz)count, each, _Alignof(zentry), 0);
+    ar->cdlim  = cdoff;
+    ar->maxhdr = 0;
+    zentry one = {0};
+    if (perm) {
+        iz each = sizeof(zentry);
+        ar->entries = alloc(perm, (iz)count, each, _Alignof(zentry), 0);
+    }
     for (i64 i = 0; i < count; i++) {
-        // Its fixed part tells its length, at most 192 KiB
-        iz len = (iz)MIN(cdend-off, ZIP_CENTRAL_LEN);
-        got = zin_get(in, off, len, &h);
-        if (got>0 && len==ZIP_CENTRAL_LEN) {
-            iz var = zip_central_varlen(h);
-            len += (iz)MIN(MAX(var, 0), cdend-off-len);
-            got = zin_get(in, off, len, &h);
-        }
-        if (got <= 0) {
-            return zar_failed(got);
-        }
-        zentry *e = ar->entries + i;
-        len = zip_parse_header(h, len, cdoff, e);
-        if (len && !e->name.len) {
-            // Refused, as by Info-ZIP, rather than kept for readers that
-            // cannot name it
+        zentry *e   = perm ? ar->entries+i : &one;
+        iz      len = 0;
+        i32     r   = zar_header(in, off, cdend, cdoff, in->cap, e, &len);
+        if (r == ZAR_ENONAME) {
             ar->noname = i;
-            return ZAR_ENONAME;
-        }
-        if (!len) {
+            return r;
+        } else if (r == ZAR_EFORMAT) {
             ar->bad = i;
-            return ZAR_EFORMAT;
+            return r;
+        } else if (r) {
+            return r;
         }
-        arena tmp = scratch;
-        e->offset += ar->shift;
-        e->name    = JOIN(perm, e->name);
-        e->cextra  = JOIN(perm, zip_filter_extra(&tmp, e->cextra));
-        e->comment = JOIN(perm, e->comment);
+        ar->maxhdr = MAX(ar->maxhdr, len);
+        if (perm) {
+            arena tmp = scratch;
+            e->offset += ar->shift;
+            e->name    = JOIN(perm, e->name);
+            e->cextra  = JOIN(perm, zip_filter_extra(&tmp, e->cextra));
+            e->comment = JOIN(perm, e->comment);
+        }
         off += len;
     }
     if (off != cdend) {
@@ -476,9 +509,63 @@ static i32 zar_entries(zarchive *ar, arena *perm, arena scratch)
     // self-extractor's stub after zip -A, or a zipapp's #! line, which
     // Info-ZIP keeps. Without entries, it precedes the central directory.
     ar->beg = ar->end.cdoff;
-    for (i64 i = 0; i < ar->end.count; i++) {
+    for (i64 i = 0; perm && i < ar->end.count; i++) {
         ar->beg = MIN(ar->beg, ar->entries[i].offset);
     }
+    return ZAR_OK;
+}
+
+// Read the central directory that zar_open found, keeping its entries,
+// all in perm, as zar_walk reads it.
+static i32 zar_entries(zarchive *ar, arena *perm, arena scratch)
+{
+    return zar_walk(ar, perm, scratch);
+}
+
+// Check the central directory that zar_open found, as zar_entries reads
+// it, but keeping none of it, for zar_next to read it again.
+[[maybe_unused]] static i32 zar_check(zarchive *ar)
+{
+    return zar_walk(ar, 0, (arena){0});
+}
+
+// Prepare to read again the central directory that zar_check checked,
+// through its own window in perm, of at least window bytes, and no more
+// than the directory, unless the archive is in memory, but holding its
+// longest header: so read whole, if it fits, else a window at a time.
+[[maybe_unused]] static void zar_reread(zarchive *ar, iz window, arena *perm)
+{
+    zin *cd = &ar->cd;
+    *cd = ar->in;  // in memory: the same, a window that never moves
+    if (!cd->mem) {
+        cd->limit = ar->end.cdoff + ar->end.cdsize;
+        cd->cap   = (iz)MIN(ar->end.cdsize, MAX(window, ar->maxhdr));
+        cd->buf   = newbytes(perm, cd->cap);
+        cd->len   = 0;
+        cd->pos   = ar->end.cdoff;
+        cd->ahead = cd->cap;  // the first fill reads the whole window
+    }
+}
+
+// Read again the central header at *off, as zar_check read it, through
+// the central directory's window (zar_reread), moving *off past it, its
+// extra fields filtered (without Zip64) into a, and its name and comment
+// pointing into that window, valid until its next use. Returns a ZAR
+// code: anything but ZAR_OK means the archive has changed (or a read
+// failed), as does a header longer than the longest read before.
+[[maybe_unused]] static i32 zar_next(zarchive *ar, i64 *off, zentry *e,
+                                     arena *a)
+{
+    i64 cdend = ar->end.cdoff + ar->end.cdsize;
+    iz  len   = 0;
+    i32 r     = zar_header(&ar->cd, *off, cdend, ar->cdlim, ar->maxhdr, e,
+                           &len);
+    if (r) {
+        return r==ZAR_ENONAME ? ZAR_EFORMAT : r;
+    }
+    e->offset += ar->shift;
+    e->cextra  = zip_filter_extra(a, e->cextra);
+    *off += len;
     return ZAR_OK;
 }
 
@@ -496,7 +583,7 @@ static i32 zar_read(zarchive *ar, os *ctx, i32 fd, i64 size, arena *perm,
 }
 
 // An entry's name for messages: in Unicode, if it has that too.
-static s8 shown_name(zarchive *ar, zentry *e)
+[[maybe_unused]] static s8 shown_name(zarchive *ar, zentry *e)
 {
     s8 u = entry_unicode(ar, e - ar->entries);
     return u.s ? u : e->name;
