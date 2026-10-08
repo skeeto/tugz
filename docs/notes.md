@@ -1402,6 +1402,8 @@ ones as invariants. Those that no test asserts are marked untested.
     cmake --build build-fuzz   # the seven fuzzers (LLVM clang)
     cmake --build build-fuzz --target tugz_fuzz_seeds  # fuzz/corpus/
     build-fuzz/fuzz-diff-inflate -fork=3 -max_len=65536 fuzz/corpus/diff-inflate
+    build-fuzz/fuzz-roundtrip -fork=3 -max_len=1200000 fuzz/corpus/roundtrip
+    build-fuzz/fuzz-diff-deflate -fork=3 -max_len=1200000 fuzz/corpus/diff-deflate
     build-fuzz/fuzz-zipread -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zipread
     build-fuzz/fuzz-zip -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zip
     build-fuzz/fuzz-unzip -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/unzip
@@ -1441,6 +1443,10 @@ Fuzzers:
   flushes (some with no input, some left unfinished as it moves on) and
   piece sizes, must produce piece-independent output that decodes under
   zlib, libdeflate, and our streaming decoder
+- The encoder fuzzers need inputs past 64 KiB (`-max_len`, and
+  `seeds.py`'s 200 KB and 1.1 MB seeds) to reach the 65,535-byte stored
+  chunks, a full staging buffer with small output pieces, and, past 1
+  MiB, window slides; their other seeds stay under 8 KB, for speed
 - `fuzz-zipread`: arbitrary bytes as an existing archive, parsed by
   `src/zip.c` as the program reads it (the final 64 KiB, then the Zip64
   end record and the central directory), each part in an allocation of

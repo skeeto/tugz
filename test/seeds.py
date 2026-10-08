@@ -61,6 +61,33 @@ for i, s in enumerate(samples):
         put("diff-deflate", f"s{i}_{k}", cfg + s[:8000])
 print(n, "deflate seeds")
 
+# Encoder inputs well past 64 KiB, for a -max_len above them: text and
+# noise in runs, so that blocks change kind, incompressible runs span
+# 65,535-byte stored chunks, output fills the staging buffer (about 64
+# KiB untaken) with small output pieces, and past 1 MiB the window
+# slides. The other seeds stay small, for speed.
+big = random.Random(2)
+text = words()
+def mixed(n):
+    out = bytearray()
+    while len(out) < n:
+        k = big.randrange(1000, 150000)
+        if big.random() < 0.5:
+            out += big.randbytes(k)
+        else:
+            off = big.randrange(len(text))
+            out += (text[off:] + text)[:k]
+    return bytes(out[:n])
+for i, size in enumerate((200000, 1100000)):
+    data = mixed(size)
+    cfg = bytearray(big.getrandbits(8) for _ in range(8))
+    put("roundtrip", f"big{i}", bytes(cfg[:3]) + data)
+    # diff-deflate's encoder: flush points (cfg[6] bit 1), and output in
+    # pieces of 16 or 64 bytes (cfg[3], a fuzz_pieces index)
+    cfg[6] |= 2
+    cfg[3] = (cfg[3] & ~7) | (5 + i)
+    put("diff-deflate", f"big{i}", bytes(cfg) + data)
+
 # Data after a gzip member, which GNU gzip's policy settles (see
 # fuzz_diff_inflate.c): zero bytes are padding, here also longer than the
 # decoder's 256 KiB reads (for runs with a -max_len above it); a lone
