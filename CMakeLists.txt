@@ -12,6 +12,14 @@ file(STRINGS src/base.c tugz_version
 string(REGEX REPLACE ".*\"(.*)\"" "\\1" tugz_version "${tugz_version}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS src/base.c)
 
+# Release by default at the top level, set before project(), which on
+# the MSVC ABI would set Debug
+get_property(tugz_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND
+   NOT tugz_multi_config AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 project(tugz
     VERSION ${tugz_version}
     DESCRIPTION "Streaming DEFLATE, zlib, and gzip library"
@@ -23,12 +31,6 @@ if(CMAKE_C_COMPILER_ID STREQUAL "MSVC" OR
     message(FATAL_ERROR
         "tugz needs GCC or Clang (with the GNU-style driver): "
         "it uses their builtins and attributes")
-endif()
-
-get_property(tugz_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
-if(PROJECT_IS_TOP_LEVEL AND NOT tugz_multi_config AND
-   NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
 if(PROJECT_IS_TOP_LEVEL AND NOT CMAKE_CROSSCOMPILING)
