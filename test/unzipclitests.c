@@ -813,6 +813,52 @@ static void test_bomb(os *ctx)
     TEST(!ctx->nchanges);
     UNZIP(ctx, 12, "-t", "a.zip");
     free(z.s);
+
+    // A compressed size reaching past the central directory, even to
+    // 2^63 - 1 (Zip64), is listed, as UnZip lists it, but its data is
+    // refused before any entry's is read, the others' too, where UnZip
+    // reads it by its local header's size
+    for (i32 big = 0; big < 2; big++) {
+        xspec spec2[] = {
+            {.name="a.txt", .data=TEXT, .method=8},
+            {.name="r", .data="x",
+             .cextra={(u8 *)"\x01\x00\x08\x00" "\xff\xff\xff\xff\xff\xff"
+                      "\xff\x7f", big ? 12 : 0}},
+            {.name="c.txt", .data=TEXT},
+        };
+        z = build(spec2, countof(spec2), 0);
+        u8 *r = z.s + get32(z.s+z.len-22+16) + 46+5;  // the second's header
+        put32(r+20, big ? 0xffffffff : 268435457);
+        mfs_reset(ctx);
+        put_archive(ctx, "a.zip", z);
+        UNZIP(ctx, 0, "-l", "a.zip");
+        TEST(output_has(ctx, 1, "   r\n"));
+        TEST(output_has(ctx, 1, "3 files\n"));
+        UNZIP(ctx, 0, "-v", "a.zip");
+        TEST(output_has(ctx, 1, big ? " 9223372036854775807 -214748364% "
+                                    : " 268435457 -214748364% "));
+        for (i32 how = 0; how < 3; how++) {
+            mfs_reset(ctx);
+            put_archive(ctx, "a.zip", z);
+            ctx->dest = S("out/");
+            if (how == 2) {
+                UNZIP(ctx, 12, "-o", "-d", "out", "a.zip");
+            } else {
+                UNZIP(ctx, 12, how ? "-p" : "-t", "a.zip");
+            }
+            TEST(output_has(ctx, 3,
+                "error: invalid zip file with overlapped components "
+                "(possible zip bomb)\n"));
+            TEST(!output_has(ctx, 3, "a.txt"));
+            TEST(!output_has(ctx, 3, "hello"));
+            TEST(!ctx->nchanges);
+        }
+        // Selected alone, the others are read
+        mfs_reset(ctx);
+        put_archive(ctx, "a.zip", z);
+        UNZIP(ctx, 0, "-t", "a.zip", "a.txt", "c.txt");
+        free(z.s);
+    }
 }
 
 // An archive rewritten as it is extracted, as by another process, its

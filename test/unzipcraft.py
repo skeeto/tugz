@@ -354,6 +354,13 @@ write("overlap.zip", build([shared, Entry("b.txt", TEXT, offset=0,
                                           local=False)]))
 write("overlapcd.zip", build([Entry("a.txt", TEXT, csize=len(deflate(TEXT))
                                     + 20)]))
+# A central compressed size reaching past the central directory, and the
+# end of the file, which UnZip lists, and reads by the local header's
+write("csizepast.zip", build([
+    Entry("a.txt", TEXT),
+    Entry("r", b"x", method=0, csize=268435457,
+          lsizes=(zlib.crc32(b"x"), 1, 1)),
+    Entry("c.txt", TEXT, method=0)]))
 nested = Entry("inner.txt", b"inner\n", method=0)
 outer = Entry("outer.bin", b"", method=0)
 body = nested.local_header() + nested.comp

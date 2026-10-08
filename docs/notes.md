@@ -983,7 +983,11 @@ race allows).
   as each is copied, its local header's name and extra fields must fit
   there too, or it fails ("Zip file structure invalid", naming the
   entry, 3). Entries being deleted are not checked, so `-d` can remove
-  the overlapping ones.
+  the overlapping ones. An entry whose central compressed size reaches
+  past the central directory leaves the archive unread, whatever is
+  done ("Zip file structure invalid", 3), where Info-ZIP copies it, size
+  and all, though tugz's unzip lists it, as UnZip does (`zip.sh`,
+  `csize.zip`).
 - Replacing the archive: a hard-linked archive is replaced by a new
   file, which its other names do not share (Info-ZIP copies into it).
   The temporary file goes beside the file that links at the archive path
@@ -1143,7 +1147,15 @@ for entries.
   bomb)" (12), and one in the central directory is found before anything
   is written, the `-d` directory included. Debian's UnZip finds overlaps
   entry by entry, as it reads them, and does not check the central
-  directory.
+  directory. The shared parser bounds only each local header by the
+  central directory for unzip (`zip_parse_header`'s `fit`), so that a
+  compressed size reaching past it, even past the end of the file (up to
+  2^63 - 1 with Zip64), is listed by `-l`, `-v`, and `-z` as UnZip lists
+  it, where it once was "start of central directory not found" (3), and
+  then found by this check, its arithmetic free of overflow, should the
+  entry be read; zip still refuses it as the archive's structure, and
+  `zip_parse_central` too (`unzip.sh`, `csizepast.zip`; `test_bomb`;
+  `ziptests`).
 - Decoding: an entry is read by its central header's method, flags,
   sizes, and CRC. Its local header gives the data's offset, its DOS time
   and extra fields (times and owner, as UnZip takes them from there),
@@ -1389,7 +1401,11 @@ ones as invariants. Those that no test asserts are marked untested.
   entry is read, so that none is extracted, nor the `-d` directory made,
   where Debian's UnZip finds them entry by entry, having extracted those
   before (`unzip.sh`, "Overlapped components", compared with a Debian
-  `REF` where it finds them too; `tests-unzipcli`, `test_bomb`).
+  `REF` where it finds them too; `tests-unzipcli`, `test_bomb`). That
+  includes a central compressed size reaching past the central
+  directory, which Info-ZIP's UnZip, listing it as tugz does, tests and
+  extracts by its local header's size (12 for `-t`, `-p`, and
+  extraction, unless the entry is left out; `csizepast.zip`).
 - Sizes: an entry is read by its central header's sizes, method, and
   CRC, the central directory checked whole first, rather than by its
   local header's, as UnZip reads it unless a data descriptor follows
@@ -1454,9 +1470,12 @@ ones as invariants. Those that no test asserts are marked untested.
   (`unzip.sh`, "names.zip"). Listings' dates are ISO, as Debian's.
   `-v`'s compression factor is UnZip's where UnZip's arithmetic holds,
   and where it overflows (a Zip64 size with an encrypted entry's
-  compressed size under its 12-byte header, wrapped), the growth as
-  large as fits, "-214748364%", where Debian's UnZip shows " 214748364%"
-  (`test_factor`; `unzip.sh`, `ratio.zip`, under the sanitizers).
+  compressed size under its 12-byte header, wrapped, or a compressed
+  size over about 2.1 million times the size), the growth as large as
+  fits, "-214748364%", where Debian's UnZip shows " 214748364%",
+  "-214748365%" (a size of 1 compressed to 268,435,457), or " 200%" (to
+  2^63 - 1) (`test_factor`; `unzip.sh`, `ratio.zip` and
+  `csizepast.zip`, under the sanitizers).
 - Windows: a link becomes a file holding its target, with a file's
   attributes and times, as in the port, but made last, as on POSIX
   (`unzip_windows.sh`, "Links"; `test_windows`).

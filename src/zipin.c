@@ -277,7 +277,8 @@ typedef struct {
     i64     noname;  // the entry that ZAR_ENONAME refused
     i64     bad;     // the header that ZAR_EFORMAT refused, or -1
     i64     shift;   // added to entries' offsets (unzip's extra bytes)
-    i64     cdlim;   // entries' data lies before this, as offsets read
+    i64     cdlim;   // entries' local headers, and but for unzip, their
+                     // data, lie before this, as offsets read
     iz      maxhdr;  // the longest central header read
     zin     cd;      // the central directory's own window (zar_reread)
     i64    *spans;   // where entries to be copied begin, ascending (zip's,
@@ -445,12 +446,13 @@ static i32 zar_open(zarchive *ar, os *ctx, i32 fd, i64 size, arena *perm)
 }
 
 // Read the central header at off, of a directory ending at cdend, for
-// an entry whose data lies before cdoff (as offsets read), through the
-// window, no longer than max bytes. Its name, extra fields (with Zip64,
-// unfiltered), and comment point into the window, valid until its next
-// use. Returns a ZAR code, and its length in *len.
-static i32 zar_header(zin *in, i64 off, i64 cdend, i64 cdoff, iz max,
-                      zentry *e, iz *len)
+// an entry whose local header, and given fit, its data, lies before cdoff
+// (as offsets read), through the window, no longer than max bytes. Its
+// name, extra fields (with Zip64, unfiltered), and comment point into
+// the window, valid until its next use. Returns a ZAR code, and its
+// length in *len.
+static i32 zar_header(zin *in, i64 off, i64 cdend, i64 cdoff, b32 fit,
+                      iz max, zentry *e, iz *len)
 {
     // Its fixed part tells its length, at most 192 KiB
     u8 *h   = 0;
@@ -467,7 +469,7 @@ static i32 zar_header(zin *in, i64 off, i64 cdend, i64 cdoff, iz max,
     if (got <= 0) {
         return zar_failed(got);
     }
-    *len = zip_parse_header(h, n, cdoff, e);
+    *len = zip_parse_header(h, n, cdoff, fit, e);
     if (*len && !e->name.len) {
         // Refused, as by Info-ZIP, rather than kept for readers that
         // cannot name it
@@ -541,7 +543,8 @@ static i32 zar_walk(zarchive *ar, arena *perm, arena scratch)
     for (i64 i = 0; past ? off<cdend : i<count; i++) {
         zentry *e   = perm ? ar->entries+i : &one;
         iz      len = 0;
-        i32     r   = zar_header(in, off, cdend, cdoff, in->cap, e, &len);
+        i32     r   = zar_header(in, off, cdend, cdoff, !ar->unzip, in->cap,
+                                 e, &len);
         if (r == ZAR_ENONAME) {
             ar->noname = i;
             return r;
@@ -642,8 +645,8 @@ static i32 zar_entries(zarchive *ar, arena *perm, arena scratch)
 {
     i64 cdend = ar->end.cdoff + ar->end.cdsize;
     iz  len   = 0;
-    i32 r     = zar_header(&ar->cd, *off, cdend, ar->cdlim, ar->maxhdr, e,
-                           &len);
+    i32 r     = zar_header(&ar->cd, *off, cdend, ar->cdlim, !ar->unzip,
+                           ar->maxhdr, e, &len);
     if (r) {
         return r==ZAR_ENONAME ? ZAR_EFORMAT : r;
     }

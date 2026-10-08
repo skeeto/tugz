@@ -627,9 +627,11 @@ static iz zip_central_varlen(u8 const *h)
 }
 
 // Parse the central header beginning the n bytes at h, for an entry whose
-// data lies before cdoff. Its name, extra fields (with Zip64, unfiltered),
-// and comment point into h. Returns its length, or 0 if malformed.
-static iz zip_parse_header(u8 *h, iz n, i64 cdoff, zentry *e)
+// local header lies before cdoff, and given fit, its data too. Its name,
+// extra fields (with Zip64, unfiltered), and comment point into h.
+// Returns its length, or 0 if malformed. (Unzip lists an entry of any
+// compressed size, as UnZip does, but bounds its data before reading.)
+static iz zip_parse_header(u8 *h, iz n, i64 cdoff, b32 fit, zentry *e)
 {
     iz var = n<ZIP_CENTRAL_LEN ? -1 : zip_central_varlen(h);
     if (var<0 || var>n-ZIP_CENTRAL_LEN) {
@@ -660,7 +662,7 @@ static iz zip_parse_header(u8 *h, iz n, i64 cdoff, zentry *e)
         !zip_apply64(e, e->cextra, disk==ZIP_MAX16)) {
         return 0;
     }
-    if (e->offset>cdoff-ZIP_LOCAL_LEN || e->csize>cdoff-e->offset) {
+    if (e->offset>cdoff-ZIP_LOCAL_LEN || (fit && e->csize>cdoff-e->offset)) {
         return 0;
     }
     return ZIP_CENTRAL_LEN + var;
@@ -681,7 +683,7 @@ static zentry *zip_parse_central(u8 *p, iz n, i64 count, i64 cdoff,
     iz off = 0;
     for (i64 i = 0; i < count; i++) {
         zentry *e   = entries + i;
-        iz      len = zip_parse_header(p+off, n-off, cdoff, e);
+        iz      len = zip_parse_header(p+off, n-off, cdoff, 1, e);
         if (!len) {
             return 0;
         }

@@ -510,19 +510,29 @@ ours 81 none none -pq encrypted.zip
 # Overlapped components, a zip bomb's: found before any entry is read
 # (Debian's UnZip finds them as it reads the second), with Debian's
 # message and status; data reaching into the central directory too
-# (which Debian's does not check)
-for z in overlap inner overlapcd; do
+# (which Debian's does not check), even past the end of the file, by a
+# central compressed size that UnZip lists, then reads by the local one
+for z in overlap inner overlapcd csizepast; do
     printf 'Archive:  %s.zip\nerror: invalid zip file with overlapped components (possible zip bomb)\n' $z >want
     ours 12 want none -t $z.zip
     printf 'error: invalid zip file with overlapped components (possible zip bomb)\n' >want
     ours 12 want none -tq $z.zip
     ours 12 none want -p $z.zip
-    if [ $debian = 1 ] && [ $z != overlapcd ]; then
+    if [ $debian = 1 ] && [ $z != overlapcd ] && [ $z != csizepast ]; then
         same -tq $z.zip
         same -pq $z.zip 'b*'
     fi
     same -l $z.zip                            # listing reads no data
+    same -z $z.zip
 done
+# Its other entries, selected alone, are read
+same -t csizepast.zip a.txt c.txt
+# and -v as UnZip's, but for the departure in its compression factor,
+# where UnZip's arithmetic overflows (above)
+both -v csizepast.zip
+sed 's/ -214748365% / -214748364% /' ref.out >ref.v
+cmp -s ours.st ref.st && cmp -s ours.out ref.v && cmp -s ours.err ref.err ||
+    fail "-v csizepast.zip: $(diff ref.v ours.out)"
 
 # Output beyond an entry's size is not written: an overrun, which UnZip
 # writes out before finding the CRC wrong
@@ -822,7 +832,7 @@ xours 81 want want.err ../encrypted.zip
 [ ! -s ours.tree ] || fail "encrypted.zip: $(cat ours.tree)"
 
 # Overlapped components, a zip bomb's, found before anything is written
-for z in overlap inner overlapcd; do
+for z in overlap inner overlapcd csizepast; do
     printf 'Archive:  ../%s.zip\n' $z >want
     echo 'error: invalid zip file with overlapped components (possible zip bomb)' >want.err
     xours 12 want want.err ../$z.zip

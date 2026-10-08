@@ -579,6 +579,14 @@ static void test_zip64(arena a)
     TEST(got->offset==(i64)5<<30 && !got->cextra.len);
     put32(buf+20, 0xffffffff);
     TEST(!zip_parse_central(buf, p-buf, 1, (i64)6 << 30, &a));  // bounds
+    // Unbounded, as unzip lists it, a compressed size may reach past the
+    // central directory, though the local header may not
+    zentry one = {0};
+    TEST(!zip_parse_header(buf, p-buf, (i64)6 << 30, 1, &one));
+    TEST(zip_parse_header(buf, p-buf, (i64)6 << 30, 0, &one) == p-buf);
+    TEST(one.csize==0xffffffff && one.offset==(i64)5<<30);
+    TEST(!zip_parse_header(buf, p-buf, ((i64)5 << 30) + 29, 0, &one));
+    TEST(zip_parse_header(buf, p-buf, ((i64)5 << 30) + 30, 0, &one));
     got = zip_parse_central(buf, p-buf, 1, (i64)10 << 30, &a);
     TEST(got && got->usize==0xffffffff && got->csize==0xffffffff);
     TEST(got->offset == (i64)5<<30);

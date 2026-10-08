@@ -1300,7 +1300,8 @@ open("loc64.zip", "wb").write(loc + cen + e64 + l64 + sat)'
     # Entries that would be copied must not overlap, as UnZip refuses
     # them, unlike Info-ZIP's zip, which copies shared data once for
     # each: central headers that share a local header (a zip bomb), and
-    # one whose local header reaches, with its data, into the next entry.
+    # one whose local header reaches, with its data, into the next entry,
+    # or whose data reaches past the central directory.
     # Deleting all but one of those sharing leaves nothing to refuse.
     $PY -c 'import struct, zlib
 def local(n, d, xlen=0):
@@ -1321,8 +1322,13 @@ write("share.zip", local(b"s0", d) + d,
 # tells, but its local header declares 20 bytes of extra fields
 loc = local(b"a", b"alpha", 20) + b"\0" * 4 + local(b"b", b"bravo") + b"bravo"
 write("reach.zip", loc, central(b"a", b"alpha", 0) +
-      central(b"b", b"bravo", 35), 2)'
-    for z in share reach; do
+      central(b"b", b"bravo", 35), 2)
+# a central compressed size reaching past the central directory, which
+# unzip lists, as UnZip does, and Info-ZIP copies
+cen = central(b"c", b"x", 0)
+write("csize.zip", local(b"c", b"x") + b"x",
+      cen[:20] + struct.pack("<I", 268435457) + cen[24:], 1)'
+    for z in share reach csize; do
         cp $z.zip ${z}0.zip
         exits 3 "$ZIP" $z.zip tree/a.txt >out 2>&1
         case $z in
@@ -1330,6 +1336,7 @@ write("reach.zip", loc, central(b"a", b"alpha", 0) +
                    'zip warning: entry overlaps another (possible zip bomb): s0' \
                    '' 'zip error: Zip file structure invalid (share.zip)' ;;
         reach) printf '\nzip error: Zip file structure invalid (a)\n' ;;
+        csize) printf '\nzip error: Zip file structure invalid (csize.zip)\n' ;;
         esac >want
         cmp -s out want || fail "$z.zip: $(cat out)"
         cmp -s $z.zip ${z}0.zip || fail "$z.zip changed"

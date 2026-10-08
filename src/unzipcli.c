@@ -2349,8 +2349,10 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
         next_entry(u, ar, &off, &e, &tmp);
         s8     name = entry_name(u, &e, &tmp);
         if (readable(&e) && wanted(u, name, 0, 0)) {
-            i64 end = e.offset + ZIP_LOCAL_LEN + e.csize;
-            bomb = end > next_span(ar, &spans, e.offset);
+            // (a compressed size, which listings take as it is, may
+            // reach anywhere, up to 2^63)
+            i64 room = next_span(ar, &spans, e.offset) - e.offset;
+            bomb = e.csize > room - ZIP_LOCAL_LEN;
         }
     }
     if (bomb) {

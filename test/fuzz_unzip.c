@@ -156,7 +156,7 @@ static xentries read_entries(os *ctx, s8 z, b32 windows, arena *a)
             zip_local_varlen(z.s+i)>=0) {
             r.at[r.nat++] = i + ZIP_LOCAL_LEN + zip_local_varlen(z.s+i);
         } else if (sig==ZIP_CENTRAL_SIG &&
-                   zip_parse_header(z.s+i, z.len-i, (i64)1<<60, &e)) {
+                   zip_parse_header(z.s+i, z.len-i, (i64)1<<60, 1, &e)) {
             xentry_ *x = r.data + r.len++;
             s8 stale = {0};
             s8 un    = zar_uname(ctx, &e, windows, &(i32){0}, &stale, a, scratch);
