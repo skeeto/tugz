@@ -267,11 +267,40 @@ static i32 fuzz_decode64(fuzzenv *env, u8 const *in, iz len, iz inpiece,
     }
 }
 
+typedef struct {
+    iz  end;
+    i32 flush;
+    b32 early;
+} fuzzseg;
+
+// The next segment of fuzz_encode's input after off, from its seed.
+static fuzzseg fuzz_segment(u32 *seed, iz off, iz len, b32 finishing)
+{
+    fuzzseg s = {len, DEF_FINISH, 0};
+    if (*seed && !finishing) {
+        u32 x = *seed = *seed*1103515245 + 12345;
+        iz seglen = x>>27 & 3 ? 1 + (iz)(x>>16)%2048 : 0;
+        s.end = MIN(len, off + seglen);
+        static i32 const modes[] = {DEF_NONE, DEF_NONE, DEF_SYNC, DEF_FULL};
+        s.flush = modes[(x>>8)%4];
+        if (s.end==len && s.flush==DEF_NONE) {
+            s.flush = DEF_FINISH;
+        }
+        s.early = x>>30 & 1;
+    }
+    return s;
+}
+
 // Encode in memory, feeding input and taking output in pieces (0 for
-// unlimited). A nonzero seed splits input into segments, each ending in
-// a flush chosen from NONE, SYNC, or FULL, and sometimes moves on to the
-// next segment before the flush completes, which must not change the
-// output. Returns a malloc'd buffer.
+// unlimited). A nonzero seed splits input into segments, a quarter of
+// them empty, each ending in a flush chosen from NONE, SYNC, or FULL,
+// and the last in FINISH, perhaps after empty SYNC or FULL segments. It
+// sometimes moves on to the next segment before the flush completes
+// (from FINISH, to an empty FINISH), which must not change the output:
+// an empty segment's flush then falls due behind unfinished ones. But
+// not where the next segment is empty and in the mode of the latest
+// flush, which would then only complete that flush rather than flush
+// again as when waited for. Returns a malloc'd buffer.
 static s8 fuzz_encode(fuzzenv *env, i32 format, i32 level, u8 const *in,
                       iz len, iz inpiece, iz outpiece, u32 seed)
 {
@@ -280,18 +309,16 @@ static s8 fuzz_encode(fuzzenv *env, i32 format, i32 level, u8 const *in,
     iz cap = 8*len + (1<<16);
     s8 r = {malloc((uz)cap), 0};
     iz off = 0;
+    i32 latest = DEF_NONE;  // latest flush, unless input completed it
+    fuzzseg seg = fuzz_segment(&seed, 0, len, 0);
     for (b32 last = 0; !last;) {
-        iz end = len;
-        i32 flush = DEF_FINISH;
-        b32 early = 0;
-        if (seed) {
-            seed = seed*1103515245 + 12345;
-            end = MIN(len, off + 1 + (iz)(seed>>16)%2048);
-            static i32 const modes[] = {DEF_NONE, DEF_NONE, DEF_SYNC, DEF_FULL};
-            flush = end<len ? modes[(seed>>8)%4] : DEF_FINISH;
-            early = seed>>30 & 1;
-        }
-        last = end == len;
+        iz  end   = seg.end;
+        i32 flush = seg.flush;
+        last = flush==DEF_FINISH && !seg.early;
+        latest = flush ? flush : end>off ? DEF_NONE : latest;
+        fuzzseg next = fuzz_segment(&seed, end, len, flush==DEF_FINISH);
+        b32 early = seg.early && (next.end>end || next.flush!=latest ||
+                                  latest==DEF_FINISH);
         for (;;) {
             zbuf b = {0};
             b.in     = in + off;
@@ -305,7 +332,7 @@ static s8 fuzz_encode(fuzzenv *env, i32 format, i32 level, u8 const *in,
             CHECK(r.len < cap);
             if (status == GZ_NEEDOUT) {
                 CHECK(!b.outlen);
-                if (early && off==end && !last) {
+                if (early && off==end) {
                     break;  // the flush is due, and completes in later calls
                 }
                 continue;
@@ -321,6 +348,7 @@ static s8 fuzz_encode(fuzzenv *env, i32 format, i32 level, u8 const *in,
             CHECK(off==end && flush!=DEF_NONE);
             break;
         }
+        seg = next;
     }
     return r;
 }

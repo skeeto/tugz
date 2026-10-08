@@ -174,7 +174,8 @@ output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
   the deflator hold any queue exactly, at no cost to calls that don't
   queue. Each is staged once the one before it is delivered, as when
   waited for. `test_flush_queue` queues 1,001 flushes with no output
-  room.
+  room, and `fuzz-diff-deflate`'s `fuzz_encode` makes empty segments
+  and moves on early from them, avoiding repeats.
 - Of the deflator's large tables only the hash heads start zeroed:
   tokens are written before use, and chains lead only to links that
   insertions wrote. A slide rebases every link, written or not, so it
@@ -1437,8 +1438,9 @@ Fuzzers:
 - `fuzz-diff-deflate`: zlib (every parameter, flush mode, mid-stream
   parameter change) and libdeflate streams must decode exactly; our
   streaming encoder, in every format with fuzzer-placed NONE/SYNC/FULL
-  flushes and piece sizes, must produce piece-independent output that
-  decodes under zlib, libdeflate, and our streaming decoder
+  flushes (some with no input, some left unfinished as it moves on) and
+  piece sizes, must produce piece-independent output that decodes under
+  zlib, libdeflate, and our streaming decoder
 - `fuzz-zipread`: arbitrary bytes as an existing archive, parsed by
   `src/zip.c` as the program reads it (the final 64 KiB, then the Zip64
   end record and the central directory), each part in an allocation of
