@@ -1,4 +1,4 @@
-// tugz core: raw DEFLATE decoder (RFC 1951)
+// tugz core: raw DEFLATE decoder (RFC 1951), and Deflate64
 //
 // Accepts exactly the streams zlib accepts: incomplete Huffman codes are
 // rejected except for a lone 1-bit code, and an empty distance code is
@@ -13,27 +13,47 @@
 // The caller supplies input and output buffers of any size, and decoding
 // resumes wherever the previous call stopped.
 //
+// Deflate64, PKWARE's "Enhanced Deflating" (ZIP method 9), differs only
+// in a 64 KiB window, distance codes 30 and 31 (base 32769 and 49153,
+// 14 extra bits), and length code 285 taking 16 extra bits over a base
+// of 3 (lengths 3 to 65538) rather than meaning 258. Its inflator, from
+// inflate64_new, has a window with 64 KiB of history and room for its
+// longest match. The fast loop is compiled once for each format, with
+// the format a constant, so Deflate's is as if Deflate64 did not exist.
+//
 // Window invariant: until history first slides, wpos equals the total
-// output so far. Afterwards wpos >= INF_HIST, which exceeds any distance.
-// Therefore a distance is too far back exactly when it exceeds wpos.
+// output so far. Afterwards wpos >= the history size, which no distance
+// exceeds. So a distance is too far back exactly when it exceeds wpos.
 
-#define INF_HIST    32768
-#define INF_CHUNK   (1 << 18)
-#define INF_SLACK   (258 + 32)  // room for one match plus wide-copy overrun
-#define INF_WINCAP  (INF_HIST + INF_CHUNK + INF_SLACK)
-#define LIT_ROOT    11
-#define DIST_ROOT   8
-#define LIT_ENOUGH  2342  // zlib's enough for 286 symbols, 11-bit root
-#define DIST_ENOUGH 402   // zlib's enough for 30 symbols, 8-bit root
+#define INF_HIST      32768
+#define INF64_HIST    65536
+#define INF_CHUNK     (1 << 18)
+#define INF_SLACK     (258 + 32)    // room for one match plus wide-copy overrun
+#define INF64_SLACK   (65538 + 32)
+#define INF_WINCAP    (INF_HIST + INF_CHUNK + INF_SLACK)
+#define INF64_WINCAP  (INF64_HIST + INF_CHUNK + INF64_SLACK)
+#define LIT_ROOT      11
+#define DIST_ROOT     8
+#define LIT_ENOUGH    2342  // zlib's enough for 286 symbols, 11-bit root
+#define DIST_ENOUGH   402   // zlib's enough for 30 symbols, 8-bit root
+
+// Deflate64's 32 distance symbols, 8-bit root: the root's 256 entries
+// plus subtables. A subtable of 2^k entries holds a complete subtree at
+// least k deep, so at least k+1 codes, and k <= 15-8. With 32 codes,
+// at most four subtables of 128 entries.
+#define DIST64_ENOUGH (256 + 4*128)
 
 enum {
     HUFF_CODELEN,
     HUFF_LITLEN,
     HUFF_DIST,
+    HUFF_LITLEN64,  // Deflate64's
+    HUFF_DIST64,
 };
 
 // Table entry layout:
 //   bits  0..4   total bits: code length plus extra bits
+//   bit   5      F_HI: add 32768 to the value (Deflate64 distances)
 //   bit   6      F_LINK: subtable link
 //   bit   7      F_LIT: literal
 //   bits  8..11  code length (root bits for a subtable link)
@@ -41,9 +61,10 @@ enum {
 //   bits 16..30  value: literal, base length/distance, or subtable offset
 //   bit  30      F_EOB: end of block (only with F_SPECIAL)
 //   bit  31      F_SPECIAL: end of block or invalid code
-// Length and distance entries have no flags. Flags make the common tests
-// single-bit tests. Subtable entries hold the full code length, so a
-// lookup never needs to consume the root bits separately.
+// Length and distance entries have no flags, but F_HI for Deflate64's
+// distances past 32768. Flags make the common tests single-bit tests.
+// Subtable entries hold the full code length, so a lookup never needs to
+// consume the root bits separately.
 enum {
     ENT_LIT,
     ENT_LEN,  // also distances
@@ -51,6 +72,7 @@ enum {
     ENT_SUB,
     ENT_BAD,
 };
+#define F_HI        (1u << 5)
 #define F_LINK      (1u << 6)
 #define F_LIT       (1u << 7)
 #define F_EOB       (1u << 30)
@@ -67,6 +89,7 @@ enum {
 #define ENT_SUBBITS(e)  ((i32)((e)>>12 & 15))
 #define ENT_EXTRA(e)    (ENT_TOTAL(e) - ENT_CODELEN(e))
 #define ENT_VAL(e)      ((i32)((e)>>16 & 0x7fff))
+#define ENT_VAL64(e)    (ENT_VAL(e) | (i32)((e) & F_HI)<<10)
 #define ENT_KIND(e) \
     ((e) & F_LINK ? ENT_SUB : (e) & F_LIT ? ENT_LIT : \
      !((e) & F_SPECIAL) ? ENT_LEN : (e) & F_EOB ? ENT_EOB : ENT_BAD)
@@ -110,6 +133,7 @@ typedef struct {
 
     i32 state;
     b32 final;
+    b32 d64;      // Deflate64
     iz  stored;   // stored block bytes remaining
     htable lt;    // the current block's codes: fixed, or in the entries
     htable dt;
@@ -126,11 +150,11 @@ typedef struct {
     i32 nlit;       // literal/length code lengths, then distance ones
     i32 nlens;      // total
     i32 nread;      // read so far
-    u16 lens[286+30];
+    u16 lens[286+32];
     u32 cl_entries[128];
 
-    u32 lit_entries[LIT_ENOUGH];
-    u32 dist_entries[DIST_ENOUGH];
+    u32  lit_entries[LIT_ENOUGH];
+    u32 *dist_entries;  // DIST_ENOUGH, or DIST64_ENOUGH for Deflate64
 } inflator;
 
 static u16 const inf_len_base[29] = {
@@ -141,13 +165,15 @@ static u8 const inf_len_extra[29] = {
     0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4,
     4, 5, 5, 5, 5, 0
 };
-static u16 const inf_dist_base[30] = {
+// Distance codes 30 and 31 are Deflate64's alone
+static u16 const inf_dist_base[32] = {
     1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385,
-    513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577
+    513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+    32769, 49153
 };
-static u8 const inf_dist_extra[30] = {
+static u8 const inf_dist_extra[32] = {
     0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9,
-    10, 10, 11, 11, 12, 12, 13, 13
+    10, 10, 11, 11, 12, 12, 13, 13, 14, 14
 };
 static u8 const inf_cl_order[19] = {
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
@@ -260,6 +286,11 @@ static u32 sym_entry(i32 sym, i32 len, i32 kind)
     switch (kind) {
     case HUFF_CODELEN:
         return ENT(len, ENT_LIT, 0, sym);
+    case HUFF_LITLEN64:
+        if (sym == 285) {
+            return ENT(len, ENT_LEN, 16, 3);
+        }
+        [[fallthrough]];
     case HUFF_LITLEN:
         if (sym < 256) {
             return ENT(len, ENT_LIT, 0, sym);
@@ -271,8 +302,11 @@ static u32 sym_entry(i32 sym, i32 len, i32 kind)
         }
         break;
     case HUFF_DIST:
-        if (sym < 30) {
-            return ENT(len, ENT_LEN, inf_dist_extra[sym], inf_dist_base[sym]);
+    case HUFF_DIST64:
+        if (sym < (kind==HUFF_DIST ? 30 : 32)) {
+            u32 base = inf_dist_base[sym];
+            return ENT(len, ENT_LEN, inf_dist_extra[sym], base & 0x7fff) |
+                   (base>>15) * F_HI;
         }
         break;
     }
@@ -301,7 +335,7 @@ static b32 htable_build(htable *t, u32 *entries, iz cap, u16 const *lens,
         t->mask = 1;
         entries[0] = entries[1] = kind==HUFF_CODELEN ? ENT(1, ENT_LIT, 0, 0)
                                                      : ENT(1, ENT_BAD, 0, 0);
-        return kind != HUFF_LITLEN;
+        return kind!=HUFF_LITLEN && kind!=HUFF_LITLEN64;
     }
 
     i32 left = 1;
@@ -389,10 +423,25 @@ static b32 htable_build(htable *t, u32 *entries, iz cap, u16 const *lens,
     return 1;
 }
 
+// Memory needed by inf_new, including alignment padding.
+static iz inf_memsize(b32 d64)
+{
+    iz ndist  = d64 ? DIST64_ENOUGH : DIST_ENOUGH;
+    iz wincap = d64 ? INF64_WINCAP : INF_WINCAP;
+    return (iz)sizeof(inflator) + _Alignof(inflator) +
+           ndist*(iz)sizeof(u32) + _Alignof(u32) + wincap + 64;
+}
+
 // Memory needed by inflate_new, including alignment padding.
 [[maybe_unused]] static iz inflate_memsize(void)
 {
-    return (iz)sizeof(inflator) + _Alignof(inflator) + INF_WINCAP + 64;
+    return inf_memsize(0);
+}
+
+// Memory needed by inflate64_new, including alignment padding.
+[[maybe_unused]] static iz inflate64_memsize(void)
+{
+    return inf_memsize(1);
 }
 
 // Prepare to decode a new stream.
@@ -415,12 +464,27 @@ static void inflate_reset(inflator *s)
 // starts) before any symbol is decoded, every code length is written
 // before it is read, and the stash is filled before it is read. So the
 // state starts uncleared, and costs no more to set up than to reset.
-static inflator *inflate_new(arena *a)
+static inflator *inf_new(arena *a, b32 d64)
 {
     inflator *s = alloc(a, 1, sizeof(inflator), _Alignof(inflator), 0);
-    s->win = newbytes(a, INF_WINCAP);
+    s->d64 = d64;
+    s->dist_entries = alloc(a, d64 ? DIST64_ENOUGH : DIST_ENOUGH,
+                            sizeof(u32), _Alignof(u32), 0);
+    s->win = newbytes(a, d64 ? INF64_WINCAP : INF_WINCAP);
     inflate_reset(s);
     return s;
+}
+
+// A DEFLATE inflator.
+[[maybe_unused]] static inflator *inflate_new(arena *a)
+{
+    return inf_new(a, 0);
+}
+
+// A Deflate64 inflator, otherwise used as inflate_new's.
+[[maybe_unused]] static inflator *inflate64_new(arena *a)
+{
+    return inf_new(a, 1);
 }
 
 // Note that the current unit cannot complete with the input at hand.
@@ -509,13 +573,15 @@ static u32 inf_decode(inflator *s, htable const *t)
 // undelivered output is in the way.
 static b32 inf_room(inflator *s)
 {
-    if (s->wpos <= INF_WINCAP-INF_SLACK) {
+    iz hist = s->d64 ? INF64_HIST : INF_HIST;
+    iz lim  = s->d64 ? INF64_WINCAP-INF64_SLACK : INF_WINCAP-INF_SLACK;
+    if (s->wpos <= lim) {
         return 1;
     } else if (s->wflushed < s->wpos) {
         return 0;
     }
-    bytemove(s->win, s->win+s->wpos-INF_HIST, INF_HIST);
-    s->wpos = s->wflushed = INF_HIST;
+    bytemove(s->win, s->win+s->wpos-hist, hist);
+    s->wpos = s->wflushed = hist;
     return 1;
 }
 
@@ -546,8 +612,9 @@ static void store64(u8 *p, u64 v)
 }
 
 // Copy a match of len bytes from dist back, writing up to 31 bytes past
-// the end (requires slack).
-static u8 *copy_match(u8 *out, iz dist, iz len)
+// the end (requires slack). Inlined into each format's fast loop, as it
+// would be into one.
+[[gnu::always_inline]] static inline u8 *copy_match(u8 *out, iz dist, iz len)
 {
     u8 *src = out - dist;
     u8 *end = out + len;
@@ -592,8 +659,9 @@ static u8 *copy_match(u8 *out, iz dist, iz len)
 
 // Fast loop: runs while at least 16 input bytes and room for a full
 // match remain. Returns true at end of block, false to fall back to the
-// careful path (or on error).
-static b32 decode_fast(inflator *s)
+// careful path (or on error). Always inlined into decode_fast and
+// decode_fast64, so d64 is a constant and each format has its own loop.
+[[gnu::always_inline]] static inline b32 decode_fast_as(inflator *s, b32 d64)
 {
     htable const *lt = &s->lt;
     htable const *dt = &s->dt;
@@ -601,7 +669,7 @@ static b32 decode_fast(inflator *s)
     u8 const *inend = s->inend;
     u8 *win    = s->win;
     u8 *out    = win + s->wpos;
-    u8 *outlim = win + INF_WINCAP - INF_SLACK;
+    u8 *outlim = win + (d64 ? INF64_WINCAP-INF64_SLACK : INF_WINCAP-INF_SLACK);
     u64 bb = s->bitbuf;
     i32 bc = s->bitcnt;
     u32 const *lte = lt->entries;
@@ -617,6 +685,11 @@ static b32 decode_fast(inflator *s)
     // enough to look up the next code early, overlapping the lookup with
     // the match copy. Refilling only appends above existing bits, so the
     // preloaded entry stays valid. An iteration reads at most 8 bytes.
+    //
+    // Deflate64's distances take up to 14 extra bits (15+5+15+14 = 49,
+    // leaving 15, still enough), and its length code 285 takes 16, after
+    // which the buffer refills again before the distance. Its iterations
+    // then read at most 16 bytes, which the loop's test leaves.
     #define REFILL() \
         bb |= load64le(in) << bc; \
         in += (63 - bc) >> 3; \
@@ -646,15 +719,19 @@ static b32 decode_fast(inflator *s)
                     }
                 }
             } else if (!(e & F_SPECIAL)) {
-                iz len = ENT_VAL(e) + EXTRA(e);
+                iz  len    = ENT_VAL(e) + EXTRA(e);
+                b32 refill = d64 && ENT_TOTAL(e)>15+5;
                 CONSUME(e);
+                if (refill) {
+                    REFILL();
+                }
 
                 e = lookup(dte, dmask, bb);
                 if (e & F_SPECIAL) {
                     s->err = GZ_EDATA;
                     break;
                 }
-                iz dist = ENT_VAL(e) + EXTRA(e);
+                iz dist = (d64 ? ENT_VAL64(e) : ENT_VAL(e)) + EXTRA(e);
                 CONSUME(e);
                 if (dist > out-win) {
                     s->err = GZ_EDATA;
@@ -691,6 +768,16 @@ static b32 decode_fast(inflator *s)
     return eob;
 }
 
+static b32 decode_fast(inflator *s)
+{
+    return decode_fast_as(s, 0);
+}
+
+static b32 decode_fast64(inflator *s)
+{
+    return decode_fast_as(s, 1);
+}
+
 // Careful path: decode one literal, length/distance pair, or end of
 // block. Output is only written once the whole unit has been decoded.
 // Like zlib, each field is finished before the next begins, so input
@@ -715,7 +802,7 @@ static void inf_symbol(inflator *s)
     if (s->err) {
         return;
     }
-    iz dist = ENT_VAL(e) + inf_bits(s, ENT_EXTRA(e));
+    iz dist = ENT_VAL64(e) + inf_bits(s, ENT_EXTRA(e));  // F_HI: Deflate64
     if (s->err) {
         return;
     } else if (dist > s->wpos) {
@@ -738,7 +825,7 @@ static void inf_dynamic(inflator *s)
     i32 hclen = (i32)inf_bits(s, 4) + 4;
     if (s->err) {
         return;
-    } else if (hlit>286 || hdist>30) {
+    } else if (hlit>286 || hdist>(s->d64 ? 32 : 30)) {
         s->err = GZ_EDATA;
         return;
     }
@@ -810,15 +897,37 @@ static void inf_lens(inflator *s)
         return;
     }
 
+    b32 d64 = s->d64;
     if (!lens[256] ||
         !htable_build(&s->lt, s->lit_entries, countof(s->lit_entries),
-                      lens, s->nlit, HUFF_LITLEN, LIT_ROOT) ||
-        !htable_build(&s->dt, s->dist_entries, countof(s->dist_entries),
-                      lens+s->nlit, total-s->nlit, HUFF_DIST, DIST_ROOT)) {
+                      lens, s->nlit, d64 ? HUFF_LITLEN64 : HUFF_LITLEN,
+                      LIT_ROOT) ||
+        !htable_build(&s->dt, s->dist_entries,
+                      d64 ? DIST64_ENOUGH : DIST_ENOUGH, lens+s->nlit,
+                      total-s->nlit, d64 ? HUFF_DIST64 : HUFF_DIST,
+                      DIST_ROOT)) {
         s->err = GZ_EDATA;
         return;
     }
     s->state = INF_SYMBOLS;
+}
+
+// Build Deflate64's fixed codes, the same code lengths as DEFLATE's but
+// a different length code 285 and valid distance codes 30 and 31, into
+// the dynamic codes' tables. Rare enough not to need constant tables.
+static void inf_fixed64(inflator *s)
+{
+    u16 *lens = s->lens;
+    for (i32 i = 0; i < 288; i++) {
+        lens[i] = i<144 ? 8 : i<256 ? 9 : i<280 ? 7 : 8;
+    }
+    htable_build(&s->lt, s->lit_entries, countof(s->lit_entries), lens, 288,
+                 HUFF_LITLEN64, LIT_ROOT);
+    for (i32 i = 0; i < 32; i++) {
+        lens[i] = 5;
+    }
+    htable_build(&s->dt, s->dist_entries, DIST64_ENOUGH, lens, 32,
+                 HUFF_DIST64, DIST_ROOT);
 }
 
 // Read a block header, including a stored block's lengths or the start
@@ -846,8 +955,12 @@ static void inf_header(inflator *s)
         s->state = INF_STORED;
     } break;
     case 1:
-        s->lt = (htable){inf_fixlit, countof(inf_fixlit) - 1};
-        s->dt = (htable){inf_fixdist, countof(inf_fixdist) - 1};
+        if (s->d64) {
+            inf_fixed64(s);
+        } else {
+            s->lt = (htable){inf_fixlit, countof(inf_fixlit) - 1};
+            s->dt = (htable){inf_fixdist, countof(inf_fixdist) - 1};
+        }
         s->state = INF_SYMBOLS;
         break;
     case 2:
@@ -905,7 +1018,7 @@ static i32 inf_run(inflator *s)
                 continue;
             }
             iz n = MIN(s->stored, s->inend - s->in);
-            n = MIN(n, INF_WINCAP - s->wpos);
+            n = MIN(n, (s->d64 ? INF64_WINCAP : INF_WINCAP) - s->wpos);
             if (!n) {
                 return GZ_NEEDIN;
             }
@@ -916,7 +1029,7 @@ static i32 inf_run(inflator *s)
         } continue;
         case INF_SYMBOLS:
             if (s->inend-s->in >= 16) {
-                if (decode_fast(s)) {
+                if (s->d64 ? decode_fast64(s) : decode_fast(s)) {
                     s->state = s->final ? INF_END : INF_HEAD;
                 }
                 continue;

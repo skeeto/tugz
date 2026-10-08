@@ -630,9 +630,9 @@ static void bdynamic(bits *b, b32 final, i32 hlit, i32 hdist, u8 const *lens)
 
 typedef struct {
     i32 hlit, hdist;
-    u8  lens[286+30];
+    u8  lens[286+32];  // Deflate64's 32 distance codes, too
     u32 lcodes[286];
-    u32 dcodes[30];
+    u32 dcodes[32];
 } dyncode;
 
 static void dyn_begin(bits *b, dyncode *c)
@@ -1704,6 +1704,316 @@ static void test_inflate_resume(arena a)
         free(z.s);
         free(p);
     }
+}
+
+// Deflate64 streams, built along with the output they decode to
+
+typedef struct {
+    bits     b;
+    dyncode *c;     // the current block's codes, or null for fixed codes
+    u8      *want;  // the output so far
+    iz       len;
+} d64enc;
+
+static void d64_sym(d64enc *e, i32 sym)
+{
+    if (e->c) {
+        dyn_lit(&e->b, e->c, sym);
+    } else {
+        bfixed(&e->b, sym);
+    }
+}
+
+static void d64_lit(d64enc *e, u8 v)
+{
+    d64_sym(e, v);
+    e->want[e->len++] = v;
+}
+
+// A match, its length by code 285 if longer than 258 or if asked to be,
+// else by codes 257 to 284. Only a match within the output so far adds
+// to it, so that an invalid one leaves what precedes the error.
+static void d64_match(d64enc *e, i32 len, i32 dist, b32 use285)
+{
+    TEST(len>=3 && len<=65538 && dist>=1 && dist<=65536);
+    if (use285 || len>258) {
+        d64_sym(e, 285);
+        bput(&e->b, (u32)(len - 3), 16);
+    } else {
+        i32 s = 27;
+        for (; inf_len_base[s] > len; s--) {}
+        d64_sym(e, 257 + s);
+        bput(&e->b, (u32)(len - inf_len_base[s]), inf_len_extra[s]);
+    }
+    i32 d = 31;
+    for (; inf_dist_base[d] > dist; d--) {}
+    if (e->c) {
+        dyn_dist(&e->b, e->c, d);
+    } else {
+        bcode(&e->b, (u32)d, 5);
+    }
+    bput(&e->b, (u32)(dist - inf_dist_base[d]), inf_dist_extra[d]);
+    if (dist <= e->len) {
+        for (i32 i = 0; i < len; i++, e->len++) {
+            e->want[e->len] = e->want[e->len-dist];
+        }
+    }
+}
+
+static void d64_lits(d64enc *e, i32 n)
+{
+    for (i32 i = 0; i < n; i++) {
+        d64_lit(e, (u8)('a' + rand32()%16));
+    }
+}
+
+// Decode a Deflate64 stream, its input given up to cut bytes in the first
+// piece, then inpiece bytes at a time (0 for all the rest), its output
+// taken outpiece bytes at a time (0 for all of cap).
+static i32 d64_run(arena a, u8 const *in, iz len, iz cut, iz inpiece,
+                   iz outpiece, u8 *out, iz cap, iz *outlen, iz *used)
+{
+    inflator *s = inflate64_new(&a);
+    iz off = 0;
+    *outlen = 0;
+    for (;;) {
+        iz n = (off<cut ? cut : len) - off;
+        n = inpiece ? MIN(n, inpiece) : n;
+        iz room = cap - *outlen;
+        room = outpiece ? MIN(room, outpiece) : room;
+        zbuf b = {in+off, n, out+*outlen, room};
+        i32 r = inflate_stream(s, &b);
+        off += n - b.inlen;
+        *outlen += room - b.outlen;
+        TEST(r!=GZ_NEEDIN || !b.inlen);
+        if ((r==GZ_NEEDIN && off<len) || (r==GZ_NEEDOUT && *outlen<cap)) {
+            continue;
+        }
+        *used = off;
+        return r;
+    }
+}
+
+// A Deflate64 stream followed by junk, without a reference to compare
+// against: whole, with output taken in pieces, every prefix, split in
+// two at every byte, and a byte at a time, it must decode to want with
+// status r (GZ_OK, or GZ_EDATA once want is out), ending exactly at the
+// end of the stream, and every prefix must be truncated or fail as the
+// whole does, with a prefix of the output.
+static void check_d64(arena a, u8 const *p, iz len, u8 const *want,
+                      iz wantlen, i32 r)
+{
+    enum { JUNK = 3 };
+    iz  total = len + JUNK;
+    iz  cap   = wantlen + (1<<16);
+    u8 *in    = malloc((uz)total);
+    u8 *out   = malloc((uz)cap);
+    memcpy(in, p, (uz)len);
+    memset(in+len, 0x5a, JUNK);
+    iz outlen, used;
+
+    static iz const outpieces[] = {0, 1, 1000, 65537};
+    for (i32 i = 0; i < countof(outpieces); i++) {
+        i32 got = d64_run(a, in, total, total, 0, outpieces[i], out, cap,
+                          &outlen, &used);
+        TEST(got == r);
+        TEST(outlen==wantlen && !memcmp(out, want, (uz)wantlen));
+        TEST(r!=GZ_OK || used==len);
+    }
+
+    for (iz n = 0; n < len; n++) {
+        i32 got = d64_run(a, in, n, n, 0, 0, out, cap, &outlen, &used);
+        TEST(got==GZ_NEEDIN || (r!=GZ_OK && got==r));
+        TEST(outlen<=wantlen && !memcmp(out, want, (uz)outlen));
+    }
+
+    for (iz cut = 0; cut <= total+1; cut++) {
+        b32 bytewise = cut > total;
+        i32 got = d64_run(a, in, total, bytewise ? 0 : cut, bytewise, 0,
+                          out, cap, &outlen, &used);
+        TEST(got == r);
+        TEST(outlen==wantlen && !memcmp(out, want, (uz)wantlen));
+        TEST(r!=GZ_OK || used==len);
+    }
+
+    free(out);
+    free(in);
+}
+
+static void test_deflate64(os *ctx, arena a)
+{
+    enum { CAP = 1 << 21 };
+    d64enc e = {0};
+    e.want = malloc(CAP);
+
+    // A fixed block, a dynamic block with all 32 distance codes, and a
+    // fixed block again: the longest matches, distances from 1 to 65536
+    // through codes 30 and 31, and more output than the window's chunk,
+    // so matches cross where history slides. Literals vary, so a match
+    // from the wrong distance shows.
+    bput(&e.b, 0, 1);
+    bput(&e.b, 1, 2);
+    d64_lits(&e, 199);
+    d64_match(&e, 65538, 199, 0);  // 285 with its greatest extra value
+    d64_lits(&e, 5);
+    d64_match(&e, 3, 2, 1);        // 285 with its least
+    d64_match(&e, 1000, 3, 1);
+    d64_lits(&e, 5);
+    d64_match(&e, 258, 32769, 0);  // 284's greatest; 30's least
+    d64_match(&e, 300, 65536, 0);  // 31's greatest
+    d64_lits(&e, 5);
+    d64_match(&e, 65538, 49153, 0);
+    d64_match(&e, 70, 40000, 0);
+    d64_sym(&e, 256);
+
+    // 'a' to 'p', end of block, and 257 in 5 bits, the other lengths in
+    // 6, and every distance code in 5
+    dyncode d = {0};
+    d.hlit  = 286;
+    d.hdist = 32;
+    for (i32 i = 0; i < 16; i++) {
+        d.lens['a'+i] = 5;
+    }
+    for (i32 i = 256; i < 286; i++) {
+        d.lens[i] = i<258 ? 5 : 6;
+    }
+    for (i32 i = 0; i < 32; i++) {
+        d.lens[286+i] = 5;
+    }
+    bdynamic(&e.b, 0, d.hlit, d.hdist, d.lens);
+    canonical(d.lens, d.hlit, d.lcodes);
+    canonical(d.lens+d.hlit, d.hdist, d.dcodes);
+    e.c = &d;
+    for (i32 i = 0; i < 4; i++) {
+        d64_lits(&e, 3);
+        d64_match(&e, 65538, 65536, 0);
+    }
+    d64_match(&e, 4000, 32770, 0);
+    d64_match(&e, 258, 49154, 0);
+    d64_match(&e, 10, 1, 0);
+    d64_match(&e, 65538 - 7, 7, 1);
+    d64_sym(&e, 256);
+
+    // The longest pairs, 60 bits: 15-bit codes for length 285 and for
+    // distance codes 30 and 31, the longest extra values, then literals
+    // whose codes the fast loop looks up before its next refill
+    static i32 const steep[][2] = {  // symbol, code length: 1 to 15, 15
+        {'a', 1}, {'b', 2}, {'c', 3}, {'d', 4}, {'e', 5}, {'f', 6},
+        {'g', 7}, {256, 8}, {257, 9}, {258, 10}, {259, 11}, {260, 12},
+        {261, 13}, {262, 14}, {284, 15}, {285, 15},
+    };
+    dyncode t = {0};
+    t.hlit  = 286;
+    t.hdist = 32;
+    for (i32 i = 0; i < countof(steep); i++) {
+        t.lens[steep[i][0]] = (u8)steep[i][1];
+    }
+    for (i32 i = 0; i < 14; i++) {
+        t.lens[286+i] = (u8)(i + 1);
+    }
+    t.lens[286+30] = t.lens[286+31] = 15;
+    bdynamic(&e.b, 0, t.hlit, t.hdist, t.lens);
+    canonical(t.lens, t.hlit, t.lcodes);
+    canonical(t.lens+t.hlit, t.hdist, t.dcodes);
+    e.c = &t;
+    for (i32 i = 0; i < 8; i++) {
+        static i32 const dists[] = {65536, 49153, 49152, 32769};
+        d64_match(&e, 65538 - i%3, dists[i%4], 1);
+        for (i32 j = 0; j < i%5; j++) {
+            d64_lit(&e, (u8)('a' + (i+j)%7));
+        }
+        d64_match(&e, 3 + i%6, 1 + i%2, 0);
+    }
+    d64_sym(&e, 256);
+
+    e.c = 0;
+    bput(&e.b, 1, 1);
+    bput(&e.b, 1, 2);
+    d64_lits(&e, 3);
+    d64_match(&e, 65538, 65536, 0);
+    d64_match(&e, 5, 12345, 0);
+    d64_sym(&e, 256);
+    TEST(e.len > INF64_HIST+INF_CHUNK+65538);
+    check_d64(a, e.b.buf, e.b.len, e.want, e.len, GZ_OK);
+
+    // A distance one past the output so far, at the start and once the
+    // output is just short of the window's 64 KiB, and for contrast,
+    // once the output fills it
+    for (i32 n = 0; n < 3; n++) {
+        static i32 const dists[] = {2, 65536, 65536};
+        e = (d64enc){.want = e.want};
+        bput(&e.b, 1, 1);
+        bput(&e.b, 1, 2);
+        d64_lit(&e, 'a');
+        if (n) {
+            d64_match(&e, 65533 + n, 1, 1);
+        }
+        d64_match(&e, 3, dists[n], 0);
+        d64_sym(&e, 256);
+        check_d64(a, e.b.buf, e.b.len, e.want, e.len, n<2 ? GZ_EDATA : GZ_OK);
+    }
+
+    // Literal/length codes 286 and 287 are invalid as in DEFLATE
+    for (i32 sym = 286; sym <= 287; sym++) {
+        e = (d64enc){.want = e.want};
+        bput(&e.b, 1, 1);
+        bput(&e.b, 1, 2);
+        d64_lit(&e, 'a');
+        d64_sym(&e, sym);
+        bput(&e.b, 0, 16);
+        check_d64(a, e.b.buf, e.b.len, e.want, e.len, GZ_EDATA);
+    }
+
+    // DEFLATE, for contrast, against zlib. Length code 285 means 258,
+    // with no extra bits, and distance codes 30 and 31 are invalid, as is
+    // a dynamic block with more than 30 distance codes, which Deflate64
+    // takes.
+    e = (d64enc){.want = e.want};
+    bput(&e.b, 1, 1);
+    bput(&e.b, 1, 2);
+    d64_lit(&e, 'a');
+    d64_sym(&e, 285);
+    bcode(&e.b, 0, 5);
+    d64_sym(&e, 256);
+    check_splits(a, e.b.buf, e.b.len);
+    s8 out;
+    TEST(do_inflate(ctx, a, e.b.buf, e.b.len, &out) == GZ_OK);
+    TEST(out.len == 259);
+    free(out.s);
+
+    e = (d64enc){.want = e.want};
+    bput(&e.b, 1, 1);
+    bput(&e.b, 1, 2);
+    d64_lits(&e, 40);
+    d64_match(&e, 3, 32769, 0);
+    d64_sym(&e, 256);
+    check_splits(a, e.b.buf, e.b.len);
+    TEST(do_inflate(ctx, a, e.b.buf, e.b.len, &out) == GZ_EDATA);
+    free(out.s);
+
+    for (i32 hdist = 30; hdist <= 32; hdist++) {
+        e = (d64enc){.want = e.want};
+        d.hdist = hdist;
+        for (i32 i = 0; i < 32; i++) {
+            d.lens[286+i] = i<hdist ? 5 : 0;
+        }
+        d.lens[286]    = hdist<32  ? 4 : 5;  // complete in every case
+        d.lens[286+29] = hdist==30 ? 4 : 5;
+        bdynamic(&e.b, 1, d.hlit, d.hdist, d.lens);
+        canonical(d.lens, d.hlit, d.lcodes);
+        canonical(d.lens+d.hlit, d.hdist, d.dcodes);
+        e.c = &d;
+        d64_lits(&e, 20);
+        d64_match(&e, 10, 1, 0);
+        d64_sym(&e, 256);
+        check_splits(a, e.b.buf, e.b.len);
+        TEST(do_inflate(ctx, a, e.b.buf, e.b.len, &out) ==
+             (hdist==30 ? GZ_OK : GZ_EDATA));
+        free(out.s);
+        check_d64(a, e.b.buf, e.b.len, e.want, e.len, GZ_OK);
+    }
+
+    free(e.want);
 }
 
 static void test_inflate_zlib(os *ctx, arena a)
@@ -3114,6 +3424,7 @@ int main(void)
     test_inflate_repeats(&ctx, a);
     test_inflate_splits(a);
     test_inflate_resume(a);
+    test_deflate64(&ctx, a);
     test_container(&ctx, a);
     test_io_errors(&ctx, a);
     test_cli(&ctx, a);
