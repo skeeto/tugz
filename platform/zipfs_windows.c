@@ -122,7 +122,8 @@ static b32 handle_info(iptr h, os_info *info)
 
 // Symbolic links and junctions are followed, as Info-ZIP does on Windows
 // (there is no -y), unless asked not to, as for the directories along an
-// entry's name, when a link or a junction is FT_LINK. Other reparse
+// entry's name, when a link or a junction, or any other reparse point
+// that names another file (reparse_link), is FT_LINK. Other reparse
 // points, such as cloud placeholders, are ordinary files.
 static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
                    arena scratch)
@@ -154,8 +155,7 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
     if (ok && !follow && (info->attr & FILE_ATTRIBUTE_REPARSE) &&
         GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag,
                                      sizeof(tag)) &&
-        (tag.reparse_tag==IO_REPARSE_TAG_SYMLINK ||
-         tag.reparse_tag==IO_REPARSE_TAG_MOUNT_POINT)) {
+        reparse_link(tag)) {
         info->type = FT_LINK;
     }
     CloseHandle(h);

@@ -68,8 +68,7 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define FIND_FIRST_EX_LARGE_FETCH  2u
 #define PIPE_NOWAIT                1u
 #define PIPE_READMODE_MESSAGE      2u
-#define IO_REPARSE_TAG_MOUNT_POINT 0xa0000003u
-#define IO_REPARSE_TAG_SYMLINK     0xa000000cu
+#define IO_REPARSE_TAG_SURROGATE   0x20000000u
 #define INVALID_FILE_ATTRIBUTES    0xffffffffu
 #define INVALID_HANDLE_VALUE       ((iptr)-1)
 #define LOCALE_INVARIANT           0x7fu
@@ -117,6 +116,16 @@ typedef struct {
     u32 attributes;
     u32 reparse_tag;
 } attribute_tag_info;
+
+// Whether a reparse point is a link: its tag a name surrogate, which
+// names another file, as a symbolic link, a junction, or a WSL or
+// container link does (IsReparseTagNameSurrogate). Others, such as a
+// cloud placeholder or a deduplicated file, are the file itself.
+static b32 reparse_link(attribute_tag_info tag)
+{
+    return (tag.attributes & FILE_ATTRIBUTE_REPARSE) &&
+           (tag.reparse_tag & IO_REPARSE_TAG_SURROGATE);
+}
 
 enum { MAX_HANDLES = 8 };
 
@@ -460,8 +469,7 @@ static i32 open_input(c16 *wpath, i32 mode, iptr *out)
         GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof(tag));
         if (tag.attributes & FILE_ATTRIBUTE_REPARSE) {
             CloseHandle(h);
-            if (tag.reparse_tag==IO_REPARSE_TAG_SYMLINK ||
-                tag.reparse_tag==IO_REPARSE_TAG_MOUNT_POINT) {
+            if (reparse_link(tag)) {
                 return OS_ESYMLINK;
             }
             return open_input(wpath, mode & ~OS_NOFOLLOW, out);
@@ -505,7 +513,8 @@ static i32 open_input(c16 *wpath, i32 mode, iptr *out)
 // does. DeleteFileW refuses two of those. A read-only file: clear the
 // attribute through a handle, mark the file deleted, then restore it,
 // which the deletion survives, for any other hard links to the file. A
-// junction or a directory link, which is a directory to DeleteFileW:
+// junction or another directory link (reparse_link), which is a
+// directory to DeleteFileW:
 // mark it deleted through a handle to the link itself, which removes
 // only the link, never its target nor what is in it. Each is checked
 // through the handle, so that what is deleted is what was checked,
@@ -545,9 +554,8 @@ static b32 remove_file(c16 *wpath)
     b32 ok = GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag,
                                           sizeof(tag));
     if (link) {
-        ok = ok && (tag.attributes&dirlink)==dirlink &&
-             (tag.reparse_tag==IO_REPARSE_TAG_MOUNT_POINT ||
-              tag.reparse_tag==IO_REPARSE_TAG_SYMLINK);
+        ok = ok && (tag.attributes & FILE_ATTRIBUTE_DIRECTORY) &&
+             reparse_link(tag);
     } else {
         ok = ok && (tag.attributes&rofile)==FILE_ATTRIBUTE_READONLY;
     }

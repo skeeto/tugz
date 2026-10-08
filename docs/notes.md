@@ -1332,8 +1332,12 @@ for entries.
   port passes `SetFileTime` none, where POSIX copies the modification
   time; and its creation time is set, as `SetFileTime` sets it
   (`test_wintimes`; `unzip_windows.sh`, "Times").
-  Junctions, like links, count as links on the way to an entry, and a
-  junction or a directory link at a file entry's own name is replaced,
+  Here and in gzip and zip, a link is any reparse point whose tag is a
+  name surrogate (`IsReparseTagNameSurrogate`): links, junctions, WSL
+  and container links; others, such as cloud placeholders, are the file
+  itself. Junctions, like links, count as links on the way to an
+  entry, and a junction or a directory link at a file entry's own name
+  is replaced,
   as a link is on POSIX: removed by a handle to the link itself, opened
   with `FILE_FLAG_OPEN_REPARSE_POINT`, checked to be a junction or a
   link, and marked deleted, which removes neither its target nor what
