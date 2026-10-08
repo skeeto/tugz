@@ -963,7 +963,7 @@ static i32 inf_held(inflator *s, i32 r)
 // Output may also be taken without copying through inflate_pending and
 // inflate_consume, in which case b->out may be empty, and GZ_NEEDOUT
 // asks the caller to take the pending output and call again.
-static i32 inflate_stream(inflator *s, zbuf *b)
+static i32 inf_stream(inflator *s, zbuf *b)
 {
     if (s->err) {
         inf_drain(s, b);
@@ -1018,4 +1018,22 @@ static i32 inflate_stream(inflator *s, zbuf *b)
         s->bitcnt = 0;
     }
     return inf_held(s, r);
+}
+
+// As inf_stream, but also for a null b->in with no input, which callers
+// pass naturally (unzip for an empty entry, the library for a call that
+// only takes output): offsetting a null pointer, even by zero, is
+// undefined, so an empty array stands in for it.
+static i32 inflate_stream(inflator *s, zbuf *b)
+{
+    if (b->in) {
+        return inf_stream(s, b);
+    }
+    static u8 const none[1];
+    zbuf t = *b;
+    t.in = none;
+    i32 r = inf_stream(s, &t);
+    b->out    = t.out;
+    b->outlen = t.outlen;
+    return r;
 }
