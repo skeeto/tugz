@@ -1070,7 +1070,7 @@ static os *unzipos_new(iz cap)
 {
     os *ctx = calloc(1, sizeof(*ctx));
     CHECK(ctx);
-    ctx->mem = malloc((uz)cap);
+    ctx->mem = calloc(1, (uz)cap);  // (not read: GCC thinks poisoning is)
     CHECK(ctx->mem);
     ctx->cap = cap;
     ctx->lo  = ctx->mem;
