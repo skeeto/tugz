@@ -121,6 +121,25 @@ def symbol(v, base, extra):
     i = max(i for i, b in enumerate(base) if b <= v)
     return i, extra[i], v - base[i]
 
+# Deflate64's codes (see src/inflate.c): length code 285 is 16 extra bits
+# over a base of 3, and distance codes 30 and 31 reach 64 KiB back. A
+# match token (length, distance, 285) codes its length with 285 even if
+# shorter codes could.
+DIST_BASE64 = DIST_BASE + [32769, 49153]
+DIST_EXTRA64 = DIST_EXTRA + [14, 14]
+
+def lensym(t, d64):
+    if d64 and (t[0] > 258 or len(t) > 2):
+        return 28, 16, t[0] - 3
+    if d64:
+        return symbol(t[0], LEN_BASE[:28], LEN_EXTRA[:28])
+    return symbol(t[0], LEN_BASE, LEN_EXTRA)
+
+def distsym(t, d64):
+    if d64:
+        return symbol(t[1], DIST_BASE64, DIST_EXTRA64)
+    return symbol(t[1], DIST_BASE, DIST_EXTRA)
+
 def code_lengths(freq):
     """Huffman code lengths, at most 15, for {symbol: count}."""
     if len(freq) == 1:
@@ -149,18 +168,19 @@ def canonical(lens):
         code <<= 1
     return codes
 
-def dynamic(w, tokens, final, bad=None):
+def dynamic(w, tokens, final, bad=None, d64=False):
     """One dynamic block of tokens, literals or (length, distance), with
     the code length code {0..15: 4 bits}. bad="empty" gives the matches
     an empty distance code, and bad="unused" codes the last match's
-    distance with a lone code's unused codeword: both invalid."""
+    distance with a lone code's unused codeword: both invalid. d64
+    codes it as Deflate64."""
     lfreq, dfreq = {256: 1}, {}
     for t in tokens:
         if isinstance(t, int):
             lfreq[t] = lfreq.get(t, 0) + 1
         else:
-            ls = 257 + symbol(t[0], LEN_BASE, LEN_EXTRA)[0]
-            ds = symbol(t[1], DIST_BASE, DIST_EXTRA)[0]
+            ls = 257 + lensym(t, d64)[0]
+            ds = distsym(t, d64)[0]
             lfreq[ls] = lfreq.get(ls, 0) + 1
             dfreq[ds] = dfreq.get(ds, 0) + 1
     llens = code_lengths(lfreq)
@@ -186,8 +206,8 @@ def dynamic(w, tokens, final, bad=None):
         if isinstance(t, int):
             w.code(lc[t], lens[t])
             continue
-        ls, le, lv = symbol(t[0], LEN_BASE, LEN_EXTRA)
-        ds, de, dv = symbol(t[1], DIST_BASE, DIST_EXTRA)
+        ls, le, lv = lensym(t, d64)
+        ds, de, dv = distsym(t, d64)
         w.code(lc[257+ls], lens[257+ls])
         w.put(lv, le)
         if bad == "empty":
@@ -258,6 +278,109 @@ for name, spec in blocks.items():
                 streaming(fmt, piece, rng.randrange(8)) + z)
             nlone += 1
 print(nlone, "lone and empty distance code seeds")
+
+# Deflate64 streams for fuzz-inflate, which decodes its input after the
+# first byte as Deflate64, that byte selecting input and output piece
+# sizes (fuzz_pieces indices, bits 0-2 and 3-5): the longest matches
+# (length code 285's 16 extra bits), distances past 32 KiB (codes 30 and
+# 31), enough output to slide the 64 KiB window, fixed and stored blocks
+# among dynamic ones, and invalid and truncated streams. Python has no
+# Deflate64 codec, so they are built here from tokens.
+def fixed(w, tokens, final, d64=True):
+    """One block of fixed codes."""
+    def sym(s):
+        if s < 144:
+            w.code(0x30 + s, 8)
+        elif s < 256:
+            w.code(0x190 + s - 144, 9)
+        elif s < 280:
+            w.code(s - 256, 7)
+        else:
+            w.code(0xc0 + s - 280, 8)
+    w.put(final, 1)
+    w.put(1, 2)
+    for t in tokens:
+        if isinstance(t, int):
+            sym(t)
+            continue
+        ls, le, lv = lensym(t, d64)
+        ds, de, dv = distsym(t, d64)
+        sym(257 + ls)
+        w.put(lv, le)
+        w.code(ds, 5)
+        w.put(dv, de)
+    sym(256)
+
+def stored(w, data, final):
+    w.put(final, 1)
+    w.put(0, 2)
+    w.put(0, -w.n % 8)
+    w.put(len(data), 16)
+    w.put(len(data) ^ 0xffff, 16)
+    for c in data:
+        w.put(c, 8)
+
+rng = random.Random(3)
+def lits(n):
+    return [rng.choice(b"abcdefgh") for _ in range(n)]
+def far(n, lo=32769, hi=65536):
+    """Literals and matches at distances from lo to hi, after 64 KiB."""
+    toks = []
+    for _ in range(n):
+        toks += lits(rng.randint(0, 3))
+        toks.append((rng.choice([3, 4, 10, 100, 258, 259, 1000, 20000]),
+                     rng.randint(lo, hi)))
+    return toks
+noise64 = bytes(rng.getrandbits(8) for _ in range(40000))
+FILL = lits(100) + [(65438, 100)]  # 64 KiB of history
+d64blocks = {  # name: [(kind, tokens or data)] per block
+    "long": [("dynamic", list(b"Deflate64 ") + [(65538, 10)]*5 +
+              [(300, 40000), (1000, 65536), (65538, 49153), (65535, 32769),
+               (258, 1), (259, 1), (10, 2, 285)])],
+    "far": [("dynamic", FILL + far(60))],
+    "far-fixed": [("fixed", FILL + far(60))],
+    "short285": [("dynamic", lits(20) + [(n, rng.randint(1, 20), 285)
+                                          for n in range(3, 300, 7)])],
+    "stored": [("stored", noise64),
+               ("dynamic", far(80, 32769, 40000))],
+    "blocks": [("fixed", FILL + far(10)),
+               ("stored", noise64[:1000]),
+               ("dynamic", far(30)),
+               ("fixed", far(10)),
+               ("dynamic", far(20, 49153))],
+    "bad-far": [("dynamic", list(b"abc") + [(10, 65536)])],
+    "bad-far-fixed": [("fixed", FILL[:50] + [(10, 40000)])],
+    "bad-unused": [("unused", [97] + [(65538, 1)]*3)],
+}
+d64seeds = {}  # name: (stream, its output if valid)
+for name, spec in d64blocks.items():
+    bad = name.startswith("bad")
+    w, data = Bits(), bytearray()
+    for k, (kind, b) in enumerate(spec):
+        final = k == len(spec)-1
+        if kind == "stored":
+            stored(w, b, final)
+            data += b
+            continue
+        if kind == "fixed":
+            fixed(w, b, final)
+        else:
+            dynamic(w, b, final, "unused" if kind == "unused" else None, True)
+        if not bad:
+            expand(b, data)
+    raw = w.done()
+    d64seeds[name] = raw, None if bad else bytes(data)
+    if not bad:
+        d64seeds[f"cut-{name}"] = raw[:len(raw)//2], None
+# Deflate streams are Deflate64 ones too unless they code length 258
+for name, s in (("words", samples[6]), ("hello", samples[2])):
+    d64seeds[f"deflate-{name}"] = zlib.compress(s, 9, -15), None
+nd64 = 0
+for name, (raw, _) in d64seeds.items():
+    for cfg in (0x00, 0x01, 0x08, 0x09, 0x17, 0x2d, 0x38, 0x3f):
+        put("inflate", f"d64-{name}-{cfg:02x}", bytes([cfg]) + raw)
+        nd64 += 1
+print(nd64, "Deflate64 seeds")
 
 # ZIP archives for fuzz-zipread, mostly from Python's zipfile, some
 # patched into forms it does not write: Zip64 end records and central
@@ -452,8 +575,9 @@ print(nzip, "zip program seeds")
 # fault, bits 5-7), at, cfg (the umask, a terminal, standard input a
 # file, and canned answers, bits 4-7), and n, the length of answers
 # given instead (here none). The archives: those above, test/unzipcraft.py's
-# hostile ones (written by it to a scratch directory), and entries aimed
-# at the links the harness plants in its -d directory.
+# hostile ones (written by it to a scratch directory), entries aimed at
+# the links the harness plants in its -d directory, and two of the
+# Deflate64 streams above, whose output slides the window.
 import sys
 
 def unix_entry(name, kind=0o100000, mode=0o644):
@@ -482,6 +606,28 @@ uzips["planted"] = archive([
     (unix_entry("dir/f"), b"f\n"),
     (unix_entry("ble.txt"), b"b\n"),
 ])
+
+def deflate64_archive(streams):
+    """An archive of the Deflate64 seed streams [(name, stream, data)]:
+    written stored, then patched to method 9 with the data's CRC and
+    size."""
+    z = bytearray(archive([(entry(n, zipfile.ZIP_STORED), raw)
+                           for n, raw, _ in streams]))
+    cdoff = end_record(bytes(z))[3]
+    loc, cen = 0, cdoff
+    for _, raw, data in streams:
+        for p, at in ((loc, 8), (cen, 10)):
+            z[p+at:p+at+2] = struct.pack("<H", 9)
+            z[p+at+6:p+at+10] = struct.pack("<I", zlib.crc32(data))
+            z[p+at+14:p+at+18] = struct.pack("<I", len(data))
+        nlen, xlen = struct.unpack("<HH", z[loc+26:loc+30])
+        loc += 30 + nlen + xlen + len(raw)
+        nlen, xlen, clen = struct.unpack("<HHH", z[cen+28:cen+34])
+        cen += 46 + nlen + xlen + clen
+    return bytes(z)
+
+uzips["deflate64"] = deflate64_archive(
+    [(n, d64seeds[n][0], d64seeds[n][1]) for n in ("long", "blocks")])
 with tempfile.TemporaryDirectory() as tmp:
     subprocess.run([sys.executable, os.path.abspath("test/unzipcraft.py")],
                    cwd=tmp, check=True)
