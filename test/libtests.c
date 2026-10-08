@@ -447,6 +447,7 @@ static void test_members(void)
     memcpy(p, a.s, (uz)a.len);
     memcpy(p+a.len, b.s, (uz)b.len);
     memcpy(p+a.len+b.len, "junk", 4);
+    p[a.len+1] = 0x9e;  // the old magic, which GNU gzip accepts
 
     for (i32 i = 0; i < countof(pieces); i++) {
         tugz_inflator *z;

@@ -3,7 +3,8 @@
 //
 // The gzip decoder handles one member at a time: after a member ends,
 // the next call begins parsing another. Bytes that are not a gzip header
-// produce GZ_ENOTGZ, leaving trailing data policy to the caller.
+// produce GZ_ENOTGZ, leaving trailing data policy to the caller. As in
+// GNU gzip, a header may begin with the old magic, 1f 9e, as well as 1f 8b.
 
 enum {
     FMT_RAW,
@@ -132,9 +133,11 @@ static i32 gzip_header_byte(decoder *z, u8 c)
     z->hpos++;
     switch (z->state) {
     case DEC_FIXED:
-        // Each field is validated as soon as it is complete, like zlib
+        // Each field is validated as soon as it is complete, like zlib.
+        // As in GNU gzip, the old magic, 1f 9e, also begins a member.
         z->buf[z->len++] = c;
-        if (z->len==2 && (z->buf[0]!=0x1f || z->buf[1]!=0x8b)) {
+        if (z->len==2 && (z->buf[0]!=0x1f ||
+                          (z->buf[1]!=0x8b && z->buf[1]!=0x9e))) {
             return GZ_ENOTGZ;
         } else if (z->len==4 && z->buf[2]!=8) {
             return GZ_EMETHOD;

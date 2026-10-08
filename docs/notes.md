@@ -1623,7 +1623,10 @@ Fuzzers:
 - Decoder strictness matches zlib exactly: incomplete codes rejected
   except a lone 1-bit code; an empty distance code is an error only when
   used; reserved header flags rejected; FHCRC verified.
-- Concatenated members decode in sequence. As in GNU gzip, data after
+- Concatenated members decode in sequence. As in GNU gzip (though not
+  zlib), a member may begin with the old magic, `1f 9e`, as well as
+  `1f 8b`, first or later, in the library too. GNU's other formats
+  (compress, pack, LZH) are not read. As in GNU gzip, data after
   the last member is ignored with a warning (exit 2), unless it is only
   zero bytes (padding, as on tape), which is fine, or starts with the
   gzip magic, in which case it must be a valid member. GNU gzip reads

@@ -7,6 +7,8 @@ set -e
 GZIP=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 REF=${REF:-/usr/bin/gzip}
 LIBDEFLATE=${LIBDEFLATE:-$(command -v libdeflate-gzip || true)}
+gnu=  # whether REF is GNU gzip, for tests of GNU's particular behavior
+"$REF" --version 2>/dev/null | grep -q 'Free Software Foundation' && gnu=1
 tmp=$(mktemp -d)
 trap 'cd / && rm -rf "$tmp"' EXIT
 cd "$tmp"
@@ -137,6 +139,23 @@ cat one text | cmp -s - m.out || fail "multi-member"
 "$GZIP" -c text one empty binary one >m3.gz
 for f in text one empty binary one; do "$GZIP" -c $f; done >m3.want
 cmp -s m3.want m3.gz || fail "several files in one run"
+
+# As in GNU gzip, the old magic, 1f 9e, begins a member too, first or
+# later, so in place nothing is taken for trailing garbage
+{ printf '\037\236'; tail -c +3 m1.gz; } >old1.gz
+cat m1.gz old1.gz >old2.gz
+printf x >old1.want
+printf xx >old2.want
+for f in old1 old2; do
+    same_output $f.want "$GZIP" -dc $f.gz || fail "old magic: -dc $f"
+    expect_status 0 "$GZIP" -t $f.gz
+    cp $f.gz $f.in.gz
+    "$GZIP" -d $f.in.gz || fail "old magic: -d $f"
+    [ ! -e $f.in.gz ] && cmp -s $f.in $f.want || fail "old magic: -d $f"
+    if [ -n "$gnu" ]; then
+        same_output $f.want "$REF" -dc $f.gz || fail "old magic: $REF -dc $f"
+    fi
+done
 
 # Trailing garbage is a warning; corruption is an error
 { cat m1.gz; printf junk; } >tg.gz

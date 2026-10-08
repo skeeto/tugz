@@ -2280,6 +2280,17 @@ static void test_container(os *ctx, arena a)
     TEST(equals(out, (u8 *)"hellohello", 10));
     free(out.s);
 
+    // As in GNU gzip, the old magic, 1f 9e, begins a member too, first
+    // or later
+    for (i32 i = 0; i < 2; i++) {
+        s8 old = cat(gzbytes(member.s, member.len), member.s, member.len);
+        old.s[i*member.len + 1] = 0x9e;
+        TEST(do_gunzip(ctx, a, old.s, old.len, &out) == GZ_OK);
+        TEST(equals(out, (u8 *)"hellohello", 10));
+        free(out.s);
+        free(old.s);
+    }
+
     // Empty member followed by a member
     s8 none;
     TEST(do_gzip(ctx, a, 0, 0, 6, &none) == GZ_OK);
@@ -2307,6 +2318,7 @@ static void test_container(os *ctx, arena a)
         {{0x1f},             1, GZ_ETRUNC},
         {{0x1f, 0x8b},       2, GZ_ETRUNC},
         {{0x1f, 0x8b, 8, 0}, 4, GZ_ETRUNC},
+        {{0x1f, 0x9e, 8, 0}, 4, GZ_ETRUNC},
         {{0x1f, 0x8c, 8, 0}, 4, GZ_TRAILING},
     };
     for (i32 i = 0; i < countof(tails); i++) {
