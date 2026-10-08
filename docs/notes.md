@@ -1196,8 +1196,14 @@ for entries.
   modification time, for files and directories, `-D` and `-DD` skipping
   it with the others (`test_ctime`; `unzip_windows.sh`, "Times").
   Junctions, like links, count as links on the way to an entry, and a
-  junction at an entry's own name cannot be removed ("cannot delete
-  old", 50), so nothing is written through it. A link becomes a regular
+  junction or a directory link at a file entry's own name is replaced,
+  as a link is on POSIX: removed by a handle to the link itself, opened
+  with `FILE_FLAG_OPEN_REPARSE_POINT`, checked to be a junction or a
+  link, and marked deleted, which removes neither its target nor what
+  is in it, so nothing is written through it. A directory that is not
+  a link, even an empty one, stays ("cannot delete old", 50, as in
+  UnZip). At a directory entry's own name, a junction is "exists but is
+  not directory" (2), as a link is on POSIX. A link becomes a regular
   file holding its target, as in the port, made last, as on POSIX. DOS
   times are local by each year's own daylight saving rules
   (`TzSpecificLocalTimeToSystemTime`), as zip writes them there. There
@@ -1294,8 +1300,9 @@ ones as invariants. Those that no test asserts are marked untested.
   (`unzip.sh`, "names.zip"). Listings' dates are ISO, as Debian's.
 - Windows: a link becomes a file holding its target, as in the port, but
   made last, as on POSIX (`unzip_windows.sh`, "Links"; `test_windows`).
-  Junctions and directory links are never followed (`unzip_windows.sh`,
-  which also finds a junction at an entry's own name left in place, 50).
+  Junctions and directory links are never followed, but replaced at a
+  file entry's own name, as links are on POSIX (`unzip_windows.sh`,
+  which also finds an empty directory there left in place, 50).
   Trailing dots and spaces are dropped from names, and devices' names
   found by a list, rather than left to the system and asked of it
   (`test_windows`; `unzip_windows.sh`, "Names mapped for Windows"). DOS
@@ -1621,10 +1628,13 @@ Fuzzers:
 - `-f` replaces an existing output by unlinking it first, never writing
   through a link. On Windows a read-only output is replaced too, as
   unlinking ignores the mode on POSIX: the attribute is cleared just to
-  delete the file, then restored, so other hard links to it keep it. An
-  output it cannot remove (a directory, and on Windows a name another
-  process holds delete-pending) is an error (1), as in GNU gzip, while
-  without `-f` it is refused with a warning (2).
+  delete the file, then restored, so other hard links to it keep it.
+  Likewise a junction or a directory link is replaced, as a link is on
+  POSIX, removing the link alone, never its target nor what is in it
+  (`cli.sh`). An output it cannot remove (a directory, even an empty
+  one, and on Windows a name another process holds delete-pending) is
+  an error (1), as in GNU gzip, while without `-f` it is refused with a
+  warning (2).
 - Windows paths get the `\\?\` prefix, lifting MAX_PATH. It turns off
   Win32 parsing, so paths are first resolved as Win32 would: against the
   current directory (UNC or not), a drive's, or the root, dropping `.`,
