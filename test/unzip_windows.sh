@@ -65,6 +65,10 @@ atimeutc() {
     ps "(Get-Item -Force -LiteralPath '$1').LastAccessTimeUtc.ToString('s')" |
         tr -d '\r'
 }
+ctimeutc() {
+    ps "(Get-Item -Force -LiteralPath '$1').CreationTimeUtc.ToString('s')" |
+        tr -d '\r'
+}
 
 # Extract with Explorer's zip folder, which runs asynchronously.
 shell_extract() {  # archive directory count
@@ -272,10 +276,13 @@ attrib +r attr\\plain.txt
 # Times: MS-DOS times are local by each year's own daylight saving
 # rules, as .NET gives them; a local extended timestamp (UT) gives
 # modification and access times in UTC, for directories too, set once
-# their files are in them; -D skips directories', -DD all of them
-ut() {  # flags mtime [atime]: a UT field
-    printf 'UT'; f16 $((1 + 4*($# - 1))); printf '\\%03o' $1; f32 $2
-    [ $# -lt 3 ] || f32 $3
+# their files are in them; -D skips directories', -DD all of them. Its
+# creation time is set too, as Info-ZIP's port sets it, only along with
+# its modification time
+ut() {  # flags time...: a UT field, the times its flags announce
+    printf 'UT'; f16 $((1 + 4*($# - 1))); printf '\\%03o' $1
+    shift
+    for t; do f32 $t; done
 }
 entry 'winter.txt' 0 $FAT 32 $(dos 2006 1 15 12 0 0)
 entry 'summer.txt' 0 $FAT 32 $(dos 2006 7 15 12 0 0)
@@ -283,6 +290,10 @@ entry 'march.txt' 0 $FAT 32 $(dos 2006 3 20 12 0 0)
 entry 'ut.txt' 0 $UNIX $FILE $d2020 "$(ut 3 1000000000 1100000000)"
 entry 'd/' 0 $UNIX $((040755 << 16 | 16)) $d2020 "$(ut 1 1200000000)"
 entry 'd/f.txt' 0 $UNIX $FILE $d2020
+entry 'ct.txt' 0 $UNIX $FILE $d2020 "$(ut 7 1000000000 1100000000 900000000)"
+entry 'noct.txt' 0 $UNIX $FILE $d2020 "$(ut 6 1100000000 850000000)"
+entry 'cd/' 0 $UNIX $((040755 << 16 | 16)) $d2020 \
+    "$(ut 5 1200000000 950000000)"
 finish times.zip
 for D in '' -D -DD; do
     rm -rf times
@@ -299,16 +310,26 @@ for D in '' -D -DD; do
             fail "UT time: $(mtimeutc times/ut.txt)"
         [ "$(atimeutc times/ut.txt)" = 2004-11-09T11:33:20 ] ||
             fail "UT access time: $(atimeutc times/ut.txt)"
+        [ "$(ctimeutc times/ct.txt)" = 1998-07-09T16:00:00 ] ||
+            fail "UT creation time: $(ctimeutc times/ct.txt)"
     else
         [ "$(mtime times/winter.txt)" != 2006-01-15T12:00:00 ] ||
             fail "-DD set a time"
+        [ "$(ctimeutc times/ct.txt)" != 1998-07-09T16:00:00 ] ||
+            fail "-DD set a creation time"
     fi
+    [ "$(ctimeutc times/noct.txt)" != 1996-12-07T23:06:40 ] ||
+        fail "a creation time without a modification time"
     if [ -z "$D" ]; then
         [ "$(mtimeutc times/d)" = 2008-01-10T21:20:00 ] ||
             fail "directory time: $(mtimeutc times/d)"
+        [ "$(ctimeutc times/cd)" = 2000-02-08T08:53:20 ] ||
+            fail "directory creation time: $(ctimeutc times/cd)"
     else
         [ "$(mtimeutc times/d)" != 2008-01-10T21:20:00 ] ||
             fail "$D set a directory time"
+        [ "$(ctimeutc times/cd)" != 2000-02-08T08:53:20 ] ||
+            fail "$D set a directory creation time"
     fi
 done
 
