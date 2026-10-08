@@ -958,7 +958,9 @@ static i32 os_symlink(os *ctx, s8 target, s8 path, osattrs *attrs, s8 *why,
         if (tlen) {
             bytecopy(f->data, target.s, tlen);
         }
-        if (attrs->flags & OS_AOWNER) {
+        if (ctx->windows) {
+            failed = mfs_setattrs(ctx, f, attrs, why);  // as any file's
+        } else if (attrs->flags & OS_AOWNER) {
             osattrs own = {0};
             own.uid   = attrs->uid;
             own.gid   = attrs->gid;

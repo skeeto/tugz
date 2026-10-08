@@ -356,15 +356,29 @@ for D in '' -D -DD; do
 done
 
 # Links, from Unix, become files holding their targets, as in Info-ZIP's
-# port, made last
+# port, made last, with a file's attributes and times, as the port's
+# close_outfile gives them to any file
 entry 'link' 0 $UNIX $((0120777 << 16)) $d2020 '' 'target' 1181691900
 entry 'target' 0 $UNIX $FILE $d2020 '' 'hello\n' 909783072
+entry 'rolink' 0 $UNIX $((0120777 << 16 | 1)) $d2020 "$(ut 1 1000000000)" \
+    'target' 1181691900
 finish link.zip
 mkdir link
 (cd link && "$UNZIP" ../link.zip >../out) || fail "link: status $?"
 [ "$(cat link/link)" = target ] || fail "link file: $(cat link/link)"
 [ "$(cat link/target)" = hello ] || fail "link's target"
 grep -q '^finishing deferred symbolic links:' out || fail "link: $(cat out)"
+[ "$(mtime link/link)" = 2020-01-02T03:04:06 ] ||
+    fail "link file's time: $(mtime link/link)"
+[ "$(attrs link/link)" = Archive ] ||
+    fail "link file's attributes: $(attrs link/link)"
+[ "$(cat link/rolink)" = target ] || fail "rolink file: $(cat link/rolink)"
+[ "$(mtimeutc link/rolink)" = 2001-09-09T01:46:40 ] ||
+    fail "link file's UT time: $(mtimeutc link/rolink)"
+fresh_atime link/rolink ||
+    fail "link file's access time: $(atimeutc link/rolink)"
+[ "$(attrs link/rolink)" = "ReadOnly, Archive" ] ||
+    fail "read-only link file: $(attrs link/rolink)"
 
 # Nothing is written through a junction or a directory link in the
 # destination: an entry within one is refused, as is a directory entry

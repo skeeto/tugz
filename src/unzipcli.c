@@ -94,8 +94,9 @@ static i32  os_setattrs(os *, i32 fd, osattrs *, s8 *why, arena *);
 static i32  os_setdirattrs(os *, s8 path, osattrs *, s8 *why, arena *);
 // Create a symbolic link to target, which must not exist, and, given
 // OS_AOWNER, give the link its owner. On Windows, where links need
-// privileges, a regular file holding the target. Returns the flags that
-// failed, OS_ALINK for the link itself.
+// privileges, a regular file holding the target, given its attributes
+// and times as os_setattrs gives them. Returns the flags that failed,
+// OS_ALINK for the link itself.
 static i32  os_symlink(os *, s8 target, s8 path, osattrs *, s8 *why,
                        arena *);
 
@@ -1828,6 +1829,17 @@ static i32 extract_member(unzip *u, zarchive *ar, zentry *e, xentry *x,
             k->attrs.uid   = ux.uid;
             k->attrs.gid   = ux.gid;
             k->attrs.flags = OS_AOWNER;
+        }
+        if (u->windows) {
+            // The file holding the target gets a file's attributes and
+            // times, as the port, which makes no links, extracts it as
+            // any file (win32.c, close_outfile)
+            k->attrs.mode    = um.mode & 07777 & ~mask;
+            k->attrs.dosattr = uz_dosattr(e->extattr);
+            k->attrs.flags  |= OS_AMODE;
+            if (u->Dflag <= 1) {
+                entry_times(u, &k->attrs, &ux, dost);
+            }
         }
     } else {
         // Its attributes, then it is kept, as close_outfile gives them

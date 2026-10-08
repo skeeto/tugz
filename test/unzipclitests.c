@@ -1105,9 +1105,10 @@ static void test_windows(os *ctx)
 // access time; without its access time, the access time is left
 // unchanged; and its creation time is set, which a central UT field
 // never holds. All for files and directories, -D skipping them for
-// directories and -DD for both. On POSIX, the field's times count
+// directories and -DD for both, and for a link, extracted as a file
+// holding its target, as any file. On POSIX, the field's times count
 // alone, the access time defaulting to the modification time, never a
-// creation time.
+// creation time, and a link gets none.
 static void test_wintimes(os *ctx)
 {
     xspec spec[] = {
@@ -1124,6 +1125,8 @@ static void test_wintimes(os *ctx)
         {.name="dos.txt", .data="e\n"},
         {.name="m/", .extattr=DIRM(0755), .lextra=utf(1, 1500000000, 0, 0)},
         {.name="a/", .extattr=DIRM(0755), .lextra=utf(2, 0, 1500000100, 0)},
+        {.name="link", .data="target", .extattr=LINKM|1,
+         .lextra=utf(1, 1600000000, 0, 0)},
     };
     s8 z = build(spec, countof(spec), 0);
     char *D[] = {"-o", "-oD", "-oDD"};
@@ -1162,6 +1165,16 @@ static void test_wintimes(os *ctx)
         TEST(!files || (win ? f->mtime==dos && f->atime==dos
                             : f->mtime==dos && f->atime==1600000100));
         TEST(mfs_get(ctx, "central.txt")->ctime >= 1900000000);
+
+        f = mfs_get(ctx, "link");
+        if (win) {
+            TEST(equals(file_data(ctx, "link"), "target"));
+            TEST(f->dosattr == 0x21);
+            TEST(files ? f->mtime==1600000000 : f->mtime>=1900000000);
+            TEST(f->atime==f->ctime && f->atime>=1900000000);
+        } else {
+            TEST(f->type==FT_LINK && f->mtime>=1900000000);
+        }
     }
     free(z.s);
 }

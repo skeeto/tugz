@@ -200,15 +200,18 @@ static i32 os_setdirattrs(os *ctx, s8 path, osattrs *attrs, s8 *why,
 // Links need privileges on Windows, which Info-ZIP's port does not
 // make: as it extracts them, a link becomes a regular file holding its
 // target, every byte of it (empty for an empty target), created where
-// nothing is, as a link would be. It is written to completion before it
-// is kept, so that a failure leaves nothing.
+// nothing is, as a link would be, with a file's attributes and times,
+// as the port's close_outfile gives them. It is written to completion
+// and given them before it is kept, so that a failure to write leaves
+// nothing, while a failure to give them is reported, the file kept.
 static i32 os_symlink(os *ctx, s8 target, s8 path, osattrs *attrs, s8 *why,
                       arena *a)
 {
-    (void)attrs;
     i32 fd = os_open(ctx, path, OS_CREATE, *a);
     b32 ok = fd >= 0;
-    ok = ok && os_write(ctx, fd, target.s, target.len) && os_keep(ctx, fd);
+    ok = ok && os_write(ctx, fd, target.s, target.len);
+    i32 failed = ok ? os_setattrs(ctx, fd, attrs, why, a) : 0;
+    ok = ok && os_keep(ctx, fd);
     if (fd >= 0) {
         u32 err = GetLastError();
         if (!os_close(ctx, fd) && ok) {
@@ -222,7 +225,7 @@ static i32 os_symlink(os *ctx, s8 target, s8 path, osattrs *attrs, s8 *why,
         failure(ctx, OS_ALINK, why, a);
         return OS_ALINK;
     }
-    return 0;
+    return failed;
 }
 
 void mainCRTStartup(void)
