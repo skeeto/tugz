@@ -578,6 +578,31 @@ zips["large"] = archive([(entry("first.txt", zipfile.ZIP_STORED), b"first"),
                          (entry("big.bin", zipfile.ZIP_STORED), big),
                          (entry("last.c"), text)])
 
+# Overlapping entries, which zip and unzip refuse: central headers that
+# share one entry's data (a zip bomb), and one whose local header's extra
+# fields run, with its data, into the next entry
+def overlapped(names, offsets, loc, data):
+    cen = b""
+    for n, o in zip(names, offsets):
+        d = data[n]
+        cen += struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 0x31e, 10, 0, 0,
+                           0, 0x5021, zlib.crc32(d), len(d), len(d), len(n),
+                           0, 0, 0, 0, 0x81a40000, o) + n
+    end = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, len(names), len(names),
+                      len(cen), len(loc), 0)
+    return loc + cen + end
+def plain_local(n, d, xlen=0):
+    return struct.pack("<IHHHHHIIIHH", 0x04034b50, 10, 0, 0, 0, 0x5021,
+                       zlib.crc32(d), len(d), len(d), len(n), xlen) + n
+shared = b"shared " * 40
+zips["overlap-shared"] = overlapped(
+    [b"s0", b"s1", b"s2"], [0, 0, 0], plain_local(b"s0", shared) + shared,
+    {b"s0": shared, b"s1": shared, b"s2": shared})
+zips["overlap-reach"] = overlapped(
+    [b"a", b"b"], [0, 35],
+    plain_local(b"a", b"alpha", 20) + b"\0"*4 + plain_local(b"b", b"bravo")
+    + b"bravo", {b"a": b"alpha", b"b": b"bravo"})
+
 for name, z in zips.items():
     put("zipread", name + ".zip", z)
 print(len(zips), "zip seeds")

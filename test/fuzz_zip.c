@@ -9,10 +9,11 @@
 // created, or the temporary file's writes failing. Whatever zip does
 // must leave the archive as it was, or else, having succeeded, replace
 // it with one that src/zip.c parses, whose entries are the old ones in
-// order, each copied as it was or replaced by a file's, and then files'
-// (some modes delete entries), and from which zip reads every entry
-// back. No temporary file may remain, and zip may claim no memory once
-// it has created one (but after a fault).
+// order, each copied as it was (none twice: their spans do not overlap)
+// or replaced by a file's, and then files' (some modes delete entries),
+// and from which zip reads every entry back. No temporary file may
+// remain, and zip may claim no memory once it has created one (but after
+// a fault).
 // $ clang -g -O1 -fsanitize=fuzzer,address,undefined test/fuzz_zip.c
 // $ ./a.out -max_len=8192 corpus/
 #include "zipos.c"

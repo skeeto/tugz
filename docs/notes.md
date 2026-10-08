@@ -1545,9 +1545,10 @@ Fuzzers:
   entries are copied, and writes failing). It must leave the archive as
   it was, or else replace it with one whose entries are the old ones in
   order, copied exactly or replaced by the files', then the files'
-  (unless deleted), and which it reads back; it must leave no temporary
-  file, nor claim memory once it has created one. Inputs need more than
-  64 KiB (`-max_len`) for copies to read through the window again.
+  (unless deleted), those copied from no overlapping spans of the old,
+  and which it reads back; it must leave no temporary file, nor claim
+  memory once it has created one. Inputs need more than 64 KiB
+  (`-max_len`) for copies to read through the window again.
 - `fuzz-unzip`: the unzip program itself (`unzip_main`, in memory,
   `test/unzipos.c`), with arbitrary bytes as its archive, in sixteen
   modes (extraction with `-o`, the prompt, `-n`, `-j`, `-x`, `-f`, `-u`,
