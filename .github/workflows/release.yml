@@ -1,7 +1,7 @@
 # On a version tag (v1.2.3, which must equal TUGZ_VERSION in src/base.c),
 # test, then publish a release: a deterministic source tarball, the
-# single-file sources (tugz.c with tugz.h, gzip.c, zip.c). GitHub records
-# each asset's SHA-256 digest.
+# single-file sources (tugz.c with tugz.h, gzip.c, zip.c, unzip.c). GitHub
+# records each asset's SHA-256 digest.
 name: release
 
 on:

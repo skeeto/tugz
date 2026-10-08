@@ -1,13 +1,16 @@
 # Single-file amalgamations of the tugz sources, without a configure step:
 #   $ cmake -P cmake/amalgamate.cmake
 #   $ cmake -DTUGZ_ARTIFACT=tugz -DTUGZ_OUTPUT_DIR=dist -P cmake/amalgamate.cmake
-# TUGZ_ARTIFACT is gzip, zip, tugz, or all (the default), and
+# TUGZ_ARTIFACT is gzip, zip, unzip, tugz, or all (the default), and
 # TUGZ_OUTPUT_DIR the directory written (default: the current one).
-#   gzip.c, zip.c  the CRT-free Windows programs, with their build commands
-#   tugz.c         the library with tugz.h inlined, and a copy of tugz.h
+#   gzip.c, zip.c, unzip.c  the CRT-free Windows programs, with their
+#                           build commands
+#   tugz.c                  the library with tugz.h inlined, and a copy
+#                           of tugz.h
 # The inputs are the quoted .c includes of platform/gzip_windows.c,
-# platform/zip_windows.c, and platform/libtugz.c, in order, then the
-# entry file itself, so the unity files stay the only lists of sources.
+# platform/zip_windows.c, platform/unzip_windows.c, and
+# platform/libtugz.c, in order, then the entry file itself, so the unity
+# files stay the only lists of sources.
 # Between files goes a blank line, and local includes and "// $ cc"
 # build lines are dropped. Around the library core, tugz.c saves and
 # restores (push_macro, pop_macro) each name the core defines as a macro
@@ -129,6 +132,18 @@ function(tugz_zip)
     tugz_write(zip.c "${text}")
 endfunction()
 
+function(tugz_unzip)
+    tugz_inputs(files platform/unzip_windows.c)
+    set(text
+        "// tugz unzip ${v}: an Info-ZIP compatible unzip for Windows\n"
+        "// Single-file amalgamation of the tugz sources. Build:\n"
+        "//   $ cc -O2 -nostartfiles -o unzip.exe unzip.c -lmemory\n"
+        "\n")
+    string(CONCAT text ${text})
+    tugz_concat(text ${files})
+    tugz_write(unzip.c "${text}")
+endfunction()
+
 function(tugz_library)
     tugz_inputs(files platform/libtugz.c)
 
@@ -196,12 +211,16 @@ if(TUGZ_ARTIFACT STREQUAL "gzip")
     tugz_gzip()
 elseif(TUGZ_ARTIFACT STREQUAL "zip")
     tugz_zip()
+elseif(TUGZ_ARTIFACT STREQUAL "unzip")
+    tugz_unzip()
 elseif(TUGZ_ARTIFACT STREQUAL "tugz")
     tugz_library()
 elseif(TUGZ_ARTIFACT STREQUAL "all")
     tugz_gzip()
     tugz_zip()
+    tugz_unzip()
     tugz_library()
 else()
-    message(FATAL_ERROR "TUGZ_ARTIFACT must be gzip, zip, tugz, or all")
+    message(FATAL_ERROR
+        "TUGZ_ARTIFACT must be gzip, zip, unzip, tugz, or all")
 endif()

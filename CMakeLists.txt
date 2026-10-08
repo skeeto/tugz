@@ -159,11 +159,12 @@ endif()
 
 # ---- Single-file sources ---------------------------------------------
 
-# gzip.c, zip.c, tugz.c, and tugz.h in the build's amalgamation/
+# gzip.c, zip.c, unzip.c, tugz.c, and tugz.h in the build's amalgamation/
 set(tugz_amalgamation_dir ${PROJECT_BINARY_DIR}/amalgamation)
 set(tugz_amalgamation
     ${tugz_amalgamation_dir}/gzip.c
     ${tugz_amalgamation_dir}/zip.c
+    ${tugz_amalgamation_dir}/unzip.c
     ${tugz_amalgamation_dir}/tugz.c
     ${tugz_amalgamation_dir}/tugz.h)
 file(GLOB tugz_sources CONFIGURE_DEPENDS
@@ -175,7 +176,7 @@ add_custom_command(
             -P ${PROJECT_SOURCE_DIR}/cmake/amalgamate.cmake
     DEPENDS ${PROJECT_SOURCE_DIR}/cmake/amalgamate.cmake
             ${PROJECT_SOURCE_DIR}/tugz.h ${tugz_sources}
-    COMMENT "Generating gzip.c, zip.c, and tugz.c"
+    COMMENT "Generating gzip.c, zip.c, unzip.c, and tugz.c"
     VERBATIM)
 add_custom_target(tugz_amalgamation DEPENDS ${tugz_amalgamation})
 
