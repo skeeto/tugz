@@ -35,7 +35,7 @@ with unzip in `platform/zipfs_*.c`.
 | `src/base.c`             | types, arena, status codes, streaming buffers   |
 | `src/crc32.c`            | CRC-32 (slicing-by-8, ARMv8 CRC, x86 PCLMUL)    |
 | `src/adler32.c`          | Adler-32                                        |
-| `src/inflate.c`          | resumable raw DEFLATE decoder, zlib-exact       |
+| `src/inflate.c`          | resumable DEFLATE/Deflate64 decoder, zlib-exact |
 | `src/deflate.c`          | resumable raw DEFLATE encoder, flushes          |
 | `src/gzip.c`             | zlib and gzip containers: decoder, encoder      |
 | `src/io.c`               | programs only: `os_*` interface, reader/writer  |
@@ -200,6 +200,28 @@ output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
   and 0.31 / 0.54 s with the new, with or without the reuse.
 - Programs reach the buffers without copying (`*_pending`/`*_consume`),
   so the program's throughput is unchanged by the restructure.
+- Deflate64 (ZIP method 9, for unzip; not in the library's interface)
+  shares the decoder. It differs in a 64 KiB window, length code 285 (16
+  extra bits over a base of 3, lengths up to 65538, rather than 258),
+  and distance codes 30 and 31 (base 32769 and 49153, 14 extra bits).
+  An entry's value has 15 bits, so those bases set a flag, `F_HI` (bit
+  5, unused before), worth 32768. `inflate64_new` claims a window with
+  64 KiB of history and slack for a whole 65538-byte match plus the
+  copy's overrun, so no match is ever split and the careful path still
+  writes a unit whole, and a distance table for 32 symbols (at most 768
+  entries: a subtable of 2^k entries holds at least k+1 codes);
+  `inflate_new`'s inflator is as it was. The fast loop is one function,
+  always inlined, with the format a constant parameter, compiled as
+  `decode_fast` and `decode_fast64`; Deflate's has no added instruction.
+  Deflate64's refills once more after a length of more than 20 bits
+  (only code 285's), as a pair may then take 60 bits, and adds `F_HI`
+  to distances. Its fixed blocks build their tables, which differ from
+  DEFLATE's constant ones, into the dynamic tables' room. `copy_match`
+  is always inlined too: called from two loops, clang made it a call,
+  which cost Deflate 2% on Silesia. Deflate64 is tested with hand-built
+  streams (`test_deflate64`: whole, at every split, a byte at a time,
+  with output in pieces, across window slides) and fuzzed by
+  `fuzz-inflate` against itself in pieces, there being no reference.
 - `platform/libtugz.c` builds an object, or the CMake target
   `tugz::tugz` (static, or shared with `BUILD_SHARED_LIBS`), exporting
   only `tugz_*` (no writable data): the core's other functions are all
@@ -975,9 +997,9 @@ for entries.
   zip splits `ZIPOPT`), and wildcard archive names. UnZip's other
   options are refused with its "error:  -a option not supported" (10),
   as are `-K` and `-X` on Windows. Entries that are encrypted,
-  compressed by a method other than stored or deflated, or need a
-  version past 4.5 are skipped with UnZip's messages for a build without
-  them, and count as skipped (81).
+  compressed by a method other than stored, deflated, or Deflate64, or
+  need a version past 4.5 are skipped with UnZip's messages for a build
+  without them, and count as skipped (81).
 - Messages: UnZip's words, and its routing (`UzpMessagePrnt`): a message
   for standard error goes there, but under `-t` everything goes to
   standard output, so that redirecting it keeps the whole report, and
@@ -1042,11 +1064,17 @@ for entries.
   when the two sizes differ). A deflated entry's input stops at its
   compressed size, and its output is decoded to its end, to check it,
   but written only up to its size; more than its size with a CRC that
-  matches is invalid data (2). Output goes out 64 KiB at a time, as
-  UnZip flushes its slide, so that an error in a short entry's data
-  leaves none of it on standard output, and there each entry's output is
-  flushed as it ends, so that a write that fails, however short, is
-  reported for it (50). A read error in the archive ends the run (3,
+  matches is invalid data (2). Deflate64 (method 9, PKWARE's "enhanced
+  deflating", which Explorer's zip folder writes for large files: a 2.2
+  GiB one, not one of 64 MiB) is decoded as UnZip's `USE_DEFLATE64`
+  build does, and listed as `Def64N` (with the level as for `Defl:N`);
+  its inflator, with a 64 KiB history and room for a 65538-byte match
+  (407 KB, to Deflate's 308 KB), is claimed only for an archive with
+  entries by it, after its central directory. Output goes out 64 KiB at
+  a time, as UnZip flushes its slide, so that an error in a short
+  entry's data leaves none of it on standard output, and there each
+  entry's output is flushed as it ends, so that a write that fails,
+  however short, is reported for it (50). A read error in the archive ends the run (3,
   "zipfile read error"), as UnZip's `readbyte` does, and an archive that
   ends early while its central directory is read is 51.
 - Names: as zip reads them (`zar_uname`), a name is UTF-8 if flag bit 11
@@ -1210,6 +1238,12 @@ ones as invariants. Those that no test asserts are marked untested.
   entry's size, where UnZip writes what it decodes beyond it before
   finding the CRC wrong (`unzip.sh`, "Output beyond an entry's size";
   `test_damaged`).
+- Deflate64: a match reaching before the start of an entry's data is
+  invalid ("invalid compressed data to inflate", 2), as a deflated
+  entry's is by zlib's rule, where UnZip's own inflate, which decodes
+  Deflate64, copies from its window as an earlier entry left it and then
+  usually finds a bad CRC, also 2 (`unzip.sh`, "Departure: a Deflate64
+  match").
 - Damaged and failed files: a bad CRC, invalid data, data beyond the
   size, or a failed write leaves no file (2, or 50), where UnZip keeps
   what it wrote, though the old file is gone either way (`unzip.sh`,
@@ -1305,7 +1339,9 @@ ones as invariants. Those that no test asserts are marked untested.
 
 Fuzzers:
 
-- `fuzz-inflate`: arbitrary input to raw and gzip decoders
+- `fuzz-inflate`: arbitrary input to raw and gzip decoders, and to the
+  Deflate64 decoder, which with input and output in fuzzer-chosen
+  pieces must agree with itself given everything at once
 - `fuzz-roundtrip`: deflate then inflate; output must not depend on push
   sizes or stream offset (including past 4 GiB), nor, in any format, on
   an encoder reset after other streams at the same or another level;

@@ -324,9 +324,10 @@ are exit statuses: 0 success, 1 warnings, 2 errors in some entries, 3 a
 damaged archive, 4 out of memory, 9 no archive found, 10 bad or
 unsupported options, 11 no matching entries, 50 a failed write, 51 an
 archive cut short, and 81 entries skipped, plus Debian's 12 for
-overlapped entries, a zip bomb. Encrypted entries, and those compressed
-by methods other than stored and deflated (Deflate64, bzip2, LZMA, ...),
-are skipped (81).
+overlapped entries, a zip bomb. Entries may be stored, deflated, or
+compressed by Deflate64 (PKWARE's "enhanced deflating", which Explorer's
+zip folder uses for large files). Encrypted entries, and those
+compressed by other methods (bzip2, LZMA, ...), are skipped (81).
 
 Deliberate departures from Info-ZIP, all listed in
 [docs/notes.md](docs/notes.md#departures-from-info-zip-unzip), include
