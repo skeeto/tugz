@@ -1633,8 +1633,11 @@ write("ms64split.zip", total=0, recdisk=1, sat=True)'
     for f in ms64 ms64sat; do
         cp $f.zip $f.d.zip
     done
+    # (SOURCE_DATE_EPOCH keeps tree/a.txt's access time, which each read
+    # may change, out of the comparisons below.)
     for f in nd0 r64 r64sat ms64 ms64sat; do
-        "$ZIP" -q $f.zip tree/a.txt || fail "end records of $f.zip"
+        SOURCE_DATE_EPOCH=1700000000 "$ZIP" -q $f.zip tree/a.txt ||
+            fail "end records of $f.zip"
         verify $f.zip
         [ "$(names $f.zip | tr '\n' ' ')" = "e/a.txt e/b.txt tree/a.txt " ] ||
             fail "end records of $f.zip: $(names $f.zip)"
