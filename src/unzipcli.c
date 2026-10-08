@@ -1254,11 +1254,12 @@ static i32 test_member(unzip *u, zarchive *ar, zentry *e, zlocal *l,
     return PK_OK;
 }
 
-// Shift every entry's offset, and the spans, as UnZip changes its
+// Shift the offsets of the entries read, nentries (of a directory that
+// may end early, the rest unset), and the spans, as UnZip changes its
 // extra_bytes.
-static void reshift(zarchive *ar, zspans *spans, i64 by)
+static void reshift(zarchive *ar, i64 nentries, zspans *spans, i64 by)
 {
-    for (i64 i = 0; i < ar->end.count; i++) {
+    for (i64 i = 0; i < nentries; i++) {
         ar->entries[i].offset += by;
     }
     for (iz i = 0; i < spans->len; i++) {
@@ -1309,9 +1310,9 @@ static i32 find_local(unzip *u, zarchive *ar, zentry *e, i64 filnum,
         info(u, MSG_STDERR, S("  (attempting to re-compensate)\n"));
         if (ar->shift) {
             u->oldshift = ar->shift;
-            reshift(ar, spans, -ar->shift);
+            reshift(ar, u->nentries, spans, -ar->shift);
         } else {
-            reshift(ar, spans, u->oldshift);
+            reshift(ar, u->nentries, spans, u->oldshift);
         }
         err = PK_ERR;
     }
