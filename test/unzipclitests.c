@@ -667,6 +667,31 @@ static void test_links(os *ctx)
     UNZIP(ctx, 0, "-qo", "l.zip");
     TEST(equals(file_data(ctx, "l"), "a target"));
     free(d.s);
+
+    // A target too long to keep (over 4096 bytes) is refused with a
+    // warning (1), ending the line that names it, and nothing is made
+    static char far[5000];
+    memset(far, 'x', sizeof(far)-1);
+    xspec toolong[] = {
+        {.name="far", .data=far, .extattr=LINKM},
+        {.name="after.txt", .data="after\n"},
+    };
+    d = build(toolong, countof(toolong), 0);
+    mfs_reset(ctx);
+    put_archive(ctx, "t.zip", d);
+    UNZIP(ctx, 1, "t.zip");
+    TEST(output_is(ctx, 3,
+        "Archive:  t.zip\n"
+        "    linking: far                     warning:  symbolic link (far) "
+        "failed: target too long\n"
+        " extracting: after.txt               \n"));
+    TEST(!mfs_get(ctx, "far"));
+    TEST(equals(file_data(ctx, "after.txt"), "after\n"));
+    UNZIP(ctx, 1, "-qo", "t.zip");
+    TEST(output_is(ctx, 3, "warning:  symbolic link (far) failed: target "
+                           "too long\n"));
+    TEST(!mfs_get(ctx, "far"));
+    free(d.s);
     free(z.s);
 }
 

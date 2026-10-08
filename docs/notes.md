@@ -1113,7 +1113,7 @@ for entries.
   hosts that UnZip takes links from, are deferred, as UnZip defers them:
   each gets an empty file, created exclusively, to hold its place, whose
   identity (device and inode) is recorded, and its target, up to 4096
-  bytes (a longer one is refused with a warning), is kept in memory,
+  bytes (a longer one is refused with a warning, 1), is kept in memory,
   checked by the CRC. Once every file is extracted ("finishing deferred
   symbolic links:"), each placeholder still there, reached through no
   link, empty, and the same file, is removed and the link made in its
@@ -1232,10 +1232,12 @@ ones as invariants. Those that no test asserts are marked untested.
 - Deferred links: a placeholder is an empty file, known by its identity,
   where UnZip's holds the target, known by its size and content
   (`test_links`, a link and a file of one name). A target longer than
-  4096 bytes is refused with a warning, making neither link nor file,
-  and leaving the status alone (untested; checked by hand). A link's
-  mode is not set, where UnZip's builds with `lchmod`, such as macOS's,
-  set it (untested: `unzip.sh`'s tree listings leave links' modes out).
+  4096 bytes is refused, making neither link nor file, with a warning
+  that ends the line naming it, where UnZip makes the link: status 1,
+  though UnZip's own failures to keep or make a link leave the status
+  alone (`test_links`). A link's mode is not set, where UnZip's builds
+  with `lchmod`, such as macOS's, set it (untested: `unzip.sh`'s tree
+  listings leave links' modes out).
 - The prompt: a new name is mapped as entry names are, below the `-d`
   directory, where UnZip takes it relative to the current directory,
   ignoring `-d` (and Apple's build takes a leading `/` as absolute)

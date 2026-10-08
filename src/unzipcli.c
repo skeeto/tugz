@@ -1762,9 +1762,13 @@ static i32 extract_member(unzip *u, zarchive *ar, zentry *e, xentry *x,
     }
 
     if (link && !out.target) {
+        // Refused, where UnZip would make it: a warning (1), though
+        // UnZip's own link failures in close_outfile leave the status
+        // alone. The message ends the line naming it, as UnZip's do.
         os_close(ctx, fd);
         info(u, MSG_STDERR, JOIN(&scratch, S("warning:  symbolic link ("),
              shown(u, full, &scratch), S(") failed: target too long\n")));
+        return MAX(err, PK_WARN);
     } else if (link) {
         // The placeholder is kept, and known by its identity
         os_info id = {0};
