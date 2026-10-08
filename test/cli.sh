@@ -282,7 +282,8 @@ done <<'EOF'
 --k=1|option '--keep' doesn't allow an argument
 --recursive|--recursive not supported in this version
 --rec|--recursive not supported in this version
---rsyncable|--rsyncable not supported in this version
+--r|option '--r' is ambiguous; possibilities: '--recursive' '--rsyncable'
+--rsyncable=1|option '--rsyncable' doesn't allow an argument
 -r|-r not supported in this version
 -9a|-a not supported in this version
 EOF
@@ -298,7 +299,8 @@ if [ -n "$gnu" ]; then
                 --k=1 --he=x --quiet= --stdout=x '-j -h' \
                 '--bogus --help' '--he --bogus' '-h -j' '-V -j' \
                 --st --dec --hel --h --no --q --si --silent --fa --fo \
-                --be --to --u -H -m; do
+                --be --to --u -H -m --rsyncable --rs --r --rsyncable=1 \
+                '-d --rsyncable'; do
         set +e
         "$GZIP" -k $args one >opt.out 2>opt.err
         st=$?

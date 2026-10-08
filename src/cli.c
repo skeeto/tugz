@@ -614,6 +614,7 @@ static i32 apply_option(options *o, i32 c, s8 longname, arena scratch)
     case 'k': o->keep       = 1;       return -1;
     case 'm':                          return -1;  // no time: as always
     case 'n':                          return -1;  // nothing to save
+    case OPT_RSYNCABLE:                return -1;  // a hint, not a format
     case 'q': o->quiet      = 1;       return -1;
     case 't': o->test       = 1;       return -1;
     case 'h': case 'H':
@@ -626,7 +627,7 @@ static i32 apply_option(options *o, i32 c, s8 longname, arena scratch)
         return usage_error(scratch, (s8){0});  // GNU's, without a message
     case 'a': case 'b': case 'l': case 'r': case 'v':
     case 'L': case 'M': case 'N': case 'S': case 'Z':
-    case OPT_PRESUME: case OPT_SYNCHRONOUS: case OPT_RSYNCABLE:
+    case OPT_PRESUME: case OPT_SYNCHRONOUS:
         // GNU gzip's wording for its own -Z
         name = s8concat(&scratch, name, S(" not supported in this version"));
         return usage_error(scratch, name);

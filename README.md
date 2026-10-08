@@ -151,11 +151,13 @@ unless `-f`, and special and set-ID files always, and it reads a header
 before replacing a file.
 
 Headers record no file name or time, as GNU gzip's do under `-n`, which
-is therefore accepted (as in `gzip -9n`). Not yet supported, and refused
-rather than ignored: `-r` (`--recursive`), `-l` (`--list`), `-v`
+is therefore accepted (as in `gzip -9n`). `--rsyncable` is accepted and
+ignored: it asks only for rsync-friendly output, which tugz's is not, but
+the result is an ordinary gzip file either way. Not yet supported, and
+refused rather than ignored: `-r` (`--recursive`), `-l` (`--list`), `-v`
 (`--verbose`), `-S` (`--suffix`), `-N` (`--name`), `-a` (`--ascii`), `-L`
-(`--license`), `--rsyncable`, `--synchronous`, the `GZIP` environment
-variable, and GNU gzip's other input formats (compress, pack, LZH, zip).
+(`--license`), `--synchronous`, the `GZIP` environment variable, and GNU
+gzip's other input formats (compress, pack, LZH, zip).
 
 ## zip
 

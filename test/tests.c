@@ -3024,7 +3024,8 @@ static void test_cli(os *ctx, arena a)
         {"--st=x l",  "gzip: option '--stdout' doesn't allow an argument\n"},
         {"--rec l",   "gzip: --recursive not supported in this version\n"},
         {"-r l",      "gzip: -r not supported in this version\n"},
-        {"--rsync l", "gzip: --rsyncable not supported in this version\n"},
+        {"--r l",     "gzip: option '--r' is ambiguous; possibilities: "
+                      "'--recursive' '--rsyncable'\n"},
     };
     for (i32 i = 0; i < countof(usage); i++) {
         TEST(run(ctx, a, usage[i].args) == EXIT_ERR);
@@ -3046,10 +3047,20 @@ static void test_cli(os *ctx, arena a)
         TEST(run(ctx, a, nflags[i]) == EXIT_OK);
         TEST(equals(mfs_get(ctx, "<stdout>"), noname.s, noname.len));
     }
-    free(noname.s);
     TEST(run(ctx, a, "-dnc l.gz") == EXIT_OK);
     TEST(equals(mfs_get(ctx, "<stdout>"), text, 1000));
     TEST(run(ctx, a, "-Nc l") == EXIT_ERR);
+
+    // --rsyncable promises no format, so it is accepted and ignored
+    static char *const rflags[] = {"--rsyncable -c l", "--rs -c l"};
+    for (i32 i = 0; i < countof(rflags); i++) {
+        TEST(run(ctx, a, rflags[i]) == EXIT_OK);
+        TEST(equals(mfs_get(ctx, "<stdout>"), noname.s, noname.len));
+        TEST(!mfs_get(ctx, "<stderr>").len);
+    }
+    free(noname.s);
+    TEST(run(ctx, a, "--rsyncable -dc l.gz") == EXIT_OK);
+    TEST(equals(mfs_get(ctx, "<stdout>"), text, 1000));
     TEST(run(ctx, a, "--name -c l") == EXIT_ERR);
     TEST(!mfs_get(ctx, "<stdout>").len);
 

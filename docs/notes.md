@@ -1718,16 +1718,21 @@ Fuzzers:
   name in them is always `gzip`, as in tugz's other messages, where
   getopt's is `argv[0]` as invoked. An option of GNU's that tugz lacks
   (`-a`, `-b`, `-l`, `-L`, `-M`, `-N`, `-r`, `-S`, `-v`, `-Z`, and the
-  long forms, `--synchronous`, `--rsyncable`, and the hidden
-  `---presume-input-tty`) is refused as GNU refuses `-Z` in builds
-  without LZW, `gzip: -r not supported in this version` and the same
-  pointer to `--help`, status 1, rather than ignored: as with `-n`
-  (below), an option is accepted only when tugz already does what it
-  asks. `--rsyncable` asks for different output, `--synchronous` for
+  long forms, `--synchronous`, and the hidden `---presume-input-tty`)
+  is refused as GNU refuses `-Z` in builds without LZW, `gzip: -r not
+  supported in this version` and the same pointer to `--help`, status
+  1, rather than ignored: as with `-n` (below), an option is accepted
+  only when tugz already does what it asks. `--synchronous` asks for
   `fsync` calls tugz does not make, and `-a`, though GNU ignores it with
   a warning on POSIX, converts line ends on Windows, where tugz runs
   too. GNU's hidden `-m` (no time saved or restored) is accepted, as
-  `-n` is.
+  `-n` is. `--rsyncable` is accepted too, silently as GNU accepts it,
+  though tugz's output does not resync (its blocks do not restart at
+  content-defined points, so a small change upstream shifts everything
+  after it): the option promises only rsync-friendliness, not a format,
+  so any valid gzip output keeps the contract, and packaging scripts
+  pass it routinely. It is left out of `--help`, which lists letters
+  only.
 - Names follow GNU gzip's default suffixes, in any case: `.gz`, `.z`,
   `-gz`, `-z`, `_z`, and `.tgz` and `.taz`, which stand for `.tar`.
   Decompressing in place drops one; compressing in place leaves a file
