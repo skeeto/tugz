@@ -1125,9 +1125,13 @@ for entries.
   directory, whatever the end record's count, which then must be the
   number read, or without Zip64 records that number modulo 65,536, as
   writers without Zip64 wrap it past 65,535 entries (Java's old
-  `ZipOutputStream`). Otherwise the entries read are processed, then
-  reported as UnZip finds the fault once it gets there ("expected
-  central file header signature not found (file #N)", 3): a count of
+  `ZipOutputStream`). Otherwise the entries read are processed, and the
+  fault reported where UnZip finds it ("expected central file header
+  signature not found (file #N)", 3, N one past the headers read):
+  after a listing, and when testing or extracting, which scan the
+  directory in blocks of 16,384 selected entries (see Memory), before
+  the entries of the block it ends, so before them all in a smaller
+  archive: a count of
   more or fewer entries than there are, even of more than the directory
   could hold, or a directory invalid after some entries. A count that
   matches with no end record after the headers is UnZip's warning
@@ -1409,6 +1413,21 @@ ones as invariants. Those that no test asserts are marked untested.
   on as though its parts were concatenated (untested), and an entry made
   on VMS is extracted without UnZip's question "stored in VMS format.
   Extract anyway? (y/n)" (untested).
+- Zip64 end records: one that checks out is used even beside an end
+  record not saturated that disagrees with it, as a writer that wraps a
+  count past 65,535 entries, or an offset past 4 GiB, in the end record
+  might give the true one in the Zip64 record. UnZip (`find_ecrec64`),
+  Go, and 7-Zip then go by the end record alone, which places the
+  central directory 76 bytes (the Zip64 records) before it ends ("76
+  extra bytes at beginning or within zipfile", then "reported length of
+  central directory is -76 bytes too long ... Compensating..."). So a
+  Zip64 count of 3 headers beside an end record's 4 is read without
+  error (0), where UnZip finds the count wrong (3), and a Zip64 count of
+  1 beside an end record's 3 is the count fault that UnZip reports when
+  a saturated end record defers to that Zip64 count (3, "file #4",
+  `count64.zip`), where UnZip, reading 3, misses the end record after
+  the headers (2, "didn't find end-of-central-dir signature")
+  (`unzip.sh`, `mixed64.zip`, `mixed64ok.zip`).
 - Zip bombs: overlapped components, and data reaching into the central
   directory, which Debian's UnZip does not check, are found before any
   entry is read, so that none is extracted, nor the `-d` directory made,

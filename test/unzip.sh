@@ -369,8 +369,8 @@ cd craft
 for z in basic nocomment sfx sfxok zip64 desc empty emptycomment emptysfx \
          multi many badcrc baddata truncdata storedsize localname badextra \
          truncated badcdoff badheader badlocal deflate64 \
-         count2 count4 count5 count0 sfx64 sfx64ok nosig64 loc64 cmtcut \
-         cmtnone cmtcut64 cdjunk cmtlines; do
+         count2 count4 count5 count0 count64 sfx64 sfx64ok nosig64 loc64 \
+         cmtcut cmtnone cmtcut64 cdjunk cmtlines; do
     for mode in -l -v -t -tq -tqq -p -pq -z -zq -c -cq; do
         [ $apple = 1 ] && [ "$mode" = -c ] && continue  # Apple's names
         same $mode $z.zip
@@ -411,6 +411,29 @@ ours 0 want none -t localsizes.zip
 ours 0 want none -p localsizes.zip
 both -t localsizes.zip
 [ "$(cat ref.st)" = 2 ] || fail "localsizes.zip: REF's status $(cat ref.st)"
+
+# Departure: a Zip64 end record is used beside an end record, not
+# saturated, that counts otherwise, where UnZip goes by the end record:
+# a Zip64 count of 1 of 3 headers is the count fault that UnZip finds
+# when a saturated end record defers to it (count64.zip), and one of 3
+# beside an end record's 4 is read without error
+{ printf 'Archive:  mixed64.zip\n'
+  printf 'error:  expected central file header signature not found '
+  printf '(file #4).\n'
+  printf '  (please check that you have transferred or created the zipfile '
+  printf 'in the\n  appropriate BINARY mode and that you have compiled '
+  printf 'UnZip properly)\n'
+  printf '    testing: %-22s   OK\n' a b c
+  printf 'At least one error was detected in mixed64.zip.\n'; } >want
+ours 3 want none -t mixed64.zip
+{ printf 'Archive:  mixed64ok.zip\n'
+  printf '    testing: %-22s   OK\n' a b c
+  printf 'No errors detected in compressed data of mixed64ok.zip.\n'; } >want
+ours 0 want none -t mixed64ok.zip
+both -t mixed64.zip
+[ "$(cat ref.st)" = 2 ] || fail "mixed64.zip: REF's status $(cat ref.st)"
+both -t mixed64ok.zip
+[ "$(cat ref.st)" = 3 ] || fail "mixed64ok.zip: REF's status $(cat ref.st)"
 
 # Wildcard archive names: each match, in name order, then a summary,
 # leaving out names starting with a dot unless the pattern does

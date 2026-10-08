@@ -312,6 +312,18 @@ loc64 = bytearray(build(basic(), zip64=True))  # only the locator wrong
 at = loc64.rindex(b"PK\x06\x07")
 loc64[at + 8:at + 16] = struct.pack("<Q", 7)
 write("loc64.zip", bytes(loc64))
+# Zip64 end records' counts of entries: 1 of 3, which a saturated end
+# record defers to; and beside an end record not saturated that counts
+# otherwise, 1 where the end record counts 3, and 3 where it counts 4,
+# which UnZip ignores, reading by the end record (a departure)
+write("count64.zip", build(abc, zip64=True, count=1))
+for name, count, plain in ("mixed64.zip", 1, 3), ("mixed64ok.zip", 3, 4):
+    mixed = bytearray(build(abc, zip64=True, count=count))
+    at = mixed.rindex(b"PK\x06\x06")
+    cdsize, cdoff = struct.unpack("<QQ", mixed[at + 40:at + 56])
+    at = mixed.rindex(b"PK\x05\x06")
+    mixed[at + 8:at + 20] = struct.pack("<HHII", plain, plain, cdsize, cdoff)
+    write(name, bytes(mixed))
 write("cmtcut.zip", build(basic(), comment=b"12345", clen=10))
 write("cmtnone.zip", build(basic(), clen=65535))
 write("cmtcut64.zip", build(basic(), comment=b"12345", clen=10, zip64=True))
