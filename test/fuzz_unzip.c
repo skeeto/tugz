@@ -370,8 +370,14 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     mfs_snapfree(before);
 
     // Again, with -n, changes nothing (but where faults or errors left
-    // work undone: a damaged entry's file is gone, though it replaced one)
+    // work undone: a damaged entry's file is gone, though it replaced one,
+    // as is a link refused for its target's length, a warning)
     b32 clean = status==0 || status==1 || status==11 || status==81;
+    s8  out   = unzipos_output(ctx, 3);
+    s8  long_ = S("failed: target too long");
+    for (iz i = 0; clean && i+long_.len <= out.len; i++) {
+        clean = !s8equals((s8){out.s+i, long_.len}, long_);
+    }
     if (!modes[mode].rerun || faulted || !clean) {
         return 0;
     }
