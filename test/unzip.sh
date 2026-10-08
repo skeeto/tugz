@@ -961,7 +961,8 @@ for limit in "-v 60000" "-d 30000"; do
     grep -q '^tugz unzip' out ||
         fail "unzip -v under ulimit $limit: $st $(cat err)"
     for run in "0 ../tree.zip" "4 ../oombig.zip -d new"; do
-        chmod -R u+rwx x.ours && rm -rf x.ours
+        [ ! -e x.ours ] || chmod -R u+rwx x.ours
+        rm -rf x.ours
         mkdir x.ours
         set +e
         (ulimit $limit && cd x.ours && exec "$oomunzip" -q ${run#* }) \
@@ -996,7 +997,8 @@ z.writestr(zipfile.ZipInfo("after.txt", (2020, 1, 2, 3, 4, 6)), b"after\n")
 z.close()
 EOF
     for member in stored.bin deflated.bin; do
-        chmod -R u+rwx x.ours && rm -rf x.ours
+        [ ! -e x.ours ] || chmod -R u+rwx x.ours
+        rm -rf x.ours
         mkdir x.ours
         (cd x.ours && exec "$U" -q ../big.zip $member after.txt) ||
             fail "big.zip $member"

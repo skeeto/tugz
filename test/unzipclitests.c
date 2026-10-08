@@ -1127,7 +1127,7 @@ static void test_faults(os *ctx)
 {
     static char big[200000];
     for (iz i = 0; i < countof(big)-1; i++) {
-        big[i] = (char)('a' + (i*i/7)%26);
+        big[i] = (char)('a' + ((i64)i*i/7)%26);
     }
     xspec spec[] = {
         {.name="d/big.txt", .data=big, .method=8},
