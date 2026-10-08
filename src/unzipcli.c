@@ -2292,6 +2292,21 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
         return PK_BOMB;
     }
 
+    // Extracting an entry also takes room for its local header's name,
+    // which lies, with the entry's data, before where the next one
+    // begins (or later by the shift that find_local may undo): room to
+    // decode it, three bytes a byte, then, should it differ from the
+    // central name, its shown form and the message's copy of that, twice
+    // its length each, which on Windows, decoded from a code page, may be
+    // three times the name's
+    i64 span = 0;
+    for (iz k = 0; k < spans.len; k++) {
+        i64 next = k+1<spans.len ? spans.beg[k+1] : ar->end.cdoff;
+        span = MAX(span, next - spans.beg[k]);
+    }
+    iz local = (iz)MIN(MAX(span+ar->shift-ZIP_LOCAL_LEN, 0), ZIP_MAX16);
+    u->room += (u->windows ? 3+12 : 3+4)*local + (1<<8);
+
     i32  err     = PK_OK;
     i64  filnum  = 0;
     u64  skipped = 0;

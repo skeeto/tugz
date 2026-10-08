@@ -1259,6 +1259,30 @@ static void test_local_name(os *ctx)
         " extracting: " LONGA "  \n"));
     TEST(equals(file_data(ctx, LONGA), "a\n"));
     free(z.s);
+
+    // A long one, once the file system has changed, shown in the room
+    // planned for it
+    iz n = 60000;
+    s8 x = {malloc((uz)n + 9), n + 9};
+    TEST(x.s);
+    put16(x.s, 0x7075);
+    put16(x.s+2, (u32)n + 5);
+    x.s[4] = 1;
+    put32(x.s+5, crc32_update(0, (u8 *)"b.txt", 5, &(i32){0}));
+    memset(x.s+9, 'b', (uz)n);
+    xspec spec2[] = {
+        {.name="a.txt", .data="a\n"},
+        {.name="b.txt", .data="b\n", .lextra=x},
+    };
+    z = build(spec2, countof(spec2), 0);
+    mfs_reset(ctx);
+    put_archive(ctx, "n.zip", z);
+    UNZIP(ctx, 1, "-q", "n.zip");
+    TEST(output_has(ctx, 2, "b.txt:  mismatching \"local\" filename (bbbb"));
+    TEST(equals(file_data(ctx, "a.txt"), "a\n"));
+    TEST(equals(file_data(ctx, "b.txt"), "b\n"));
+    free(x.s);
+    free(z.s);
 }
 
 static void test_stdin(os *ctx)
