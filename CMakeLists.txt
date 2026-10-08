@@ -88,6 +88,23 @@ if(TUGZ_BUILD_LIBRARY)
             VERSION ${PROJECT_VERSION}
             SOVERSION ${PROJECT_VERSION_MAJOR})
     endif()
+    # A Windows DLL exports what a module-definition file lists, generated
+    # from tugz.h's declarations: TUGZ_API marks nothing dllexport, and no
+    # linker but GNU ld exports unmarked functions
+    if(BUILD_SHARED_LIBS AND WIN32)
+        file(STRINGS tugz.h tugz_decls
+             REGEX "^TUGZ_API .*tugz_[a-z0-9_]+\\(")
+        set(tugz_def "EXPORTS\n")
+        foreach(decl IN LISTS tugz_decls)
+            string(REGEX MATCH "tugz_[a-z0-9_]+\\(" name "${decl}")
+            string(REPLACE "(" "" name "${name}")
+            string(APPEND tugz_def "    ${name}\n")
+        endforeach()
+        file(CONFIGURE OUTPUT ${PROJECT_BINARY_DIR}/tugz.def
+             CONTENT "${tugz_def}")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS tugz.h)
+        target_sources(tugz PRIVATE ${PROJECT_BINARY_DIR}/tugz.def)
+    endif()
 endif()
 
 # ---- Programs --------------------------------------------------------
