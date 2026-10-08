@@ -1233,7 +1233,8 @@ open(sys.argv[1], "wb").write(loc + cen + end)' noname.zip
     # the end of the file (no end record); and Zip64 records after data
     # their offsets do not account for, whose record is found just before
     # its locator, as Info-ZIP's finds it, but which zip refuses (3), as
-    # it does without Zip64
+    # it does without Zip64, and as it refuses one there whose locator
+    # alone is wrong
     $PY -c 'import struct, sys
 loc = cen = b""
 for n in b"a", b"b", b"c":
@@ -1253,8 +1254,10 @@ e64 = struct.pack("<IQHHIIQQQQ", 0x06064b50, 44, 45, 45, 0, 0, 3, 3,
 l64 = struct.pack("<IIQI", 0x07064b50, 0, len(loc) + len(cen), 1)
 sat = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 0xffff, 0xffff,
                   0xffffffff, 0xffffffff, 0)
-open("sfx64.zip", "wb").write(b"#!/bin/sh\n" + loc + cen + e64 + l64 + sat)'
-    for z in count2 count5 cut sfx64; do
+open("sfx64.zip", "wb").write(b"#!/bin/sh\n" + loc + cen + e64 + l64 + sat)
+l64 = struct.pack("<IIQI", 0x07064b50, 0, len(loc) + len(cen) - 9, 1)
+open("loc64.zip", "wb").write(loc + cen + e64 + l64 + sat)'
+    for z in count2 count5 cut sfx64 loc64; do
         cp $z.zip ${z}0.zip
         exits 3 "$ZIP" $z.zip tree/a.txt >out 2>&1
         case $z in

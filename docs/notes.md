@@ -954,7 +954,8 @@ race allows).
   misses, just before the locator, as data prepended to a Zip64 archive
   leaves it, which is looked for there, as Info-ZIP and UnZip look, and
   refused as such data is (3, with the warning), where Info-ZIP finds
-  an entry missing (3). An end record whose comment runs past the end
+  an entry missing (3); found there with offsets that add up, its
+  locator alone wrong, it is refused as before (3), where UnZip reads it. An end record whose comment runs past the end
   of the file, which UnZip shows cut short, is no end record ("missing
   end signature", 3), where Info-ZIP finds the file ending early
   ("Unexpected end of zip file", 2).

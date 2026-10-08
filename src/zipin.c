@@ -367,7 +367,9 @@ static s8 zar_uname(os *ctx, zentry *e, b32 windows, i32 *crccpu, s8 *stale,
 // Info-ZIP's zip look for it: data prepended to the archive without
 // adjusting its offsets, which then shift them (ZAR_EPREFIX), as for an
 // archive without Zip64 records. Where neither holds the record,
-// ar->nosig64.
+// ar->nosig64. Zip refuses a record found so even when the offsets add
+// up, the locator alone being wrong, as it refuses other layouts that do
+// not add up.
 //
 // For unzip (ar->unzip), the end record is read as UnZip reads it: one
 // whose comment runs past the end of the file is taken, its comment cut
@@ -420,6 +422,9 @@ static i32 zar_open(zarchive *ar, os *ctx, i32 fd, i64 size, arena *perm)
         }
         r = zip_parse_end64(rec, e);
         ar->moved64 &= e->end64 >= 0;
+        if (ar->moved64 && !ar->unzip && r==ZIP_OK) {
+            r = ZIP_EFORMAT;  // only the locator wrong: zip refuses it
+        }
         ar->nosig64  = !sig && e->end64>=0;
     }
     switch (r) {

@@ -366,8 +366,8 @@ cd craft
 for z in basic nocomment sfx sfxok zip64 desc empty emptycomment emptysfx \
          multi many badcrc baddata truncdata storedsize localname badextra \
          truncated badcdoff badheader badlocal deflate64 \
-         count2 count4 count5 count0 sfx64 sfx64ok nosig64 cmtcut cmtnone \
-         cmtcut64 cdjunk; do
+         count2 count4 count5 count0 sfx64 sfx64ok nosig64 loc64 cmtcut \
+         cmtnone cmtcut64 cdjunk; do
     for mode in -l -v -t -tq -tqq -p -pq -z -zq -c -cq; do
         [ $apple = 1 ] && [ "$mode" = -c ] && continue  # Apple's names
         same $mode $z.zip

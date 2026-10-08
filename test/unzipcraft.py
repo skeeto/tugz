@@ -308,6 +308,10 @@ nosig = bytearray(build(basic(), prefix=b"#!/bin/sh\n", shifted=False,
                         zip64=True))
 nosig[nosig.rindex(b"PK\x06\x06") + 3] = 0
 write("nosig64.zip", bytes(nosig))
+loc64 = bytearray(build(basic(), zip64=True))  # only the locator wrong
+at = loc64.rindex(b"PK\x06\x07")
+loc64[at + 8:at + 16] = struct.pack("<Q", 7)
+write("loc64.zip", bytes(loc64))
 write("cmtcut.zip", build(basic(), comment=b"12345", clen=10))
 write("cmtnone.zip", build(basic(), clen=65535))
 write("cmtcut64.zip", build(basic(), comment=b"12345", clen=10, zip64=True))
