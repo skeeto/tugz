@@ -806,6 +806,21 @@ for answer in n y; do
     fi
 done
 
+# A write to standard output (-p, -c) that fails, here to /dev/full where
+# there is one, is reported for the entry whose data it held, however
+# short, status 50, where UnZip ignores it (a departure)
+if [ -w /dev/full ]; then
+    printf 'after.txt:  write error (disk full?).\n' >want.err
+    for opt in -p -c; do
+        set +e
+        "$U" $opt large.zip after.txt </dev/null >/dev/full 2>ours.err
+        st=$?
+        set -e
+        [ $st = 50 ] && cmp -s want.err ours.err ||
+            fail "write error to /dev/full ($opt): $st $(cat ours.err)"
+    done
+fi
+
 # Out of memory: an archive's memory, its planned paths included, is
 # claimed before anything is extracted, so that running out (status 4)
 # leaves nothing, not even the -d directory. Systems limit address space

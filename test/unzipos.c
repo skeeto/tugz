@@ -162,7 +162,7 @@ struct os {
     // (-1 for neither); writes to created files past a total fail (-1
     // for none); the nth mkdir, create, or keep fails (0 for none);
     // os_setattrs and os_setdirattrs fail for the OS_A* flags given;
-    // links fail
+    // links fail; writes to standard output fail
     char   *archive;
     i32     when;
     i64     shrinkto;
@@ -173,6 +173,7 @@ struct os {
     i32     failkeep;
     i32     failattrs;
     b32     failsymlink;
+    b32     failstdout;
     b32     armed;  // the archive's faults have begun
 
     // Counted per run
@@ -579,7 +580,10 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
     CHECK(len >= 0);
     if (fd==1 || fd==2) {
         mbuf *b = ctx->out + fd - 1;
-        if (b->len+len > MFS_OUTMAX) {
+        if (fd==1 && ctx->failstdout) {
+            mfs_fault(ctx, "No space left on device");
+            return 0;
+        } else if (b->len+len > MFS_OUTMAX) {
             mfs_fault(ctx, "File too large");
             return 0;
         }
@@ -1071,6 +1075,7 @@ static void mfs_reset(os *ctx)
     ctx->failkeep    = 0;
     ctx->failattrs   = 0;
     ctx->failsymlink = 0;
+    ctx->failstdout  = 0;
 }
 
 static os *unzipos_new(iz cap)

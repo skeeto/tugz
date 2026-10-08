@@ -1043,9 +1043,11 @@ for entries.
   but written only up to its size; more than its size with a CRC that
   matches is invalid data (2). Output goes out 64 KiB at a time, as
   UnZip flushes its slide, so that an error in a short entry's data
-  leaves none of it on standard output. A read error in the archive ends
-  the run (3, "zipfile read error"), as UnZip's `readbyte` does, and an
-  archive that ends early while its central directory is read is 51.
+  leaves none of it on standard output, and there each entry's output is
+  flushed as it ends, so that a write that fails, however short, is
+  reported for it (50). A read error in the archive ends the run (3,
+  "zipfile read error"), as UnZip's `readbyte` does, and an archive that
+  ends early while its central directory is read is 51.
 - Names: as zip reads them (`zar_uname`), a name is UTF-8 if flag bit 11
   is set, or comes from a Unicode path field (0x7075) of version 1 whose
   CRC is the stored name's. Otherwise, on Windows, as Info-ZIP's port
@@ -1215,12 +1217,12 @@ ones as invariants. Those that no test asserts are marked untested.
   "leaves no file" and a write past `ulimit -f`; `test_damaged` and
   `test_faults`; `unzip_windows.sh`, a bad CRC). A failed write to
   standard output (`-p`, `-c`) is reported ("write error (disk full?).")
-  and ends the archive's processing (50), where UnZip, writing data
-  there as messages, ignores it and exits 0 (untested; and output still
-  buffered when the run ends, under 64 KiB, is flushed without a check,
-  so its failure, as UnZip's, goes unreported). An interrupted run
-  removes the file being written and dies by the signal, as gzip and zip
-  do, where UnZip exits 80 (untested here).
+  for the entry whose data it held, however short, its output being
+  flushed as it ends, and ends the archive's processing (50), where
+  UnZip, writing data there as messages, ignores it and exits 0
+  (`unzip.sh`, to `/dev/full` where there is one; `test_faults`). An
+  interrupted run removes the file being written and dies by the signal,
+  as gzip and zip do, where UnZip exits 80 (untested here).
 - Links on disk: nothing is written through a link below the `-d`
   directory, whether from the archive or there before: an entry under
   one fails with UnZip's "exists but is not directory" (2), where UnZip

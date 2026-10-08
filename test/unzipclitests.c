@@ -822,7 +822,8 @@ static void test_damaged(os *ctx)
 }
 
 // Faults: a failed write asks whether to go on, and either way the file
-// is not kept (50); a directory, a file, or an attribute that cannot be
+// is not kept (50), and one to standard output, however short, ends the
+// archive (50); a directory, a file, or an attribute that cannot be
 // made is reported, and the rest go on; an archive that shrinks or
 // fails to read once extraction began leaves no partial file
 static void test_faults(os *ctx)
@@ -897,6 +898,19 @@ static void test_faults(os *ctx)
     TEST(output_is(ctx, 2, "d/big.txt:  write error (disk full?).  "
                            "Continue? (y/n/^C) "));
     TEST(!mfs_get(ctx, "d/big.txt"));
+
+    // Standard output that fails, its failure blamed on the entry whose
+    // data it held, however short
+    for (i32 c = 0; c < 2; c++) {
+        char *opt = c ? "-c" : "-p";
+        mfs_reset(ctx);
+        put_archive(ctx, "a.zip", z);
+        ctx->failstdout = 1;
+        UNZIP(ctx, 50, opt, "a.zip", "d/small.txt", "e/f.txt");
+        TEST(output_is(ctx, 2, "d/small.txt:  write error (disk full?).\n"));
+        UNZIP(ctx, 50, opt, "a.zip", "d/big.txt");
+        TEST(output_is(ctx, 2, "d/big.txt:  write error (disk full?).\n"));
+    }
 
     // The archive cut short, or failing, once extraction has begun
     for (i64 at = 100; at < z.len; at += z.len/7) {

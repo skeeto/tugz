@@ -1228,6 +1228,13 @@ static i32 test_member(unzip *u, zarchive *ar, zentry *e, zlocal *l,
             return PK_DISK;
         }
     }
+    if (u->cflag && !writer_flush(u->out)) {
+        // What remained buffered, the entry's last data perhaps, flushed
+        // so that its failure, however little was written, is reported
+        info(u, MSG_STDERR, JOIN(&scratch, sname,
+             S(":  write error (disk full?).\n")));
+        return PK_DISK;
+    }
     b32 overrun = out > usize;  // more than it says it holds
     if (disk) {
         disk->len = (iz)MIN(out, usize);  // perhaps less
