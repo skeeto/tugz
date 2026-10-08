@@ -423,9 +423,11 @@ static i32 zar_entries(zarchive *ar, arena *perm, arena scratch)
 
     // Memory for the entries is claimed only for a directory that begins
     // with a header, as a file that only ends like an archive (sparse, or
-    // damaged) does not, and is then not touched until each is parsed
+    // damaged) does not, and is then not touched until each is parsed.
+    // A count kept unchecked for the caller to shift (ZAR_EPREFIX) may be
+    // anything that a Zip64 record says, even past 2^63 (negative here).
     b32 head = cdend-off>=ZIP_CENTRAL_LEN && zip_central_varlen(h)>=0;
-    if (count > ar->end.cdsize/ZIP_CENTRAL_LEN || (count && !head)) {
+    if (count<0 || count>ar->end.cdsize/ZIP_CENTRAL_LEN || (count && !head)) {
         ar->bad = 0;
         return ZAR_EFORMAT;
     } else if ((u64)count > (uz)-1>>1) {
