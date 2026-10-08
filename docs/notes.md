@@ -1426,6 +1426,11 @@ ones as invariants. Those that no test asserts are marked untested.
   "comments.zip"). A name is shown in Unicode whenever a Unicode path
   field gives it, as Debian's UnZip shows it in a UTF-8 locale
   (`unzip.sh`, "names.zip"). Listings' dates are ISO, as Debian's.
+  `-v`'s compression factor is UnZip's where UnZip's arithmetic holds,
+  and where it overflows (a Zip64 size with an encrypted entry's
+  compressed size under its 12-byte header, wrapped), the growth as
+  large as fits, "-214748364%", where Debian's UnZip shows " 214748364%"
+  (`test_factor`; `unzip.sh`, `ratio.zip`, under the sanitizers).
 - Windows: a link becomes a file holding its target, with a file's
   attributes and times, as in the port, but made last, as on POSIX
   (`unzip_windows.sh`, "Links"; `test_windows`).

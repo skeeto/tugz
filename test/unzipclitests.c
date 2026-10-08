@@ -1569,6 +1569,56 @@ static void test_comments(os *ctx)
     free(z.s);
 }
 
+// The compression factor, -v's, as UnZip computes it, but without
+// overflow where UnZip's overflows: for a Zip64 size and a small
+// encrypted entry, its compressed size less 12 wrapped, and for a
+// compressed size far larger than a small size
+static void test_factor(os *ctx)
+{
+    byte *mem = malloc(1<<12);
+    TEST(mem);
+    arena a = {mem, mem+(1<<12), ctx, 0};
+    TEST(equals(cfactor(&a, 8589930571000, (u64)-1), "-214748364%"));
+    TEST(equals(cfactor(&a, 1, 268435457), "-214748364%"));
+    TEST(equals(cfactor(&a, 1, (u64)-1), "-214748364%"));
+    TEST(equals(cfactor(&a, (u64)-1, 1), "100%"));
+    TEST(equals(cfactor(&a, 0, 5), " 0%"));
+    TEST(equals(cfactor(&a, 1000, 0), "100%"));
+    TEST(equals(cfactor(&a, 1000, 1000), " 0%"));
+    TEST(equals(cfactor(&a, 1000, 1999), "100%"));  // as UnZip shows it
+    TEST(equals(cfactor(&a, 3000000, 1000000), " 67%"));
+    TEST(equals(cfactor(&a, 3000000, 9000000), "-200%"));
+    // and as UnZip's arithmetic, where that does not overflow
+    u64 rng = 1;
+    for (i32 i = 0; i < 100000; i++) {
+        rng = rng*0x3243f6a8885a308d + 1;
+        u64 uc = (rng >> 20) >> (rng & 31);
+        u64 c  = (rng >> 30) % (uc*(i&1 ? 2 : 1000) + 2);
+        i64 f  = 0;
+        if (!uc) {
+            f = 0;
+        } else if (uc > 2000000) {
+            u64 denom = uc / 1000;
+            f = uc>=c ? (i64)((uc-c + (denom>>1)) / denom)
+                      : -(i64)((c-uc + (denom>>1)) / denom);
+        } else {
+            f = uc>=c ? (i64)((1000*(uc-c) + (uc>>1)) / uc)
+                      : -(i64)((1000*(c-uc) + (uc>>1)) / uc);
+        }
+        char want[32];
+        char sgn = f<0 ? '-' : ' ';
+        f = f<0 ? (-f + 5)/10 : (f + 5)/10;
+        if (f == 100) {
+            snprintf(want, sizeof(want), "100%%");
+        } else {
+            snprintf(want, sizeof(want), "%c%lld%%", sgn, (long long)f);
+        }
+        arena tmp = a;
+        TEST(equals(cfactor(&tmp, uc, c), want));
+    }
+    free(mem);
+}
+
 static void test_stdin(os *ctx)
 {
     s8 z = six_files();
@@ -1610,6 +1660,7 @@ int main(void)
     test_wintimes(ctx);
     test_stdin(ctx);
     test_comments(ctx);
+    test_factor(ctx);
     test_local_name(ctx);
     unzipos_free(ctx);
     puts("all unzip program tests pass");

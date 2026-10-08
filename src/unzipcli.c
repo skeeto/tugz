@@ -442,18 +442,26 @@ static s8 plural(u64 n)
 }
 
 // UnZip's ratio (list.c): the compression factor in tenths of a percent,
-// negative for growth.
+// negative for growth. Where UnZip's arithmetic overflows, as for a
+// Zip64 size with an encrypted entry's compressed size under 12 (less
+// its header, wrapped), this computes without overflow and holds the
+// growth to what leaves room for rounding in an i32.
 static i32 ratio(u64 uc, u64 c)
 {
+    u64 d = uc>=c ? uc-c : c-uc;
+    u64 q = 0;
     if (!uc) {
         return 0;
     } else if (uc > 2000000) {
         u64 denom = uc / 1000;
-        return uc>=c ? (i32)((uc-c + (denom>>1)) / denom)
-                     : -(i32)((c-uc + (denom>>1)) / denom);
+        q = d/denom + (d%denom + (denom>>1))/denom;
+    } else if (d > ((u64)-1 - (uc>>1))/1000) {
+        q = (u64)-1;
+    } else {
+        q = (1000*d + (uc>>1)) / uc;
     }
-    return uc>=c ? (i32)((1000*(uc-c) + (uc>>1)) / uc)
-                 : -(i32)((1000*(c-uc) + (uc>>1)) / uc);
+    q = MIN(q, (u64)0x7fffffff - 5);  // as is any compression, under 1000
+    return uc>=c ? (i32)q : -(i32)q;
 }
 
 // The compression factor as list.c shows it: "%c%d%%", or "100%".

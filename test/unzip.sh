@@ -381,6 +381,13 @@ same -l methods.zip
 same -v methods.zip
 same -t overrun.zip
 
+# Departure: -v's compression factor where UnZip's arithmetic overflows,
+# for a Zip64 size and an encrypted entry's compressed size under 12,
+# wrapped: the growth, as large as fits, where Debian's UnZip shows
+# " 214748364%" (a sanitized build traps on any overflow)
+exits 0 "$U" -v ratio.zip >got 2>&1
+grep -q ' -214748364% ' got || fail "-v ratio.zip: $(cat got)"
+
 # Departure: a Deflate64 match from before the entry's start is invalid
 # data, as a deflated one is (zlib's check), where UnZip's own inflate
 # copies from its window as it was, then finds a bad CRC

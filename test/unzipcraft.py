@@ -326,6 +326,11 @@ write("cdjunk.zip", bytes(junk[:at] + b"junk!\n" + junk[at:]))
 lines = (b"\n\ta\r\n\t" * 10923)[:65535]
 write("cmtlines.zip", build([Entry("a.txt", b"a\n", comment=lines)],
                             comment=lines))
+# -v's compression factor for a Zip64 size and an encrypted entry whose
+# compressed size, less its 12-byte header, wraps
+write("ratio.zip", build([Entry("r", b"\0" * 11, method=0, flags=1,
+                                usize=8589930571000, z64=True)],
+                         zip64=True))
 
 # Damaged structure
 good = build(basic())
