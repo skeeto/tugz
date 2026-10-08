@@ -2286,7 +2286,7 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
             info(u, MSG_STDERR, JOIN(&scratch, S("note:  "), path,
                  S(" may be a plain executable, not an archive\n")));
         }
-        if (fd >= 0) {
+        if (fd > 0) {  // standard input stays open
             os_close(u->ctx, fd);
         }
         if (lastchance || stdin) {
@@ -2414,7 +2414,7 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
     err = MAX(err, r);
 
 done:
-    if (fd >= 0) {
+    if (fd > 0) {
         os_close(u->ctx, fd);
     }
     return err;
