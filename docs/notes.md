@@ -221,7 +221,10 @@ output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
   which cost Deflate 2% on Silesia. Deflate64 is tested with hand-built
   streams (`test_deflate64`: whole, at every split, a byte at a time,
   with output in pieces, across window slides) and fuzzed by
-  `fuzz-inflate` against itself in pieces, there being no reference.
+  `fuzz-inflate` against itself in pieces, there being no reference,
+  from streams hand-built by `seeds.py` (which Info-ZIP's UnZip decodes
+  too); `unzip_windows.sh` optionally extracts Explorer's large
+  Deflate64 archives (`UNZIP_D64`).
 - `platform/libtugz.c` builds an object, or the CMake target
   `tugz::tugz` (static, or shared with `BUILD_SHARED_LIBS`), exporting
   only `tugz_*` (no writable data): the core's other functions are all
@@ -1361,6 +1364,9 @@ ones as invariants. Those that no test asserts are marked untested.
     SLOW=1 sh test/unzip.sh build/unzip  # adds Zip64: entries of 4 GiB
                                        # (needs about 13 GiB free in TMPDIR)
     TUGZ_ZIP=./zip.exe sh test/unzip_windows.sh ./unzip.exe  # on Windows
+    UNZIP_D64=dir TUGZ_ZIP=./zip.exe sh test/unzip_windows.sh ./unzip.exe
+                                       # adds Explorer's Deflate64 archives
+                                       # in dir (about 5 GB free in TMPDIR)
 
 Fuzzers:
 
