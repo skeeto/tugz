@@ -2,18 +2,19 @@
 
 tugz (tiny unity gzip) is a from-specification implementation of gzip
 (RFC 1952), zlib (RFC 1950), and DEFLATE (RFC 1951): a drop-in `gzip`
-command, a streaming library (`tugz.h`), and an Info-ZIP compatible
-`zip`. The commands identify themselves as `gzip (tugz) 0.1.0` and `tugz
-zip 0.1.0`, and are installed under the names `gzip` and `zip`.
+command, a streaming library (`tugz.h`), and Info-ZIP compatible `zip`
+and `unzip`. The commands identify themselves as `gzip (tugz) 0.1.0`,
+`tugz zip 0.1.0`, and `tugz unzip 0.1.0, a subset of Info-ZIP UnZip
+6.0`, and are installed under the names `gzip`, `zip`, and `unzip`.
 
 ## Layout
 
 Unity build: each program's platform layer (`platform/*_posix.c`,
 `platform/*_windows.c`, `platform/libtugz.c`, and the test programs)
 includes the sources it needs, and it or the program's own layer
-(`src/gzipio.c`, `src/zipcli.c`) defines their hooks. Everything is
-`static` except the entry points. Nothing at file scope in the core is
-mutable; platform layers may use globals and `#ifdef`.
+(`src/gzipio.c`, `src/zipcli.c`, `src/unzipcli.c`) defines their hooks.
+Everything is `static` except the entry points. Nothing at file scope in
+the core is mutable; platform layers may use globals and `#ifdef`.
 
 The core (`base`, `crc32`, `adler32`, `inflate`, `deflate`, `gzip`) does
 no I/O: callers hand it input and output buffers of any size and it
@@ -22,9 +23,11 @@ resumes where it stopped. Its only hooks are `os_oom` and `os_extend`
 interface and a buffered reader and writer); gzip adds `src/gzipio.c`
 (descriptor drivers) and `src/cli.c`, and zip `src/zip.c`, `src/wild.c`
 (wildcards), `src/dir.c` (directories), `src/zipin.c` (archive reading),
-and `src/zipcli.c`. The library layer adds none of them. The shared
-`os_*` implementations live in `platform/posix.c` and
-`platform/windows.c`, and the file system functions that zip shares
+and `src/zipcli.c`, and unzip, which takes only `base`, `crc32`, and
+`inflate` of the core, the same, with `src/unzip.c` (its rules) and
+`src/unzipcli.c` in place of `src/zipcli.c`. The library layer adds none
+of them. The shared `os_*` implementations live in `platform/posix.c`
+and `platform/windows.c`, and the file system functions that zip shares
 with unzip in `platform/zipfs_*.c`.
 
 | File                     | Purpose                                         |
@@ -44,25 +47,34 @@ with unzip in `platform/zipfs_*.c`.
 | `src/zipin.c`            | archive reading, shared by zip and unzip        |
 | `src/zipcli.c`           | zip command line and archive driver, `zip_main` |
 | `src/unzip.c`            | unzip's rules: names to paths, times, modes     |
+| `src/unzipcli.c`         | unzip command line and driver, `unzip_main`     |
 | `platform/posix.c`       | shared POSIX `os_*` implementation              |
 | `platform/windows.c`     | shared CRT-free Win32 `os_*`, paths, arguments  |
 | `platform/gzip_*.c`      | gzip entry points (POSIX, Windows)              |
 | `platform/zipfs_*.c`     | file system functions for zip and unzip         |
 | `platform/zip_*.c`       | zip's archive replacement and entry points      |
+| `platform/unzip_*.c`     | unzip's extraction hooks and entry points       |
 | `platform/libtugz.c`     | library layer; `tugz.h` is its interface        |
 | `test/tests.c`           | test suite (in-memory file system)              |
 | `test/libtests.c`        | library interface tests                         |
 | `test/fuzz_*.c`          | libFuzzer harnesses: codec ones share           |
-|                          | `fuzzos.c`, `fuzz_zip.c` uses `zipos.c`         |
+|                          | `fuzzos.c`, `fuzz_zip.c` uses `zipos.c`,        |
+|                          | `fuzz_unzip.c` `unzipos.c`                      |
 | `test/bench.c`           | benchmark versus zlib and libdeflate            |
 | `test/ziptests.c`        | ZIP format unit tests                           |
 | `test/zipclitests.c`     | zip program tests, in memory                    |
 | `test/zipos.c`           | in-memory platform layer for the zip program    |
 | `test/unziptests.c`      | unzip rule tests, with tables from UnZip 6.0    |
+| `test/unzipclitests.c`   | unzip program tests, in memory                  |
+| `test/unzipos.c`         | in-memory platform layer for the unzip program  |
 | `test/cli.sh`            | end-to-end gzip tests                           |
 | `test/zip.sh`            | end-to-end zip tests (unzip, zipinfo, Python)   |
 | `test/zipcheck.py`       | zip.sh's verifier through Python's `zipfile`    |
 | `test/zip_windows.sh`    | zip.exe under Windows' own extractors           |
+| `test/unzip.sh`          | end-to-end unzip tests against Info-ZIP's UnZip |
+| `test/unzipcraft.py`     | unzip.sh's crafted archives (Python)            |
+| `test/unzip_windows.sh`  | unzip.exe beside Windows' own extractors        |
+| `test/pty.cs`            | pseudo console for the Windows tests' prompts   |
 | `test/seeds.py`          | fuzzing seed corpus generator                   |
 
 The only conditional compilation in the core is CPU architecture and
@@ -205,9 +217,9 @@ output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
   enumerators still share the program's names (documented in `tugz.h`).
   `test/amalgtests.c` (ctest's `amalgamation`) embeds it beside a
   program's own `assert`, `MIN`, `i64`, and `byte`.
-- The targets leave `C_STANDARD` unset, so the compiler's default
-  (gnu17 or later, which accepts C23 attributes) applies even when a
-  consumer sets `CMAKE_C_STANDARD` to 11, and compile at `-O2`, as the
+- The targets leave `C_STANDARD` unset, so the compiler's default (gnu17
+  or later, which accepts C23 attributes) applies even when a consumer
+  sets `CMAKE_C_STANDARD` to 11, and compile at `-O2`, as the
   performance figures were measured, rather than Release's `-O3`.
 
 ## zip
@@ -218,18 +230,17 @@ and directory listings (`src/wild.c`, `src/dir.c`), an archive reader
 (`src/zipin.c`), and a driver (`src/zipcli.c`), also tested and fuzzed
 over an in-memory platform layer (`test/zipos.c`), over more platform
 functions, declared at the top of `src/zipin.c`, `src/zipcli.c`, and
-`src/dir.c`: `os_stat`, `os_fstat`, and
-`os_missing` (whether a failed `os_stat` found nothing there),
-`os_listdir`, `os_readlink`, positioned `os_readat`/`os_writeat`,
-`os_truncate`, `os_resolve` (the file that links at the archive's path
-lead to), `os_writable` (whether the archive may be replaced),
-`os_commit` (atomic rename over the target, only once the file is
-closed, or on Windows flushed, without error), `os_localtime`,
-`os_isatty`, `os_error` (the last failure's reason), and, needed only on
-Windows (POSIX stubs them), `os_fromcp` (a name in a code page),
-`os_fullpath` (a file's final path, to tell files apart without IDs),
-and `os_upcase` (a name in upper case, as the file system ignores case).
-It needs neither inflate nor the gzip container.
+`src/dir.c`: `os_stat`, `os_fstat`, and `os_missing` (whether a failed
+`os_stat` found nothing there), `os_listdir`, `os_readlink`, positioned
+`os_readat`/`os_writeat`, `os_truncate`, `os_resolve` (the file that
+links at the archive's path lead to), `os_writable` (whether the archive
+may be replaced), `os_commit` (atomic rename over the target, only once
+the file is closed, or on Windows flushed, without error),
+`os_localtime`, `os_isatty`, `os_error` (the last failure's reason),
+and, needed only on Windows (POSIX stubs them), `os_fromcp` (a name in a
+code page), `os_fullpath` (a file's final path, to tell files apart
+without IDs), and `os_upcase` (a name in upper case, as the file system
+ignores case). It needs neither inflate nor the gzip container.
 
 - Scope: batch use by release scripts. Other options, everything
   interactive or legacy among them (encryption, comments, splits, SFX
@@ -565,8 +576,8 @@ It needs neither inflate nor the gzip container.
   single disk, nor by the Zip64 record's own. A locator's total of zero
   disks, as Microsoft's writers (Windows Explorer, .NET) put there, is
   taken for one, as Debian's UnZip (6.0-29) takes it, though Info-ZIP's
-  zip and UnZip 6.0 take it for a split. Only a missing archive is
-  new: anything else at its path must be a zip file, so an empty file, a
+  zip and UnZip 6.0 take it for a split. Only a missing archive is new:
+  anything else at its path must be a zip file, so an empty file, a
   directory, a FIFO, or a device fails with 3 before any work, as
   Info-ZIP fails (it waits on a FIFO, and cannot open a socket, 15). An
   empty file therefore never adds itself.
@@ -929,33 +940,365 @@ race allows).
   the new archive has the old owner and group, where Info-ZIP keeps the
   whole mode for a new owner or group.
 
+## unzip
+
+The unzip program reads archives through the reader that zip uses for an
+existing archive (`src/zipin.c`: the end records, then the central
+directory through the read-ahead window, and each entry's local header
+found and its data bounds-checked), with `src/zip.c`'s parsers, decodes
+through `src/inflate.c` alone, and applies `src/unzip.c`'s rules: pure
+functions, ported from UnZip 6.0's source, that `test/unziptests.c`
+checks against tables recorded from macOS's `/usr/bin/unzip` and
+Debian's UnZip (6.0-29), for names to paths (`uz_mapname`), DOS dates
+(`uz_dosdate`, `uz_timegm`), extra fields' times and owners
+(`uz_extra_izux`), modes (`uz_mode`, `uz_symlink_host`), Windows
+attributes (`uz_dosattr`), and names made safe to show (`uz_filter`).
+The driver, `src/unzipcli.c` (`unzip_main`), follows UnZip's `unzip.c`,
+`envargs.c`, `process.c`, `list.c`, `extract.c`, and `fileio.c`, cited
+at each function, with Debian's additions: ISO dates in listings and the
+check for overlapped components. Beyond zip's file system functions
+(`platform/zipfs_*.c`), its platform hooks, declared at the top of
+`src/unzipcli.c`, are `os_isatty`, `os_error`, `os_mkdir`, `os_umask`,
+`os_mktime` (Unix seconds from a local time, the inverse of
+`os_localtime`), `os_setattrs` (owner, mode, and times, on the
+descriptor of a file not yet kept), `os_setdirattrs` (a directory's,
+through a handle that refuses a link at its end), and `os_symlink`, in
+`platform/unzip_posix.c` and `platform/unzip_windows.c`, which also hold
+the entry points. Neither expands member arguments, which are patterns
+for entries.
+
+- Scope: busybox unzip's features, and UnZip 6.0's that are cheap:
+  listings (`-l`, `-v`), testing, extraction to disk or to standard
+  output (`-p`, `-c`), the comment (`-z`), selection (`-x`, `-C`),
+  overwriting (`-n`, `-o`, `-f`, `-u`, the prompt), `-j`, `-D`, `-V`,
+  `-K`, `-X`, `-q`, the environment (`UNZIP`, else `UNZIPOPT`, split as
+  zip splits `ZIPOPT`), and wildcard archive names. UnZip's other
+  options are refused with its "error:  -a option not supported" (10),
+  as are `-K` and `-X` on Windows. Entries that are encrypted,
+  compressed by a method other than stored or deflated, or need a
+  version past 4.5 are skipped with UnZip's messages for a build without
+  them, and count as skipped (81).
+- Messages: UnZip's words, and its routing (`UzpMessagePrnt`): a message
+  for standard error goes there, but under `-t` everything goes to
+  standard output, so that redirecting it keeps the whole report, and
+  errors are repeated on standard error when that alone is a terminal.
+  Whether the last message ended a line is tracked across both streams,
+  for UnZip's newlines before and after messages. Statuses combine as in
+  `extract.c` and `process.c`: per archive the most severe; an unmatched
+  member raises a status of at most 1 to 11, while an unmatched `-x`
+  pattern only warns; no entry processed is 81 if any was skipped, else
+  11; and skipped entries raise a status of at most 1 to 81. Over the
+  matches of a wildcard, the most severe but a directory's, then
+  Info-ZIP's summary on standard error ("2 archives were successfully
+  processed.").
+- Archives: a name is tried as given, then with `.zip` and `.ZIP`. A
+  name with wildcards is expanded by `src/dir.c`'s `expand_wild`, on
+  POSIX as UnZip's `do_wild` matches (case matters, `[sets]` and escapes
+  work, and a name starting with `.` matches only a pattern that does),
+  on Windows as zip and gzip expand arguments there (ignoring case, by
+  DOS rules, with either separator, leaving out hidden and system
+  files), and the matches are processed in name order. An archive of
+  `-`, as in busybox, is standard input: a regular file is read in place
+  (and left open), anything else read whole into memory first
+  (`zin_memory`, one window that never moves), and `-n` is implied
+  unless `-o` is given, as no prompt could read its answers.
+- Data before the archive: the comment is shown, and `-z` stops, once
+  the end record is found, before the central directory is read, as
+  UnZip's `find_ecrec` does. Data before the archive that its offsets do
+  not account for (a self-extractor's stub), the distance from where the
+  central directory ends by its offset and size to where the Zip64 end
+  record, or failing one the end record, begins, shifts every entry's
+  offset, with UnZip's "extra bytes at beginning or within zipfile"
+  warning (1); a negative distance is its "missing N bytes in zipfile"
+  (2), and an offset of 0 for a directory that is not empty its "NULL
+  central directory offset" (2). Where the first entry's local header is
+  not found so shifted, the shift is undone ("attempting to
+  re-compensate"), and redone should a later entry then not be found, as
+  UnZip does; only the entries read are shifted. A central directory
+  invalid after some entries is processed up to there, then reported, as
+  UnZip finds the fault only once it gets there. Disk numbers in the end
+  record alone are taken, as UnZip takes them, for the parts of an
+  archive concatenated, with its warning; a split that Zip64 records
+  describe is refused (11). The shared parser takes a Zip64 locator's
+  total of zero disks for one (see Merging, under zip).
+- Overlapped components (zip bombs): before any entry's data is read, by
+  `-t`, `-p`, `-c`, or extraction (listings read none), the least that
+  each selected, readable entry takes, a local header's fixed 30 bytes
+  and its compressed data, is sorted by offset (a stable merge sort),
+  and none may overlap the next or reach the central directory. Each
+  entry is checked again once its local header is read, by its real
+  length, against the next one's offset. Either failure is Debian's
+  "invalid zip file with overlapped components (possible zip bomb)"
+  (12), before anything is written, the `-d` directory included.
+  Debian's UnZip finds overlaps entry by entry, as it reads them, and
+  does not check the central directory.
+- Decoding: an entry is read by its central header's method, flags,
+  sizes, and CRC. Its local header gives the data's offset, its DOS time
+  and extra fields (times and owner, as UnZip takes them from there),
+  and its name, which is decoded as the central one is and compared with
+  it, as Debian's UnZip compares them ("mismatching "local" filename",
+  1). A stored entry copies its compressed size (warning, as UnZip does,
+  when the two sizes differ). A deflated entry's input stops at its
+  compressed size, and its output is decoded to its end, to check it,
+  but written only up to its size; more than its size with a CRC that
+  matches is invalid data (2). Output goes out 64 KiB at a time, as
+  UnZip flushes its slide, so that an error in a short entry's data
+  leaves none of it on standard output. A read error in the archive ends
+  the run (3, "zipfile read error"), as UnZip's `readbyte` does, and an
+  archive that ends early while its central directory is read is 51.
+- Names: as zip reads them (`zar_uname`), a name is UTF-8 if flag bit 11
+  is set, or comes from a Unicode path field (0x7075) of version 1 whose
+  CRC is the stored name's. Otherwise, on Windows, as Info-ZIP's port
+  reads them, one made on MS-DOS (but by PKZIP for Windows 2.5 to 4.0),
+  OS/2, or by WinZip on NTFS is decoded from the OEM code page, and
+  another that is not UTF-8 from the ANSI code page; on POSIX it is its
+  bytes. Members match, and messages show, that name, through
+  `uz_filter`: bytes below 0x20 as `^` and a letter, and DEL, C1
+  controls, and bytes not UTF-8 as `?` (UnZip relies on the locale).
+  Paths follow `uz_mapname`, in UnZip's order: a name made on MS-DOS
+  without `/` separates with `\` (warned of once per archive), leading
+  `/` are stripped (warned of), `-j` keeps the last component, empty and
+  `.` components are dropped, as are `..` (warned of), control
+  characters are dropped, a final `;N` too unless `-V`, and on POSIX a
+  final `.` or `..` component becomes `_` or `__`; on Windows,
+  `:\<>|"?*` become `_`, trailing dots and spaces are dropped (UnZip
+  leaves that to the system), and a device's name, by a list (CON, PRN,
+  AUX, NUL, CONIN$, CONOUT$, CLOCK$, and COM and LPT with a digit or a
+  superscript one, two, or three, in any case, with any extension), gets
+  a `_` before it (UnZip asks the system). A name left empty fails
+  ("mapname:  conversion of ... failed", 2), its directories still made.
+  A path so made never holds a `..` component, a leading `/`, NUL, or
+  control characters, nor on Windows a drive, a stream, or a device's
+  name: `tests-unzip` checks every name of up to four characters from an
+  alphabet of the troublesome ones, under every option and host, then
+  100,000 longer ones at random.
+- Extraction: the `-d` directory is made, if missing, one level only, as
+  UnZip's `checkdir` makes it (a trailing `/` dropped), and an entry's
+  missing directories silently; a directory entry says "creating:" only
+  when it made its directory. A file there already is judged by UnZip's
+  `check_for_newer` (the entry's extended time, else its DOS time
+  against the file's rounded up to two seconds; a link is older, with
+  UnZip's note), then `-f`, `-u`, `-n`, `-o`, or the prompt decide. The
+  prompt is UnZip's, on standard error, its answers read through a
+  reader allocated before any output, into 10 bytes as UnZip's `fgets`
+  reads them, so that a longer answer is taken in pieces: `y`, `n`, `A`
+  and `N` for the rest of the run, `r` for "new name: " (asked again
+  while empty; the end of input keeps the name), and others "error:
+  invalid response [...]" (`{ENTER}` for an empty one); at the end of
+  input, " NULL" and "treating as "[N]one"", status 1. A file to replace
+  is removed, then the new one created exclusively ("cannot delete old",
+  "cannot create": 50), as UnZip's `open_outfile` and gzip do. On POSIX
+  the owner (`-X`), mode, and times are set on the descriptor, in that
+  order, before the file is kept; Unix hosts' modes are taken as they
+  are, others' with the umask, and set-ID and sticky bits only under
+  `-K`. Times come from the local `UT` field, else a `UX` field, else
+  the DOS time as local time (`os_mktime`: `mktime` with `tm_isdst` -1).
+  Directories made by their own entries get theirs at the end, deepest
+  first (their paths sorted in reverse), through a handle opened without
+  following a link (`O_NOFOLLOW`): owner, times, then mode, as UnZip
+  orders them, keeping an inherited set-group-ID bit unless `-X` or `-K`
+  for a Unix host's.
+- Links: never through one. Below the `-d` directory, every directory on
+  an entry's path is checked not to be a link (`linkless`, from the `-d`
+  directory on, remembering the directories found, so that a run of
+  entries in one directory examines it once), and missing ones are made.
+  A link there, from the archive or from before, is UnZip's "exists but
+  is not directory" (2), where UnZip follows it. A file is removed and
+  created anew, never opened where it is, so a link in its place is
+  replaced, not followed. Between a check and the creation, another
+  process could still put a link in the way. Links with data, from the
+  hosts that UnZip takes links from, are deferred, as UnZip defers them:
+  each gets an empty file, created exclusively, to hold its place, whose
+  identity (device and inode) is recorded, and its target, up to 4096
+  bytes (a longer one is refused with a warning), is kept in memory,
+  checked by the CRC. Once every file is extracted ("finishing deferred
+  symbolic links:"), each placeholder still there, reached through no
+  link, empty, and the same file, is removed and the link made in its
+  place (with `-X`, given its owner by `lchown`); otherwise "invalid
+  placeholder file".
+- Discarding: extracted files are opened as gzip's outputs are, to be
+  removed unless kept (on Windows, delete-pending), and kept only once
+  their data has been checked and their attributes set. A bad CRC,
+  invalid data, data beyond the size, or a failed write or close leaves
+  no file, and so does an interruption, through the signal handlers that
+  gzip and zip share, after which the process dies by the signal. A
+  failed write asks UnZip's "write error (disk full?).  Continue?
+  (y/n/^C)" and goes on to the next entry only for `y` (50).
+- Memory: zip's reserve-and-commit arenas, perm and scratch. The
+  inflator, its 64 KiB output window, and the prompt's reader are
+  claimed before the first archive, and whatever an archive needs before
+  its first change to the file system, its memory then reused for the
+  next: its entries (the central directory whole) and their Unicode
+  names, and, as extraction is planned, every selected entry's mapped
+  path, room for links' targets and paths and for the directories
+  finished at the end, the sorted spans of the overlap check, the cache
+  of directories found, and the room that extracting any one entry takes
+  (its messages, its path, a new name, and sorting the directories),
+  claimed last, just before the `-d` directory is made. So running out
+  of memory (4, "not enough memory") extracts nothing, not even the `-d`
+  directory, as `test/unzip.sh` checks under `ulimit -v` and on Linux
+  `ulimit -d`, and nothing is claimed once the file system has changed,
+  as `test/unzipos.c` checks in every run of `tests-unzipcli` and
+  `fuzz-unzip`, but for a link or directory renamed at the prompt, whose
+  path is kept to the end, and the POSIX layer's `malloc` of a pending
+  output's path, outside the arenas. Unlike UnZip, which reads the
+  central directory as it goes, unzip holds it whole: on the M4 Max, for
+  100,000 entries with names of 17 bytes and no extra fields, `-t`
+  peaked at 18.6 MB and extraction at 31.9 MB, and for 200,000 at 34.6
+  and 61.3 MB, about 160 and 290 bytes an entry (UnZip: 2.8 MB either
+  way).
+- Windows: `platform/unzip_windows.c` is CRT-free like zip's. Paths are
+  `\\?\` paths, of any length, and the console is read and written in
+  UTF-16, so a new name typed at the prompt may be any Unicode; an
+  answer's CR before its newline is dropped, as the port's text-mode
+  `fgets` drops it. A `\` in member patterns is a `/`, as the port takes
+  it. `os_setattrs` gives a file its times and its read-only, hidden,
+  system, and archive attributes (from the external attributes' low
+  byte, whatever the host) in one `FileBasicInfo` call on the handle
+  that wrote it, still delete-pending, which Windows allows and
+  `os_keep` then clears, trying times and attributes apart should that
+  fail, to tell which failed. Directories get times only, as in the
+  port, through a handle opened with `FILE_FLAG_OPEN_REPARSE_POINT` that
+  refuses a reparse point. Junctions, like links, count as links on the
+  way to an entry, and a junction at an entry's own name cannot be
+  removed ("cannot delete old", 50), so nothing is written through it. A
+  link becomes a regular file holding its target, as in the port, made
+  last, as on POSIX. DOS times are local by each year's own daylight
+  saving rules (`TzSpecificLocalTimeToSystemTime`), as zip writes them
+  there. There is no umask (access control is inherited), and `-K` and
+  `-X` are refused. Explorer, `tar`, and .NET's `Expand-Archive` extract
+  the archives of tugz's zip as unzip does, and Explorer and `tar`
+  Explorer's own, while `Expand-Archive` decodes those OEM names from
+  the ANSI code page.
+
+### Departures from Info-ZIP UnZip
+
+Each is deliberate, for safety, for busybox's features, or for a simpler
+or friendlier result. `test/unzip.sh` compares everything else with
+Info-ZIP's UnZip and checks these on their own (some marked "Departure"
+there), `test/unzipclitests.c` (`tests-unzipcli`) checks them in memory,
+`test/unzip_windows.sh` the Windows ones, and `fuzz-unzip` the safety
+ones as invariants. Those that no test asserts are marked untested.
+
+- Arguments: as in busybox, an argument after the archive made only of
+  option letters that tugz takes is options (`unzip a.zip -o`), where
+  UnZip takes it for a member (`unzip.sh`, "options after the archive"),
+  and an archive of `-` is standard input, implying `-n` unless `-o`
+  (`unzip.sh`, "Standard input as the archive"; `tests-unzipcli`,
+  `test_stdin`). `-v` alone prints one line, "tugz unzip 0.1.0, a subset
+  of Info-ZIP UnZip 6.0", rather than UnZip's version report, and the
+  usage and `-hh` are tugz's own (`unzip.sh`, "Usage"). UnZip's options
+  that tugz lacks are refused (10) rather than taken (`unzip.sh`).
+- Archives: the matches of a wildcard are processed in name order,
+  rather than the directory's (`unzip.sh`, "w/*.zip order"). On Windows,
+  hidden and system files are left out of the matches, as zip and gzip
+  leave them out, where the port, by its sources, lists them (untested).
+  A split archive that Zip64 records describe is refused (11), where
+  UnZip reads on as though its parts were concatenated (untested), and
+  an entry made on VMS is extracted without UnZip's question "stored in
+  VMS format.  Extract anyway? (y/n)" (untested).
+- Zip bombs: overlapped components, and data reaching into the central
+  directory, which Debian's UnZip does not check, are found before any
+  entry is read, so that none is extracted, nor the `-d` directory made,
+  where Debian's UnZip finds them entry by entry, having extracted those
+  before (`unzip.sh`, "Overlapped components", compared with a Debian
+  `REF` where it finds them too; `tests-unzipcli`, `test_bomb`).
+- Sizes: an entry is read by its central header's sizes, method, and
+  CRC, the central directory being read whole first, rather than by its
+  local header's (untested: no test sets them apart). Output stops at an
+  entry's size, where UnZip writes what it decodes beyond it before
+  finding the CRC wrong (`unzip.sh`, "Output beyond an entry's size";
+  `test_damaged`).
+- Damaged and failed files: a bad CRC, invalid data, data beyond the
+  size, or a failed write leaves no file (2, or 50), where UnZip keeps
+  what it wrote, though the old file is gone either way (`unzip.sh`,
+  "leaves no file" and a write past `ulimit -f`; `test_damaged` and
+  `test_faults`; `unzip_windows.sh`, a bad CRC). A failed write to
+  standard output (`-p`, `-c`) is reported ("write error (disk full?).")
+  and ends the archive's processing (50), where UnZip, writing data
+  there as messages, ignores it and exits 0 (untested; and output still
+  buffered when the run ends, under 64 KiB, is flushed without a check,
+  so its failure, as UnZip's, goes unreported). An interrupted run
+  removes the file being written and dies by the signal, as gzip and zip
+  do, where UnZip exits 80 (untested here).
+- Links on disk: nothing is written through a link below the `-d`
+  directory, whether from the archive or there before: an entry under
+  one fails with UnZip's "exists but is not directory" (2), where UnZip
+  follows a link to a directory. The `-d` directory and the path to it
+  may be links (`unzip.sh`, "Departure: nothing is written through a
+  link"; `test_links`; `fuzz-unzip`'s planted links;
+  `unzip_windows.sh`'s junction).
+- Deferred links: a placeholder is an empty file, known by its identity,
+  where UnZip's holds the target, known by its size and content
+  (`test_links`, a link and a file of one name). A target longer than
+  4096 bytes is refused with a warning, making neither link nor file,
+  and leaving the status alone (untested; checked by hand). A link's
+  mode is not set, where UnZip's builds with `lchmod`, such as macOS's,
+  set it (untested: `unzip.sh`'s tree listings leave links' modes out).
+- The prompt: a new name is mapped as entry names are, below the `-d`
+  directory, where UnZip takes it relative to the current directory,
+  ignoring `-d` (and Apple's build takes a leading `/` as absolute)
+  (`test_prompt`, whose new names under a `-d` directory must stay below
+  it; `unzip.sh` compares names with `..` and a leading `/` without
+  `-d`, but for Apple's).
+- `-f` with a `-d` directory that is missing freshens nothing, where
+  UnZip, not making it, freshens the current directory (untested:
+  `unzip.sh` runs it, but with nothing to freshen in either place).
+- Display: control characters in comments are shown as in names (`^X`),
+  where UnZip writes them raw, and bytes not UTF-8 in names and comments
+  as `?`, where UnZip leaves them to the locale (`unzip.sh`,
+  "comments.zip"). A name is shown in Unicode whenever a Unicode path
+  field gives it, as Debian's UnZip shows it in a UTF-8 locale
+  (`unzip.sh`, "names.zip"). Listings' dates are ISO, as Debian's.
+- Windows: a link becomes a file holding its target, as in the port, but
+  made last, as on POSIX (`unzip_windows.sh`, "Links"; `test_windows`).
+  Junctions and directory links are never followed (`unzip_windows.sh`,
+  which also finds a junction at an entry's own name left in place, 50).
+  Trailing dots and spaces are dropped from names, and devices' names
+  found by a list, rather than left to the system and asked of it
+  (`test_windows`; `unzip_windows.sh`, "Names mapped for Windows"). DOS
+  times are local by each year's own daylight saving rules, where the
+  port applies the current year's (`unzip_windows.sh`, a date in March
+  2006). A `UT` field's creation time is not set, where the port sets it
+  (untested). Paths may exceed `MAX_PATH` (`unzip_windows.sh`, "Long
+  paths"), and the console is read and written in UTF-16
+  (`unzip_windows.sh`, the prompt in a pseudo console).
+
 ## Workflow
 
     cmake -B build && cmake --build build -j
-    ctest --test-dir build -j4 # unit, library, ZIP format, zip program,
-                               # and amalgamation tests (ASan/UBSan),
-                               # gzip and zip end to end (zip's
+    ctest --test-dir build -j4 # unit, library, ZIP format, zip and
+                               # unzip rules and programs, and
+                               # amalgamation tests (ASan/UBSan), gzip,
+                               # zip, and unzip end to end (their
                                # out-of-memory tests with the release
-                               # zip, where ulimit works) (needs zlib,
-                               # libdeflate, /usr/bin/gzip, Info-ZIP
-                               # unzip and zipinfo; optional Python)
+                               # builds, where ulimit works) (needs
+                               # zlib, libdeflate, /usr/bin/gzip,
+                               # Info-ZIP unzip and zipinfo; optional
+                               # Python, which crafts unzip's archives)
     SLOW=1 sh test/cli.sh build/gzip   # adds a 5 GiB stream (>4 GiB offsets)
     cmake -B build-w64 -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-x86_64.cmake
                                # Win32 builds (or cmake -G Ninja natively
-                               # under w64devkit, which runs zip-windows)
+                               # under w64devkit, which runs zip-windows
+                               # and unzip-windows)
     cmake -B build-fuzz -DCMAKE_C_COMPILER=clang -DTUGZ_BUILD_FUZZ=ON
-    cmake --build build-fuzz   # the six fuzzers (LLVM clang)
+    cmake --build build-fuzz   # the seven fuzzers (LLVM clang)
     cmake --build build-fuzz --target tugz_fuzz_seeds  # fuzz/corpus/
     build-fuzz/fuzz-diff-inflate -fork=3 -max_len=65536 fuzz/corpus/diff-inflate
     build-fuzz/fuzz-zipread -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zipread
     build-fuzz/fuzz-zip -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zip
+    build-fuzz/fuzz-unzip -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/unzip
     cmake -B build -DTUGZ_BUILD_BENCH=ON && cmake --build build
     build/bench -l 1,6,9 bench_corpus/silesia/*
-    cmake -P cmake/amalgamate.cmake    # gzip.c, zip.c, tugz.c (and the
-                                       # build's amalgamation/ has them)
+    cmake -P cmake/amalgamate.cmake    # gzip.c, zip.c, unzip.c, tugz.c (and
+                                       # the build's amalgamation/ has them)
     SLOW=1 sh test/zip.sh build/zip    # adds Zip64: 4 and 5 GiB files, 70,000 entries
                                        # (needs about 10 GiB free in TMPDIR)
     sh test/zip_windows.sh ./zip.exe   # on Windows, under w64devkit
+    REF=/usr/bin/unzip sh test/unzip.sh build/unzip  # against Info-ZIP's UnZip
+    SLOW=1 sh test/unzip.sh build/unzip  # adds Zip64: entries of 4 GiB
+                                       # (needs about 13 GiB free in TMPDIR)
+    TUGZ_ZIP=./zip.exe sh test/unzip_windows.sh ./unzip.exe  # on Windows
 
 Fuzzers:
 
@@ -992,6 +1335,21 @@ Fuzzers:
   (unless deleted), and which it reads back; it must leave no temporary
   file, nor claim memory once it has created one. Inputs need more than
   64 KiB (`-max_len`) for copies to read through the window again.
+- `fuzz-unzip`: the unzip program itself (`unzip_main`, in memory,
+  `test/unzipos.c`), with arbitrary bytes as its archive, in sixteen
+  modes (extraction with `-o`, the prompt, `-n`, `-j`, `-x`, `-f`, `-u`,
+  `-V`, a linked `-d`, `-KX`, `-DDC`, or from standard input; `-l`,
+  `-v`, `-t`, `-p`), with POSIX or Windows conventions, the umask, the
+  prompt's answers, and faults (the archive shrinking or failing to
+  read, as it is opened or once extraction began, and directories,
+  files, keeps, attributes, or links failing), over a tree with a
+  sentinel outside the `-d` directory and links within it that lead
+  there. It must exit with a status UnZip may, change nothing outside
+  the `-d` directory and write over no file there, leave every file it
+  extracts equal to an entry of that name as `src/zip.c`'s parser and
+  zlib read it, pipe no more than the entries' sizes, leave nothing
+  open, and claim no memory once it has changed the file system; then,
+  run again with `-n`, change nothing.
 
 ## Cross-platform verification
 
@@ -1028,6 +1386,15 @@ Fuzzers:
   including the literal-only input. zip.exe is about 100 KiB, imports
   only KERNEL32 and SHELL32, and has no stack frame over 4000 bytes (no
   `__chkstk`).
+- unzip: `test/unzip.sh` passes on macOS against its `/usr/bin/unzip`,
+  Apple's UnZip 6.0, for the sanitized build and, for the out-of-memory
+  tests, the release build, and `tests-unzipcli` and `fuzz-unzip` run
+  Windows conventions on any host. `unzip.exe` builds warning-free with
+  mingw for x86-64 and i686, as does the amalgamation `unzip.c`; on
+  Windows 11, `test/unzip_windows.sh` passes for the x86-64 build, the
+  amalgamation, and the i686 build, and the amalgamation, built by its
+  header's command, imports only KERNEL32 and SHELL32, with no stack
+  frame over 4000 bytes.
 - zip speed versus Info-ZIP 3.0 on the 267 MB benchmark corpus (Apple
   M-series): -1 2.2 s vs 1.9 s (4% smaller), -6 3.1 s vs 4.9 s, -9 6.8 s
   vs 12.6 s (smaller). 10,000 small files (64 B to 8 KiB, -6): 0.32 s vs
@@ -1298,6 +1665,17 @@ Fuzzers:
   empty null buffers (UBSan under GCC)
 - zip: bytes resembling a Zip64 locator before a plain end record made
   the reader insist on Zip64 (fuzzing)
+- unzip, found by its in-memory tests and `fuzz-unzip`: memory claimed
+  after the first change to the file system (each new name at the
+  prompt), a link's target taken from the room planned for its size
+  rather than its data, offsets re-compensated for entries never read, a
+  Zip64 count of entries past 2^63 taken as too large for memory (4)
+  rather than a damaged directory, local names in a code page compared
+  undecoded (Windows), `-K` and `-X` refused only after the archive with
+  Windows conventions, and standard input closed after reading an
+  archive from it; and in inflate, a null input pointer with no input
+  offset by zero, which C leaves undefined (UBSan under Linux clang,
+  from the first `fuzz-unzip` campaign in WSL)
 
 ## Performance log
 
