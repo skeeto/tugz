@@ -96,6 +96,21 @@ typedef struct {
     iz       nat;
 } xentries;
 
+// Decode a Deflate64 stream ending within in, by tugz's own decoder,
+// there being no other (tests-tugz checks it against hand-built streams)
+static s8 decode64(s8 in, u8 *out, iz cap)
+{
+    iz    len = inflate64_memsize();
+    byte *mem = malloc((uz)len);
+    CHECK(mem);
+    arena     a = {mem, mem+len, 0, 0};
+    inflator *s = inflate64_new(&a);
+    zbuf      b = {in.s, in.len, out, cap};
+    i32       r = inflate_stream(s, &b);
+    free(mem);
+    return r==GZ_OK ? (s8){out, b.out - out} : (s8){0};
+}
+
 // Decode an entry's data at off, within the archive, by zlib: the
 // stored bytes, or a raw deflate stream ending within them; null if not.
 static s8 decode(s8 z, i64 off, zentry *e, u8 *out, iz cap)
@@ -106,6 +121,8 @@ static s8 decode(s8 z, i64 off, zentry *e, u8 *out, iz cap)
     s8 in = {z.s+off, (iz)e->csize};
     if (e->method == ZIP_STORE) {
         return in;
+    } else if (e->method == ZIP_DEFLATE64) {
+        return decode64(in, out, cap);
     } else if (e->method != ZIP_DEFLATE) {
         return (s8){0};
     }
