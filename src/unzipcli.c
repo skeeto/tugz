@@ -1974,7 +1974,7 @@ static i32 do_member(unzip *u, zarchive *ar, zentry *e, xentry *x,
                          lt);
     lname = lname.s ? lname : l.name;
     if (!zequals(lname, name)) {
-        arena tmp = scratch;
+        arena tmp = lt;  // past the room lname may be in
         info(u, MSG_STDERR, JOIN(&tmp, shown(u, name, &tmp),
              S(":  mismatching \"local\" filename ("),
              shown(u, lname, &tmp), S("),\n         continuing with "

@@ -258,6 +258,24 @@ static s8 owner(u32 uid, u32 gid)
     return (s8){p, 15};
 }
 
+// An Info-ZIP Unicode path field ("up", version 1) naming utf8 for a
+// stored name
+static s8 upath(char const *stored, char const *utf8)
+{
+    static u8 buf[4][64];
+    static i32 next;
+    u8 *p = buf[next++ % countof(buf)];
+    s8  s = cstrs8(stored);
+    s8  u = cstrs8(utf8);
+    TEST(u.len <= 64-9);
+    put16(p, 0x7075);
+    put16(p+2, (u32)(5 + u.len));
+    p[4] = 1;
+    put32(p+5, crc32_update(0, s.s, s.len, &(i32){0}));
+    bytecopy(p+9, u.s, u.len);
+    return (s8){p, 9 + u.len};
+}
+
 #define TEXT "hello hello hello hello\n" "hello hello hello hello\n" \
              "hello hello hello hello\n" "hello hello hello hello\n"
 
@@ -1061,6 +1079,30 @@ static void test_windows(os *ctx)
 
 // An archive on standard input, a regular file read in place, or else
 // read whole, never overwriting unless -o
+// A local name decoded through its Unicode path field, unlike the
+// central one, is reported from where it was decoded, not from memory
+// the message reuses (a fuzzer's find: AddressSanitizer reported the
+// overlapping copy)
+#define LONGA "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.txt"
+#define LONGB "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.txt"
+static void test_local_name(os *ctx)
+{
+    xspec spec[] = {
+        {.name=LONGA, .data="a\n", .lextra=upath(LONGA, LONGB)},
+    };
+    s8 z = build(spec, countof(spec), 0);
+    mfs_reset(ctx);
+    put_archive(ctx, "n.zip", z);
+    UNZIP(ctx, 1, "-o", "n.zip");
+    TEST(output_is(ctx, 3,
+        "Archive:  n.zip\n"
+        LONGA ":  mismatching \"local\" filename (" LONGB "),\n"
+        "         continuing with \"central\" filename version\n"
+        " extracting: " LONGA "  \n"));
+    TEST(equals(file_data(ctx, LONGA), "a\n"));
+    free(z.s);
+}
+
 static void test_stdin(os *ctx)
 {
     s8 z = six_files();
@@ -1098,6 +1140,7 @@ int main(void)
     test_faults(ctx);
     test_windows(ctx);
     test_stdin(ctx);
+    test_local_name(ctx);
     unzipos_free(ctx);
     puts("all unzip program tests pass");
     return 0;
