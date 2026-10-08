@@ -679,6 +679,18 @@ xsame ../plain.zip -dnew
 xsame ../plain.zip -d new/two
 [ $apple = 1 ] || xsame ../plain.zip -d new/
 xsame -f ../plain.zip -d new
+# Departure: -f with a missing -d directory freshens nothing, where
+# UnZip, not making it, freshens the current directory (as Debian's
+# does; Apple's freshens nothing too)
+SETUP='printf old >f && touch -t 201001010000 f'
+xboth -fo ../plain.zip -d new
+printf 'Archive:  ../plain.zip\n' >want
+[ "$(cat ours.st)" = 0 ] && cmp -s want ours.out && [ ! -s ours.err ] ||
+    fail "-fo -d new: $(cat ours.st) $(cat ours.out ours.err)"
+[ "$(cat x.ours/f)" = old ] && [ "$(ls x.ours)" = f ] ||
+    fail "-fo -d new freshened: $(cat ours.tree)"
+[ $debian = 0 ] || [ "$(cat x.ref/f)" = f ] ||
+    fail "-fo -d new: REF freshened nothing: $(cat ref.tree)"
 SETUP=': >file && touch -t 202001010000 file'
 [ $apple = 1 ] || xsame ../plain.zip -d file  # (Apple's says nothing)
 

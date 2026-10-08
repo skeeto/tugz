@@ -1301,8 +1301,9 @@ ones as invariants. Those that no test asserts are marked untested.
   it; `unzip.sh` compares names with `..` and a leading `/` without
   `-d`, but for Apple's).
 - `-f` with a `-d` directory that is missing freshens nothing, where
-  UnZip, not making it, freshens the current directory (untested:
-  `unzip.sh` runs it, but with nothing to freshen in either place).
+  UnZip, not making it, freshens the current directory, as Debian's
+  does, though Apple's freshens nothing too (`unzip.sh`, "-f with a
+  missing -d directory", checking Debian's `REF` too).
 - Display: control characters in comments are shown as in names (`^X`),
   where UnZip writes them raw, and bytes not UTF-8 in names and comments
   as `?`, where UnZip leaves them to the locale (`unzip.sh`,
