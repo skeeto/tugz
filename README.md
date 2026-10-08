@@ -23,6 +23,11 @@ Windows, CRT-free (w64devkit):
 
     $ cc -O2 -fno-builtin -nostartfiles -o gzip.exe platform/gzip_windows.c -lmemory -lshell32 -lkernel32
 
+Or with clang targeting MSVC, taking the mem functions from its static
+runtime:
+
+    $ clang -O2 -fno-builtin -nostartfiles -Wl,/subsystem:console -o gzip.exe platform/gzip_windows.c -llibvcruntime -llibcmt -lshell32 -lkernel32
+
 Hardware CRC-32 is used automatically: PCLMULQDQ on x86 (detected at run
 time), and the CRC instructions on ARMv8 targets that have them.
 
@@ -107,6 +112,10 @@ C11 alone lacks the C23 attributes. Options:
 | `TUGZ_WARNINGS` | top level | warnings for tugz's own targets |
 | `TUGZ_SANITIZE` | if supported | ASan and UBSan in the tests |
 | `TUGZ_LIBMEMORY` | AUTO | Windows programs with w64devkit's `-lmemory` |
+
+Built by clang targeting MSVC, the programs link the static runtime's
+mem functions, and the shell-script tests run unsanitized programs, as
+the sanitizers need the C runtime's startup code.
 
 A plain `cmake --install` installs whatever was built: the library, its
 header, and the package, and the programs as `gzip`, `zip`, and `unzip`

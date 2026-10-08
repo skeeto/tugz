@@ -109,7 +109,14 @@ endif()
 
 # ---- Programs --------------------------------------------------------
 
-# Windows programs link no C runtime (see README.md)
+# Windows programs link no C runtime (see README.md). For the mem
+# functions that -fno-builtin calls, they link w64devkit's libmemory
+# where it is found, else the C runtime: the msvcrt or UCRT DLL on mingw,
+# and the static libvcruntime with clang targeting MSVC.
+set(tugz_msvc_abi OFF)
+if(CMAKE_C_SIMULATE_ID STREQUAL "MSVC")
+    set(tugz_msvc_abi ON)
+endif()
 set(tugz_libmemory OFF)
 if(WIN32 AND (TUGZ_BUILD_GZIP OR TUGZ_BUILD_ZIP OR TUGZ_BUILD_UNZIP OR
               TUGZ_BUILD_TESTS))
@@ -129,6 +136,10 @@ if(WIN32 AND (TUGZ_BUILD_GZIP OR TUGZ_BUILD_ZIP OR TUGZ_BUILD_UNZIP OR
             message(FATAL_ERROR
                 "TUGZ_LIBMEMORY is ON, but this toolchain has no libmemory "
                 "(w64devkit's -lmemory)")
+        elseif(tugz_msvc_abi)
+            message(STATUS
+                "tugz: no libmemory, so Windows programs link memcpy and "
+                "memset from the C runtime's static libvcruntime")
         else()
             message(STATUS
                 "tugz: no libmemory, so Windows programs import memcpy and "
@@ -142,12 +153,23 @@ function(tugz_crtfree tgt)
     cmake_parse_arguments(PARSE_ARGV 1 arg NOSTRIP "" "")
     target_compile_options(${tgt} PRIVATE
         -fno-builtin -fno-asynchronous-unwind-tables)
-    target_link_options(${tgt} PRIVATE -nostartfiles -Wl,--gc-sections)
-    if(NOT arg_NOSTRIP)
-        target_link_options(${tgt} PRIVATE -s)
+    if(tugz_msvc_abi)
+        # lld-link or link.exe, which strip unless asked for /DEBUG
+        target_link_options(${tgt} PRIVATE -nostartfiles LINKER:/OPT:REF)
+    else()
+        target_link_options(${tgt} PRIVATE -nostartfiles -Wl,--gc-sections)
+        if(NOT arg_NOSTRIP)
+            target_link_options(${tgt} PRIVATE -s)
+        endif()
     endif()
     if(tugz_libmemory)
         target_link_libraries(${tgt} PRIVATE memory)
+    elseif(tugz_msvc_abi)
+        # The static runtime, whose libcmt has the CPU feature variables
+        # that libvcruntime's mem functions read (left at their defaults,
+        # as no CRT startup code sets them)
+        set_property(TARGET ${tgt} PROPERTY MSVC_RUNTIME_LIBRARY MultiThreaded)
+        target_link_libraries(${tgt} PRIVATE libvcruntime libcmt)
     endif()
     target_link_libraries(${tgt} PRIVATE shell32 kernel32)
 endfunction()
@@ -263,13 +285,60 @@ if(TUGZ_BUILD_TESTS)
     option(TUGZ_SANITIZE "Build tests with ASan and UBSan"
            ${TUGZ_HAVE_SANITIZERS})
 
-    # Debug and test builds: sanitized where supported
+    # On the MSVC ABI, the sanitizers start from the C runtime's startup
+    # code, which the CRT-free -debug programs lack, so only the unit
+    # tests are sanitized, and ASan's runtime DLL goes on their PATH
+    set(tugz_sanitize_programs ${TUGZ_SANITIZE})
+    set(tugz_sanitize_path "")
+    if(TUGZ_SANITIZE AND tugz_msvc_abi)
+        set(tugz_sanitize_programs OFF)
+        set(arch ${CMAKE_C_COMPILER_ARCHITECTURE_ID})
+        if(arch STREQUAL "x64")
+            set(arch x86_64)
+        elseif(arch STREQUAL "X86")
+            set(arch i386)
+        elseif(arch STREQUAL "ARM64")
+            set(arch aarch64)
+        endif()
+        execute_process(COMMAND ${CMAKE_C_COMPILER}
+                -print-file-name=clang_rt.asan_dynamic-${arch}.dll
+            OUTPUT_VARIABLE dll OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        file(TO_CMAKE_PATH "${dll}" dll)
+        if(IS_ABSOLUTE "${dll}" AND EXISTS "${dll}" AND
+           NOT CMAKE_VERSION VERSION_LESS 3.22)
+            get_filename_component(tugz_sanitize_path "${dll}" DIRECTORY)
+            file(TO_NATIVE_PATH "${tugz_sanitize_path}" tugz_sanitize_path)
+            message(STATUS "tugz: on the MSVC ABI, only the unit tests "
+                    "are sanitized, with ASan's DLL from ${tugz_sanitize_path}")
+        else()
+            set(TUGZ_SANITIZE OFF)
+            message(STATUS "tugz: on the MSVC ABI, the tests are not "
+                    "sanitized: no clang_rt.asan_dynamic-${arch}.dll found"
+                    " for ctest (which must be CMake 3.22 or later)")
+        endif()
+    endif()
+
+    # Debug and test builds: sanitized where supported, a test program
+    # given ASan's DLL by tugz_sanitize_test
     function(tugz_sanitize tgt)
+        cmake_parse_arguments(PARSE_ARGV 1 arg CRTFREE "" "")
         target_compile_options(${tgt} PRIVATE -g3 -O1)
-        if(TUGZ_SANITIZE)
+        if(arg_CRTFREE)
+            set(sanitize ${tugz_sanitize_programs})
+        else()
+            set(sanitize ${TUGZ_SANITIZE})
+        endif()
+        if(sanitize)
             target_compile_options(${tgt} PRIVATE
                 -fsanitize=address,undefined -fno-sanitize-recover=all)
             target_link_options(${tgt} PRIVATE -fsanitize=address,undefined)
+        endif()
+    endfunction()
+    function(tugz_sanitize_test test)
+        if(TUGZ_SANITIZE AND tugz_sanitize_path)
+            set_tests_properties(${test} PROPERTIES ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:${tugz_sanitize_path}")
         endif()
     endfunction()
 
@@ -283,6 +352,7 @@ if(TUGZ_BUILD_TESTS)
             tugz_sanitize(${tgt})
             tugz_reflibs(${tgt} ${ARGN})
             add_test(NAME ${test} COMMAND ${tgt})
+            tugz_sanitize_test(${test})
             set_property(GLOBAL APPEND PROPERTY tugz_test_targets ${tgt})
         endif()
     endfunction()
@@ -296,11 +366,11 @@ if(TUGZ_BUILD_TESTS)
 
     # The programs again, for their end-to-end tests
     tugz_program(tugz_gzip_debug gzip gzip-debug NOSTRIP)
-    tugz_sanitize(tugz_gzip_debug)
+    tugz_sanitize(tugz_gzip_debug CRTFREE)
     tugz_program(tugz_zip_debug zip zip-debug NOSTRIP)
-    tugz_sanitize(tugz_zip_debug)
+    tugz_sanitize(tugz_zip_debug CRTFREE)
     tugz_program(tugz_unzip_debug unzip unzip-debug NOSTRIP)
-    tugz_sanitize(tugz_unzip_debug)
+    tugz_sanitize(tugz_unzip_debug CRTFREE)
     set_property(GLOBAL APPEND PROPERTY tugz_test_targets
                  tugz_gzip_debug tugz_zip_debug tugz_unzip_debug)
 
@@ -416,6 +486,7 @@ if(TUGZ_BUILD_TESTS)
     tugz_common(tugz_tests_amalg)
     tugz_sanitize(tugz_tests_amalg)
     add_test(NAME amalgamation COMMAND tugz_tests_amalg)
+    tugz_sanitize_test(amalgamation)
     set_property(GLOBAL APPEND PROPERTY tugz_test_targets
                  tugz_amalgamation_lib tugz_tests_amalg)
 
