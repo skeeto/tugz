@@ -1446,7 +1446,19 @@ ones as invariants. Those that no test asserts are marked untested.
   stored entry). Output stops at an
   entry's size, where UnZip writes what it decodes beyond it before
   finding the CRC wrong (`unzip.sh`, "Output beyond an entry's size";
-  `test_damaged`).
+  `test_damaged`), and data beyond the size is invalid ("invalid
+  compressed data to inflate", 2) even with the right CRC, which UnZip,
+  checking the CRC alone, finds good. The exception is a size wrapped
+  to 32 bits, as a writer without Zip64 (JDK 6's, for one) writes an
+  entry of 4 GiB or more: a size from the 32-bit field, not a Zip64
+  extra, that data decoding further by a multiple of 4 GiB, with the
+  right CRC, matches modulo 4 GiB is taken as all of it, and written
+  whole, as UnZip writes it, though decoded a second time to write what
+  lies past the size, so that nothing there is written unchecked; any
+  other length past the size, or past one from a Zip64 extra, is still
+  invalid (`unzip.sh`, "wrapped.zip", 5 GiB; `test_wrapped`). Listings
+  show the wrapped size, as UnZip's do. A stored entry's compressed size
+  wraps too, and tugz fails there as UnZip does, after re-compensating.
 - Deflate64: a match reaching before the start of an entry's data is
   invalid ("invalid compressed data to inflate", 2), as a deflated
   entry's is by zlib's rule, where UnZip's own inflate, which decodes

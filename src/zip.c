@@ -52,7 +52,7 @@ enum {
 };
 
 // An entry, one for each of an existing archive's, and so kept small: a
-// byte for the flag leaves no padding (112 bytes on 64-bit hosts).
+// byte for each flag leaves no padding (112 bytes on 64-bit hosts).
 typedef struct {
     s8  name;
     s8  lextra;   // local extra fields, without Zip64
@@ -70,6 +70,7 @@ typedef struct {
     u16 method;
     u16 intattr;
     u8  zip64;    // the local header carries a Zip64 extra
+    u8  usize64;  // read: its size came from a Zip64 extra
 } zentry;
 
 typedef struct {
@@ -592,6 +593,7 @@ static b32 zip_apply64(zentry *e, s8 x, b32 diskmax)
             if (want[2] && len==8 && !diskmax) {
                 want[0] = want[1] = 0;  // only the offset: Info-ZIP's
             }
+            e->usize64 = (u8)want[0];
             u8 *f = x.s + i + 4;
             i64 *fields[3] = {&e->usize, &e->csize, &e->offset};
             for (i32 k = 0; k < 3; k++) {

@@ -1155,6 +1155,17 @@ typedef struct {
     iz  len;     // the data decoded, up to its size
 } xout;
 
+// Whether an entry's data, decoding to out bytes with the CRC crc, more
+// than its size, usize, is nonetheless all of it: the size, from its
+// 32-bit field rather than a Zip64 extra, is out's modulo 4 GiB, as a
+// writer without Zip64 wraps an entry's of 4 GiB or more, and the CRC
+// is right. UnZip, checking only the CRC, takes it so.
+static b32 size_wrapped(zentry *e, i64 usize, i64 out, u32 crc)
+{
+    return !e->usize64 && e->method!=ZIP_STORE && crc==e->crc &&
+           usize<=ZIP_MAX32 && out>usize && (u32)out==(u32)usize;
+}
+
 // Read and decode an entry's data, its local header found at l, to
 // standard output with -c and -p, nowhere with -t, or to disk, out,
 // as extract.c's extract_or_test_member, name being, on disk, its path.
@@ -1194,75 +1205,104 @@ static i32 test_member(unzip *u, zarchive *ar, zentry *e, zlocal *l,
 
     // Output goes out a window at a time, as UnZip flushes its slide, so
     // that an error in a short entry's data leaves none of it written.
-    // Beyond its size, it is still decoded to check, but not written.
-    zin *in    = &ar->in;
-    i64  pos   = l->data;
-    i64  left  = e->csize;
-    i64  out   = 0;
-    u32  crc   = 0;
-    b32  bad   = 0;  // invalid compressed data
-    zbuf b     = {0};
-    inflator *s = e->method==ZIP_DEFLATE64 ? u->inf64 : u->inf;
-    inflate_reset(s);
-    b.out    = u->window;
-    b.outlen = UZ_WSIZE;
-    for (b32 done = 0; !done;) {
-        if (!b.inlen && left) {
-            u8 *p = 0;
-            iz  n = (iz)MIN(left, ZIN_CAP);
-            i32 got = zin_get(in, pos, n, &p);
-            if (got < 0) {
-                info(u, MSG_STDERR, S("error:  zipfile read error\n"));
-                writer_flush(u->out);
-                os_exit(u->ctx, PK_BADERR);  // as UnZip's readbyte
-            } else if (!got) {
-                bad = !store;  // the file has shrunk: as if at its end
-                break;
+    // Beyond its size, it is still decoded to check, but not written,
+    // unless the size wrapped (size_wrapped): then the data is decoded
+    // again to write the rest, so that nothing beyond the size is written
+    // unchecked. (A link's target, held in room for its size, does not
+    // wrap.)
+    b32 wraps   = !(disk && disk->link);
+    i64 lo      = 0;      // output is written from here
+    i64 hi      = usize;  // up to here
+    i64 out     = 0;
+    u32 crc     = 0;
+    b32 bad     = 0;  // invalid compressed data
+    b32 overrun = 0;  // more than it says it holds
+    for (b32 again = 0;; again = 1) {
+        zin *in   = &ar->in;
+        i64  pos  = l->data;
+        i64  left = e->csize;
+        i64  had  = out;  // decoded the first time
+        u32  sum  = crc;
+        zbuf b    = {0};
+        inflator *s = e->method==ZIP_DEFLATE64 ? u->inf64 : u->inf;
+        inflate_reset(s);
+        b.out    = u->window;
+        b.outlen = UZ_WSIZE;
+        out = crc = 0;
+        for (b32 done = 0; !done;) {
+            if (!b.inlen && left) {
+                u8 *p = 0;
+                iz  n = (iz)MIN(left, ZIN_CAP);
+                i32 got = zin_get(in, pos, n, &p);
+                if (got < 0) {
+                    info(u, MSG_STDERR, S("error:  zipfile read error\n"));
+                    writer_flush(u->out);
+                    os_exit(u->ctx, PK_BADERR);  // as UnZip's readbyte
+                } else if (!got) {
+                    bad = !store;  // the file has shrunk: as if at its end
+                    break;
+                }
+                b.in    = p;
+                b.inlen = n;
+                pos  += n;
+                left -= n;
             }
-            b.in    = p;
-            b.inlen = n;
-            pos  += n;
-            left -= n;
-        }
 
-        s8 data = {0};
-        if (store) {
-            data = (s8){(u8 *)b.in, b.inlen};
-            b.inlen = 0;
-            done = !left;
-        } else {
-            i32 r = inflate_stream(s, &b);
-            if (r == GZ_OK) {
-                done = 1;
-            } else if (r==GZ_NEEDIN && !left) {
-                done = bad = 1;  // ends with the entry's data unfinished
-            } else if (r!=GZ_NEEDIN && r!=GZ_NEEDOUT) {
-                done = bad = 1;
+            s8 data = {0};
+            if (store) {
+                data = (s8){(u8 *)b.in, b.inlen};
+                b.inlen = 0;
+                done = !left;
+            } else {
+                i32 r = inflate_stream(s, &b);
+                if (r == GZ_OK) {
+                    done = 1;
+                } else if (r==GZ_NEEDIN && !left) {
+                    done = bad = 1;  // ends with the data unfinished
+                } else if (r!=GZ_NEEDIN && r!=GZ_NEEDOUT) {
+                    done = bad = 1;
+                }
+                if (bad || (!done && b.outlen)) {
+                    continue;  // the window not yet full, nor the end
+                }
+                data = (s8){u->window, b.out - u->window};
+                b.out    = u->window;
+                b.outlen = UZ_WSIZE;
             }
-            if (bad || (!done && b.outlen)) {
-                continue;  // the window not yet full, nor the stream done
-            }
-            data = (s8){u->window, b.out - u->window};
-            b.out    = u->window;
-            b.outlen = UZ_WSIZE;
-        }
-        crc = crc32_update(crc, data.s, data.len, &u->crccpu);
-        iz keep = (iz)MIN(data.len, MAX(usize-out, 0));
-        out += data.len;
-        if (u->cflag && keep) {
-            writer_write(u->out, data.s, keep);
-            if (u->out->err) {
-                info(u, MSG_STDERR, JOIN(&scratch, sname,
-                     S(":  write error (disk full?).\n")));
+            crc = crc32_update(crc, data.s, data.len, &u->crccpu);
+            i64 at   = out;
+            out += data.len;
+            iz  skip = (iz)MIN(MAX(lo-at, 0), data.len);
+            iz  keep = (iz)MIN(MAX(hi-at, 0), data.len) - skip;
+            u8 *from = data.s + skip;
+            if (u->cflag && keep>0) {
+                writer_write(u->out, from, keep);
+                if (u->out->err) {
+                    info(u, MSG_STDERR, JOIN(&scratch, sname,
+                         S(":  write error (disk full?).\n")));
+                    return PK_DISK;
+                }
+            } else if (disk && disk->target && keep>0) {
+                bytecopy(disk->target+at+skip, from, keep);
+            } else if (disk && keep>0 && disk->fd>=0 &&
+                       !os_write(u->ctx, disk->fd, from, keep)) {
+                disk->goon = disk_error(u, sname, scratch);
                 return PK_DISK;
             }
-        } else if (disk && disk->target) {
-            bytecopy(disk->target+out-data.len, data.s, keep);
-        } else if (disk && keep && disk->fd>=0 &&
-                   !os_write(u->ctx, disk->fd, data.s, keep)) {
-            disk->goon = disk_error(u, sname, scratch);
-            return PK_DISK;
         }
+
+        if (again) {
+            bad |= out!=had || crc!=sum;  // the archive changed under it
+            break;
+        }
+        overrun = out > usize;
+        b32 wrapped = wraps && !bad && size_wrapped(e, usize, out, crc);
+        overrun &= !wrapped;
+        if (!wrapped || (!u->cflag && !disk)) {
+            break;  // under -t, nothing more to write
+        }
+        lo = usize;
+        hi = out;
     }
     if (u->cflag && !writer_flush(u->out)) {
         // What remained buffered, the entry's last data perhaps, flushed
@@ -1271,7 +1311,6 @@ static i32 test_member(unzip *u, zarchive *ar, zentry *e, zlocal *l,
              S(":  write error (disk full?).\n")));
         return PK_DISK;
     }
-    b32 overrun = out > usize;  // more than it says it holds
     if (disk) {
         disk->len = (iz)MIN(out, usize);  // perhaps less
     }

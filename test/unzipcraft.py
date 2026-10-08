@@ -272,6 +272,35 @@ write("truncdata.zip", build([Entry("cut.txt", TEXT,
                                     comp=deflate(TEXT)[:10])]))
 write("overrun.zip", build([Entry("big.txt", TEXT, usize=10,
                                   crc=zlib.crc32(TEXT[:10]))]))
+
+
+def zeros(n):
+    """A raw deflate stream of n zeros, n over 2 MiB, made cheaply: a
+    MiB's stream, flushed to a block boundary, after the first MiB of
+    zeros decodes in any later place to another MiB of them, the window
+    holding nothing else, so it is repeated."""
+    mib = bytes(1 << 20)
+    c = zlib.compressobj(9, zlib.DEFLATED, -15)
+    first = c.compress(mib) + c.flush(zlib.Z_SYNC_FLUSH)
+    more = c.compress(mib) + c.flush(zlib.Z_SYNC_FLUSH)
+    k, rest = divmod(n, 1 << 20)
+    return first + more*(k - 1) + c.compress(bytes(rest)) + c.flush()
+
+
+# An entry of 5 GiB and more, deflated, whose sizes a writer without
+# Zip64 (JDK 6's, for one) wrapped to 32 bits, then others: of a length
+# not its size modulo 4 GiB, and of its sizes in a Zip64 extra, wrapped
+# still, which are data beyond the size (the CRC of the zeros is known)
+BIG = 5 << 30 | 12345
+BIGZ = zeros(BIG)
+for name, usize, z64 in (("wrapped", BIG & 0xFFFFFFFF, False),
+                         ("wrappedoff", (BIG+1) & 0xFFFFFFFF, False),
+                         ("wrapped64", BIG & 0xFFFFFFFF, True)):
+    write(name + ".zip", build([
+        Entry("big", method=8, comp=BIGZ, crc=0x2A1847FF, usize=usize,
+              z64=z64),
+        Entry("small", b"hello\n", method=0, z64=z64)], zip64=z64))
+
 write("storedsize.zip", build([Entry("s.txt", b"stored\n", method=0,
                                      usize=99)]))
 write("localname.zip", build([Entry("central.txt", b"x\n",

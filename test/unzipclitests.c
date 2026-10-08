@@ -1665,6 +1665,31 @@ static void test_factor(os *ctx)
     free(mem);
 }
 
+// Data decoding past an entry's size is all of it where a writer without
+// Zip64 wrapped that size to 32 bits: by 4 GiB or a multiple of it, the
+// size from its 32-bit field, the CRC right, and not stored (whose data
+// is its compressed size). (unzip.sh decodes 5 GiB, too much here.)
+static void test_wrapped(os *ctx)
+{
+    (void)ctx;
+    i64    g = (i64)1 << 32;
+    zentry e = {.method=ZIP_DEFLATE, .crc=0x2a1847ff};
+    TEST(size_wrapped(&e, 1073754169, 5368721465, 0x2a1847ff));
+    TEST(size_wrapped(&e, 0, g, 0x2a1847ff));
+    TEST(size_wrapped(&e, 0, 3*g, 0x2a1847ff));
+    TEST(size_wrapped(&e, g-1, 2*g-1, 0x2a1847ff));
+    TEST(!size_wrapped(&e, 10, 10, 0x2a1847ff));         // not past it
+    TEST(!size_wrapped(&e, 10, 20, 0x2a1847ff));         // an overrun
+    TEST(!size_wrapped(&e, 10, g+11, 0x2a1847ff));       // not congruent
+    TEST(!size_wrapped(&e, 10, g+10, 0x12345678));       // a bad CRC
+    TEST(!size_wrapped(&e, g+10, 2*g+10, 0x2a1847ff));   // not 32 bits
+    e.usize64 = 1;
+    TEST(!size_wrapped(&e, 10, g+10, 0x2a1847ff));       // from Zip64
+    e.usize64 = 0;
+    e.method  = ZIP_STORE;
+    TEST(!size_wrapped(&e, 10, g+10, 0x2a1847ff));
+}
+
 static void test_stdin(os *ctx)
 {
     s8 z = six_files();
@@ -1707,6 +1732,7 @@ int main(void)
     test_stdin(ctx);
     test_comments(ctx);
     test_factor(ctx);
+    test_wrapped(ctx);
     test_local_name(ctx);
     unzipos_free(ctx);
     puts("all unzip program tests pass");

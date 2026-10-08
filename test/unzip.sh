@@ -566,6 +566,32 @@ printf 'hello hell' >want
 "$U" -p overrun.zip >got 2>got.err && fail "-p overrun.zip: status 0"
 cmp -s want got || fail "-p overrun.zip output"
 
+# An entry of 5 GiB and more whose size, without Zip64, wrapped to 32
+# bits: its data is all of it, as UnZip finds, listed by the wrapped size
+for z in wrapped wrappedoff wrapped64; do
+    same -l $z.zip
+    same -v $z.zip
+done
+same -t wrapped.zip
+{ echo 0 >got.st; "$U" -p wrapped.zip 2>got.err || echo $? >got.st; } |
+    wc -c >got
+[ "$(tr -d ' ' <got)" = 5368721471 ] && [ "$(cat got.st)" = 0 ] &&
+    [ ! -s got.err ] || fail "-p wrapped.zip: $(cat got got.err)"
+# Departure: but with a length not its size modulo 4 GiB, or that size in
+# a Zip64 extra, an overrun, its output stopping at its size, where UnZip
+# checks the CRC alone and finds the data good
+for z in wrappedoff wrapped64; do
+    { printf 'Archive:  %s.zip\n    testing: %-22s  \n' $z big
+      printf '  error:  invalid compressed data to inflate\n'
+      printf '    testing: %-22s   OK\n' small
+      printf 'At least one error was detected in %s.zip.\n' $z; } >want
+    ours 2 want none -t $z.zip
+done
+{ echo 0 >got.st; "$U" -p wrapped64.zip big 2>got.err || echo $? >got.st; } |
+    wc -c >got
+[ "$(tr -d ' ' <got)" = 1073754169 ] && [ "$(cat got.st)" = 2 ] &&
+    grep -q invalid got.err || fail "-p wrapped64.zip: $(cat got got.err)"
+
 # Names: UTF-8, by flag or Unicode path field, as Debian's UnZip shows
 # them (as UTF-8), and control characters as ^X
 cat >want <<EOF
@@ -1054,6 +1080,11 @@ EOF
         [ "$(cat x.ours/after.txt)" = after ] || fail "big.zip after.txt"
     done
     chmod -R u+rwx x.ours && rm -rf x.ours big.zip
+
+    # The entry whose size wrapped (above), extracted whole, as UnZip
+    # extracts it
+    xsame ../wrapped.zip
+    rm -rf x.ours x.ref
 fi
 
 [ ! -e "$tmp/FAILED" ] || exit 1
