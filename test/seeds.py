@@ -446,3 +446,63 @@ for name, z in zips.items():
         put("zip", f"{name}-{how:02x}.zip", bytes([how, at]) + z)
         nzip += 1
 print(nzip, "zip program seeds")
+
+# The same and more for fuzz-unzip after its header (see
+# test/fuzz_unzip.c): how (the mode, low four bits; Windows, bit 4; a
+# fault, bits 5-7), at, cfg (the umask, a terminal, standard input a
+# file, and canned answers, bits 4-7), and n, the length of answers
+# given instead (here none). The archives: those above, test/unzipcraft.py's
+# hostile ones (written by it to a scratch directory), and entries aimed
+# at the links the harness plants in its -d directory.
+import sys
+
+def unix_entry(name, kind=0o100000, mode=0o644):
+    zi = zipfile.ZipInfo(name, date_time=(2024, 5, 6, 7, 8, 10))
+    zi.create_system = 3
+    zi.external_attr = (kind | mode) << 16
+    return zi
+
+LINK = 0o120000
+uzips = dict(zips)
+uzips["planted"] = archive([
+    (unix_entry("esc/pwned"), b"pwned\n"),
+    (unix_entry("abs/d/pwned"), b"pwned\n"),
+    (unix_entry("fesc"), b"replaced\n"),
+    (unix_entry("new"), b"new\n"),
+    (unix_entry("loop/x"), b"x\n"),
+    (unix_entry("a"), b"new a\n"),
+    (unix_entry("d/x"), b"new x\n"),
+    (unix_entry("l", LINK, 0o777), b"../outside"),
+    (unix_entry("l/pwned"), b"pwned\n"),
+    (unix_entry("d/l2", LINK, 0o777), b"/outside/d"),
+    (unix_entry("d/l2/pwned"), b"pwned\n"),
+    (unix_entry("same", LINK, 0o777), b"target"),
+    (unix_entry("same"), b"file\n"),
+    (unix_entry("dir/", 0o040000, 0o755), b""),
+    (unix_entry("dir/f"), b"f\n"),
+    (unix_entry("ble.txt"), b"b\n"),
+])
+with tempfile.TemporaryDirectory() as tmp:
+    subprocess.run([sys.executable, os.path.abspath("test/unzipcraft.py")],
+                   cwd=tmp, check=True)
+    for name in sorted(os.listdir(tmp)):
+        with open(os.path.join(tmp, name), "rb") as f:
+            z = f.read()
+        if len(z) <= 1 << 16:
+            uzips["craft-" + name] = z
+
+nunzip = 0
+for name, z in uzips.items():
+    hows = list(range(16)) + [16 | 0, 16 | 1, 16 | 15]  # Windows too
+    hows += [1<<5 | 0, 2<<5 | 0, 3<<5 | 0, 4<<5 | 0, 5<<5 | 0, 6<<5 | 0,
+             7<<5 | 0]
+    for how in hows:
+        at = 2 if how>>5 in (4, 5, 6, 7) else 128
+        cfg = 0x10 if how & 15 == 1 else 0  # answering y
+        put("unzip", f"{name}-{how:02x}", bytes([how, at, cfg, 0]) + z)
+        nunzip += 1
+    # The prompts answered otherwise, among the canned answers
+    for cfg in (0x00, 0x50, 0x70, 0xa0, 0xc0):
+        put("unzip", f"{name}-01-{cfg:02x}", bytes([1, 0, cfg, 0]) + z)
+        nunzip += 1
+print(nunzip, "unzip program seeds")
