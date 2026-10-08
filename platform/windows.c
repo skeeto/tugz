@@ -49,6 +49,7 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define DELETE                     0x00010000u
 #define GENERIC_READ               0x80000000u
 #define GENERIC_WRITE              0x40000000u
+#define FILE_READ_ATTRIBUTES       0x80u
 #define FILE_WRITE_ATTRIBUTES      0x100u
 #define FILE_SHARE_ALL             7u
 #define CREATE_NEW                 1u
@@ -61,6 +62,7 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define FILE_ATTRIBUTE_DIRECTORY   0x10u
 #define FILE_ATTRIBUTE_REPARSE     0x400u
 #define FILE_FLAG_OPEN_REPARSE     0x00200000u
+#define FILE_FLAG_BACKUP_SEMANTICS 0x02000000u
 #define FILE_TYPE_UNKNOWN          0u
 #define FILE_TYPE_DISK             1u
 #define FIND_FIRST_EX_LARGE_FETCH  2u
@@ -500,40 +502,80 @@ static i32 open_input(c16 *wpath, i32 mode, iptr *out)
 }
 
 // Delete a file, or a link rather than its target, as POSIX unlink
-// does, which ignores the read-only attribute that refuses DeleteFileW:
-// clear it through a handle, mark the file deleted, then restore it,
+// does. DeleteFileW refuses two of those. A read-only file: clear the
+// attribute through a handle, mark the file deleted, then restore it,
 // which the deletion survives, for any other hard links to the file. A
-// directory, read-only or not, is left alone. Returns whether the file
-// was deleted, and if not, leaves why in the last error.
+// junction or a directory link, which is a directory to DeleteFileW:
+// mark it deleted through a handle to the link itself, which removes
+// only the link, never its target nor what is in it. Each is checked
+// through the handle, so that what is deleted is what was checked,
+// whatever the name has become meanwhile, and a directory that is not a
+// link, read-only or not, empty or not, is left alone, as is any other
+// reparse point that is a directory (a cloud placeholder holds files).
+// Returns whether the file was deleted, and if not, leaves why in the
+// last error.
 static b32 remove_file(c16 *wpath)
 {
     if (DeleteFileW(wpath)) {
         return 1;
-    } else if (GetLastError() != ERROR_ACCESS_DENIED) {
+    }
+    u32 why     = GetLastError();
+    u32 attr    = GetFileAttributesW(wpath);
+    u32 dirlink = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE;
+    u32 rofile  = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_DIRECTORY;
+    b32 link    = attr!=INVALID_FILE_ATTRIBUTES && (attr&dirlink)==dirlink;
+    b32 locked  = why==ERROR_ACCESS_DENIED && attr!=INVALID_FILE_ATTRIBUTES &&
+                  (attr&rofile)==FILE_ATTRIBUTE_READONLY;
+    if (!link && !locked) {
+        SetLastError(why);  // as DeleteFileW said
         return 0;
     }
-    u32 attr = GetFileAttributesW(wpath);
-    u32 kind = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_DIRECTORY;
-    if (attr==INVALID_FILE_ATTRIBUTES || (attr&kind)!=FILE_ATTRIBUTE_READONLY) {
-        SetLastError(ERROR_ACCESS_DENIED);  // as DeleteFileW said
-        return 0;
-    }
-    iptr h = CreateFileW(wpath, DELETE|FILE_WRITE_ATTRIBUTES, FILE_SHARE_ALL,
-                         0, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE, 0);
+
+    // Only a directory link opens with backup semantics, so the handle
+    // is never to a directory otherwise
+    u32  flags = FILE_FLAG_OPEN_REPARSE;
+    u32  want  = DELETE | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES;
+    flags |= link ? FILE_FLAG_BACKUP_SEMANTICS : 0;
+    iptr h = CreateFileW(wpath, want, FILE_SHARE_ALL, 0, OPEN_EXISTING,
+                         flags, 0);
     if (h == INVALID_HANDLE_VALUE) {
         return 0;
     }
+    attribute_tag_info tag = {0};
+    b32 ok = GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag,
+                                          sizeof(tag));
+    if (link) {
+        ok = ok && (tag.attributes&dirlink)==dirlink &&
+             (tag.reparse_tag==IO_REPARSE_TAG_MOUNT_POINT ||
+              tag.reparse_tag==IO_REPARSE_TAG_SYMLINK);
+    } else {
+        ok = ok && (tag.attributes&rofile)==FILE_ATTRIBUTE_READONLY;
+    }
+    if (!ok) {
+        CloseHandle(h);
+        SetLastError(why);
+        return 0;
+    }
+
     b32 deleted = 0;
     u32 err     = 0;
+    u8  discard = 1;
     basic_info info = {0};
     info.attributes = FILE_ATTRIBUTE_NORMAL;
-    if (SetFileInformationByHandle(h, FileBasicInfo, &info, sizeof(info))) {
-        u8 discard = 1;
+    if (!(tag.attributes & FILE_ATTRIBUTE_READONLY)) {
         deleted = SetFileInformationByHandle(h, FileDispositionInfo,
                                              &discard, 1);
         err = GetLastError();
-        info.attributes = attr;
-        SetFileInformationByHandle(h, FileBasicInfo, &info, sizeof(info));
+    } else if (SetFileInformationByHandle(h, FileBasicInfo, &info,
+                                          sizeof(info))) {
+        deleted = SetFileInformationByHandle(h, FileDispositionInfo,
+                                             &discard, 1);
+        err = GetLastError();
+        if (!link || !deleted) {
+            info.attributes = tag.attributes;
+            SetFileInformationByHandle(h, FileBasicInfo, &info,
+                                       sizeof(info));
+        }
     } else {
         err = GetLastError();
     }

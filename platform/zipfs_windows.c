@@ -25,8 +25,6 @@ W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 #define CP_ACP                     0u
 #define CP_OEMCP                   1u
 #define MB_ERR_INVALID_CHARS       0x8u
-#define FILE_READ_ATTRIBUTES       0x80u
-#define FILE_FLAG_BACKUP_SEMANTICS 0x02000000u
 #define ERROR_ENVVAR_NOT_FOUND     203u
 
 enum { FileIdInfo = 18 };
