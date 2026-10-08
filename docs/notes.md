@@ -971,6 +971,11 @@ race allows).
   of the file, which UnZip shows cut short, is no end record ("missing
   end signature", 3), where Info-ZIP finds the file ending early
   ("Unexpected end of zip file", 2).
+  An end record that counts 0 entries before a directory of headers, as
+  65,536 entries without Zip64 wrap the count, is refused as any count
+  that the headers do not match ("expected 0 entries but found 65536",
+  3), where Info-ZIP takes the archive for an empty one and replaces
+  it, losing every entry (`zip.sh`, `count0.zip`).
   An archive whose Zip64 locator gives a total of zero disks, as
   Microsoft's writers make them, is read as on one disk, where Info-ZIP
   asks for the next part of a split archive (`Could not find: x.z01`).
@@ -1131,7 +1136,10 @@ for entries.
   central directory not found" (3), even for a count of 0 (the empty
   archive, at offset 0, aside). The count sizes nothing: what unzip
   keeps for each entry is claimed by the headers read. Zip refuses a
-  count other than the headers', as Info-ZIP's zip does. `unzip.sh`
+  count other than the headers', as Info-ZIP's zip does, first with its
+  warning, "expected N entries but found M", where the headers fill the
+  directory: zip then counts them, header by header through its window,
+  claiming nothing for them (`zar_miscount`). `unzip.sh`
   compares these, and the end records above, with UnZip (`count*.zip`,
   `wrap.zip`, `sfx64.zip`, `nosig64.zip`, `cmt*.zip`, `cdjunk.zip`),
   `tests-unzipcli` checks them in memory (`test_directory`), and

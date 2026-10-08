@@ -1271,7 +1271,7 @@ for n in b"a", b"b", b"c":
 def end(k, clen=0):
     return struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, k, k, len(cen),
                        len(loc), clen)
-for k in 2, 5:
+for k in 0, 2, 5:
     open("count%d.zip" % k, "wb").write(loc + cen + end(k))
 open("cut.zip", "wb").write(loc + cen + end(3, 10) + b"12345")
 e64 = struct.pack("<IQHHIIQQQQ", 0x06064b50, 44, 45, 45, 0, 0, 3, 3,
@@ -1281,14 +1281,30 @@ sat = struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 0xffff, 0xffff,
                   0xffffffff, 0xffffffff, 0)
 open("sfx64.zip", "wb").write(b"#!/bin/sh\n" + loc + cen + e64 + l64 + sat)
 l64 = struct.pack("<IIQI", 0x07064b50, 0, len(loc) + len(cen) - 9, 1)
-open("loc64.zip", "wb").write(loc + cen + e64 + l64 + sat)'
-    for z in count2 count5 cut sfx64 loc64; do
+open("loc64.zip", "wb").write(loc + cen + e64 + l64 + sat)
+# 65,537 entries without Zip64, the count wrapped to 1
+locs, cens = [], []
+for i in range(65537):
+    n = b"%05d" % i
+    cens.append(struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 0x31e, 10, 0,
+                            0, 0, 0x5021, 0, 0, 0, len(n), 0, 0, 0, 0,
+                            0x81a40000, 35*i) + n)
+    locs.append(struct.pack("<IHHHHHIIIHH", 0x04034b50, 10, 0, 0, 0, 0x5021,
+                            0, 0, 0, len(n), 0) + n)
+loc, cen = b"".join(locs), b"".join(cens)
+open("wrap.zip", "wb").write(loc + cen + end(1))'
+    # Info-ZIP warns of a count the headers that fill the directory do
+    # not match. Departure: a count of 0, which it takes for an empty
+    # archive, replacing it, is refused too.
+    for z in count0 count2 count5 wrap cut sfx64 loc64; do
         cp $z.zip ${z}0.zip
         exits 3 "$ZIP" $z.zip tree/a.txt >out 2>&1
         case $z in
-        cut)   w='missing end signature--probably not a zip file' ;;
-        sfx64) w='offsets do not account for data before the archive' ;;
-        *)     w= ;;
+        count*) w="expected ${z#count} entries but found 3" ;;
+        wrap)   w='expected 1 entries but found 65537' ;;
+        cut)    w='missing end signature--probably not a zip file' ;;
+        sfx64)  w='offsets do not account for data before the archive' ;;
+        *)      w= ;;
         esac
         { [ -z "$w" ] || echo "zip warning: $w"
           printf '\nzip error: Zip file structure invalid (%s)\n' $z.zip

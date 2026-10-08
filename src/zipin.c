@@ -276,6 +276,7 @@ typedef struct {
     zunames unames;
     i64     noname;  // the entry that ZAR_ENONAME refused
     i64     bad;     // the header that ZAR_EFORMAT refused, or -1
+    i64     found;   // headers in a directory not of its count, or -1
     i64     shift;   // added to entries' offsets (unzip's extra bytes)
     i64     cdlim;   // entries' local headers, and but for unzip, their
                      // data, lie before this, as offsets read
@@ -377,12 +378,15 @@ static s8 zar_uname(os *ctx, zentry *e, b32 windows, i32 *crccpu, s8 *stale,
 // For unzip (ar->unzip), the end record is read as UnZip reads it: one
 // whose comment runs past the end of the file is taken, its comment cut
 // short (ar->end.cut), as is one that counts more entries than its
-// directory holds (as zar_check reads them). Zip refuses both.
+// directory holds (as zar_check reads them). Zip refuses both, the
+// latter on reading the directory, to count the headers it holds
+// (zar_miscount).
 static i32 zar_open(zarchive *ar, os *ctx, i32 fd, i64 size, arena *perm)
 {
     zin *in = &ar->in;
-    ar->bad = -1;
-    in->ctx = ctx;
+    ar->bad   = -1;
+    ar->found = -1;
+    in->ctx   = ctx;
     if (!in->mem) {
         in->fd    = fd;
         in->limit = size;
@@ -434,7 +438,7 @@ static i32 zar_open(zarchive *ar, os *ctx, i32 fd, i64 size, arena *perm)
     case ZIP_OK:
         return ZAR_OK;
     case ZIP_ECOUNT:
-        return ar->unzip ? ZAR_OK : ZAR_EFORMAT;
+        return ZAR_OK;  // zip refuses it in zar_walk, counting the headers
     case ZIP_ENOEND:
         return ZAR_ENOEND;
     case ZIP_EMULTI:
@@ -478,6 +482,36 @@ static i32 zar_header(zin *in, i64 off, i64 cdend, i64 cdoff, b32 fit,
     return *len ? ZAR_OK : ZAR_EFORMAT;
 }
 
+// Refuse a central directory that zar_walk found not of its count, with
+// bad the header that failed, but first count the headers there, as
+// Info-ZIP's zip does to warn of it: if they parse to its very end, as
+// when a writer without Zip64 wraps the count past 65,535 entries, or
+// saturates it, ar->found of them. They are read through the window,
+// claiming no memory, whatever the count.
+static i32 zar_miscount(zarchive *ar, i64 bad)
+{
+    zin *in    = &ar->in;
+    i64  off   = ar->end.cdoff;
+    i64  cdend = off + ar->end.cdsize;
+    i64  cdoff = ar->end.cdoff - ar->shift;
+    i64  n     = 0;
+    zentry one = {0};
+    for (; off < cdend; n++) {
+        iz  len = 0;
+        i32 r   = zar_header(in, off, cdend, cdoff, !ar->unzip, in->cap,
+                             &one, &len);
+        if (r==ZAR_EREAD || r==ZAR_EEOF) {
+            return r;
+        } else if (r) {
+            break;
+        }
+        off += len;
+    }
+    ar->bad   = bad;
+    ar->found = off==cdend && ar->end.count>=0 && n!=ar->end.count ? n : -1;
+    return ZAR_EFORMAT;
+}
+
 // Read the central directory that zar_open found, given perm keeping its
 // entries there, else only checking them, as unzip does before reading
 // them again (zar_reread). Given a shift (ar->shift), the end record's
@@ -485,7 +519,8 @@ static i32 zar_header(zin *in, i64 off, i64 cdend, i64 cdoff, b32 fit,
 // entries' offsets are shifted as much. Entries' Unicode names are left
 // to the caller (zar_uname). Returns a ZAR code: for ZAR_EFORMAT, the
 // header that failed is ar->bad, the count of entries for a directory
-// that does not end where it should.
+// that does not end where it should, and the headers it holds instead,
+// ar->found (zar_miscount).
 //
 // For unzip (ar->unzip), which only checks it, it is read as UnZip reads
 // it (extract.c, list.c), not by the end record's count, but header by
@@ -526,8 +561,7 @@ static i32 zar_walk(zarchive *ar, arena *perm, arena scratch)
         // headers are read while they parse, whatever the count
     } else if (count<0 || count>ar->end.cdsize/ZIP_CENTRAL_LEN ||
                (count && !head)) {
-        ar->bad = 0;
-        return ZAR_EFORMAT;
+        return zar_miscount(ar, 0);
     } else if ((u64)count > (uz)-1>>1) {
         os_oom(in->ctx);  // larger than the address space (32-bit hosts)
     }
@@ -551,8 +585,7 @@ static i32 zar_walk(zarchive *ar, arena *perm, arena scratch)
         } else if (r==ZAR_EFORMAT && past) {
             break;
         } else if (r == ZAR_EFORMAT) {
-            ar->bad = i;
-            return r;
+            return zar_miscount(ar, i);
         } else if (r) {
             return r;
         }
@@ -586,8 +619,7 @@ static i32 zar_walk(zarchive *ar, arena *perm, arena scratch)
         // when the end record defers to them, it does not check
         ar->endsig = ar->end.end64>=0 || get32(sig)==ZIP_END_SIG;
     } else if (off != cdend) {
-        ar->bad = count;
-        return ZAR_EFORMAT;
+        return zar_miscount(ar, count);
     }
     in->limit = ar->end.cdoff;  // nothing past the entries is read again
 

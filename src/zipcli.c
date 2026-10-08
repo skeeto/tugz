@@ -1355,6 +1355,13 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
     case ZAR_ENOEND:
         return not_zip(z, scratch);
     case ZAR_EFORMAT:
+        if (ar->found >= 0) {
+            // As Info-ZIP warns of a count that wrapped, or any other
+            s8 msg = JOIN(&scratch, S("expected "),
+                          znum(&scratch, ar->end.count),
+                          S(" entries but found "));
+            warn(z, msg, znum(&scratch, ar->found), scratch);
+        }
         return fail(z, ZE_FORM, S("Zip file structure invalid"), z->archive,
                     scratch);
     case ZAR_EMULTI:
