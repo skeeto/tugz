@@ -290,6 +290,7 @@ typedef struct {
     b32     rooted;    // which is there
     s8      checked;   // known to be directories, through its last '/'
     iz      checkcap;  // room for that
+    iz      room;      // that extracting an entry takes
     b32     slashed;   // the archive's backslashes were warned of
     xlinks  links;     // links to create once the files are extracted
     xdirs   dirs;      // directories to give attributes after that
@@ -1993,13 +1994,9 @@ static xentry *plan_extract(unzip *u, zarchive *ar, arena *scratch)
     u->checkcap = longest;
     u->slashed  = 0;
 
-    // Claim the room that extracting an entry takes, its messages and
-    // paths, a new name asked for, and sorting the directories, so that
-    // none is claimed once files are written. (Only a new name for a
-    // link or directory, kept to the end, is then claimed.)
-    arena probe = *scratch;
-    newbytes(&probe, 16*(longest + maxname) + (1<<16) +
-                     ndirs*(iz)sizeof(xdir));
+    // The room that extracting an entry takes, its messages and paths, a
+    // new name asked for, and sorting the directories at the end
+    u->room = 16*(longest + maxname) + (1<<16) + ndirs*(iz)sizeof(xdir);
     return xs;
 }
 
@@ -2033,15 +2030,7 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
     u8 *fm    = new(&scratch, u->fspecs.len, u8);
     u8 *xm    = new(&scratch, u->xspecs.len, u8);
 
-    // Extraction, planned, then its directory made
-    xentry *xs = 0;
-    if (u->extract) {
-        xs = plan_extract(u, ar, &scratch);
-        i32 r = make_root(u, scratch);
-        if (r) {
-            return r;
-        }
-    }
+    xentry *xs = u->extract ? plan_extract(u, ar, &scratch) : 0;
 
     // The entries to be read must not overlap, nor reach into the
     // central directory, as Debian's UnZip finds them out: here, before
@@ -2071,6 +2060,20 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
     iz  *block   = new(&scratch, DIR_BLKSIZ, iz);
     iz   nblock  = 0;
     b32  stop    = 0;
+
+    // Claimed, the room that extracting each entry takes, so that none is
+    // claimed once files are written (but for a new name, from the
+    // prompt, for a link or directory, kept to the end), then the -d
+    // directory made
+    if (u->extract) {
+        arena probe = scratch;
+        newbytes(&probe, u->room);
+        i32 r = make_root(u, scratch);
+        if (r) {
+            return r;
+        }
+    }
+
     for (i64 i = 0; i<=count && !stop; i++) {
         if (i==count && (u->cderr==CD_SIG || u->cderr==CD_NONAME)) {
             // As the scan finds it, before the entries of its block
