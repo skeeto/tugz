@@ -106,6 +106,8 @@ typedef struct {
     b32 blkready; // a block is complete and should be emitted
     i32 flushing; // flush due once a call's input is in, or DEF_NONE
     b32 flushed;  // flushing's output is staged, awaiting drain
+    b32 finq;     // a FINISH is due after flushing and those queued
+    u64 nqueued;  // SYNC/FULL flushes due after flushing, alternating
 
     u8 *win;
     iz  win_len;
@@ -1014,6 +1016,8 @@ static void deflate_reset(deflator *d)
     d->olen       = d->ooff = 0;
     d->blkready   = d->flushed = 0;
     d->flushing   = DEF_NONE;
+    d->finq       = 0;
+    d->nqueued    = 0;
     d->win_len    = 0;
     d->base       = 0;
     d->pos        = d->ins = 0;
@@ -1142,6 +1146,14 @@ static void def_flush(deflator *d, i32 flush)
     }
 }
 
+// The mode of the latest flush due, or DEF_NONE if none is.
+static i32 def_lastdue(deflator *d)
+{
+    return d->finq      ? DEF_FINISH :
+           d->nqueued&1 ? DEF_SYNC + DEF_FULL - d->flushing :
+           d->flushing;
+}
+
 // Compress from b->in into b->out, advancing both. With DEF_NONE,
 // returns GZ_NEEDIN once all input is consumed, though output may remain
 // staged. Otherwise returns GZ_OK once all input is consumed, the flush
@@ -1151,16 +1163,35 @@ static void def_flush(deflator *d, i32 flush)
 // output remains.
 //
 // A flush falls due once its call has consumed all input, and later
-// calls complete it before anything else. A call that repeats a SYNC or
-// FULL flush with no input then returns, while another goes on with its
-// own input and mode. After DEF_FINISH falls due, only repeats are valid.
+// calls complete it before anything else. While flushes are unfinished,
+// a call never consumes input, and one with no input in the mode of the
+// latest due flush only completes them (returning GZ_OK once all are
+// complete): it is a repeat. A no-input SYNC, FULL, or FINISH in another
+// mode falls due at once, queued behind the others, so the stream is
+// the one a caller waiting for each flush to complete would get. Any
+// other call completes the unfinished flushes, then goes on with its own
+// input and mode. After DEF_FINISH falls due, queued or not, only
+// repeats are valid.
+//
+// Repeats make adjacent queued flushes differ in mode, so the queue is
+// a run of SYNC and FULL alternating from flushing, perhaps then FINISH:
+// a count and a flag hold it exactly.
 //
 // Output may also be taken without copying through deflate_pending and
 // deflate_consume, in which case b->out may be empty.
 static i32 deflate_stream(deflator *d, zbuf *b, i32 flush)
 {
-    if (d->flushing==DEF_FINISH && (b->inlen || flush!=DEF_FINISH)) {
+    if ((d->flushing==DEF_FINISH || d->finq) &&
+        (b->inlen || flush!=DEF_FINISH)) {
         return GZ_EUSAGE;
+    }
+
+    if (d->flushing && flush && !b->inlen && flush!=def_lastdue(d)) {
+        if (flush == DEF_FINISH) {
+            d->finq = 1;
+        } else {
+            d->nqueued++;
+        }
     }
 
     for (;;) {
@@ -1171,9 +1202,18 @@ static i32 deflate_stream(deflator *d, zbuf *b, i32 flush)
             } else if (d->flushing == DEF_FINISH) {
                 return GZ_OK;
             }
+            d->flushed = 0;
+            if (d->nqueued) {
+                d->nqueued--;
+                d->flushing = DEF_SYNC + DEF_FULL - d->flushing;
+                continue;
+            } else if (d->finq) {
+                d->finq = 0;
+                d->flushing = DEF_FINISH;
+                continue;
+            }
             b32 repeat = flush==d->flushing && !b->inlen;
             d->flushing = DEF_NONE;
-            d->flushed = 0;
             if (repeat) {
                 return GZ_OK;
             }

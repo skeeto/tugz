@@ -157,11 +157,24 @@ output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
   zlib's byte for byte (FLEVEL). gzip decoding stops after each member;
   the program's driver applies the GNU trailing-data policy.
 - A flush falls due once its call has consumed all input, and later
-  calls complete it before anything else, whatever their mode. A caller
-  may thus move on before `TUGZ_DONE`, as to FINISH at the end of input,
-  and get the stream it would have had by waiting (zlib's documentation
-  requires repeating the mode). Once FINISH is due, other calls get
-  `TUGZ_EUSAGE`.
+  calls complete it before consuming input, whatever their mode. A
+  no-input SYNC, FULL, or FINISH made while flushes are unfinished
+  (output undelivered, or not yet staged) falls due at once, queued
+  behind them. A caller may thus move on before `TUGZ_DONE` and get the
+  stream it would have had by waiting for each flush, at any buffer
+  sizes (zlib's documentation requires repeating the mode): each FULL
+  keeps its own empty stored block and history reset, so decoding can
+  restart after it. The one call that does not flush is the repeat a
+  waiting caller makes: no input, in the mode of the latest due flush,
+  while that is unfinished. It completes the due flushes, so two
+  flushes in a row in one mode take waiting for the first. Once FINISH
+  is due, queued or not, other calls get `TUGZ_EUSAGE`.
+- Since repeats don't queue, queued flushes alternate SYNC and FULL from
+  the current one, perhaps then a FINISH: a 64-bit count and a flag in
+  the deflator hold any queue exactly, at no cost to calls that don't
+  queue. Each is staged once the one before it is delivered, as when
+  waited for. `test_flush_queue` queues 1,001 flushes with no output
+  room.
 - Of the deflator's large tables only the hash heads start zeroed:
   tokens are written before use, and chains lead only to links that
   insertions wrote. A slide rebases every link, written or not, so it
@@ -1774,6 +1787,12 @@ Fuzzers:
   zlib never writes such codes, and the streaming check's seeds lacked
   its config byte (`test/seeds.py` now writes both; 44 of the new seeds
   each trap `fuzz-diff-inflate` on the old decoder)
+- deflate forgot a no-input SYNC, FULL, or FINISH made while an earlier
+  flush was unfinished, so a caller moving on before `TUGZ_DONE` lost a
+  FULL's restart point (decoding from it failed: distance too far back)
+  or a FINISH (later input was accepted), and output depended on buffer
+  sizes. No test or fuzzer moved on from a no-input flush (found in
+  review; on the old deflate, `fuzz-diff-deflate`'s seeds now trap it)
 - `memcpy` with a null pointer and zero length, from callers passing
   empty null buffers (UBSan under GCC)
 - zip: bytes resembling a Zip64 locator before a plain end record made

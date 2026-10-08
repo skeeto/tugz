@@ -46,14 +46,19 @@
 // forget history, so decoding can restart there), or TUGZ_FINISH, call
 // until it returns TUGZ_DONE, supplying output space whenever it returns
 // TUGZ_NEED_OUTPUT. A flush falls due once its call has consumed all
-// input. A due SYNC or FULL flush completes before a call in another
-// mode, or with more input, goes on as asked, so the caller need not
-// wait for TUGZ_DONE to move on, as to TUGZ_FINISH at the end of input.
-// Until it completes, even after such calls (which return
-// TUGZ_NEED_OUTPUT until it does), a call in its own mode with no input
-// only completes it, rather than flushing again. Once TUGZ_FINISH falls
-// due, only TUGZ_FINISH with no input is accepted (others return
-// TUGZ_EUSAGE), and it returns TUGZ_DONE once all output is delivered.
+// input. Due flushes complete, in order, before a later call consumes
+// input (it returns TUGZ_NEED_OUTPUT until they do), and a later SYNC,
+// FULL, or FINISH call with no input falls due at once, behind them. So
+// the caller need not wait for TUGZ_DONE to move on, as to more input,
+// another flush, or TUGZ_FINISH at the end of input: the stream is the
+// one it would get by waiting for each flush, whatever the buffer
+// sizes. The exception is a call with no input in the mode of the
+// latest due flush while that is unfinished: it does not flush again,
+// but only completes the due flushes, returning TUGZ_DONE once all have
+// (to flush twice in one mode, wait for the first). Once TUGZ_FINISH
+// falls due, even behind other flushes, only TUGZ_FINISH with no input
+// is accepted (others return TUGZ_EUSAGE), and it returns TUGZ_DONE once
+// all output is delivered.
 //
 // Compression levels are 1 (fastest) through 9 (smallest), and others are
 // clamped into that range. The gzip header records no name or time, and

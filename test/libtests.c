@@ -668,12 +668,13 @@ static void test_flush(void)
     free(text);
 }
 
-// Compress p in steps, step i taking input up to ends[i] with modes[i]
-// (the last TUGZ_FINISH), and output in pieces (0 for unlimited). With
-// early, a step moves on once its input is consumed rather than waiting
-// for its flush to return TUGZ_DONE, counting in early[1] the SYNC and
-// FULL flushes left with output staged, and in early[0] those not yet
-// staged at all.
+// Compress p in steps, step i taking input up to ends[i] (perhaps none)
+// with modes[i], and output in pieces (0 for unlimited). The last step
+// is TUGZ_FINISH, as is any after a TUGZ_FINISH. With early, a step
+// other than the last moves on once its input is consumed rather than
+// waiting for its flush to return TUGZ_DONE, counting in early[2] the
+// flushes it leaves queued behind others, and of the rest, in early[1]
+// those left with output staged, and in early[0] those not yet staged.
 static buf tcompress_steps(int format, u8 const *p, iz const *ends,
                            int const *modes, i32 nsteps, iz outpiece,
                            i32 *early)
@@ -695,10 +696,11 @@ static buf tcompress_steps(int format, u8 const *p, iz const *ends,
             TEST(r.len < cap);
             if (status == TUGZ_NEED_OUTPUT) {
                 TEST(!b.outlen);
-                if (early && off==ends[i] && modes[i]!=TUGZ_FINISH) {
+                if (early && off==ends[i] && i<nsteps-1) {
                     if (modes[i] != TUGZ_NONE) {
-                        TEST(def->flushing == modes[i]);
-                        early[def->flushed]++;
+                        TEST(def_lastdue(def) == modes[i]);
+                        b32 queued = def->nqueued || def->finq;
+                        early[queued ? 2 : def->flushed]++;
                     }
                     break;
                 }
@@ -730,7 +732,7 @@ static void test_flush_switch(void)
     memcpy(mixed + m - m/4, more, (uz)(m/4));
     free(more);
 
-    i32 early[2] = {0};
+    i32 early[3] = {0};
     for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
         for (int fmode = TUGZ_SYNC; fmode <= TUGZ_FULL; fmode++) {
             for (int next = TUGZ_NONE; next <= TUGZ_FINISH; next++) {
@@ -762,6 +764,69 @@ static void test_flush_switch(void)
         }
     }
     TEST(early[0] && early[1]);
+
+    // A no-input SYNC, FULL, or FINISH made while other flushes are
+    // unfinished falls due too, behind them, so moving on from it gives
+    // the waited stream, each FULL with its own empty stored block and
+    // reset history. Each run's first mode takes input up to a cut (all
+    // of it if the run ends in FINISH, which is then repeated), the rest
+    // none. Adjacent modes differ: a no-input call in the latest due
+    // flush's mode, unfinished, only completes it, as a caller waiting
+    // for TUGZ_DONE would make it.
+    static int const runs[][7] = {
+        {TUGZ_SYNC, TUGZ_FULL, -1},
+        {TUGZ_FULL, TUGZ_SYNC, -1},
+        {TUGZ_SYNC, TUGZ_FINISH, -1},
+        {TUGZ_FULL, TUGZ_FINISH, -1},
+        {TUGZ_NONE, TUGZ_SYNC, TUGZ_FULL, TUGZ_SYNC, TUGZ_FULL, -1},
+        {TUGZ_SYNC, TUGZ_FULL, TUGZ_SYNC, TUGZ_FINISH, -1},
+        {TUGZ_FULL, TUGZ_SYNC, TUGZ_NONE, TUGZ_FULL, TUGZ_FINISH, -1},
+        {TUGZ_NONE, TUGZ_FULL, TUGZ_SYNC, TUGZ_FULL, TUGZ_SYNC,
+         TUGZ_FINISH, -1},
+    };
+    early[0] = early[1] = early[2] = 0;
+    for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
+        for (i32 j = 0; j < (i32)countof(runs); j++) {
+            for (i32 k = 0; k < 4; k++) {
+                static iz const outpieces[] = {1, 7, 64, 4096};
+                u8 *p = k<3 ? text : mixed;
+                iz len = k<3 ? n : m;
+                int const *run = runs[j];
+                i32 nrun = 0;
+                for (; run[nrun] >= 0; nrun++) {}
+                b32 fin = run[nrun-1] == TUGZ_FINISH;
+                iz cut = fin ? len : k<3 ? len/2 : len - len/4;
+                iz ends[9];
+                int modes[9];
+                i32 nsteps = 0;
+                for (i32 i = 0; i < nrun; i++, nsteps++) {
+                    ends[nsteps] = cut;
+                    modes[nsteps] = run[i];
+                }
+                if (!fin) {
+                    ends[nsteps] = len;
+                    modes[nsteps++] = TUGZ_NONE;
+                }
+                ends[nsteps] = len;
+                modes[nsteps++] = TUGZ_FINISH;
+
+                buf ref = tcompress_steps(format, p, ends, modes, nsteps,
+                                          0, 0);
+                b32 ok;
+                buf z = zlib_inflate(zlib_wbits(format), ref.s, ref.len,
+                                     &ok);
+                TEST(ok && same(z, p, len));
+                free(z.s);
+
+                buf c = tcompress_steps(format, p, ends, modes, nsteps,
+                                        outpieces[k], early);
+                TEST(same(c, ref.s, ref.len));
+                free(c.s);
+                free(ref.s);
+            }
+        }
+    }
+    TEST(early[0] && early[1] && early[2]);
 
     // Once TUGZ_FINISH falls due, other calls are rejected and change
     // nothing
@@ -796,6 +861,177 @@ static void test_flush_switch(void)
         free(ref.s);
     }
     free(mixed);
+    free(text);
+}
+
+// Call tugz_deflate with out bytes of output room each time, repeating
+// while it returns TUGZ_NEED_OUTPUT, unless early and all input is in.
+// Output is appended to r.
+static int tflush_call(tugz_deflator *d, buf *r, u8 const *p, iz len,
+                       int mode, iz out, b32 early)
+{
+    int status;
+    do {
+        tugz_buf b = {p, len, r->s+r->len, out};
+        status = tugz_deflate(d, &b, mode);
+        r->len = b.out - r->s;
+        TEST(!b.inlen || status==TUGZ_EUSAGE);
+        p += len - b.inlen;
+        len = b.inlen;
+    } while (status==TUGZ_NEED_OUTPUT && (!early || len));
+    return status;
+}
+
+// The scenario that lost flushes: input, then no-input SYNC and FULL
+// with one byte of output room, moving on without waiting for
+// TUGZ_DONE, then the same input again. The FULL must still restart the
+// stream, as it does when each flush is waited for. Likewise a FINISH
+// after an unfinished SYNC, once due, refuses further input. And a long
+// run of no-input flushes made with no output room at all comes out as
+// if each had been waited for.
+static void test_flush_queue(void)
+{
+    iz n = 4000;
+    u8 *text = textbytes(n, 21);
+    buf r[2];
+    iz restart = 0;
+    for (b32 early = 0; early <= 1; early++) {
+        tugz_deflator *d;
+        void *mem = mem_deflator(TUGZ_RAW, 6, &d);
+        r[early].s = malloc(1<<16);
+        r[early].len = 0;
+        buf *o = &r[early];
+        TEST(tflush_call(d, o, text, n, TUGZ_NONE, 1<<15, 0)
+             == TUGZ_NEED_INPUT);
+        int s1 = tflush_call(d, o, 0, 0, TUGZ_SYNC, 1, early);
+        int s2 = tflush_call(d, o, 0, 0, TUGZ_FULL, 1, early);
+        TEST(s1 == (early ? TUGZ_NEED_OUTPUT : TUGZ_DONE));
+        TEST(s2 == (early ? TUGZ_NEED_OUTPUT : TUGZ_DONE));
+        if (early) {
+            TEST(d->e->def->flushing==DEF_SYNC && d->e->def->nqueued==1);
+        } else {
+            restart = o->len;
+        }
+        TEST(tflush_call(d, o, text, n, TUGZ_NONE, 1<<15, 0)
+             == TUGZ_NEED_INPUT);
+        TEST(tflush_call(d, o, 0, 0, TUGZ_FINISH, 1<<15, 0) == TUGZ_DONE);
+        free(mem);
+    }
+    TEST(same(r[1], r[0].s, r[0].len));
+    TEST(restart>=4 && !memcmp(r[0].s+restart-4, "\0\0\xff\xff", 4));
+    b32 ok;
+    buf z = zlib_inflate(-15, r[1].s+restart, r[1].len-restart, &ok);
+    TEST(ok && same(z, text, n));
+    free(z.s);
+    z = zlib_inflate(-15, r[1].s, r[1].len, &ok);
+    TEST(ok && z.len==2*n);
+    TEST(!memcmp(z.s, text, (uz)n) && !memcmp(z.s+n, text, (uz)n));
+    free(z.s);
+    free(r[0].s);
+    free(r[1].s);
+
+    for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
+        for (b32 early = 0; early <= 1; early++) {
+            tugz_deflator *d;
+            void *mem = mem_deflator(format, 6, &d);
+            r[early].s = malloc(1<<16);
+            r[early].len = 0;
+            buf *o = &r[early];
+            TEST(tflush_call(d, o, text, n, TUGZ_NONE, 1<<15, 0)
+                 == TUGZ_NEED_INPUT);
+            int s1 = tflush_call(d, o, 0, 0, TUGZ_SYNC, 1, early);
+            int s2 = tflush_call(d, o, 0, 0, TUGZ_FINISH, 1, early);
+            TEST(s1 == (early ? TUGZ_NEED_OUTPUT : TUGZ_DONE));
+            TEST(s2 == (early ? TUGZ_NEED_OUTPUT : TUGZ_DONE));
+            for (int mode = TUGZ_NONE; mode <= TUGZ_FINISH; mode++) {
+                iz len = o->len;
+                tugz_buf b = {text, n, o->s+o->len, 1<<15};
+                TEST(tugz_deflate(d, &b, mode) == TUGZ_EUSAGE);
+                TEST(b.inlen==n && b.out==o->s+len);
+                if (mode < TUGZ_FINISH) {
+                    b.inlen = 0;
+                    TEST(tugz_deflate(d, &b, mode) == TUGZ_EUSAGE);
+                    TEST(b.out == o->s+len);
+                }
+            }
+            TEST(tflush_call(d, o, 0, 0, TUGZ_FINISH, 1<<15, 0)
+                 == TUGZ_DONE);
+            free(mem);
+        }
+        TEST(same(r[1], r[0].s, r[0].len));
+        b32 ok;
+        buf z = zlib_inflate(zlib_wbits(format), r[1].s, r[1].len, &ok);
+        TEST(ok && same(z, text, n));
+        free(z.s);
+        free(r[0].s);
+        free(r[1].s);
+    }
+
+    // Alternating no-input SYNC and FULL, with no output room, after
+    // input that fills the staging buffer or not
+    iz m = 700000;
+    u8 *noise = randbytes(m, 22);
+    for (i32 k = 0; k < 2; k++) {
+        iz len = k ? m : n;
+        u8 const *p = k ? noise : text;
+        iz nflush = 1001;
+        for (b32 early = 0; early <= 1; early++) {
+            tugz_deflator *d;
+            void *mem = mem_deflator(TUGZ_ZLIB, 6, &d);
+            iz cap = len + (1<<20);
+            r[early].s = malloc((uz)cap);
+            r[early].len = 0;
+            buf *o = &r[early];
+            int status = tflush_call(d, o, p, len, TUGZ_NONE,
+                                     early ? 1<<12 : cap, early);
+            TEST(status==TUGZ_NEED_INPUT || (early && status>0));
+            for (iz i = 0; i < nflush; i++) {
+                int mode = i&1 ? TUGZ_FULL : TUGZ_SYNC;
+                status = tflush_call(d, o, 0, 0, mode, early ? 0 : cap-o->len,
+                                     early);
+                TEST(status == (early ? TUGZ_NEED_OUTPUT : TUGZ_DONE));
+            }
+            if (early) {
+                TEST(d->e->def->nqueued == (u64)nflush-1);
+                TEST(d->e->def->flushed == !k);  // staging full?
+            }
+            TEST(tflush_call(d, o, 0, 0, TUGZ_FINISH, 1<<12, 0)
+                 == TUGZ_DONE);
+            TEST(o->len < cap);
+            free(mem);
+        }
+        TEST(same(r[1], r[0].s, r[0].len));
+        b32 ok;
+        buf z = zlib_inflate(15, r[1].s, r[1].len, &ok);
+        TEST(ok && same(z, p, len));
+        free(z.s);
+        free(r[0].s);
+        free(r[1].s);
+    }
+
+    // A reset drops queued flushes, FINISH included
+    for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
+        buf ref = tcompress(format, 6, text, n, 0, 0, 0, 0);
+        for (int mode = TUGZ_FULL; mode <= TUGZ_FINISH; mode++) {
+            tugz_deflator *d;
+            void *mem = mem_deflator(format, 6, &d);
+            buf o = {malloc(1<<16), 0};
+            TEST(tflush_call(d, &o, text, n, TUGZ_NONE, 1<<15, 0)
+                 == TUGZ_NEED_INPUT);
+            TEST(tflush_call(d, &o, 0, 0, TUGZ_SYNC, 1, 1)
+                 == TUGZ_NEED_OUTPUT);
+            TEST(tflush_call(d, &o, 0, 0, mode, 0, 1) == TUGZ_NEED_OUTPUT);
+            TEST(d->e->def->nqueued || d->e->def->finq);
+            tugz_deflate_reset(d, 6);
+            buf c = tcompress_with(d, text, n, 0, 7, 0, 0);
+            TEST(same(c, ref.s, ref.len));
+            free(c.s);
+            free(o.s);
+            free(mem);
+        }
+        free(ref.s);
+    }
+    free(noise);
     free(text);
 }
 
@@ -1386,6 +1622,7 @@ int main(void)
     test_splits();
     test_flush();
     test_flush_switch();
+    test_flush_queue();
     test_none_staging();
     test_staging_moves();
     test_roundtrip();
