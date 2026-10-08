@@ -2441,10 +2441,14 @@ static void test_container(os *ctx, arena a)
                 u8 o[16];
                 zbuf b = {g.s, cut, o, countof(o)};
                 i32 r = decoder_run(z, &b);
+                // The header byte count saturates, so a field past 2^31
+                // bytes cannot overflow it on 32-bit hosts
+                TEST(z->hpos == MIN(cut, 2));
                 if (r == GZ_NEEDIN) {
                     b.inlen = g.len - cut;
                     r = decoder_run(z, &b);
                 }
+                TEST(z->hpos == 2);
                 TEST(r == want);
                 TEST(bad || (countof(o)-b.outlen==5 && !memcmp(o, payload, 5)));
             }
@@ -2456,6 +2460,7 @@ static void test_container(os *ctx, arena a)
             for (iz k = 0; r==GZ_NEEDIN && k<g.len; k++) {
                 b.inlen = 1;
                 r = decoder_run(z, &b);
+                TEST(z->hpos == MIN(k+1, 2));
                 TEST(r==want || (r==GZ_NEEDIN && k+1<g.len));
             }
             TEST(r == want);

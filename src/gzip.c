@@ -75,7 +75,7 @@ typedef struct {
     u64 total;
     u8  buf[10];  // header or trailer bytes
     i32 len;      // bytes in buf
-    iz  hpos;     // header bytes consumed
+    i32 hpos;     // header bytes consumed, saturated at 2
     u32 hcrc;
     i32 flg;
     i32 xlen;
@@ -130,7 +130,7 @@ static void gzip_skip_absent(decoder *z)
 // FHCRC asks for it to be checked.
 static i32 gzip_header_byte(decoder *z, u8 c)
 {
-    z->hpos++;
+    z->hpos += z->hpos < 2;
     switch (z->state) {
     case DEC_FIXED:
         // Each field is validated as soon as it is complete, like zlib.
@@ -198,7 +198,7 @@ static void gzip_header_span(decoder *z, zbuf *b)
     if (z->flg & FHCRC) {
         z->hcrc = crc32_update(z->hcrc, b->in, n, &z->cpu);
     }
-    z->hpos += n;
+    z->hpos = (i32)MIN(z->hpos+MIN(n, 2), 2);  // fields may pass 2^31
     b->in += n;
     b->inlen -= n;
     if (done) {
@@ -213,7 +213,7 @@ static void gzip_header_span(decoder *z, zbuf *b)
 // input ending sooner is truncation, as there.
 static i32 zlib_header_byte(decoder *z, u8 c)
 {
-    z->hpos++;
+    z->hpos += z->hpos < 2;
     z->buf[z->len++] = c;
     if (z->len != 2) {
         return z->len<6 ? GZ_OK : GZ_EHEADER;  // CMF, or the dictionary ID
