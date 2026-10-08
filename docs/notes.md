@@ -1050,14 +1050,19 @@ for entries.
 - Overlapped components (zip bombs): before any entry's data is read, by
   `-t`, `-p`, `-c`, or extraction (listings read none), the least that
   each selected, readable entry takes, a local header's fixed 30 bytes
-  and its compressed data, is sorted by offset (a stable merge sort),
-  and none may overlap the next or reach the central directory. Each
-  entry is checked again once its local header is read, by its real
-  length, against the next one's offset. Either failure is Debian's
-  "invalid zip file with overlapped components (possible zip bomb)"
-  (12), before anything is written, the `-d` directory included.
-  Debian's UnZip finds overlaps entry by entry, as it reads them, and
-  does not check the central directory.
+  and its compressed data, must end by where the next one begins, or
+  the central directory: where each begins is sorted (in place, a heap
+  sort), no two may begin at once, and the central directory is read
+  again to check where each ends. Each entry is checked again once its
+  local header is read, by its real length, against the next one's
+  offset, and as its central header is read again to process it, it
+  must begin where one checked began, and be read only once, so that an
+  archive changed meanwhile brings in no entry unchecked. Any failure is
+  Debian's "invalid zip file with overlapped components (possible zip
+  bomb)" (12), and one in the central directory is found before anything
+  is written, the `-d` directory included. Debian's UnZip finds overlaps
+  entry by entry, as it reads them, and does not check the central
+  directory.
 - Decoding: an entry is read by its central header's method, flags,
   sizes, and CRC. Its local header gives the data's offset, its DOS time
   and extra fields (times and owner, as UnZip takes them from there),
@@ -1162,25 +1167,58 @@ for entries.
   inflator, its 64 KiB output window, and the prompt's reader are
   claimed before the first archive, and whatever an archive needs before
   its first change to the file system, its memory then reused for the
-  next: its entries (the central directory whole) and their Unicode
-  names, and, as extraction is planned, every selected entry's mapped
-  path, room for links' targets and paths and for the directories
-  finished at the end, the sorted spans of the overlap check, the cache
-  of directories found, and the room that extracting any one entry takes
-  (its messages, its path, a new name, and sorting the directories),
-  claimed last, just before the `-d` directory is made. So running out
-  of memory (4, "not enough memory") extracts nothing, not even the `-d`
-  directory, as `test/unzip.sh` checks under `ulimit -v` and on Linux
-  `ulimit -d`, and nothing is claimed once the file system has changed,
-  as `test/unzipos.c` checks in every run of `tests-unzipcli` and
+  next. Its central directory is not held: it is checked whole
+  (`zar_check`), then read again (`zar_next`) at each stage through a
+  window of its own (`zar_reread`), which holds the whole directory if
+  it fits in 256 KiB, else that much at a time, as UnZip reads its own
+  again in blocks: planning, the overlap check, and the entries'
+  processing, in UnZip's blocks of 16,384 selected entries, each block
+  scanned (its "skipping:" messages) and then read again. Planning keeps
+  where each selected, readable entry begins, for the overlap check, and
+  for extraction claims the room for links' targets and for the paths of
+  links and directories, kept to finish them at the end, then the cache
+  of directories found and the room that extracting any one entry takes
+  (its central header read again, its name, path, and messages, its
+  local header's name, no longer than its span allows, a new name, and
+  sorting the directories), claimed last, just before the `-d` directory
+  is made. So running out of memory (4, "not enough memory") extracts
+  nothing, not even the `-d` directory, as `test/unzip.sh` checks under
+  `ulimit -v` and on Linux `ulimit -d` (with 20,000 links' targets, 80
+  MB), and nothing is claimed once the file system has changed, as
+  `test/unzipos.c` checks in every run of `tests-unzipcli` and
   `fuzz-unzip`, but for a link or directory renamed at the prompt, whose
   path is kept to the end, and the POSIX layer's `malloc` of a pending
-  output's path, outside the arenas. Unlike UnZip, which reads the
-  central directory as it goes, unzip holds it whole: on the M4 Max, for
-  100,000 entries with names of 17 bytes and no extra fields, `-t`
-  peaked at 18.6 MB and extraction at 31.9 MB, and for 200,000 at 34.6
-  and 61.3 MB, about 160 and 290 bytes an entry (UnZip: 2.8 MB either
-  way).
+  output's path, outside the arenas.
+- Reading again: should the archive change meanwhile, an entry read
+  again must begin where one that the overlap check covered began, and
+  be read only once, or it is refused as overlapped (12), and one that
+  no longer reads as planned (a header that no longer parses, or longer
+  than any checked, a method not planned for, a name or path longer than
+  planned, more links or directories, or longer targets) ends the run as
+  a read error (3), so that neither guarantee gives: every entry read
+  was checked for overlaps before anything was written, and fits in the
+  memory claimed before then (`tests-unzipcli`, `test_changed`, which
+  rewrites the archive once the file system changes). Other changes
+  pass unnoticed, as changes to an entry's data always have, but for
+  its CRC.
+  The tests' window is only as large as the longest header (`UZ_CDWIN`),
+  so that every directory is read again for each entry, as a large one
+  is, its reads subject to the faults injected.
+- Memory per entry: 8 bytes and a bit, where each selected entry begins
+  and whether it was read, where holding the directory took about 160
+  for `-t` and 290 for extraction (a 112-byte `zentry`, its name, the
+  overlap check's beginnings and ends and their merge sort's copies, and
+  to extract, an 80-byte plan with the name mapped). Peak memory
+  footprint (`/usr/bin/time -l`) on the M4 Max for 100,000 empty, stored
+  entries with names of 17 bytes and no extra fields: `-t` 3.6 MB and
+  extraction 3.9 MB (18.5 and 32.0 MB holding it), for 200,000 4.4 and
+  4.7 MB (34.6 and 61.2 MB), and for one entry 1.5 and 1.7 MB, as
+  before; Apple's UnZip 6.0: 2.8 and 2.9 MB at either count. Windows 11
+  (i9-12900), peak commit (`PeakPagefileUsage`): for 100,000 entries 3.9
+  MiB either way (19.0 and 31.0 MiB holding it), for 200,000 4.9 MiB
+  (35.0 and 60.1 MiB). Reading the directory four times rather than
+  once costs `-t` of 200,000 empty entries about 20 ms (0.05 s, from
+  0.03), and extraction nothing measurable (13 s, making the files).
 - Windows: `platform/unzip_windows.c` is CRT-free like zip's. Paths are
   `\\?\` paths, of any length, and the console is read and written in
   UTF-16, so a new name typed at the prompt may be any Unicode; an
@@ -1255,7 +1293,7 @@ ones as invariants. Those that no test asserts are marked untested.
   before (`unzip.sh`, "Overlapped components", compared with a Debian
   `REF` where it finds them too; `tests-unzipcli`, `test_bomb`).
 - Sizes: an entry is read by its central header's sizes, method, and
-  CRC, the central directory being read whole first, rather than by its
+  CRC, the central directory checked whole first, rather than by its
   local header's, as UnZip reads it unless a data descriptor follows
   (`unzip.sh`, "localsizes.zip", whose local CRC and sizes are not the
   central ones, where UnZip finds a bad CRC and extracts part of a
@@ -1419,7 +1457,9 @@ Fuzzers:
   extracts equal to an entry of that name as `src/zip.c`'s parser and
   zlib read it, pipe no more than the entries' sizes, leave nothing
   open, and claim no memory once it has changed the file system; then,
-  run again with `-n`, change nothing.
+  run again with `-n`, change nothing. Its central directory is read
+  again for each entry through a window no larger than its longest
+  header (`test/unzipos.c`'s `UZ_CDWIN`), as a large archive's is.
 
 ## Cross-platform verification
 
