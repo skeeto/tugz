@@ -96,6 +96,10 @@ struct os {
     i64     failreadat;
     i64     failwriteat;
     b32     armed;  // the archive's faults have begun
+
+    // A race: as zip opens the file so named, it becomes a link to swapto
+    char   *swapname;
+    char   *swapto;
 };
 
 static s8 cstrs8(char const *z)
@@ -184,6 +188,8 @@ static void mfs_reset(os *ctx)
     ctx->shrinkto    = -1;
     ctx->failreadat  = -1;
     ctx->failwriteat = -1;
+    ctx->swapname    = 0;
+    ctx->swapto      = 0;
 }
 
 static os *zipos_new(iz cap)
@@ -269,6 +275,13 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
         ctx->writing = 1;  // zip creates only its temporary file
         mfs_arm(ctx, FAULT_TEMP);
     } else {
+        if (f && ctx->swapname && s8equals(path, cstrs8(ctx->swapname))) {
+            s8 to = cstrs8(ctx->swapto);
+            f->type = FT_LINK;
+            mfs_setlen(f, to.len);
+            bytecopy(f->data, to.s, to.len);
+            ctx->swapname = 0;
+        }
         if (f && f->type==FT_LINK && (mode & OS_NOFOLLOW)) {
             return OS_ESYMLINK;
         }

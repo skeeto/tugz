@@ -135,6 +135,7 @@ typedef struct {
     s8      name;  // in the archive
     os_info info;
     u32     dostime;
+    b32     byentry;  // an entry named it: read through no final link
 } zfile;
 
 // Each file is allocated alone, as names are allocated between them, so
@@ -1486,6 +1487,7 @@ typedef struct {
     b32      err;
     s8       why;      // of the first read error, as it occurred
     b32      changed;  // not opened, being no longer the file scanned
+    b32      byentry;  // as its zfile's
 } zsrc;
 
 // Open a file to read as the scan found it: not a FIFO swapped in since,
@@ -1496,7 +1498,9 @@ typedef struct {
 // it). The scan goes by path, as Info-ZIP's does, so one swapped in for
 // a directory while the scan is in it still leads it, and this, astray.
 // Without -y, links are followed anyway, and a file saved since by
-// renaming over it is read as it now is.
+// renaming over it is read as it now is, but for a file that an entry
+// names, which the scan refuses as a link (scan_entries): nor is it read
+// through one swapped in for it since.
 static b32 src_open(zip *z, zsrc *s, arena scratch)
 {
     s->off = 0;
@@ -1504,7 +1508,8 @@ static b32 src_open(zip *z, zsrc *s, arena scratch)
     if (s->mem.s) {
         return 1;
     }
-    i32 mode = OS_READ | OS_REGULAR | (z->symlinks ? OS_NOFOLLOW : 0);
+    b32 nofollow = z->symlinks || s->byentry;
+    i32 mode     = OS_READ | OS_REGULAR | (nofollow ? OS_NOFOLLOW : 0);
     s->fd = os_open(z->ctx, s->path, mode, scratch);
     s->changed = s->fd<0 && s->fd!=OS_ERR;  // a different type
     os_info now  = {0};
@@ -1694,6 +1699,7 @@ enum {
     WRITE_ECHANGED,  // no longer the file scanned, so not opened
     WRITE_EREAD,     // the system failed a read (zwork's why tells why)
     WRITE_EDIRFILE,
+    WRITE_ELINK,     // an entry's file is now a link (without -y)
 };
 
 // Compress a new entry. Returns WRITE_OK, or, having left the output
@@ -1718,9 +1724,10 @@ static i32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
     file_extras(z, k, f, e, &scratch);
 
     zsrc src = {0};
-    src.path = f->path;
-    src.info = &f->info;
-    src.fd   = -1;
+    src.path    = f->path;
+    src.info    = &f->info;
+    src.fd      = -1;
+    src.byentry = f->byentry;
     if (f->info.type == FT_DIR) {
         u8 *h = newbytes(&scratch, zip_local_len(e));
         zout_write(w, h, zip_local(h, e)-h);
@@ -1755,7 +1762,9 @@ static i32 write_file(zip *z, zwork *k, zfile *f, zentry *e, arena scratch)
         e->usize  = 0;
         zout_seek(w, start);  // drop an abandoned attempt, even on failure
         if (!src_open(z, &src, scratch)) {
-            return src.changed ? WRITE_ECHANGED : WRITE_EOPEN;
+            b32 link = src.fd==OS_ESYMLINK && !z->symlinks;
+            return link ? WRITE_ELINK :
+                   src.changed ? WRITE_ECHANGED : WRITE_EOPEN;
         }
 
         iz  hlen = zip_local_len(e);
@@ -2091,6 +2100,19 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
                 z->bread += e->usize;
                 e->lextra = (s8){0};  // in write_file's scratch, and written
                 cd[count++] = e;
+                break;
+            } else if (r==WRITE_ELINK && old) {
+                // A link swapped in since the scan: the entry is left as
+                // the scan leaves it for a link, as for a missing file,
+                // but kept under -FS too (scan_entries)
+                *old = was;
+                s8 shown = f->path;  // without the ./ of Windows' lookup
+                if (shown.len>2 && shown.s[0]=='.' && shown.s[1]=='/') {
+                    shown = (s8){shown.s+2, shown.len-2};
+                }
+                warn(z, S("not following link that an entry names: "),
+                     shown, scratch);
+                copy = old;
                 break;
             }
 
@@ -2547,10 +2569,12 @@ static b32 scan_entries(zip *z, zarchive *ar, iz n, zindex *old, s8 pattern,
         path = dotted ? JOIN(&z->perm, path) : path;  // kept, as name is
         if (zindex_find(old, name) != i) {
             also[i] = new_file(z, path, name, &info);
+            also[i]->byentry = 1;
             continue;
         }
         *zmap_upsert(&z->names, name, name_fold(z), &z->perm) = z->files.len;
         zfile *f = new_file(z, path, name, &info);
+        f->byentry = 1;  // nor read through a link swapped in later
         *push(&z->perm, &z->files) = f;
     }
     return any;

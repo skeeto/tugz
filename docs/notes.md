@@ -901,9 +901,13 @@ race allows).
   ending in one either, which is not followed, as it would be for a path
   named on the command line, but only stored, with `-y`: without it,
   "not following link that an entry names" warns, and the entry is left
-  as for a missing file. On Windows, a name is looked up as `./NAME`, so
-  that `NUL` or `COM1` names a file in the current directory, never the
-  DOS device that the bare name opens, as a path so named still does.
+  as for a missing file. Nor is a link swapped in for such a file after
+  the scan followed: it is opened refusing a final link (`O_NOFOLLOW`,
+  or on Windows a reparse point), and the same warning leaves the entry
+  as it was, even under `-FS` (`tests-zipcli` swaps one in). On
+  Windows, a name is looked up as `./NAME`, so that `NUL` or `COM1`
+  names a file in the current directory, never the DOS device that the
+  bare name opens, as a path so named still does.
   Info-ZIP reads them all, absolute names included, follows links, and
   opens devices. Other entries are refreshed only by
   naming their files as paths (`zip -u a.zip ../f`), and as when their

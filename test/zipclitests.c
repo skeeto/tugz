@@ -1,9 +1,9 @@
 // Unit tests of the zip program (src/zipcli.c), run in memory
 // (test/zipos.c): reading an existing archive through its window, out of
 // order and across the window's edge; an archive that shrinks, or whose
-// reads or writes fail; and, in every run, memory claimed only before
-// any output. On success prints "all zip program tests pass". A failure
-// traps.
+// reads or writes fail; a file swapped for a link as zip reads it; and,
+// in every run, memory claimed only before any output. On success prints
+// "all zip program tests pass". A failure traps.
 // $ cc -g3 -fsanitize=address,undefined -o tests-zipcli test/zipclitests.c
 #include "zipos.c"
 
@@ -321,6 +321,41 @@ static void test_shrunk(os *ctx)
     free(small.s);
 }
 
+// A file that an entry names (-u without paths), which the scan refuses
+// as a link, swapped for a link between the scan and its reading: not
+// read through it, but its entry kept, with the scan's warning. A path
+// named on the command line is still read through one, as in Info-ZIP.
+static void test_swapped_link(os *ctx, arena a)
+{
+    zspec spec[2] = {{S("f"), S("old\n")}, {S("e"), S("e\n")}};
+    s8    z       = build(spec, 2, 0);
+    for (i32 named = 0; named < 2; named++) {
+        mfs_reset(ctx);
+        mfs_put(ctx, "a.zip", FT_FILE, z.s, z.len, 1600000000);
+        mfs_put(ctx, "f", FT_FILE, "new\n", 4, 1700000000);
+        mfs_put(ctx, "secret", FT_FILE, "sec\n", 4, 1700000000);
+        ctx->swapname = "f";
+        ctx->swapto   = "secret";
+        if (named) {
+            ZIP(ctx, 0, "a.zip", "f");
+            TEST(equals(zipos_output(ctx, 1), "updating: f (stored 0%)\n"));
+            TEST(!zipos_output(ctx, 2).len);
+        } else {
+            ZIP(ctx, 0, "-u", "a.zip");
+            TEST(!zipos_output(ctx, 1).len);
+            TEST(equals(zipos_output(ctx, 2), "zip warning: not following "
+                        "link that an entry names: f\n"));
+        }
+        TEST(!ctx->swapname);  // it was opened
+        zlist l = entries(mfs_get(ctx, "a.zip"), &a);
+        TEST(l.count==2 && equals(l.entries[0].name, "f"));
+        TEST(equals(l.data[0], named ? "sec\n" : "old\n"));
+        TEST(equals(l.data[1], "e\n"));
+        TEST(no_temp(ctx));
+    }
+    free(z.s);
+}
+
 // A failed write stops zip (14), as Info-ZIP words it, leaving the
 // archive alone and no temporary file
 static void test_write_failure(os *ctx)
@@ -358,6 +393,7 @@ int main(void)
     test_edges(ctx, a);
     test_shrunk(ctx);
     test_write_failure(ctx);
+    test_swapped_link(ctx, a);
 
     free(a.beg);
     zipos_free(ctx);
