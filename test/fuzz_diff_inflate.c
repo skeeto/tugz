@@ -76,6 +76,9 @@ static void diff_stream(fuzzenv *env, u8 cfg, u8 const *in, iz len)
 {
     enum { CAP = 1 << 20 };
     i32 format = cfg % 3;
+    if (format==FMT_GZIP && len>=2 && in[0]==0x1f && in[1]==0x9e) {
+        return;  // the old magic (see LLVMFuzzerTestOneInput)
+    }
     static i32 const wbits[] = {-15, 15, 31};
     z_stream z = {0};
     CHECK(inflateInit2(&z, wbits[format]) == Z_OK);
@@ -138,11 +141,17 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
         }
     }
 
+    // A member may begin with the old magic, 1f 9e, which GNU gzip
+    // accepts and zlib doesn't, so inputs holding it are not compared
+    b32 oldmagic = 0;
+    for (size_t i = 1; i < size; i++) {
+        oldmagic |= data[i-1]==0x1f && data[i]==0x9e;
+    }
     b32 trailing;
     want = zlib_gzip(data, (iz)size, &zlen, &trailing);
     got = fuzz_gunzip(env, data, (iz)size);
     CHECK(want<0 || got!=GZ_EWRITE);
-    if (want >= 0) {
+    if (want>=0 && !oldmagic) {
         CHECK(want == (got==GZ_OK || got==GZ_TRAILING));
         if (want) {
             CHECK(trailing == (got==GZ_TRAILING));
