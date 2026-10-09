@@ -62,9 +62,11 @@
 // is accepted (others return TUGZ_EUSAGE), and it returns TUGZ_DONE once
 // all output is delivered.
 //
-// Compression levels are 1 (fastest) through 9 (smallest), and others are
-// clamped into that range. The gzip header records no name or time, and
-// its XFL marks levels 1 and 9 as GNU gzip and zlib mark them.
+// Compression levels are 1 (fastest) through 9 (smallest). Others are
+// rejected, and reserved, as 0 and those above 9 may gain meanings: init
+// and new return null, and reset returns TUGZ_EUSAGE and leaves the
+// state as it was. The gzip header records no name or time, and its XFL
+// marks levels 1 and 9 as GNU gzip and zlib mark them.
 //
 // Deflate64 (PKWARE's "Enhanced Deflating", ZIP method 9: a 64 KiB
 // window, matches up to 65538 bytes) inflates as format TUGZ_RAW64 when
@@ -149,12 +151,16 @@ TUGZ_API int            tugz_inflate(tugz_inflator *, tugz_buf *);
 TUGZ_API void           tugz_inflate_reset(tugz_inflator *);
 
 TUGZ_API ptrdiff_t      tugz_deflate_size(int format);
+// Returns null if the memory is too small, or the format or level is
+// invalid.
 TUGZ_API tugz_deflator *tugz_deflate_init(void *mem, ptrdiff_t len,
                                           int format, int level);
 TUGZ_API int            tugz_deflate(tugz_deflator *, tugz_buf *,
                                      int flush);
-// Discard the current stream and start another in the same format.
-TUGZ_API void           tugz_deflate_reset(tugz_deflator *, int level);
+// Discard the current stream and start another in the same format at a
+// level. Returns TUGZ_DONE, or TUGZ_EUSAGE, changing nothing, for an
+// invalid level or a null state.
+TUGZ_API int            tugz_deflate_reset(tugz_deflator *, int level);
 
 // Convenience: one allocation of the state's size, freed with its size.
 TUGZ_API tugz_inflator *tugz_inflate_new(tugz_allocator *, void *ctx,

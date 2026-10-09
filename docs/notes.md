@@ -108,6 +108,15 @@ output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
   checks the size first, so it is unreachable. Programs allocate their
   codecs from exactly-sized sub-arenas, so every program run checks the
   size calculation.
+- Levels outside 1-9 are rejected, where through 0.4 they were clamped:
+  init and new return null (new before allocating), and
+  `tugz_deflate_reset` returns `TUGZ_EUSAGE` and changes nothing, so
+  it returns a status where it once returned nothing. This keeps 0
+  (stored) and 10 and up (slower, smaller) free to gain meanings later
+  without changing what any existing call does. `tugz_inflate_reset`
+  stays `void`: it has no argument to reject, and a status that is
+  always `TUGZ_DONE` would only invite checks. The core still clamps,
+  for the programs, which pass only valid levels.
 - Inflate decodes in atomic units: a block header (for a dynamic block,
   up to its code lengths: at most 74 bits), a run of code lengths, or
   one literal or length/distance pair. If input runs out mid-unit, the

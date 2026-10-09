@@ -313,6 +313,53 @@ static void test_allocator(void)
     TEST(st.allocs==1 && st.frees==1);
 }
 
+// Levels outside 1-9 are reserved: init and new reject them, new without
+// allocating, and reset rejects them and leaves the state as it was, so
+// that it goes on with its stream at its level, or starts the next.
+static void test_levels(void)
+{
+    static int const bad[] = {0, 10, -1, 99, -2147483647-1, 2147483647};
+    u8 const *msg = (u8 const *)"hello hello hello";
+    for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
+        ptrdiff_t len = tugz_deflate_size(format);
+        u8 *mem = malloc((uz)len);
+        for (i32 i = 0; i < countof(bad); i++) {
+            TEST(!tugz_deflate_init(mem, len, format, bad[i]));
+            allocstats st = {0};
+            TEST(!tugz_deflate_new(test_alloc, &st, format, bad[i]));
+            TEST(!st.allocs);
+        }
+
+        for (int level = 1; level <= 9; level += 8) {
+            buf ref = tcompress(format, level, msg, 17, 0, 0, 0, 0);
+            tugz_deflator *d = tugz_deflate_init(mem, len, format, level);
+            TEST(d);
+
+            // Rejected mid-stream, the stream goes on
+            u8 out[64];
+            tugz_buf b = {msg, 5, out, countof(out)};
+            TEST(tugz_deflate(d, &b, TUGZ_NONE) == TUGZ_NEED_INPUT);
+            for (i32 i = 0; i < countof(bad); i++) {
+                TEST(tugz_deflate_reset(d, bad[i]) == TUGZ_EUSAGE);
+            }
+            b.inlen = 12;
+            TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_DONE);
+            buf c = {out, countof(out) - b.outlen};
+            TEST(same(c, ref.s, ref.len));
+
+            // Rejected after a valid reset, the next stream keeps its level
+            TEST(tugz_deflate_reset(d, 10-level) == TUGZ_DONE);
+            TEST(tugz_deflate_reset(d, level) == TUGZ_DONE);
+            TEST(tugz_deflate_reset(d, 0) == TUGZ_EUSAGE);
+            c = tcompress_with(d, msg, 17, 0, 0, 0, 0);
+            TEST(same(c, ref.s, ref.len));
+            free(c.s);
+            free(ref.s);
+        }
+        free(mem);
+    }
+}
+
 // Round trips in every format and level, with every piece size for both
 // directions. Compressed output must not depend on piece sizes, and zlib
 // must agree on decoding.
@@ -1278,7 +1325,7 @@ static void test_reset(void)
             free(tref.s);
         }
     }
-    tugz_deflate_reset(0, 6);  // ignored
+    TEST(tugz_deflate_reset(0, 6) == TUGZ_EUSAGE);
     free(next);
     free(noise);
     free(text);
@@ -1977,6 +2024,7 @@ int main(void)
 {
     test_memory();
     test_allocator();
+    test_levels();
     test_usage();
     test_zlib_format();
     test_gzip_errors();

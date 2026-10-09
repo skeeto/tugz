@@ -43,8 +43,12 @@ int main(void)
     for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
         ptrdiff_t      dlen = tugz_deflate_size(format);
         void          *dmem = malloc(dlen);
+        TEST(!tugz_deflate_init(dmem, dlen, format, 0));  // reserved
+        TEST(!tugz_deflate_init(dmem, dlen, format, 10));
         tugz_deflator *d    = tugz_deflate_init(dmem, dlen, format, 6);
         TEST(d);
+        TEST(tugz_deflate_reset(d, -1) == TUGZ_EUSAGE);
+        TEST(tugz_deflate_reset(d, 6) == TUGZ_DONE);
         tugz_buf b = {in, N, z, sizeof(z)};
         TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_DONE);
         ptrdiff_t zlen = (ptrdiff_t)sizeof(z) - b.outlen;

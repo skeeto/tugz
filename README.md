@@ -64,10 +64,11 @@ tugz_buf       b   = {in, inlen, out, outlen};
 int status = tugz_inflate(z, &b);  // TUGZ_DONE, NEED_INPUT, NEED_OUTPUT, or error
 ```
 
-Deflate supports SYNC, FULL, and FINISH flushes, and a Lua-style
-allocator callback is available in place of caller memory. To compress
-many streams, reset a state rather than initialize it again:
-`tugz_deflate_reset` (which also sets the level) takes time in
+Levels are 1 through 9; others are reserved, and init, `new`, and
+reset reject them. Deflate supports SYNC, FULL, and FINISH flushes,
+and a Lua-style allocator callback is available in place of caller
+memory. To compress many streams, reset a state rather than initialize
+it again: `tugz_deflate_reset` (which also sets the level) takes time in
 proportion to at most the first 1 KiB of the previous stream's input,
 rather than init's clearing of 512 KiB, so 100-byte streams compress
 about 4x faster. One in 2,048 of the resets and FULL flushes that follow

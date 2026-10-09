@@ -45,6 +45,11 @@ static b32 valid_format(int format)
     return format>=TUGZ_RAW && format<=TUGZ_GZIP;
 }
 
+static b32 valid_level(int level)
+{
+    return level>=1 && level<=9;
+}
+
 static b32 inflate_format(int format)
 {
 #ifdef TUGZ_DEFLATE64
@@ -150,7 +155,8 @@ TUGZ_DEF ptrdiff_t tugz_deflate_size(int format)
 TUGZ_DEF tugz_deflator *tugz_deflate_init(void *mem, ptrdiff_t len,
                                           int format, int level)
 {
-    if (!mem || !valid_format(format) || len<tugz_deflate_size(format)) {
+    if (!mem || !valid_format(format) || !valid_level(level) ||
+        len<tugz_deflate_size(format)) {
         return 0;
     }
     arena a = mem_arena(mem, len);
@@ -175,11 +181,13 @@ TUGZ_DEF int tugz_deflate(tugz_deflator *s, tugz_buf *b, int flush)
     return tugz_status(status);
 }
 
-TUGZ_DEF void tugz_deflate_reset(tugz_deflator *s, int level)
+TUGZ_DEF int tugz_deflate_reset(tugz_deflator *s, int level)
 {
-    if (s) {
-        encoder_reset(s->e, level);
+    if (!s || !valid_level(level)) {
+        return TUGZ_EUSAGE;  // the state is untouched
     }
+    encoder_reset(s->e, level);
+    return TUGZ_DONE;
 }
 
 TUGZ_DEF tugz_inflator *tugz_inflate_new(tugz_allocator *alloc, void *ctx,
@@ -205,8 +213,8 @@ TUGZ_DEF tugz_deflator *tugz_deflate_new(tugz_allocator *alloc, void *ctx,
                                          int format, int level)
 {
     ptrdiff_t len = tugz_deflate_size(format);
-    if (!len) {
-        return 0;
+    if (!len || !valid_level(level)) {
+        return 0;  // nothing allocated
     }
     void *mem = alloc(ctx, 0, 0, len);
     return mem ? tugz_deflate_init(mem, len, format, level) : 0;
