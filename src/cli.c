@@ -29,20 +29,31 @@ typedef struct {
     decoder *dec;  // when decompressing or testing, likewise
 } options;
 
+// GNU gzip 1.14's --help, its layout and wording, listing only the
+// options tugz accepts: none refused, and of the accepted no-ops those
+// GNU lists (-n, --rsyncable; not its hidden -H and -m). GNU's footer
+// for reporting bugs to its list is left out.
 static s8 const usage_text = S8(
-    "usage: gzip [-123456789cdfhknqtV] [FILE]...\n"
-    "Compress or decompress FILEs (or standard input).\n"
-    "  -1..-9  compression level (default 6)\n"
-    "  -c      write to standard output, keep input files\n"
-    "  -d      decompress\n"
-    "  -f      force: overwrite outputs, follow links, allow terminals,\n"
-    "          and with -dc copy data that is not gzip unchanged\n"
-    "  -h      print this message\n"
-    "  -k      keep input files\n"
-    "  -n      neither save nor restore the name and time (as always)\n"
-    "  -q      suppress warnings\n"
-    "  -t      test compressed file integrity\n"
-    "  -V      print version\n"
+    "Usage: gzip [OPTION]... [FILE]...\n"
+    "Compress or uncompress FILEs "
+    "(by default, compress FILES in-place).\n"
+    "\n"
+    "  -c, --stdout      write on standard output, "
+                         "keep original files unchanged\n"
+    "  -d, --decompress  decompress\n"
+    "  -f, --force       force overwrite of output file and compress links\n"
+    "  -h, --help        give this help\n"
+    "  -k, --keep        keep (don't delete) input files\n"
+    "  -n, --no-name     do not save or restore "
+                         "the original name and timestamp\n"
+    "  -q, --quiet       suppress all warnings\n"
+    "      --rsyncable   make rsync-friendly archive\n"
+    "  -t, --test        test compressed file integrity\n"
+    "  -V, --version     display version number\n"
+    "  -1, --fast        compress faster\n"
+    "  -9, --best        compress better\n"
+    "\n"
+    "With no FILE, or when FILE is -, read standard input.\n"
 );
 
 static i32 exit_combine(i32 a, i32 b)

@@ -2996,7 +2996,26 @@ static void test_cli(os *ctx, arena a)
     TEST(run(ctx, a, "-x f") == EXIT_ERR);
     TEST(run(ctx, a, "--bogus") == EXIT_ERR);
     TEST(run(ctx, a, "-h") == EXIT_OK);
-    TEST(mfs_get(ctx, "<stdout>").len > 0);
+    s8 help = dup8(mfs_get(ctx, "<stdout>"));
+    s8 helphead = S("Usage: gzip [OPTION]... [FILE]...\n");
+    TEST(help.len > helphead.len);
+    TEST(!memcmp(help.s, helphead.s, (uz)helphead.len));
+    for (iz i = 0; i < help.len; i++) {
+        // Each option line in GNU's columns, refused options left out
+        if (i==0 || help.s[i-1]=='\n') {
+            s8 line = {help.s+i, 0};
+            while (line.len<help.len-i && line.s[line.len]!='\n') {
+                line.len++;
+            }
+            if (line.len>2 && line.s[0]==' ') {
+                TEST(line.len>20 && line.s[19]==' ' && line.s[20]!=' ');
+                TEST(memcmp(line.s, "  -r", 4) && memcmp(line.s, "  -S", 4));
+            }
+        }
+    }
+    TEST(run(ctx, a, "--help") == EXIT_OK);
+    TEST(equals(mfs_get(ctx, "<stdout>"), help.s, help.len));
+    free(help.s);
     TEST(run(ctx, a, "--version") == EXIT_OK);
     s8 version = S("gzip (tugz) " TUGZ_VERSION "\n");
     TEST(equals(mfs_get(ctx, "<stdout>"), version.s, version.len));

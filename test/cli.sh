@@ -324,6 +324,25 @@ for opt in -h --help -V --version; do
     "$GZIP" $opt >opt.out 2>opt.err || fail "$opt status"
     [ -s opt.out ] && [ ! -s opt.err ] || fail "$opt output"
 done
+
+# --help is GNU gzip's, less the options tugz refuses: each option it
+# lists is accepted, and with GNU each line is one of GNU's
+"$GZIP" --help >help.out
+head -n 1 help.out | grep -qxF 'Usage: gzip [OPTION]... [FILE]...' ||
+    fail "--help: first line"
+grep -qxF -- '  -9, --best        compress better' help.out ||
+    fail "--help: GNU's columns"
+for opt in $(sed -n 's/^ *[-0-9a-zA-Z]*,* *\(--[a-z-]*\).*/\1/p' help.out)
+do
+    case $opt in --help|--version) continue ;; esac
+    "$GZIP" -cf $opt o9.gz >/dev/null 2>&1 || fail "--help lists $opt"
+done
+if [ -n "$gnu" ]; then
+    "$REF" --help >ref.help
+    while IFS= read -r line; do
+        grep -qxF -- "$line" ref.help || fail "--help line not GNU's: $line"
+    done <help.out
+fi
 printf data >-k
 "$GZIP" -- -k
 [ -e -k.gz ] && [ ! -e -k ] || fail "-- -k"

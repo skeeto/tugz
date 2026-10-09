@@ -126,23 +126,24 @@ Configure with `-DTUGZ_BUILD_GZIP=OFF -DTUGZ_BUILD_ZIP=OFF
 
 ## Usage
 
-    gzip [-123456789cdfhknqtV] [FILE]...
+    gzip [OPTION]... [FILE]...
 
 | Option | Meaning |
 |---|---|
-| `-1`..`-9` | compression level (default 6) |
-| `-c` | write to standard output, keep input files |
-| `-d` | decompress |
-| `-f` | force: overwrite outputs, follow links, allow terminals; with `-dc`, copy data that is not gzip |
-| `-k` | keep input files |
-| `-n` | neither save nor restore the name and time (always the case) |
-| `-q` | suppress warnings |
-| `-t` | test compressed file integrity |
-| `-h`, `-V` | help, version |
+| `-1`..`-9` | compression level, `--fast` to `--best` (default 6) |
+| `-c`, `--stdout` | write to standard output, keep input files |
+| `-d`, `--decompress` | decompress |
+| `-f`, `--force` | force: overwrite outputs, follow links, allow terminals; with `-dc`, copy data that is not gzip |
+| `-k`, `--keep` | keep input files |
+| `-n`, `--no-name` | neither save nor restore the name and time (always the case) |
+| `-q`, `--quiet` | suppress warnings |
+| `--rsyncable` | accepted, without effect (below) |
+| `-t`, `--test` | test compressed file integrity |
+| `-h`, `-V` | help (`--help`, GNU gzip's, less what tugz lacks), version |
 
-Long forms (`--stdout`, `--decompress`, `--best`, `--silent`, ...) are
-accepted, and as in GNU gzip abbreviated to any prefix that is not
-ambiguous (`--dec --std`).
+Long options have GNU gzip's other names too (`--to-stdout`,
+`--uncompress`, `--silent`), and as there may be abbreviated to any
+prefix that is not ambiguous (`--dec --std`).
 Installed (or linked) as `gunzip` it decompresses, and as `zcat` or
 `gzcat` it decompresses to standard output. On Windows, where `cmd` and
 PowerShell pass wildcards on as they are, arguments with them are

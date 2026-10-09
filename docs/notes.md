@@ -1892,8 +1892,14 @@ Fuzzers:
   content-defined points, so a small change upstream shifts everything
   after it): the option promises only rsync-friendliness, not a format,
   so any valid gzip output keeps the contract, and packaging scripts
-  pass it routinely. It is left out of `--help`, which lists letters
-  only.
+  pass it routinely.
+- `--help` is GNU gzip 1.14's, line for line in its layout and wording,
+  less the lines for options tugz refuses (`-l`, `-L`, `-N`, `-r`, `-S`,
+  `-v`, `--synchronous`) and GNU's closing line for reporting bugs to
+  its list; the line on mandatory arguments goes too, as no option left
+  takes one. Accepted no-ops GNU lists stay (`-n`, `--rsyncable`, in
+  GNU's wording); its hidden `-H` and `-m` stay hidden. It names `gzip`
+  under any program name, as GNU's does.
 - Names follow GNU gzip's default suffixes, in any case: `.gz`, `.z`,
   `-gz`, `-z`, `_z`, and `.tgz` and `.taz`, which stand for `.tar`.
   Decompressing in place drops one; compressing in place leaves a file
