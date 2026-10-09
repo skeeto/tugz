@@ -1,8 +1,10 @@
 # Write crafted archives for test/unzip.sh into the current directory:
 # layouts that zip programs rarely or never write, damaged archives, and
 # entries that unzip must skip or refuse.
-# Usage: python3 test/unzipcraft.py
+# Usage: python3 test/unzipcraft.py [sparse]
+# With "sparse", also archives over 4 GiB, written as sparse files.
 import struct
+import sys
 import zlib
 
 # 2020-01-02 03:04:06, as an MS-DOS date<<16 | time
@@ -485,11 +487,14 @@ def sparse(name, prefix, entries):
 # GiB, its offsets wrapped to 32 bits: sparse, 4.5 GiB long, with enough
 # small entries after 4 GiB that unzip reads them in a second block of
 # 16,384; and 4 GiB before an archive whose offsets do not account for
-# them, as UnZip takes those wrapped offsets
-sparse("offwrap.zip", 0, [("f0", 2415919105), ("f1", 2415919106)] +
-       [("t/%05d" % i, b"%d\n" % i) for i in range(16384)] +
-       [("small", b"hello\n")])
-sparse("prefix4g.zip", 1 << 32, [("a.txt", TEXT), ("small", b"hello\n")])
+# them, as UnZip takes those wrapped offsets. Only given "sparse", as
+# where the file system has holes, lest each take its full length
+if "sparse" in sys.argv[1:]:
+    sparse("offwrap.zip", 0, [("f0", 2415919105), ("f1", 2415919106)] +
+           [("t/%05d" % i, b"%d\n" % i) for i in range(16384)] +
+           [("small", b"hello\n")])
+    sparse("prefix4g.zip", 1 << 32, [("a.txt", TEXT),
+                                     ("small", b"hello\n")])
 nested = Entry("inner.txt", b"inner\n", method=0)
 outer = Entry("outer.bin", b"", method=0)
 body = nested.local_header() + nested.comp

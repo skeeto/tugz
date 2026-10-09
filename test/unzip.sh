@@ -11,7 +11,7 @@
 # does, its own build being sanitized.
 # Set SLOW=1 to include Zip64 tests: entries of 4 GiB and more, which
 # need about 13 GiB free in TMPDIR. Archives over 4 GiB are otherwise
-# sparse, which TMPDIR's file system must support.
+# sparse, and skipped where TMPDIR's file system has no holes.
 set -e
 
 unset UNZIP UNZIPOPT ZIPOPT ZIP  # options from the environment
@@ -358,8 +358,18 @@ if [ -z "$PY" ]; then
     [ ! -e "$tmp/FAILED" ] || exit 1
     exit 0
 fi
+# Archives over 4 GiB only where files may have holes: a 1 GiB hole
+# that takes (nearly) no room
+holes=
+if dd if=/dev/null of=holes bs=1048576 seek=1024 count=0 2>/dev/null &&
+   [ "$(du -k holes | cut -f1)" -lt 1024 ]; then
+    holes=sparse
+else
+    echo "unzip.sh: skipping archives over 4 GiB: no sparse files here" >&2
+fi
+rm -f holes
 mkdir craft
-(cd craft && $PY "$CRAFT") || fail "unzipcraft.py"
+(cd craft && $PY "$CRAFT" $holes) || fail "unzipcraft.py"
 cd craft
 : >none
 
@@ -589,19 +599,21 @@ done
 # re-compensating (2), and Debian's stops at the second ("not enough
 # memory for bomb detection", 4); a second block of entries, past 4 GiB,
 # is unwrapped as the first is, and the last, selected alone, is where
-# UnZip finds it
-same -l offwrap.zip
-same -v offwrap.zip
-same -t offwrap.zip small
-same -p offwrap.zip small
-{ echo 'warning [offwrap.zip]:  4294967296 extra bytes at beginning or within zipfile'
-  echo '  (attempting to process anyway)'
-  echo 'No errors detected in compressed data of offwrap.zip.'; } >want
-ours 1 want none -tq offwrap.zip
-# but 4 GiB before an archive, its offsets from its start, are data that
-# its offsets leave out, as UnZip takes them
-same -l prefix4g.zip
-same -t prefix4g.zip
+# UnZip finds it (only with sparse files, above)
+if [ -n "$holes" ]; then
+    same -l offwrap.zip
+    same -v offwrap.zip
+    same -t offwrap.zip small
+    same -p offwrap.zip small
+    { echo 'warning [offwrap.zip]:  4294967296 extra bytes at beginning or within zipfile'
+      echo '  (attempting to process anyway)'
+      echo 'No errors detected in compressed data of offwrap.zip.'; } >want
+    ours 1 want none -tq offwrap.zip
+    # but 4 GiB before an archive, its offsets from its start, are data
+    # that its offsets leave out, as UnZip takes them
+    same -l prefix4g.zip
+    same -t prefix4g.zip
+fi
 
 # Departure: a central header whose Zip64 extra lacks a field that its
 # sizes call for ends the central directory there, where UnZip warns
@@ -1146,8 +1158,11 @@ EOF
 
     # The archive whose offsets wrapped (above), extracted as UnZip
     # extracts it (whose t/ no entry makes), but for its re-compensating
-    # (2), as Apple's does, where Debian's stops at the second entry
-    if [ $debian = 0 ]; then
+    # (2), as Apple's does, where Debian's stops at the second entry (only
+    # with sparse files, above)
+    if [ -z "$holes" ]; then
+        :
+    elif [ $debian = 0 ]; then
         TIMES=files
         xboth -q ../offwrap.zip
         TIMES=all
@@ -1165,13 +1180,15 @@ EOF
             [ "$(cat x.ours/t/16383)" = 16383 ] ||
             fail "offwrap.zip: $(ls -l x.ours)"
     fi
-    printf '%s\n' \
-        'warning [../offwrap.zip]:  4294967296 extra bytes at beginning or within zipfile' \
-        '  (attempting to process anyway)' >want.err
-    [ "$(cat ours.st)" = 1 ] && [ ! -s ours.out ] &&
-        cmp -s want.err ours.err ||
-        fail "offwrap.zip: status $(cat ours.st): $(cat ours.out ours.err)"
-    rm -rf x.ours x.ref
+    if [ -n "$holes" ]; then
+        printf '%s\n' \
+            'warning [../offwrap.zip]:  4294967296 extra bytes at beginning or within zipfile' \
+            '  (attempting to process anyway)' >want.err
+        [ "$(cat ours.st)" = 1 ] && [ ! -s ours.out ] &&
+            cmp -s want.err ours.err ||
+            fail "offwrap.zip: status $(cat ours.st): $(cat ours.out ours.err)"
+        rm -rf x.ours x.ref
+    fi
 fi
 
 [ ! -e "$tmp/FAILED" ] || exit 1
