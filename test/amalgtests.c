@@ -1,7 +1,8 @@
 // Test of the single-file library, tugz.c, embedded with TUGZ_API static
 // in a program that has its own assert and MIN macros and its own i64 and
 // byte types, which must all survive it. Round-trips data through each
-// format. On success prints "all amalgamation tests pass".
+// format. On success prints "all amalgamation tests pass". With
+// TUGZ_DEFLATE64 defined, it also decodes Deflate64.
 // $ cmake -DTUGZ_ARTIFACT=tugz -P cmake/amalgamate.cmake
 // $ cc -I. -o tests-amalg test/amalgtests.c
 #include <stdio.h>
@@ -61,6 +62,33 @@ int main(void)
         free(imem);
     }
 
+    // Deflate64, given TUGZ_DEFLATE64: test/unzipcraft.py's stream of
+    // "Deflate64 ", a match of 65538 bytes from 10 back, one of 20 from
+    // 40000 back (distance code 30), and "\n"
+    static unsigned char const d64[] =
+        "\x73\x49\x4d\xcb\x49\x2c\x49\x35\x33\x51\x18\xfd\xff\x67\x61\x7b"
+        "\x3f\x1c\x17\x00";
+    ptrdiff_t ilen = tugz_inflate_size(TUGZ_RAW64);
+    TEST(!tugz_deflate_size(TUGZ_RAW64));
+#ifdef TUGZ_DEFLATE64
+    void          *imem = malloc(ilen);
+    tugz_inflator *f    = tugz_inflate_init(imem, ilen, TUGZ_RAW64);
+    TEST(f);
+    static unsigned char big[1 << 17];
+    tugz_buf c = {d64, sizeof(d64)-1, big, sizeof(big)};
+    TEST(tugz_inflate(f, &c) == TUGZ_DONE);
+    ptrdiff_t n = (ptrdiff_t)sizeof(big) - c.outlen;
+    TEST(c.inlen == 0 && n == 10 + 65538 + 20 + 1);
+    for (ptrdiff_t i = 0; i < n-1; i++) {
+        TEST(big[i] == "Deflate64 "[i%10]);
+    }
+    TEST(big[n-1] == '\n');
+    free(imem);
+    puts("all amalgamation tests pass, with Deflate64");
+#else
+    TEST(!ilen);
+    (void)d64;
     puts("all amalgamation tests pass");
+#endif
     return 0;
 }

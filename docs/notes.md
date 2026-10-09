@@ -214,8 +214,8 @@ output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
   and 0.31 / 0.54 s with the new, with or without the reuse.
 - Programs reach the buffers without copying (`*_pending`/`*_consume`),
   so the program's throughput is unchanged by the restructure.
-- Deflate64 (ZIP method 9, for unzip; not in the library's interface)
-  shares the decoder. It differs in a 64 KiB window, length code 285 (16
+- Deflate64 (ZIP method 9, for unzip, and in the library as an option,
+  below) shares the decoder. It differs in a 64 KiB window, length code 285 (16
   extra bits over a base of 3, lengths up to 65538, rather than 258),
   and distance codes 30 and 31 (base 32769 and 49153, 14 extra bits).
   An entry's value has 15 bits, so those bases set a flag, `F_HI` (bit
@@ -239,6 +239,30 @@ output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
   from streams hand-built by `seeds.py` (which Info-ZIP's UnZip decodes
   too); `unzip_windows.sh` optionally extracts Explorer's large
   Deflate64 archives (`UNZIP_D64`).
+- The library decodes Deflate64 as format `TUGZ_RAW64` when compiled
+  with `TUGZ_DEFLATE64` (CMake option of that name, off by default, a
+  `PRIVATE` define on `tugz`): a raw decoder (`decoder64_new` in
+  `src/gzip.c`, the container code with `inflate64_new`'s inflator),
+  inflate only, as zlib and gzip never carry it. Its state is 407 KB
+  against 308 KB. The enumerator is declared in every build, rather
+  than under the macro: the installed header is then the same whatever
+  the library was built with, consumers need no define (none to forget,
+  or to mismatch with a separately compiled `tugz.c`), and a program
+  asks at run time, `tugz_inflate_size(TUGZ_RAW64)` being zero without
+  it, as for any invalid format (format 3 was already rejected so). No
+  symbol or struct changes, so the ABI is the same either way. Off, the
+  library object is byte-identical to before (clang, arm64): the
+  Deflate64 fast loop was already compiled into it, unreachable, as
+  `inflate_stream` picks the loop by the inflator's flag. The tests run
+  both ways whatever the option: `tests-lib-deflate64` is
+  `test/libtests.c` with the define (seeds.py's "long" and "bad-far"
+  streams and unzipcraft.py's deflate64.zip ones, at every piece size,
+  every prefix, on junk-filled memory, and after a reset; codes 30 and
+  31 rejected by `TUGZ_RAW`, 285 read differently, and DEFLATE streams
+  without 285 decoded alike), and `amalgamation-deflate64` embeds
+  `tugz.c` with it. The fuzzers already reach the same decoder through
+  `inflate64_new` (`fuzz-inflate`), and `fuzz-diff-inflate` compares
+  with zlib, which has no Deflate64, so neither takes the format.
 - `platform/libtugz.c` builds an object, or the CMake target
   `tugz::tugz` (static, or shared with `BUILD_SHARED_LIBS`), exporting
   only `tugz_*` (no writable data): the core's other functions are all

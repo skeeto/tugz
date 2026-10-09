@@ -109,6 +109,22 @@ static decoder *decoder_new(arena *a, i32 format)
     return z;
 }
 
+// Memory needed by decoder64_new, including alignment padding.
+[[maybe_unused]] static iz decoder64_memsize(void)
+{
+    return (iz)sizeof(decoder) + 64 + inflate64_memsize();
+}
+
+// A raw Deflate64 decoder (no container), otherwise used as decoder_new's.
+[[maybe_unused]] static decoder *decoder64_new(arena *a)
+{
+    decoder *z = new(a, 1, decoder);
+    z->inf = inflate64_new(a);
+    z->format = FMT_RAW;
+    decoder_reset(z);
+    return z;
+}
+
 // Advance the gzip header state past fields the flags say are absent.
 static void gzip_skip_absent(decoder *z)
 {

@@ -3,6 +3,7 @@
 //
 // Exports only the tugz_* functions. The core allocates only from the
 // caller's memory, after checking its size, so it never runs out.
+// Define TUGZ_DEFLATE64 to decode Deflate64 as TUGZ_RAW64 (see tugz.h).
 #include "../src/base.c"
 #include "../src/crc32.c"
 #include "../src/adler32.c"
@@ -44,6 +45,16 @@ static b32 valid_format(int format)
     return format>=TUGZ_RAW && format<=TUGZ_GZIP;
 }
 
+static b32 inflate_format(int format)
+{
+#ifdef TUGZ_DEFLATE64
+    if (format == TUGZ_RAW64) {
+        return 1;
+    }
+#endif
+    return valid_format(format);
+}
+
 static int tugz_status(i32 status)
 {
     switch (status) {
@@ -78,6 +89,11 @@ static b32 valid_buf(tugz_buf *b)
 
 TUGZ_DEF ptrdiff_t tugz_inflate_size(int format)
 {
+#ifdef TUGZ_DEFLATE64
+    if (format == TUGZ_RAW64) {
+        return (iz)sizeof(tugz_inflator) + 64 + decoder64_memsize();
+    }
+#endif
     if (!valid_format(format)) {
         return 0;
     }
@@ -87,12 +103,16 @@ TUGZ_DEF ptrdiff_t tugz_inflate_size(int format)
 TUGZ_DEF tugz_inflator *tugz_inflate_init(void *mem, ptrdiff_t len,
                                           int format)
 {
-    if (!mem || !valid_format(format) || len<tugz_inflate_size(format)) {
+    if (!mem || !inflate_format(format) || len<tugz_inflate_size(format)) {
         return 0;
     }
     arena a = mem_arena(mem, len);
     tugz_inflator *s = new(&a, 1, tugz_inflator);
+#ifdef TUGZ_DEFLATE64
+    s->z   = format==TUGZ_RAW64 ? decoder64_new(&a) : decoder_new(&a, format);
+#else
     s->z   = decoder_new(&a, format);
+#endif
     s->mem = mem;
     s->len = len;
     return s;

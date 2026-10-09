@@ -79,6 +79,17 @@ use the `tugz.c` in a release's amalgams zip (or `cmake
 amalgamation with the header inlined. Define `TUGZ_API` as `static`
 before including it to embed the library in another program.
 
+Deflate64 (ZIP method 9, as unzip reads it) is an option, off by
+default: compiled with `TUGZ_DEFLATE64` defined (`cc -c -O2
+-DTUGZ_DEFLATE64 platform/libtugz.c`, the same before compiling or
+including `tugz.c`, or the CMake option below), the library inflates
+raw Deflate64 streams as format `TUGZ_RAW64`, with a state of 407 KB
+rather than 308 KB. It only decodes: deflate rejects the format.
+`TUGZ_RAW64` is declared either way, and a library built without the
+option rejects it as any invalid format (`tugz_inflate_size` returns
+zero), so the header is the same for both builds and a program can ask
+at run time. Without the option, the library is as it was.
+
 ### Using the library from CMake
 
 Each release's source tarball can be fetched as a dependency, which
@@ -112,6 +123,7 @@ C11 alone lacks the C23 attributes. Options:
 | `TUGZ_WARNINGS` | top level | warnings for tugz's own targets |
 | `TUGZ_SANITIZE` | if supported | ASan and UBSan in the tests |
 | `TUGZ_LIBMEMORY` | AUTO | Windows programs with w64devkit's `-lmemory` |
+| `TUGZ_DEFLATE64` | OFF | the library with Deflate64 (`TUGZ_RAW64`) |
 
 Built by clang targeting MSVC, the programs link the static runtime's
 mem functions, and the shell-script tests run unsanitized programs, as

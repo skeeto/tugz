@@ -66,6 +66,16 @@
 // clamped into that range. The gzip header records no name or time, and
 // its XFL marks levels 1 and 9 as GNU gzip and zlib mark them.
 //
+// Deflate64 (PKWARE's "Enhanced Deflating", ZIP method 9: a 64 KiB
+// window, matches up to 65538 bytes) inflates as format TUGZ_RAW64 when
+// the library is compiled with TUGZ_DEFLATE64 defined (CMake option
+// TUGZ_DEFLATE64), with a state about 100 KB larger. It is raw only, as
+// zlib and gzip never carry it, and decode only: deflate rejects it as an
+// invalid format. TUGZ_RAW64 is declared in every build, and a library
+// without Deflate64 rejects it too, so tugz_inflate_size(TUGZ_RAW64)
+// tells whether it is available. RAW decodes no Deflate64-only codes:
+// distance codes 30 and 31 are TUGZ_EDATA, and length code 285 is 258.
+//
 // Define TUGZ_API (e.g. as static) to control the linkage of definitions.
 // The single-file tugz.c (in each release, or from cmake -P
 // cmake/amalgamate.cmake) may so be embedded in a program's translation
@@ -92,6 +102,7 @@ enum {  // formats
     TUGZ_RAW,
     TUGZ_ZLIB,
     TUGZ_GZIP,
+    TUGZ_RAW64,  // inflate only, with TUGZ_DEFLATE64 (see above)
 };
 
 enum {  // deflate flush modes
@@ -127,7 +138,8 @@ typedef struct {
 typedef void *tugz_allocator(void *ctx, void *ptr, ptrdiff_t oldsize,
                              ptrdiff_t newsize);
 
-// Size of the state for a format, or zero if the format is invalid.
+// Size of the state for a format, or zero if the format is invalid (as
+// TUGZ_RAW64 is without TUGZ_DEFLATE64).
 TUGZ_API ptrdiff_t      tugz_inflate_size(int format);
 // Returns null if the memory is too small or the format is invalid.
 TUGZ_API tugz_inflator *tugz_inflate_init(void *mem, ptrdiff_t len,

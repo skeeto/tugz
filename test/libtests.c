@@ -1,6 +1,7 @@
 // Test suite for the tugz library interface (tugz.h)
 // Exercises streaming with every buffer split, exact stream ends, all
 // three formats, flushes, memory handling, and cross-checks with zlib.
+// With TUGZ_DEFLATE64 defined, also decodes Deflate64 (TUGZ_RAW64).
 // $ cc -g3 -fsanitize=address,undefined -o tests-lib test/libtests.c -lz
 #include "../platform/libtugz.c"
 
@@ -241,7 +242,24 @@ static void test_memory(void)
         }
         free(mem);
     }
-    TEST(!tugz_inflate_size(3));
+    // Deflate64 inflates, given the option, but never deflates
+    iz big = 1 << 23;  // room for any state
+    u8 *mem = malloc((uz)big);
+#ifdef TUGZ_DEFLATE64
+    ptrdiff_t len64 = tugz_inflate_size(TUGZ_RAW64);
+    TEST(len64>tugz_inflate_size(TUGZ_RAW) && len64<big-64);
+    for (iz off = 0; off < 64; off += 7) {
+        TEST(!tugz_inflate_init(mem+off, len64-1, TUGZ_RAW64));
+        TEST(tugz_inflate_init(mem+off, len64, TUGZ_RAW64));
+    }
+#else
+    TEST(!tugz_inflate_size(TUGZ_RAW64));
+    TEST(!tugz_inflate_init(mem, big, TUGZ_RAW64));
+#endif
+    TEST(!tugz_deflate_size(TUGZ_RAW64));
+    TEST(!tugz_deflate_init(mem, big, TUGZ_RAW64, 6));
+    free(mem);
+    TEST(!tugz_inflate_size(TUGZ_RAW64+1));
     TEST(!tugz_deflate_size(-1));
     TEST(!tugz_inflate_init(0, 1<<30, TUGZ_RAW));
 }
@@ -1587,6 +1605,350 @@ static void test_held_output(void)
     free(text);
 }
 
+#ifdef TUGZ_DEFLATE64
+// Deflate64 (TUGZ_RAW64), which has no reference decoder to compare
+// against: streams are built here from tokens, or by test/seeds.py, along
+// with the output the tokens expand to.
+
+// Literals, or else a match of len bytes from dist back
+typedef struct {
+    char const *lits;
+    i32         len;
+    i32         dist;
+} d64tok;
+
+static buf d64_expand(d64tok const *t, iz n)
+{
+    iz total = 0;
+    for (iz i = 0; i < n; i++) {
+        total += t[i].lits ? (iz)strlen(t[i].lits) : t[i].len;
+    }
+    buf r = {malloc((uz)total + 1), 0};
+    for (iz i = 0; i < n; i++) {
+        if (t[i].lits) {
+            for (char const *p = t[i].lits; *p; p++) {
+                r.s[r.len++] = (u8)*p;
+            }
+            continue;
+        }
+        TEST(t[i].dist>=1 && t[i].dist<=r.len);
+        for (i32 k = 0; k < t[i].len; k++, r.len++) {
+            r.s[r.len] = r.s[r.len-t[i].dist];
+        }
+    }
+    return r;
+}
+
+typedef struct {
+    u8 *s;
+    iz  len;
+    u64 acc;
+    i32 n;
+} tbits;
+
+static void tb_put(tbits *w, u32 v, i32 n)
+{
+    w->acc |= (u64)v << w->n;
+    for (w->n += n; w->n >= 8; w->n -= 8) {
+        w->s[w->len++] = (u8)w->acc;
+        w->acc >>= 8;
+    }
+}
+
+// A Huffman code, most significant bit first
+static void tb_code(tbits *w, u32 c, i32 n)
+{
+    u32 r = 0;
+    for (i32 i = 0; i < n; i++) {
+        r = r<<1 | (c>>i & 1);
+    }
+    tb_put(w, r, n);
+}
+
+static void tb_fixed(tbits *w, i32 sym)
+{
+    if (sym < 144) {
+        tb_code(w, (u32)(0x30 + sym), 8);
+    } else if (sym < 256) {
+        tb_code(w, (u32)(0x190 + sym - 144), 9);
+    } else if (sym < 280) {
+        tb_code(w, (u32)(sym - 256), 7);
+    } else {
+        tb_code(w, (u32)(0xc0 + sym - 280), 8);
+    }
+}
+
+// One final block of fixed codes, as Deflate64 (d64), where lengths over
+// 258 take code 285, or as DEFLATE, where 285 is 258. Either way,
+// distances past 32768 take codes 30 and 31.
+static buf d64_fixed(d64tok const *t, iz n, b32 d64)
+{
+    tbits w = {0};
+    w.s = malloc(1 << 20);
+    tb_put(&w, 1, 1);
+    tb_put(&w, 1, 2);
+    for (iz i = 0; i < n; i++) {
+        if (t[i].lits) {
+            for (char const *p = t[i].lits; *p; p++) {
+                tb_fixed(&w, (u8)*p);
+            }
+            continue;
+        }
+        if (d64 && t[i].len>258) {
+            tb_fixed(&w, 285);
+            tb_put(&w, (u32)(t[i].len - 3), 16);
+        } else {
+            i32 s = d64 ? 27 : 28;
+            for (; inf_len_base[s] > t[i].len; s--) {}
+            tb_fixed(&w, 257 + s);
+            tb_put(&w, (u32)(t[i].len - inf_len_base[s]), inf_len_extra[s]);
+        }
+        i32 d = 31;
+        for (; inf_dist_base[d] > t[i].dist; d--) {}
+        tb_code(&w, (u32)d, 5);
+        tb_put(&w, (u32)(t[i].dist - inf_dist_base[d]), inf_dist_extra[d]);
+    }
+    tb_fixed(&w, 256);
+    if (w.n) {
+        w.s[w.len++] = (u8)w.acc;
+    }
+    return (buf){w.s, w.len};
+}
+
+// test/seeds.py's "long" Deflate64 seed, a dynamic block, and its tokens
+static u8 const d64_long[] = {
+    0xed, 0xff, 0x01, 0x90, 0x24, 0x49, 0x92, 0x24, 0x49, 0x02, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28,
+    0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x02, 0x80,
+    0x28, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x32, 0x03, 0x00, 0x20,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30,
+    0xdf, 0xf8, 0xf9, 0x2a, 0xce, 0x5e, 0xfe, 0xff, 0xe5, 0xff, 0x5f, 0xfe,
+    0xff, 0xe5, 0xff, 0x5f, 0xfe, 0xff, 0x25, 0x25, 0x60, 0x3f, 0x9c, 0xf2,
+    0x81, 0xff, 0xff, 0xfe, 0xff, 0x0f, 0x00, 0xe0, 0xff, 0x1f, 0x00, 0x30,
+    0x3f, 0x00, 0x02, 0xe2, 0x00, 0xa0, 0x0d,
+};
+static d64tok const d64_long_toks[] = {
+    {"Deflate64 ", 0, 0},
+    {0, 65538, 10}, {0, 65538, 10}, {0, 65538, 10}, {0, 65538, 10},
+    {0, 65538, 10},
+    {0, 300, 40000}, {0, 1000, 65536}, {0, 65538, 49153},
+    {0, 65535, 32769}, {0, 258, 1}, {0, 259, 1}, {0, 10, 2},
+};
+
+// ...and its "bad-far" seed: "abc", then a match from 65536 back
+static u8 const d64_bad_far[] = {
+    0x45, 0xff, 0x01, 0x90, 0x24, 0x49, 0x92, 0x24, 0x49, 0x02, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0xe0, 0x4e, 0xfe, 0x7f, 0x01,
+};
+
+// test/unzipcraft.py's deflate64.zip entries, as fixed blocks
+#define LINE64 "Deflate64: matches up to 65538 bytes, 64 KiB back.\n"
+static d64tok const d64_line_toks[] = {
+    {LINE64, 0, 0}, {0, 65538, sizeof(LINE64)-1}, {"tail\n", 0, 0},
+    {0, 300, 40000}, {0, 1000, 65536}, {0, 258, 1}, {"end\n", 0, 0},
+};
+static d64tok const d64_short_toks[] = {
+    {"Deflate64 ", 0, 0}, {0, 20, 10}, {"\n", 0, 0},
+};
+
+// A stream, followed by junk, must decode to want in pieces of any size,
+// from a fresh state, from one on memory holding anything, and after a
+// reset in mid stream, ending exactly where the stream does. Each prefix
+// is truncated, with a prefix of want.
+static void check_raw64(buf c, buf want, b32 prefixes)
+{
+    enum { JUNK = 5 };
+    u8 *in = malloc((uz)c.len + JUNK);
+    memcpy(in, c.s, (uz)c.len);
+    memset(in+c.len, 0x5a, JUNK);
+    iz total = c.len + JUNK;
+
+    static iz const outs[] = {0, 1, 7, 258, 65537};
+    for (i32 i = 0; i < countof(pieces); i++) {
+        for (i32 o = 0; o < countof(outs); o++) {
+            if (pieces[i]==1 && outs[o]==1 && want.len>1<<16) {
+                continue;  // slow, and covered by smaller streams
+            }
+            result r = tdecompress(TUGZ_RAW64, in, total, pieces[i],
+                                   outs[o]);
+            TEST(r.status==TUGZ_DONE && r.used==c.len);
+            TEST(same(r.out, want.s, want.len));
+            free(r.out.s);
+        }
+    }
+
+    ptrdiff_t len = tugz_inflate_size(TUGZ_RAW64);
+    u8 *mem = malloc((uz)len);
+    for (i32 fill = 0; fill < 3; fill++) {
+        memset(mem, (u8 const[]){0, 0xff, 0xa5}[fill], (uz)len);
+        tugz_inflator *z = tugz_inflate_init(mem, len, TUGZ_RAW64);
+        TEST(z);
+        if (fill) {
+            u8 out[100];
+            tugz_buf b = {in, c.len/2, out, countof(out)};
+            TEST(tugz_inflate(z, &b) >= 0);
+            tugz_inflate_reset(z);
+        }
+        result r = tdecompress_with(z, in, total, fill==2 ? 3 : 0, 0);
+        TEST(r.status==TUGZ_DONE && r.used==c.len);
+        TEST(same(r.out, want.s, want.len));
+        free(r.out.s);
+    }
+
+    for (iz cut = 0; prefixes && cut < c.len; cut++) {
+        tugz_inflator *z = tugz_inflate_init(mem, len, TUGZ_RAW64);
+        result r = tdecompress_with(z, in, cut, cut%3, 0);
+        TEST(r.status==TUGZ_NEED_INPUT && r.used==cut);
+        TEST(r.out.len<=want.len && !memcmp(r.out.s, want.s, (uz)r.out.len));
+        free(r.out.s);
+    }
+    free(mem);
+    free(in);
+}
+
+static void test_raw64(void)
+{
+    buf want = d64_expand(d64_long_toks, countof(d64_long_toks));
+    TEST(want.len == 460600);
+    i32 cpu = 0;
+    TEST(crc32_update(0, want.s, want.len, &cpu) == 0xea49f8cb);
+    check_raw64((buf){(u8 *)d64_long, countof(d64_long)}, want, 1);
+    free(want.s);
+
+    want = d64_expand(d64_line_toks, countof(d64_line_toks));
+    buf c = d64_fixed(d64_line_toks, countof(d64_line_toks), 1);
+    check_raw64(c, want, 1);
+    free(c.s);
+    free(want.s);
+
+    want = d64_expand(d64_short_toks, countof(d64_short_toks));
+    c = d64_fixed(d64_short_toks, countof(d64_short_toks), 1);
+    static u8 const short64[] = {  // as test/unzipcraft.py writes it
+        0x73, 0x49, 0x4d, 0xcb, 0x49, 0x2c, 0x49, 0x35, 0x33, 0x51, 0xc0,
+        0xc6, 0xe2, 0x02, 0x00,
+    };
+    TEST(c.len==countof(short64) && !memcmp(c.s, short64, sizeof(short64)));
+    check_raw64(c, want, 1);
+    free(c.s);
+    free(want.s);
+
+    // Through the allocator, the state of the size reported
+    allocstats st = {0};
+    tugz_inflator *z = tugz_inflate_new(test_alloc, &st, TUGZ_RAW64);
+    TEST(z && st.allocs==1 && st.size==tugz_inflate_size(TUGZ_RAW64));
+    u8 out[32];
+    tugz_buf b = {short64, countof(short64), out, countof(out)};
+    TEST(tugz_inflate(z, &b) == TUGZ_DONE);
+    TEST(!b.inlen && b.outlen==1 && !memcmp(out, "Deflate64 Deflate64 ", 20));
+    tugz_inflate_free(z, test_alloc, &st);
+    TEST(st.frees == 1);
+    TEST(!tugz_deflate_new(test_alloc, &st, TUGZ_RAW64, 6));
+    TEST(st.allocs == 1);
+}
+
+// Deflate64's codes are not DEFLATE's: distance codes 30 and 31 are
+// errors in RAW, length code 285 differs, and RAW64 rejects distances
+// before the start of the stream.
+static void test_raw64_errors(void)
+{
+    // History past 32 KiB, then 64 KiB, and matches that reach into it
+    for (i32 far = 0; far < 2; far++) {
+        d64tok t[300];
+        iz n = 0;
+        t[n++] = (d64tok){"0123456789", 0, 0};
+        for (i32 i = 0; i < (far ? 260 : 130); i++) {
+            t[n++] = (d64tok){0, 257, 10 + i%3};
+        }
+        iz before = (iz)(far ? 260 : 130)*257 + 10;
+        t[n++] = (d64tok){0, 10, far ? 60000 : 33000};
+        t[n++] = (d64tok){"!", 0, 0};
+        buf want = d64_expand(t, n);
+        for (i32 d64 = 0; d64 < 2; d64++) {
+            // Lengths up to 257 code alike
+            buf c = d64_fixed(t, n, d64);
+            result r = tdecompress(TUGZ_RAW64, c.s, c.len, 0, 0);
+            TEST(r.status==TUGZ_DONE && r.used==c.len);
+            TEST(same(r.out, want.s, want.len));
+            free(r.out.s);
+            for (i32 i = 0; i < 3; i++) {
+                r = tdecompress(TUGZ_RAW, c.s, c.len, pieces[i], 0);
+                TEST(r.status == TUGZ_EDATA);
+                TEST(same(r.out, want.s, before));
+                free(r.out.s);
+            }
+            free(c.s);
+        }
+        free(want.s);
+    }
+
+    // Length 258 by code 285, as DEFLATE codes it, is not Deflate64
+    d64tok t[] = {{"abc", 0, 0}, {0, 258, 3}, {0, 258, 3}, {"!", 0, 0}};
+    buf want = d64_expand(t, countof(t));
+    buf c = d64_fixed(t, countof(t), 0);
+    result r = tdecompress(TUGZ_RAW, c.s, c.len, 0, 0);
+    TEST(r.status==TUGZ_DONE && same(r.out, want.s, want.len));
+    free(r.out.s);
+    r = tdecompress(TUGZ_RAW64, c.s, c.len, 0, 0);
+    TEST(r.status!=TUGZ_DONE || !same(r.out, want.s, want.len));
+    free(r.out.s);
+    free(c.s);
+    free(want.s);
+
+    // Other DEFLATE streams are Deflate64 streams too
+    iz len = 50000;
+    u8 *inputs[] = {textbytes(len, 21), randbytes(len, 22)};
+    for (i32 i = 0; i < countof(inputs); i++) {
+        c = tcompress(TUGZ_RAW, 6, inputs[i], len, 0, 0, 0, 0);
+        r = tdecompress(TUGZ_RAW64, c.s, c.len, 0, 100);
+        TEST(r.status==TUGZ_DONE && r.used==c.len);
+        TEST(same(r.out, inputs[i], len));
+        free(r.out.s);
+        free(c.s);
+        free(inputs[i]);
+    }
+
+    // A match from before the stream, its output before it delivered,
+    // the error sticky
+    for (i32 i = 0; i < 4; i++) {
+        r = tdecompress(TUGZ_RAW64, d64_bad_far, countof(d64_bad_far),
+                        pieces[i], 0);
+        TEST(r.status==TUGZ_EDATA && same(r.out, (u8 *)"abc", 3));
+        free(r.out.s);
+    }
+    tugz_inflator *z;
+    void *mem = mem_inflator(TUGZ_RAW64, &z);
+    u8 out[16];
+    tugz_buf b = {d64_bad_far, countof(d64_bad_far), out, countof(out)};
+    TEST(tugz_inflate(z, &b) == TUGZ_EDATA);
+    TEST(tugz_inflate(z, &b) == TUGZ_EDATA);
+    tugz_inflate_reset(z);  // clears it
+    b = (tugz_buf){(u8 const *)"\x07", 1, out, countof(out)};  // type 3
+    TEST(tugz_inflate(z, &b) == TUGZ_EDATA);
+    free(mem);
+}
+#endif
+
 static void test_usage(void)
 {
     tugz_inflator *z;
@@ -1634,6 +1996,12 @@ int main(void)
     test_inflate_init();
     test_held_output();
     test_deflate_init();
+#ifdef TUGZ_DEFLATE64
+    test_raw64();
+    test_raw64_errors();
+    puts("all library tests pass, with Deflate64");
+#else
     puts("all library tests pass");
+#endif
     return 0;
 }

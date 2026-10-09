@@ -47,6 +47,7 @@ option(TUGZ_BUILD_FUZZ "Build the libFuzzer harnesses (LLVM clang)" OFF)
 option(TUGZ_BUILD_BENCH "Build the benchmark (zlib, libdeflate)" OFF)
 option(TUGZ_INSTALL "Install the library, header, and package" ${PROJECT_IS_TOP_LEVEL})
 option(TUGZ_WARNINGS "Compile tugz with warnings" ${PROJECT_IS_TOP_LEVEL})
+option(TUGZ_DEFLATE64 "Decode Deflate64 in the library (TUGZ_RAW64)" OFF)
 set(TUGZ_LIBMEMORY AUTO CACHE STRING
     "Link Windows programs with w64devkit's libmemory (AUTO, ON, OFF)")
 set_property(CACHE TUGZ_LIBMEMORY PROPERTY STRINGS AUTO ON OFF)
@@ -83,6 +84,10 @@ if(TUGZ_BUILD_LIBRARY)
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
     set_target_properties(tugz PROPERTIES PUBLIC_HEADER tugz.h)
+    # tugz.h declares TUGZ_RAW64 either way, so consumers need no define
+    if(TUGZ_DEFLATE64)
+        target_compile_definitions(tugz PRIVATE TUGZ_DEFLATE64)
+    endif()
     if(BUILD_SHARED_LIBS)
         set_target_properties(tugz PROPERTIES
             VERSION ${PROJECT_VERSION}
@@ -359,6 +364,11 @@ if(TUGZ_BUILD_TESTS)
 
     tugz_test(tugz_tests tests test/tests.c ZLIB LIBDEFLATE)
     tugz_test(tugz_tests_lib tests-lib test/libtests.c ZLIB)
+    # ...and again with Deflate64, whatever TUGZ_DEFLATE64 is
+    tugz_test(tugz_tests_lib64 tests-lib-deflate64 test/libtests.c ZLIB)
+    if(TARGET tugz_tests_lib64)
+        target_compile_definitions(tugz_tests_lib64 PRIVATE TUGZ_DEFLATE64)
+    endif()
     tugz_test(tugz_tests_zip tests-zip test/ziptests.c)
     tugz_test(tugz_tests_zipcli tests-zipcli test/zipclitests.c)
     tugz_test(tugz_tests_unzip tests-unzip test/unziptests.c)
@@ -487,8 +497,20 @@ if(TUGZ_BUILD_TESTS)
     tugz_sanitize(tugz_tests_amalg)
     add_test(NAME amalgamation COMMAND tugz_tests_amalg)
     tugz_sanitize_test(amalgamation)
+    # ...and with Deflate64, as a program defining TUGZ_DEFLATE64 has it
+    add_executable(tugz_tests_amalg64 test/amalgtests.c)
+    add_dependencies(tugz_tests_amalg64 tugz_amalgamation)
+    set_target_properties(tugz_tests_amalg64 PROPERTIES
+        OUTPUT_NAME tests-amalg-deflate64)
+    target_include_directories(tugz_tests_amalg64 PRIVATE
+                               ${tugz_amalgamation_dir})
+    target_compile_definitions(tugz_tests_amalg64 PRIVATE TUGZ_DEFLATE64)
+    tugz_common(tugz_tests_amalg64)
+    tugz_sanitize(tugz_tests_amalg64)
+    add_test(NAME amalgamation-deflate64 COMMAND tugz_tests_amalg64)
+    tugz_sanitize_test(amalgamation-deflate64)
     set_property(GLOBAL APPEND PROPERTY tugz_test_targets
-                 tugz_amalgamation_lib tugz_tests_amalg)
+                 tugz_amalgamation_lib tugz_tests_amalg tugz_tests_amalg64)
 
     # Builds what the tests need and runs them
     if(PROJECT_IS_TOP_LEVEL)
