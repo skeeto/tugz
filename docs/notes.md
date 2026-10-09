@@ -1,6 +1,6 @@
 # tugz development notes
 
-tugz (tiny unity gzip) is a from-specification implementation of gzip
+tugz (tiny unity gzip/zip) is a from-specification implementation of gzip
 (RFC 1952), zlib (RFC 1950), and DEFLATE (RFC 1951): a drop-in `gzip`
 command, a streaming library (`tugz.h`), and Info-ZIP compatible `zip`
 and `unzip`. The commands identify themselves as `gzip (tugz) 0.3.0`,

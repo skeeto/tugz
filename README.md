@@ -1,4 +1,4 @@
-# tugz: tiny unity gzip
+# tugz: tiny unity gzip/zip
 
 <p align="center"><img src="docs/tugz.png" width="320" alt="tugz mascot: a smiling blue tugboat with tire fenders"></p>
 
