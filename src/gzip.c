@@ -2,7 +2,7 @@
 // DEFLATE, as streaming decoders and encoders
 //
 // The gzip decoder handles one member at a time: after a member ends,
-// the next call begins parsing another. Bytes that are not a gzip header
+// the next call with input begins parsing another. Bytes that are not a gzip header
 // produce GZ_ENOTGZ, leaving trailing data policy to the caller. As in
 // GNU gzip, a header may begin with the old magic, 1f 9e, as well as 1f 8b.
 
@@ -283,14 +283,17 @@ static i32 decoder_header(decoder *z, zbuf *b)
 }
 
 // Decode from b->in into b->out, advancing both. Returns GZ_OK at the
-// end of the stream (or gzip member), with b->in just past it. Calling
-// again after a gzip member begins the next. Otherwise returns
-// GZ_NEEDIN, GZ_NEEDOUT, or an error, which is sticky.
+// end of the stream (or gzip member), with b->in just past it, and again
+// on later calls, consuming nothing, except that a call with input after
+// a gzip member begins the next. So GZ_OK with no input left is a clean
+// end, even between gzip members, and GZ_NEEDIN with none means the
+// input is truncated. Otherwise returns GZ_NEEDIN, GZ_NEEDOUT, or an
+// error, which is sticky.
 static i32 decoder_run(decoder *z, zbuf *b)
 {
     if (z->err) {
         return z->err;
-    } else if (z->state==DEC_DONE && z->format==FMT_GZIP) {
+    } else if (z->state==DEC_DONE && z->format==FMT_GZIP && b->inlen) {
         decoder_reset(z);
     }
 

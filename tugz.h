@@ -41,12 +41,17 @@
 // decoded output remains: call again with more space (and any input
 // left). Any other result means that all output decoded so far has been
 // delivered. TUGZ_DONE marks the end of the stream (for gzip, the end of
-// each member), with b.in pointing just past its last byte. Calling
-// again on a gzip state decodes the next member, and bytes that do not
-// begin a member produce TUGZ_ENOTGZ (as in GNU gzip, though not zlib, a
-// member may begin with the old magic 1f 9e). TUGZ_NEED_INPUT means all
+// each member), with b.in pointing just past its last byte. A raw or
+// zlib state then stays done: later calls return TUGZ_DONE and consume
+// nothing, leaving any data after the stream in b.in for the caller.
+// Calling again on a gzip state with input decodes the next member, and
+// bytes that do not begin a member produce TUGZ_ENOTGZ (as in GNU gzip,
+// though not zlib, a member may begin with the old magic 1f 9e), while a
+// call with no input returns TUGZ_DONE again. TUGZ_NEED_INPUT means all
 // input was consumed: supply more, or if there is no more, the stream is
-// truncated.
+// truncated. So at the end of input, TUGZ_DONE always means a complete
+// stream (or whole gzip members) and TUGZ_NEED_INPUT a truncated one,
+// with no need to track where gzip members end.
 // Errors are sticky, and reported once the output before them has been
 // delivered. Preset dictionaries are unsupported: a zlib stream with one
 // (FDICT) gets TUGZ_EHEADER once its dictionary ID has been read, where

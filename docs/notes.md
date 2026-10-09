@@ -172,6 +172,17 @@ output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
   hash chains so no match reaches behind the flush. zlib headers match
   zlib's byte for byte (FLEVEL). gzip decoding stops after each member;
   the program's driver applies the GNU trailing-data policy.
+- At the end of input, `TUGZ_DONE` means complete and `TUGZ_NEED_INPUT`
+  truncated, whatever came before. Through 0.4, a gzip state called
+  after a member's `TUGZ_DONE` began the next member at once, so a
+  call with no input returned `TUGZ_NEED_INPUT`, and a caller had to
+  remember that it stood at a member boundary to tell a clean end from
+  truncation. Now only a call with input begins the next member; one
+  without returns `TUGZ_DONE` again. Raw and zlib states already stayed
+  done, returning `TUGZ_DONE` without consuming what follows, which is
+  now documented. The gzip program never calls without input at a
+  boundary (it reads ahead to decide whether another member follows),
+  so its behavior is unchanged.
 - A flush falls due once its call has consumed all input, and later
   calls complete it before consuming input, whatever their mode. A
   no-input SYNC, FULL, or FINISH made while flushes are unfinished

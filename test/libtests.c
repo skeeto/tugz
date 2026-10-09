@@ -579,6 +579,116 @@ static void test_members(void)
     free(a.s);
 }
 
+// Feed input to an inflator the way a caller reading a file would: call
+// until the input is used up, going on to further gzip members, or until
+// raw or zlib is done. A call with no input is made once.
+static int feed(tugz_inflator *z, int format, u8 const *p, iz len,
+                buf *out, iz cap)
+{
+    tugz_buf b = {p, len, out->s+out->len, cap-out->len};
+    int status;
+    do {
+        status = tugz_inflate(z, &b);
+        out->len = b.out - out->s;
+        TEST(status != TUGZ_NEED_OUTPUT);
+    } while (status==TUGZ_DONE && b.inlen && format==TUGZ_GZIP);
+    return status;
+}
+
+// With no more input, TUGZ_DONE means the stream ended, or for gzip a
+// member did, and TUGZ_NEED_INPUT that it was cut short, whatever the
+// calls before: at every split, byte by byte, with repeated empty calls,
+// across concatenated gzip members (an empty one too), and with a null
+// pointer for no input. Raw and zlib stay done, leaving what follows.
+static void test_clean_end(void)
+{
+    iz n = 3000;
+    u8 *text = textbytes(n, 31);
+    iz const cap = 1 << 16;
+    for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
+        buf m[3] = {
+            tcompress(format, 6, text, n, 0, 0, 0, 0),
+            tcompress(format, 1, text, 0, 0, 0, 0, 0),
+            tcompress(format, 9, text+7, 20, 0, 0, 0, 0),
+        };
+        i32 nmembers = format==TUGZ_GZIP ? 3 : 1;
+        iz ends[3];  // offsets of member ends
+        iz len = 0;
+        u8 *p = malloc((uz)(m[0].len + m[1].len + m[2].len));
+        for (i32 i = 0; i < nmembers; i++) {
+            memcpy(p+len, m[i].s, (uz)m[i].len);
+            len += m[i].len;
+            ends[i] = len;
+        }
+        iz want = format==TUGZ_GZIP ? n + 20 : n;
+        buf out = {malloc((uz)cap), 0};
+
+        // Every split: feed a prefix, then call with no input
+        tugz_inflator *z;
+        void *mem = mem_inflator(format, &z);
+        for (iz k = 0; k <= len; k++) {
+            tugz_inflate_reset(z);
+            out.len = 0;
+            int status = feed(z, format, p, k, &out, cap);
+            b32 end = 0;
+            for (i32 i = 0; i < nmembers; i++) {
+                end |= k == ends[i];
+            }
+            TEST(status == (end ? TUGZ_DONE : TUGZ_NEED_INPUT));
+            for (i32 r = 0; r < 3; r++) {
+                tugz_buf b = {r&1 ? p : 0, 0, out.s+out.len, cap-out.len};
+                TEST(tugz_inflate(z, &b) == status);
+                TEST(b.out == out.s+out.len);
+            }
+            TEST(feed(z, format, p+k, len-k, &out, cap) == TUGZ_DONE);
+            TEST(out.len==want && !memcmp(out.s, text, (uz)n));
+            tugz_buf b = {0, 0, out.s+out.len, cap-out.len};
+            TEST(tugz_inflate(z, &b) == TUGZ_DONE);
+        }
+
+        // Byte by byte, each byte followed by empty calls
+        tugz_inflate_reset(z);
+        out.len = 0;
+        for (iz k = 1; k <= len; k++) {
+            int status = feed(z, format, p+k-1, 1, &out, cap);
+            b32 end = 0;
+            for (i32 i = 0; i < nmembers; i++) {
+                end |= k == ends[i];
+            }
+            TEST(status == (end ? TUGZ_DONE : TUGZ_NEED_INPUT));
+            tugz_buf b = {0, 0, out.s+out.len, cap-out.len};
+            TEST(tugz_inflate(z, &b) == status);
+            TEST(tugz_inflate(z, &b) == status);
+        }
+        TEST(out.len==want && !memcmp(out.s, text, (uz)n));
+
+        // After the end, raw and zlib consume nothing more; for gzip, one
+        // byte of a next member is a truncation, and a bad header an error
+        u8 const junk[] = {0x1f, 0x8b, 'j', 'u', 'n', 'k'};
+        tugz_buf b = {junk, 1, out.s+out.len, cap-out.len};
+        if (format == TUGZ_GZIP) {
+            TEST(tugz_inflate(z, &b) == TUGZ_NEED_INPUT && !b.inlen);
+            b = (tugz_buf){0};
+            TEST(tugz_inflate(z, &b) == TUGZ_NEED_INPUT);
+            b = (tugz_buf){junk+1, 5, 0, 0};
+            TEST(tugz_inflate(z, &b) == TUGZ_EHEADER);
+        } else {
+            b.inlen = countof(junk);
+            TEST(tugz_inflate(z, &b) == TUGZ_DONE);
+            TEST(b.in==junk && b.inlen==countof(junk));
+            TEST(b.out == out.s+out.len);
+        }
+
+        free(mem);
+        free(out.s);
+        free(p);
+        for (i32 i = 0; i < 3; i++) {
+            free(m[i].s);
+        }
+    }
+    free(text);
+}
+
 static int zlib_header(u8 const *hdr, iz len)
 {
     u8 z[64];
@@ -2063,6 +2173,7 @@ int main(void)
     test_zlib_format();
     test_gzip_errors();
     test_members();
+    test_clean_end();
     test_stream_end();
     test_splits();
     test_flush();

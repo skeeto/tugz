@@ -69,7 +69,11 @@ free(mem);  // not z
 
 The state lies inside the caller's memory, aligned, so it may begin
 past `mem`: keep `mem` to free it. A state holds pointers into itself,
-so it may not be copied or moved.
+so it may not be copied or moved. A gzip state decodes concatenated
+members, returning `TUGZ_DONE` at the end of each. Once input runs
+out, `TUGZ_DONE` means the stream (or the last member) is complete and
+`TUGZ_NEED_INPUT` that it is truncated; a raw or zlib state stays done,
+leaving any data after the stream in `b.in`.
 
 Levels are 1 through 9; others are reserved, and init, `new`, and
 reset reject them. Deflate supports SYNC, FULL, and FINISH flushes,
