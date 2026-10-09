@@ -45,7 +45,7 @@ if [ -n "$TUGZ_ZIP" ]; then
     TUGZ_ZIP=$(cd "$(dirname "$TUGZ_ZIP")" && pwd)/$(basename "$TUGZ_ZIP")
 fi
 version=$(sed -n 's/^#define TUGZ_VERSION "\(.*\)"$/\1/p' \
-              "$(dirname "$0")/../src/base.c")
+              "$(dirname "$0")/../tugz.h")
 tmp=$(mktemp -d)
 trap 'cd / && chmod -R u+rwx "$tmp" && rm -rf "$tmp"' EXIT
 cd "$tmp"

@@ -227,3 +227,8 @@ TUGZ_DEF void tugz_deflate_free(tugz_deflator *s, tugz_allocator *alloc,
         alloc(ctx, s->mem, s->len, 0);
     }
 }
+
+TUGZ_DEF char const *tugz_version(void)
+{
+    return TUGZ_VERSION;
+}

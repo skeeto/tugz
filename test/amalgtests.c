@@ -33,6 +33,7 @@ int main(void)
     long *same = wide;  // the program's i64, not the core's long long
     (void)same;
     TEST(sizeof(byte) == 1);
+    TEST(!strcmp(tugz_version(), TUGZ_VERSION));
 
     enum { N = 1 << 16 };
     static unsigned char in[N], z[2*N], out[N];

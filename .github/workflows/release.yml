@@ -1,4 +1,4 @@
-# On a version tag (v1.2.3, which must equal TUGZ_VERSION in src/base.c),
+# On a version tag (v1.2.3, which must equal TUGZ_VERSION in tugz.h),
 # test, then publish a release of two assets: a deterministic source
 # tarball, and a zip of the single-file sources (tugz.c with tugz.h,
 # gzip.c, zip.c, unzip.c), made by the tag's own zip, as deterministic.
@@ -26,7 +26,7 @@ jobs:
 
       - name: Check the tag against the version
         run: |
-          v=$(sed -n 's/^#define TUGZ_VERSION "\([^"]*\)"$/\1/p' src/base.c)
+          v=$(sed -n 's/^#define TUGZ_VERSION "\([^"]*\)"$/\1/p' tugz.h)
           if [ "$GITHUB_REF_NAME" != "v$v" ]; then
               echo "::error::tag $GITHUB_REF_NAME is not v$v (TUGZ_VERSION)"
               exit 1
@@ -86,6 +86,7 @@ jobs:
           int main(void)
           {
               static unsigned char in[1<<16], z[1<<17], out[1<<16];
+              if (strcmp(tugz_version(), TUGZ_VERSION)) return 1;
               for (int i = 0; i < (int)sizeof(in); i++) {
                   in[i] = (unsigned char)("tugboat"[i%7] ^ (i>>9));
               }

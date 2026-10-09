@@ -12,7 +12,9 @@
 # platform/libtugz.c, in order, then the entry file itself, so the unity
 # files stay the only lists of sources.
 # Between files goes a blank line, and local includes and "// $ cc"
-# build lines are dropped. Around the library core, tugz.c saves and
+# build lines are dropped, but for src/base.c's include of tugz.h, which
+# in the programs becomes the header's version lines (in tugz.c, the
+# whole header comes first). Around the library core, tugz.c saves and
 # restores (push_macro, pop_macro) each name the core defines as a macro
 # or a type, the type names becoming tugz__ ones. Names are sorted by
 # byte, as "LC_ALL=C sort -u" sorts, so output is the same in any locale.
@@ -63,8 +65,8 @@ function(tugz_inputs out entry)
 endfunction()
 
 # Appends files to var, a blank line between them, without local
-# includes or build lines.
-function(tugz_concat var)
+# includes or build lines. The include of tugz.h becomes header_text.
+function(tugz_concat var header_text)
     set(text "${${var}}")
     set(first TRUE)
     foreach(path IN LISTS ARGN)
@@ -74,8 +76,10 @@ function(tugz_concat var)
         set(first FALSE)
         tugz_lines(lines "${path}")
         foreach(line IN LISTS lines)
-            if(NOT line MATCHES "^#include \"" AND
-               NOT line MATCHES "^// +\\$ cc")
+            if(line MATCHES "^#include \"[./]*tugz\\.h\"")
+                string(APPEND text "${header_text}")
+            elseif(NOT line MATCHES "^#include \"" AND
+                   NOT line MATCHES "^// +\\$ cc")
                 string(APPEND text "${line}\n")
             endif()
         endforeach()
@@ -83,13 +87,19 @@ function(tugz_concat var)
     set(${var} "${text}" PARENT_SCOPE)
 endfunction()
 
-# The release, TUGZ_VERSION in src/base.c
+# The release, TUGZ_VERSION in tugz.h, and the lines that define it and
+# its parts, which take the place of tugz.h in the programs (src/base.c
+# includes it for them)
 set(pattern "^#define TUGZ_VERSION \"([0-9]+\\.[0-9]+\\.[0-9]+)\"$")
-file(STRINGS "${root}/src/base.c" v REGEX "${pattern}")
+file(STRINGS "${root}/tugz.h" v REGEX "${pattern}")
 if(NOT v MATCHES "${pattern}")
-    message(FATAL_ERROR "no TUGZ_VERSION in src/base.c")
+    message(FATAL_ERROR "no TUGZ_VERSION in tugz.h")
 endif()
 set(v "${CMAKE_MATCH_1}")
+file(STRINGS "${root}/tugz.h" version_lines
+     REGEX "^#define TUGZ_VERSION(_[A-Z]+)? ")
+list(JOIN version_lines "\n" version_text)
+set(version_text "${version_text}\n")
 
 # Writes text, unescaped, to a file in the output directory, through a
 # temporary file renamed over it. Lines end in LF on every host, which
@@ -116,7 +126,7 @@ function(tugz_gzip)
         "// Copies named gunzip.exe or zcat.exe decompress by default.\n"
         "\n")
     string(CONCAT text ${text})
-    tugz_concat(text ${files})
+    tugz_concat(text "${version_text}" ${files})
     tugz_write(gzip.c "${text}")
 endfunction()
 
@@ -128,7 +138,7 @@ function(tugz_zip)
         "//   $ cc -O2 -nostartfiles -o zip.exe zip.c -lmemory\n"
         "\n")
     string(CONCAT text ${text})
-    tugz_concat(text ${files})
+    tugz_concat(text "${version_text}" ${files})
     tugz_write(zip.c "${text}")
 endfunction()
 
@@ -140,7 +150,7 @@ function(tugz_unzip)
         "//   $ cc -O2 -nostartfiles -o unzip.exe unzip.c -lmemory\n"
         "\n")
     string(CONCAT text ${text})
-    tugz_concat(text ${files})
+    tugz_concat(text "${version_text}" ${files})
     tugz_write(unzip.c "${text}")
 endfunction()
 
@@ -187,7 +197,7 @@ function(tugz_library)
         string(APPEND text "#define ${n} tugz__${n}\n")
     endforeach()
     string(APPEND text "\n")
-    tugz_concat(text ${files})
+    tugz_concat(text "" ${files})  # the header is above
     string(APPEND text "\n")
     foreach(n IN LISTS macros types)
         string(APPEND text "#pragma pop_macro(\"${n}\")\n")

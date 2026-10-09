@@ -320,6 +320,21 @@ output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
   enumerators still share the program's names (documented in `tugz.h`).
   `test/amalgtests.c` (ctest's `amalgamation`) embeds it beside a
   program's own `assert`, `MIN`, `i64`, and `byte`.
+- The version is set in `tugz.h` alone: `TUGZ_VERSION` ("X.Y.Z") and
+  `TUGZ_VERSION_MAJOR`, `_MINOR`, and `_PATCH` for `#if`. `src/base.c`
+  includes the header, so the programs report it; CMake reads the
+  string for `project()` and refuses to configure unless the numbers
+  make it; the amalgamations read it for their banners, and in `gzip.c`,
+  `zip.c`, and `unzip.c` the header's four version lines take the place
+  of base.c's include (`tugz.c` has the whole header first); the release
+  workflow checks the tag against it, and its FetchContent consumer
+  checks `tugz_version()` against the header. That function returns the
+  string the library was built with, for a program to tell which shared
+  library it loaded. Through 0.4 the string lived in `src/base.c`, out of
+  a library user's sight. To release: set the four lines, the FetchContent
+  URL and `find_package` version in README.md, and the program versions
+  quoted at the top of these notes and in unzip's `-v`; commit as
+  "Version X.Y.Z", then push the tag vX.Y.Z.
 - The targets leave `C_STANDARD` unset, so the compiler's default (gnu17
   or later, which accepts C23 attributes) applies even when a consumer
   sets `CMAKE_C_STANDARD` to 11, and compile at `-O2`, as the

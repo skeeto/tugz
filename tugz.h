@@ -107,6 +107,14 @@
 #ifndef TUGZ_H
 #define TUGZ_H
 
+// The release this header belongs to, as a string and as numbers for
+// #if. It is the one place the version is set: the programs report it,
+// and the build, the amalgamations, and the release workflow read it.
+#define TUGZ_VERSION "0.4.0"
+#define TUGZ_VERSION_MAJOR 0
+#define TUGZ_VERSION_MINOR 4
+#define TUGZ_VERSION_PATCH 0
+
 #include <stddef.h>
 
 #ifndef TUGZ_API
@@ -192,6 +200,10 @@ TUGZ_API tugz_deflator *tugz_deflate_new(tugz_allocator *, void *ctx,
                                          int format, int level);
 TUGZ_API void           tugz_deflate_free(tugz_deflator *,
                                           tugz_allocator *, void *ctx);
+
+// The library's TUGZ_VERSION, as it was built, which for a shared
+// library may differ from the header's.
+TUGZ_API char const    *tugz_version(void);
 
 #ifdef __cplusplus
 }

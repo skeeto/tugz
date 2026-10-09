@@ -2164,8 +2164,22 @@ static void test_usage(void)
     free(mem);
 }
 
+// The library's version is the header's, whose numbers make its string.
+static void test_version(void)
+{
+    TEST(!strcmp(tugz_version(), TUGZ_VERSION));
+    char v[64];
+    snprintf(v, sizeof(v), "%d.%d.%d", TUGZ_VERSION_MAJOR,
+             TUGZ_VERSION_MINOR, TUGZ_VERSION_PATCH);
+    TEST(!strcmp(v, TUGZ_VERSION));
+#if TUGZ_VERSION_MAJOR<0 || TUGZ_VERSION_MINOR<0 || TUGZ_VERSION_PATCH<0
+    TEST(0);  // the numbers work in #if
+#endif
+}
+
 int main(void)
 {
+    test_version();
     test_memory();
     test_allocator();
     test_levels();

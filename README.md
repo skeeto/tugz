@@ -91,6 +91,11 @@ use the `tugz.c` in a release's amalgams zip (or `cmake
 amalgamation with the header inlined. Define `TUGZ_API` as `static`
 before including it to embed the library in another program.
 
+`TUGZ_VERSION` is the release as a string, "MAJOR.MINOR.PATCH", and
+`TUGZ_VERSION_MAJOR`, `TUGZ_VERSION_MINOR`, and `TUGZ_VERSION_PATCH` its
+numbers, for `#if`; `tugz_version()` returns the string the library was
+built with, which for a shared library may differ from the header's.
+
 Deflate64 (ZIP method 9, as unzip reads it) is an option, off by
 default: compiled with `TUGZ_DEFLATE64` defined (`cc -c -O2
 -DTUGZ_DEFLATE64 platform/libtugz.c`, the same before compiling or

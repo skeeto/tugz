@@ -6,11 +6,24 @@
 # target tugz::tugz.
 cmake_minimum_required(VERSION 3.21...4.4)
 
-# The release, TUGZ_VERSION in src/base.c, which the programs report
-file(STRINGS src/base.c tugz_version
-     REGEX "^#define TUGZ_VERSION \"[0-9]+\\.[0-9]+\\.[0-9]+\"$")
-string(REGEX REPLACE ".*\"(.*)\"" "\\1" tugz_version "${tugz_version}")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS src/base.c)
+# The release, TUGZ_VERSION in tugz.h, which must agree with the
+# numbers beside it
+file(STRINGS tugz.h tugz_version_lines REGEX "^#define TUGZ_VERSION")
+string(REGEX MATCH "#define TUGZ_VERSION \"([0-9]+\\.[0-9]+\\.[0-9]+)\""
+       tugz_version "${tugz_version_lines}")
+set(tugz_version "${CMAKE_MATCH_1}")
+set(tugz_version_parts "")
+foreach(part IN ITEMS MAJOR MINOR PATCH)
+    string(REGEX MATCH "#define TUGZ_VERSION_${part} ([0-9]+)"
+           tugz_version_part "${tugz_version_lines}")
+    list(APPEND tugz_version_parts "${CMAKE_MATCH_1}")
+endforeach()
+list(JOIN tugz_version_parts "." tugz_version_parts)
+if(NOT tugz_version OR NOT tugz_version STREQUAL tugz_version_parts)
+    message(FATAL_ERROR "tugz.h: TUGZ_VERSION \"${tugz_version}\" is not "
+                        "its MAJOR.MINOR.PATCH (${tugz_version_parts})")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS tugz.h)
 
 # Release by default at the top level, set before project(), which on
 # the MSVC ABI would set Debug
