@@ -603,6 +603,17 @@ ours 1 want none -tq offwrap.zip
 same -l prefix4g.zip
 same -t prefix4g.zip
 
+# Departure: a central header whose Zip64 extra lacks a field that its
+# sizes call for ends the central directory there, where UnZip warns
+# ("extra field (type: 0x0001) corrupt") and reads on
+{ echo 'Archive:  short64.zip'
+  echo 'error:  expected central file header signature not found (file #2).'
+  echo '  (please check that you have transferred or created the zipfile in the'
+  echo '  appropriate BINARY mode and that you have compiled UnZip properly)'
+  printf '    testing: %-22s   OK\n' b
+  echo 'At least one error was detected in short64.zip.'; } >want
+ours 3 want none -t short64.zip
+
 # Output beyond an entry's size is not written: an overrun, which UnZip
 # writes out before finding the CRC wrong
 printf 'hello hell' >want

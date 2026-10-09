@@ -1471,6 +1471,22 @@ ones as invariants. Those that no test asserts are marked untested.
   each (2), and Debian's UnZip stops at the second entry (4)
   (`unzip.sh`, `offwrap.zip`; extracted under `SLOW`). Listings are
   UnZip's.
+- Zip64 extra fields: a central header's is read as the shared parser
+  reads it, all or nothing, so that one lacking a field that the 32-bit
+  fields' 0xFFFFFFFF calls for, a disk number of 0xFFFF without one, or
+  a value of 2^63 or more ends the central directory there ("expected
+  central file header signature not found", or for the first header,
+  "start of central directory not found", 3), where UnZip applies the
+  fields there are ("warning:  extra field (type: 0x0001) corrupt.
+  Continuing..." for a missing one), takes the rest as they are, and
+  reads on (0 or 1). Taken so, an entry would still be refused once
+  read (12), as tugz reads its data by its central sizes, a 0xFFFFFFFF
+  among them reaching past the central directory (see Zip bombs and
+  Sizes), where UnZip reads it by its local header's. The zip program
+  refuses such headers too, and no writer is known to write them
+  (`unzip.sh`, `short64.zip`). Sizes of 0xFFFFFFFF without any Zip64
+  extra are literal, and listed as UnZip lists them, but refused so
+  once read (12).
 - Zip bombs: overlapped components, and data reaching into the central
   directory, which Debian's UnZip does not check, are found before any
   entry is read, so that none is extracted, nor the `-d` directory made,

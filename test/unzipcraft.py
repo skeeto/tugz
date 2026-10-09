@@ -426,6 +426,14 @@ write("pastfar.zip", past(lambda cdoff, size: 1 << 30))
 write("pastmax.zip", past(lambda cdoff, size: 0xFFFFFFFE))
 write("pastcd.zip", past(lambda cdoff, size: cdoff + 10))
 write("pastend.zip", past(lambda cdoff, size: size - 20))
+# A central header whose sizes call for a Zip64 extra that holds only
+# one of them, which UnZip reads on past, warning of it
+write("short64.zip", build([
+    Entry("b", b"bee\n", method=0),
+    Entry("a", TEXT, csize=0xFFFFFFFF, usize=0xFFFFFFFF,
+          cextra=struct.pack("<HHQ", 1, 8, len(TEXT)),
+          lsizes=(zlib.crc32(TEXT), len(deflate(TEXT)), len(TEXT))),
+    Entry("c", b"sea\n", method=0)]))
 
 
 def crc32_zeros(n):
