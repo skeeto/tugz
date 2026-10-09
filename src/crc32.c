@@ -477,7 +477,7 @@ static u32 crc32_pclmul(u32 crc, u8 const *p, iz len)
     return crc32_slice8(~crc, p, len);
 }
 
-static b32 crc32_has_pclmul(void)
+[[maybe_unused]] static b32 crc32_has_pclmul(void)
 {
     u32 a, b, c, d;
     return __get_cpuid(1, &a, &b, &c, &d) && (c & bit_PCLMUL) && (d & bit_SSE2);
