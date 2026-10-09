@@ -2381,6 +2381,10 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
     i64  filnum  = 0;
     u64  skipped = 0;
     i64 *block   = new(&scratch, DIR_BLKSIZ, i64);  // their headers
+    i64 *floors  = 0;  // given wrapped offsets, from where each unwraps
+    if (ar->wrapped) {
+        floors = new(&scratch, DIR_BLKSIZ, i64);
+    }
     iz   nblock  = 0;
     b32  stop    = 0;
 
@@ -2404,27 +2408,33 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
             cd_error(u, nblock + filnum + 1, scratch);
             err = PK_BADERR;
         } else if (i < count) {
-            arena  tmp  = scratch;
-            zentry e    = {0};
-            i64    at   = off;
+            arena  tmp   = scratch;
+            zentry e     = {0};
+            i64    at    = off;
+            i64    floor = ar->floor;
             next_entry(u, ar, &off, &e, &tmp);
-            s8     name = entry_name(u, &e, &tmp);
+            s8     name  = entry_name(u, &e, &tmp);
             if (!wanted(u, name, fm, xm)) {
                 continue;
             } else if (!store_info(u, &e, name, tmp)) {
                 skipped++;
                 continue;
             }
+            if (floors) {
+                floors[nblock] = floor;
+            }
             block[nblock++] = at;
             if (nblock < DIR_BLKSIZ) {
                 continue;
             }
         }
+        i64 scan = ar->floor;  // where the scan goes on
         for (iz k = 0; k<nblock && !stop; k++) {
             // Read again, as planned, unless the archive has changed
             arena  tmp  = scratch;
             zentry e    = {0};
             i64    at   = block[k];
+            ar->floor = floors ? floors[k] : 0;
             next_entry(u, ar, &at, &e, &tmp);
             s8     name = entry_name(u, &e, &tmp);
             if (!readable(&e) || !wanted(u, name, 0, 0) ||
@@ -2434,6 +2444,7 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
             i32 r = do_member(u, ar, &e, name, ++filnum, read, &stop, tmp);
             err = MAX(err, r);
         }
+        ar->floor = scan;
         nblock = 0;
     }
 
@@ -2713,6 +2724,9 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
             ar.shift     = extra;
             ar.end.cdoff = cdoff + extra;
             err = PK_WARN;
+            // Or, without Zip64 records, by a multiple of 4 GiB, offsets
+            // wrapped to 32 bits, should they add up so (zar_check)
+            ar.wrapped = ar.end.end64<0 && !(extra & ZIP_MAX32);
         }
     }
     if (!cdoff && !ar.end.cdsize) {

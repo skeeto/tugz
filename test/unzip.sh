@@ -10,7 +10,8 @@
 # Set UNZIPOOM to another build for the out-of-memory tests, as ctest
 # does, its own build being sanitized.
 # Set SLOW=1 to include Zip64 tests: entries of 4 GiB and more, which
-# need about 13 GiB free in TMPDIR.
+# need about 13 GiB free in TMPDIR. Archives over 4 GiB are otherwise
+# sparse, which TMPDIR's file system must support.
 set -e
 
 unset UNZIP UNZIPOPT ZIPOPT ZIP  # options from the environment
@@ -581,6 +582,27 @@ for z in pastcd pastend; do
     same -t $z.zip a.txt c.txt
 done
 
+# An archive over 4 GiB written without Zip64, its offsets wrapped to 32
+# bits (sparse, 4.5 GiB), each entry found where it is, as 7-Zip finds
+# it, with UnZip's warning of the 4 GiB its offsets leave out (1), where
+# UnZip finds the first entry, and the first past 4 GiB, only by
+# re-compensating (2), and Debian's stops at the second ("not enough
+# memory for bomb detection", 4); a second block of entries, past 4 GiB,
+# is unwrapped as the first is, and the last, selected alone, is where
+# UnZip finds it
+same -l offwrap.zip
+same -v offwrap.zip
+same -t offwrap.zip small
+same -p offwrap.zip small
+{ echo 'warning [offwrap.zip]:  4294967296 extra bytes at beginning or within zipfile'
+  echo '  (attempting to process anyway)'
+  echo 'No errors detected in compressed data of offwrap.zip.'; } >want
+ours 1 want none -tq offwrap.zip
+# but 4 GiB before an archive, its offsets from its start, are data that
+# its offsets leave out, as UnZip takes them
+same -l prefix4g.zip
+same -t prefix4g.zip
+
 # Output beyond an entry's size is not written: an overrun, which UnZip
 # writes out before finding the CRC wrong
 printf 'hello hell' >want
@@ -1109,6 +1131,35 @@ EOF
     # The entry whose size wrapped (above), extracted whole, as UnZip
     # extracts it
     xsame ../wrapped.zip
+    rm -rf x.ours x.ref
+
+    # The archive whose offsets wrapped (above), extracted as UnZip
+    # extracts it (whose t/ no entry makes), but for its re-compensating
+    # (2), as Apple's does, where Debian's stops at the second entry
+    if [ $debian = 0 ]; then
+        TIMES=files
+        xboth -q ../offwrap.zip
+        TIMES=all
+        cmp -s ours.tree ref.tree ||
+            fail "offwrap.zip tree: $(diff ref.tree ours.tree)"
+    else
+        rm -rf x.ours
+        mkdir x.ours
+        set +e
+        (cd x.ours && exec "$U" -q ../offwrap.zip) >ours.out 2>ours.err
+        echo $? >ours.st
+        set -e
+        [ "$(wc -c <x.ours/f1 | tr -d ' ')" = 2415919106 ] &&
+            [ "$(cat x.ours/small)" = hello ] &&
+            [ "$(cat x.ours/t/16383)" = 16383 ] ||
+            fail "offwrap.zip: $(ls -l x.ours)"
+    fi
+    printf '%s\n' \
+        'warning [../offwrap.zip]:  4294967296 extra bytes at beginning or within zipfile' \
+        '  (attempting to process anyway)' >want.err
+    [ "$(cat ours.st)" = 1 ] && [ ! -s ours.out ] &&
+        cmp -s want.err ours.err ||
+        fail "offwrap.zip: status $(cat ours.st): $(cat ours.out ours.err)"
     rm -rf x.ours x.ref
 fi
 

@@ -293,6 +293,10 @@ typedef struct {
     i64     nread;   // central headers read, past the end record's count
     b32     endsig;  // an end signature follows the last header read
     i64     size;    // of the archive, as examined
+    b32     wrapped; // offsets wrapped past 4 GiB (zar_unwrap): set by
+                     // the caller, kept by zar_check if they add up
+    i64     floor;   // given wrapped, where the next entry read begins,
+                     // at least (zar_next)
 } zarchive;
 
 // Results of reading an archive (zar_open, zar_entries, zar_local)
@@ -516,8 +520,33 @@ static i32 zar_miscount(zarchive *ar, i64 bad)
 
 // How far, for unzip, an entry's local header may lie, read as UnZip
 // reads it, wherever its offset says, even past the end of the file, but
-// short of overflowing once shifted
+// short of overflowing once shifted or unwrapped (zar_unwrap)
 #define ZAR_MAXOFF ((i64)1 << 62)
+
+// An archive over 4 GiB written without Zip64, entries each under 4 GiB,
+// has its offsets wrapped to 32 bits. Unwrapped as 7-Zip unwraps them, an
+// entry's offset, if from its 32-bit field, is the least at or past floor
+// that is the same modulo 2^32, floor being where the entry before it in
+// the central directory ends, at least (zar_floor). Each of those under
+// 4 GiB, the gap to the next is less than 4 GiB, so unwrapped, offsets
+// are those written, if entries are in the directory's order.
+static i64 zar_unwrap(i64 off, i64 floor)
+{
+    i64 g = (i64)1 << 32;
+    if (off>=g || off>=floor) {
+        return off;  // from Zip64, or not wrapped
+    }
+    i64 r = (floor & -g) | off;
+    return r<floor ? r+g : r;
+}
+
+// Where the entry after e begins, at least, given wrapped offsets: past
+// its local header's fixed part and its data (at most ZAR_MAXOFF).
+static i64 zar_floor(zentry *e)
+{
+    i64 room = ZAR_MAXOFF - ZIP_LOCAL_LEN - e->offset;
+    return e->csize<room ? e->offset+ZIP_LOCAL_LEN+e->csize : ZAR_MAXOFF;
+}
 
 // Read the central directory that zar_open found, given perm keeping its
 // entries there, else only checking them, as unzip does before reading
@@ -549,6 +578,7 @@ static i32 zar_walk(zarchive *ar, arena *perm, arena scratch)
     i64 off    = ar->end.cdoff;
     i64 cdend  = off + ar->end.cdsize;
     i64 cdoff  = ar->end.cdoff - ar->shift;  // as entries' offsets read
+    i64 floor  = 0;                          // given ar->wrapped
     u8 *h      = 0;
     i32 got    = zin_get(in, off, (iz)MIN(cdend-off, in->cap), &h);
     if (got <= 0) {
@@ -597,6 +627,10 @@ static i32 zar_walk(zarchive *ar, arena *perm, arena scratch)
             return r;
         }
         ar->maxhdr = MAX(ar->maxhdr, len);
+        if (ar->wrapped) {
+            e->offset = zar_unwrap(e->offset, floor);
+            floor     = zar_floor(e);
+        }
         if (perm) {
             arena tmp = scratch;
             e->offset += ar->shift;
@@ -609,6 +643,15 @@ static i32 zar_walk(zarchive *ar, arena *perm, arena scratch)
     }
 
     if (past) {
+        // Offsets the caller would shift by a multiple of 4 GiB, as if
+        // data came before the archive, are instead wrapped if the
+        // central directory, its offset unwrapped as the entries' are,
+        // is where it is: the entries leave no room for that data
+        if (ar->wrapped) {
+            ar->wrapped = zar_unwrap(cdoff, floor) == ar->end.cdoff;
+            ar->shift   = ar->wrapped ? 0 : ar->shift;
+        }
+
         // UnZip finds the directory missing if its first header is not
         // there, even for a count of zero, unless empty (the caller's)
         i64 n     = ar->nread;
@@ -678,7 +721,9 @@ static i32 zar_entries(zarchive *ar, arena *perm, arena scratch)
 // extra fields filtered (without Zip64) into a, and its name and comment
 // pointing into that window, valid until its next use. Returns a ZAR
 // code: anything but ZAR_OK means the archive has changed (or a read
-// failed), as does a header longer than the longest read before.
+// failed), as does a header longer than the longest read before. Given
+// wrapped offsets, they are unwrapped as zar_check unwrapped them, by
+// ar->floor, from the first header, else as the caller left it.
 [[maybe_unused]] static i32 zar_next(zarchive *ar, i64 *off, zentry *e,
                                      arena *a)
 {
@@ -688,6 +733,11 @@ static i32 zar_entries(zarchive *ar, arena *perm, arena scratch)
                            ar->maxhdr, e, &len);
     if (r) {
         return r==ZAR_ENONAME ? ZAR_EFORMAT : r;
+    }
+    if (ar->wrapped) {
+        ar->floor = *off==ar->end.cdoff ? 0 : ar->floor;
+        e->offset = zar_unwrap(e->offset, ar->floor);
+        ar->floor = zar_floor(e);
     }
     e->offset += ar->shift;
     e->cextra  = zip_filter_extra(a, e->cextra);

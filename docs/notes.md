@@ -1120,6 +1120,31 @@ for entries.
   archive concatenated, with its warning; a split that Zip64 records
   describe is refused (11). The shared parser takes a Zip64 locator's
   total of zero disks for one (see Merging, under zip).
+- Offsets wrapped past 4 GiB: a distance of a multiple of 4 GiB without
+  Zip64 records is more likely an archive over 4 GiB written without
+  Zip64 (entries each under 4 GiB), its offsets wrapped to 32 bits. As
+  7-Zip reads it ("32-bit overflow in headers"), each entry's offset
+  from its 32-bit field is unwrapped to the least that is the same
+  modulo 4 GiB at or past where the entry before it in the directory
+  ends, at least (its local header's fixed 30 bytes and its data;
+  `zar_unwrap`), and so is the central directory's offset: if that puts
+  the directory where it is, the offsets are taken as wrapped, and not
+  shifted, else, the entries too few to fill the distance, it is data
+  before the archive, as above. Each entry is then found where it is,
+  and the overlap check and the bounds of each entry's data apply to
+  where entries really are, with only UnZip's warning of extra bytes
+  (1), where UnZip finds the first entry, and the first past 4 GiB, by
+  re-compensating (2), and Debian's stops at the second entry ("not
+  enough memory for bomb detection", 4) (`unzip.sh`, `offwrap.zip`, 4.5
+  GiB, sparse, and `prefix4g.zip`, 4 GiB before an archive;
+  `test_unwrap`). Unwrapping needs only where the entry before ends,
+  kept as the directory is read again, and for a block of entries read
+  again, where each one's unwrapping began (8 bytes each, claimed only
+  for such an archive). As in 7-Zip, entries out of file order in the
+  directory are unwrapped too far, where they are not found, or seem to
+  overlap others (12), and a directory whose offset wrapped to 0 is
+  UnZip's "NULL central directory offset" (2), its entries' offsets not
+  unwrapped (untested).
 - The central directory is read as UnZip's `extract.c` and `list.c` read
   it: header by header while they parse (`zar_check`), within the
   directory, whatever the end record's count, which then must be the
@@ -1437,6 +1462,15 @@ ones as invariants. Those that no test asserts are marked untested.
   `count64.zip`), where UnZip, reading 3, misses the end record after
   the headers (2, "didn't find end-of-central-dir signature")
   (`unzip.sh`, `mixed64.zip`, `mixed64ok.zip`).
+- Offsets wrapped past 4 GiB: an archive over 4 GiB without Zip64,
+  whose offsets wrapped to 32 bits, is read as 7-Zip reads it, each
+  entry found where it is (see unzip, above), so testing and extracting
+  give UnZip's warning of the 4 GiB its offsets leave out, and nothing
+  else (1), where UnZip finds the first entry, and the first past 4 GiB,
+  by re-compensating, with "bad zipfile offset (local header sig)" for
+  each (2), and Debian's UnZip stops at the second entry (4)
+  (`unzip.sh`, `offwrap.zip`; extracted under `SLOW`). Listings are
+  UnZip's.
 - Zip bombs: overlapped components, and data reaching into the central
   directory, which Debian's UnZip does not check, are found before any
   entry is read, so that none is extracted, nor the `-d` directory made,

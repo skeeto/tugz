@@ -426,6 +426,62 @@ write("pastfar.zip", past(lambda cdoff, size: 1 << 30))
 write("pastmax.zip", past(lambda cdoff, size: 0xFFFFFFFE))
 write("pastcd.zip", past(lambda cdoff, size: cdoff + 10))
 write("pastend.zip", past(lambda cdoff, size: size - 20))
+
+
+def crc32_zeros(n):
+    """The CRC-32 of n zero bytes, as zlib's crc32_combine finds it: the
+    register, all ones, times x^(8n) modulo the polynomial, reflected."""
+    def mult(a, b):
+        p = 0
+        for k in range(32):
+            if a & (1 << (31 - k)):
+                p ^= b
+            b = b >> 1 ^ (0xEDB88320 if b & 1 else 0)
+        return p
+    r, x = 1 << 31, 1 << 30  # 1 and x^1, reflected
+    for bit in bin(8 * n)[2:][::-1]:  # x^(8n) by squaring
+        if bit == "1":
+            r = mult(r, x)
+        x = mult(x, x)
+    return mult(r, 0xFFFFFFFF) ^ 0xFFFFFFFF
+
+
+assert all(crc32_zeros(n) == zlib.crc32(bytes(n)) for n in (0, 1, 5, 4099))
+
+
+def sparse(name, prefix, entries):
+    """Write, as a sparse file, prefix zero bytes, then an archive of
+    stored entries, each (name, n) for n zeros or (name, data), its
+    offsets, without Zip64, from its start, modulo 4 GiB."""
+    with open(name, "wb") as f:
+        pos, cd = 0, b""
+        for ename, data in entries:
+            n = data if isinstance(data, int) else len(data)
+            crc = crc32_zeros(n) if isinstance(data, int) else zlib.crc32(data)
+            ename = ename.encode()
+            f.seek(prefix + pos)
+            f.write(struct.pack("<IHHHIIIIHH", 0x04034B50, 10, 0, 0, DOSTIME,
+                                crc, n, n, len(ename), 0) + ename)
+            f.write(b"" if isinstance(data, int) else data)
+            cd += struct.pack(
+                "<IHHHHIIIIHHHHHII", 0x02014B50, 3 << 8 | 30, 10, 0, 0,
+                DOSTIME, crc, n, n, len(ename), 0, 0, 0, 0, 0o100644 << 16,
+                pos & 0xFFFFFFFF) + ename
+            pos += 30 + len(ename) + n
+        f.seek(prefix + pos)
+        f.write(cd + struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, len(entries),
+                                 len(entries), len(cd), pos & 0xFFFFFFFF, 0))
+
+
+# An archive over 4 GiB, written without Zip64, of entries each under 4
+# GiB, its offsets wrapped to 32 bits: sparse, 4.5 GiB long, with enough
+# small entries after 4 GiB that unzip reads them in a second block of
+# 16,384; and 4 GiB before an archive whose offsets do not account for
+# them, as UnZip takes those wrapped offsets
+sparse("offwrap.zip", 0, [("f0", 2415919105), ("f1", 2415919106)] +
+       [("t/%05d" % i, b"%d\n" % i) for i in range(16384)] +
+       [("small", b"hello\n")])
+sparse("prefix4g.zip", 1 << 32, [("a.txt", TEXT), ("small", b"hello\n")])
 nested = Entry("inner.txt", b"inner\n", method=0)
 outer = Entry("outer.bin", b"", method=0)
 body = nested.local_header() + nested.comp

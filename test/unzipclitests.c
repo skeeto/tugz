@@ -1701,6 +1701,35 @@ static void test_past(os *ctx)
     }
 }
 
+// Offsets that a writer without Zip64 wrapped past 4 GiB, unwrapped as
+// 7-Zip unwraps them: each the least past where the entry before it
+// ends, at least, its 32-bit offset modulo 4 GiB. (unzip.sh reads such
+// an archive, 4.5 GiB and sparse, too large here.)
+static void test_unwrap(os *ctx)
+{
+    (void)ctx;
+    i64 g = (i64)1 << 32;
+    TEST(zar_unwrap(0, 0) == 0);
+    TEST(zar_unwrap(100, 50) == 100);
+    TEST(zar_unwrap(50, 50) == 50);
+    TEST(zar_unwrap(49, 50) == g+49);
+    TEST(zar_unwrap(536870979, 4831838275) == 4831838275);
+    TEST(zar_unwrap(536870980, 4831838275) == 4831838276);
+    TEST(zar_unwrap(536870978, 4831838275) == 4831838274+g);
+    TEST(zar_unwrap(g-1, 3*g) == 4*g-1);
+    TEST(zar_unwrap(g+5, 3*g) == g+5);  // from Zip64, as it is
+    TEST(zar_unwrap(g-1, ZAR_MAXOFF) == ZAR_MAXOFF+g-1);
+
+    zentry e = {.offset=2415919137, .csize=2415919106};
+    TEST(zar_floor(&e) == 2415919137 + 30 + 2415919106);
+    e = (zentry){.offset=ZAR_MAXOFF-31, .csize=1};
+    TEST(zar_floor(&e) == ZAR_MAXOFF);
+    e.csize = 2;
+    TEST(zar_floor(&e) == ZAR_MAXOFF);
+    e = (zentry){.offset=ZAR_MAXOFF+g, .csize=(i64)((u64)-1>>1)};
+    TEST(zar_floor(&e) == ZAR_MAXOFF);
+}
+
 // Data decoding past an entry's size is all of it where a writer without
 // Zip64 wrapped that size to 32 bits: by 4 GiB or a multiple of it, the
 // size from its 32-bit field, the CRC right, and not stored (whose data
@@ -1770,6 +1799,7 @@ int main(void)
     test_factor(ctx);
     test_wrapped(ctx);
     test_past(ctx);
+    test_unwrap(ctx);
     test_local_name(ctx);
     unzipos_free(ctx);
     puts("all unzip program tests pass");
