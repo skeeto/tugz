@@ -375,7 +375,15 @@ if(TUGZ_BUILD_TESTS)
         endif()
     endfunction()
 
-    tugz_test(tugz_tests tests test/tests.c ZLIB LIBDEFLATE)
+    # libdeflate, a second reference, cross-checks tests if found
+    tugz_test(tugz_tests tests test/tests.c ZLIB)
+    if(TARGET tugz_tests AND tugz_libdeflate)
+        tugz_reflibs(tugz_tests LIBDEFLATE)
+        target_compile_definitions(tugz_tests PRIVATE TUGZ_HAVE_LIBDEFLATE)
+    elseif(TARGET tugz_tests)
+        message(STATUS "tugz: tests without libdeflate, "
+                "skipping its cross-checks")
+    endif()
     tugz_test(tugz_tests_lib tests-lib test/libtests.c ZLIB)
     # ...and again with Deflate64, whatever TUGZ_DEFLATE64 is
     tugz_test(tugz_tests_lib64 tests-lib-deflate64 test/libtests.c ZLIB)

@@ -531,9 +531,10 @@ differential ones (`-DTUGZ_BUILD_FUZZ=ON`, with LLVM clang as
 
 Tests and benchmarks use zlib and libdeflate as references, and zip
 archives are verified with unzip, Python's zipfile, and on Windows with
-Explorer, .NET, and tar. So the full test run needs zlib, libdeflate, a
-reference gzip (`/usr/bin/gzip`, or `-DTUGZ_REF_GZIP=...`), and
-Info-ZIP's `unzip` (`-DTUGZ_UNZIP=...`) and `zipinfo`, while Python
+Explorer, .NET, and tar. So the full test run needs zlib, libdeflate
+(without it, `tests` skips its libdeflate cross-checks), a reference
+gzip (`/usr/bin/gzip`, or `-DTUGZ_REF_GZIP=...`), and Info-ZIP's
+`unzip` (`-DTUGZ_UNZIP=...`) and `zipinfo`, while Python
 (through `uv` if installed) adds checks, and crafts most of unzip's
 archives. Configuring warns of a test skipped or disabled for want of
 one. Tested on macOS, Linux (x86-64, i386, aarch64, big-endian PowerPC),

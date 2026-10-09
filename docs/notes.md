@@ -1738,9 +1738,10 @@ ones as invariants. Those that no test asserts are marked untested.
                                # zip, and unzip end to end (their
                                # out-of-memory tests with the release
                                # builds, where ulimit works) (needs
-                               # zlib, libdeflate, /usr/bin/gzip,
-                               # Info-ZIP unzip and zipinfo; optional
-                               # Python, which crafts unzip's archives)
+                               # zlib, /usr/bin/gzip, Info-ZIP unzip
+                               # and zipinfo; optional libdeflate,
+                               # which cross-checks tests, and Python,
+                               # which crafts unzip's archives)
     SLOW=1 sh test/cli.sh build/gzip   # adds a 5 GiB stream (>4 GiB offsets)
     cmake -B build-w64 -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-x86_64.cmake
                                # Win32 builds (or cmake -G Ninja natively

@@ -1,7 +1,10 @@
 // Test suite for tugz
 // On success prints "all tests pass" and exits with status zero. A
-// failure traps, so run under a debugger to examine it.
-// $ cc -g3 -fsanitize=address,undefined -o tests test/tests.c -lz -ldeflate
+// failure traps, so run under a debugger to examine it. libdeflate, a
+// second reference, is optional: without TUGZ_HAVE_LIBDEFLATE defined,
+// its cross-checks are skipped.
+// $ cc -g3 -fsanitize=address,undefined -DTUGZ_HAVE_LIBDEFLATE
+//      -o tests test/tests.c -lz -ldeflate
 #include "../src/base.c"
 #include "../src/crc32.c"
 #include "../src/adler32.c"
@@ -12,7 +15,9 @@
 #include "../src/gzipio.c"
 #include "../src/cli.c"
 
-#include <libdeflate.h>
+#if TUGZ_HAVE_LIBDEFLATE
+#  include <libdeflate.h>
+#endif
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2052,6 +2057,7 @@ static void test_inflate_zlib(os *ctx, arena a)
                 }
             }
 
+#if TUGZ_HAVE_LIBDEFLATE
             // libdeflate levels 0..12
             for (i32 level = 0; level <= 12; level++) {
                 struct libdeflate_compressor *c =
@@ -2067,6 +2073,7 @@ static void test_inflate_zlib(os *ctx, arena a)
                 free(z);
                 libdeflate_free_compressor(c);
             }
+#endif
             free(p);
         }
     }
@@ -2085,6 +2092,7 @@ static void check_roundtrip(os *ctx, arena a, u8 *p, iz len, i32 level)
     TEST(equals(out, p, len));
     free(out.s);
 
+#if TUGZ_HAVE_LIBDEFLATE
     struct libdeflate_decompressor *dd = libdeflate_alloc_decompressor();
     u8 *buf = malloc((uz)len + 1);
     uz actual = 0;
@@ -2093,6 +2101,7 @@ static void check_roundtrip(os *ctx, arena a, u8 *p, iz len, i32 level)
     TEST(actual==(uz)len && (!len || !memcmp(buf, p, (uz)len)));
     free(buf);
     libdeflate_free_decompressor(dd);
+#endif
     free(gz.s);
 }
 
@@ -3515,6 +3524,9 @@ int main(void)
     test_roundtrip(&ctx, a);
 
     free(a.beg);
+#if !TUGZ_HAVE_LIBDEFLATE
+    puts("libdeflate checks skipped: built without TUGZ_HAVE_LIBDEFLATE");
+#endif
     puts("all tests pass");
     return 0;
 }
