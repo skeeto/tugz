@@ -15,6 +15,10 @@ typedef struct {
     c16 altname[14];
 } find_data;
 
+typedef void (__stdcall *w32proc)(void);
+
+// Only functions that Windows XP has are imported: see winapi for the
+// newer ones, looked up at run time.
 #define W32(r) __declspec(dllimport) r __stdcall
 W32(b32)    CloseHandle(iptr);
 W32(c16 **) CommandLineToArgvW(c16 *, i32 *);
@@ -30,16 +34,16 @@ W32(u32)    GetFullPathNameW(c16 *, u32, c16 *, c16 **);
 W32(u32)    GetFileAttributesW(c16 *);
 W32(b32)    GetConsoleMode(iptr, u32 *);
 W32(b32)    GetFileInformationByHandle(iptr, void *);
-W32(b32)    GetFileInformationByHandleEx(iptr, i32, void *, u32);
 W32(u32)    GetFileType(iptr);
 W32(u32)    GetLastError(void);
+W32(iptr)   GetModuleHandleW(c16 const *);
 W32(b32)    GetNamedPipeHandleStateW(iptr, u32 *, u32 *, u32 *, u32 *, c16 *,
                                      u32);
+W32(w32proc) GetProcAddress(iptr, char const *);
 W32(iptr)   GetStdHandle(u32);
 W32(i32)    LCMapStringW(u32, u32, c16 const *, i32, c16 *, i32);
 W32(b32)    ReadConsoleW(iptr, c16 *, u32, u32 *, uptr);
 W32(b32)    ReadFile(iptr, void *, u32, u32 *, uptr);
-W32(b32)    SetFileInformationByHandle(iptr, i32, void *, u32);
 W32(b32)    SetNamedPipeHandleState(iptr, u32 *, u32 *, u32 *);
 W32(void)   SetLastError(u32);
 W32(void *) VirtualAlloc(uptr, iz, u32, u32);
@@ -92,10 +96,16 @@ W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
 #define MEM_RESERVE                0x2000u
 #define PAGE_READWRITE             4u
 
+// FILE_INFO_BY_HANDLE_CLASS, of GetFileInformationByHandleEx and
+// SetFileInformationByHandle
 enum {
     FileBasicInfo        = 0,
+    FileRenameInfo       = 3,
     FileDispositionInfo  = 4,
+    FileEndOfFileInfo    = 6,
     FileAttributeTagInfo = 9,
+    FileIdInfo           = 18,
+    FileRenameInfoEx     = 22,
 };
 
 typedef struct {
@@ -127,6 +137,46 @@ static b32 reparse_link(attribute_tag_info tag)
            (tag.reparse_tag & IO_REPARSE_TAG_SURROGATE);
 }
 
+typedef struct {
+    u32  flags;  // FileRenameInfoEx, else a BOOLEAN ReplaceIfExists
+    iptr root;
+    u32  len;    // bytes
+    c16  name[];
+} rename_info;
+
+typedef struct {
+    uptr status;  // an NTSTATUS, or a pointer
+    uptr information;
+} io_status;
+
+typedef struct {
+    u16  len, cap;  // bytes
+    c16 *s;
+} unicode_string;
+
+// Functions newer than Windows XP (Vista's), looked up at run time so
+// that the programs import only XP's, and where they are missing, the
+// native functions of ntdll, which every version has, through which they
+// work. Defining TUGZ_FORCE_XP pretends that Vista's are missing, and
+// that FindFirstFileExW takes only XP's arguments (find_first), to test
+// the fallbacks on a newer Windows. A function not found is null.
+typedef struct {
+    b32 (__stdcall *getinfo)(iptr, i32, void *, u32);   // ...ByHandleEx
+    b32 (__stdcall *setinfo)(iptr, i32, void *, u32);   // ...ByHandle
+    u32 (__stdcall *finalpath)(iptr, c16 *, u32, u32);  // ...NameByHandleW
+    i32 (__stdcall *ntquery)(iptr, io_status *, void *, u32, i32);
+    i32 (__stdcall *ntset)(iptr, io_status *, void *, u32, i32);
+    i32 (__stdcall *ntname)(iptr, i32, void *, u32, u32 *);  // NtQueryObject
+    u32 (__stdcall *doserror)(i32);  // RtlNtStatusToDosError
+    b32 oldfind;  // FindFirstFileExW has refused Windows 7's arguments
+} winapi;
+
+#ifdef TUGZ_FORCE_XP
+enum { FORCE_XP = 1 };
+#else
+enum { FORCE_XP = 0 };
+#endif
+
 enum { MAX_HANDLES = 8 };
 
 struct os {
@@ -142,7 +192,101 @@ struct os {
     iptr  guard;       // zip's archive, held so that it can be replaced
     byte *lo;          // zip: the uncommitted middle of its memory
     byte *hi;
+    winapi api;
 };
+
+// Look up the functions of winapi, once (os_init).
+static void load_api(winapi *w)
+{
+    iptr k32 = GetModuleHandleW(L"kernel32.dll");
+    iptr nt  = GetModuleHandleW(L"ntdll.dll");  // in every process
+    if (!FORCE_XP && k32) {
+        w->getinfo   = (b32 (__stdcall *)(iptr, i32, void *, u32))
+                       GetProcAddress(k32, "GetFileInformationByHandleEx");
+        w->setinfo   = (b32 (__stdcall *)(iptr, i32, void *, u32))
+                       GetProcAddress(k32, "SetFileInformationByHandle");
+        w->finalpath = (u32 (__stdcall *)(iptr, c16 *, u32, u32))
+                       GetProcAddress(k32, "GetFinalPathNameByHandleW");
+    }
+    if (nt) {
+        w->ntquery  = (i32 (__stdcall *)(iptr, io_status *, void *, u32, i32))
+                      GetProcAddress(nt, "NtQueryInformationFile");
+        w->ntset    = (i32 (__stdcall *)(iptr, io_status *, void *, u32, i32))
+                      GetProcAddress(nt, "NtSetInformationFile");
+        w->ntname   = (i32 (__stdcall *)(iptr, i32, void *, u32, u32 *))
+                      GetProcAddress(nt, "NtQueryObject");
+        w->doserror = (u32 (__stdcall *)(i32))
+                      GetProcAddress(nt, "RtlNtStatusToDosError");
+    }
+}
+
+// The FILE_INFORMATION_CLASS of a FILE_INFO_BY_HANDLE_CLASS, whose
+// structure is the same, or zero where XP has none.
+static i32 ntclass(i32 cls)
+{
+    switch (cls) {
+    case FileBasicInfo:        return 4;   // FileBasicInformation
+    case FileRenameInfo:       return 10;  // FileRenameInformation
+    case FileDispositionInfo:  return 13;  // FileDispositionInformation
+    case FileEndOfFileInfo:    return 20;  // FileEndOfFileInformation
+    case FileAttributeTagInfo: return 35;  // FileAttributeTagInformation
+    }
+    return 0;  // FileIdInfo, FileRenameInfoEx: refused, as Windows 7 does
+}
+
+// The result of a native call, its status, as the Win32 one would give it.
+static b32 ntresult(winapi *w, i32 status)
+{
+    if (status < 0) {  // an error or a warning, not NT_SUCCESS
+        SetLastError(w->doserror ? w->doserror(status)
+                                 : ERROR_INVALID_FUNCTION);
+        return 0;
+    }
+    return 1;
+}
+
+// GetFileInformationByHandleEx, or as it does, NtQueryInformationFile.
+static b32 get_info(os *ctx, iptr h, i32 cls, void *buf, u32 len)
+{
+    winapi *w = &ctx->api;
+    if (w->getinfo) {
+        return w->getinfo(h, cls, buf, len);
+    } else if (!ntclass(cls) || !w->ntquery) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    io_status io = {0};
+    return ntresult(w, w->ntquery(h, &io, buf, len, ntclass(cls)));
+}
+
+// SetFileInformationByHandle, or as it does, NtSetInformationFile, which
+// renames to an NT path, where it renames to a Win32 one. Each name to
+// rename to is a \\?\ path (winpath), which is \??\ in NT.
+static b32 set_info(os *ctx, iptr h, i32 cls, void *buf, u32 len)
+{
+    winapi *w = &ctx->api;
+    if (w->setinfo) {
+        return w->setinfo(h, cls, buf, len);
+    } else if (!ntclass(cls) || !w->ntset) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    c16 *name = 0;
+    if (cls == FileRenameInfo) {
+        rename_info *ri = buf;
+        name = ri->len>=8 && ri->name[0]=='\\' && ri->name[1]=='\\' &&
+               ri->name[2]=='?' && ri->name[3]=='\\' ? ri->name : 0;
+    }
+    if (name) {
+        name[1] = '?';
+    }
+    io_status io = {0};
+    i32 status = w->ntset(h, &io, buf, len, ntclass(cls));
+    if (name) {
+        name[1] = '\\';
+    }
+    return ntresult(w, status);
+}
 
 typedef struct {
     c16 *s;
@@ -447,7 +591,7 @@ static c16 *winpath(arena *a, s8 path)
 }
 
 // Returns zero and a handle, or an OS_E* code.
-static i32 open_input(c16 *wpath, i32 mode, iptr *out)
+static i32 open_input(os *ctx, c16 *wpath, i32 mode, iptr *out)
 {
     u32 flags = FILE_ATTRIBUTE_NORMAL;
     flags |= mode & OS_NOFOLLOW ? FILE_FLAG_OPEN_REPARSE : 0;
@@ -466,13 +610,13 @@ static i32 open_input(c16 *wpath, i32 mode, iptr *out)
         // Refuse links, but other reparse points (e.g. cloud placeholder
         // files) are ordinary files: reopen those normally.
         attribute_tag_info tag = {0};
-        GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof(tag));
+        get_info(ctx, h, FileAttributeTagInfo, &tag, sizeof(tag));
         if (tag.attributes & FILE_ATTRIBUTE_REPARSE) {
             CloseHandle(h);
             if (reparse_link(tag)) {
                 return OS_ESYMLINK;
             }
-            return open_input(wpath, mode & ~OS_NOFOLLOW, out);
+            return open_input(ctx, wpath, mode & ~OS_NOFOLLOW, out);
         }
     }
 
@@ -523,7 +667,7 @@ static i32 open_input(c16 *wpath, i32 mode, iptr *out)
 // reparse point that is a directory (a cloud placeholder holds files).
 // Returns whether the file was deleted, and if not, leaves why in the
 // last error.
-static b32 remove_file(c16 *wpath)
+static b32 remove_file(os *ctx, c16 *wpath)
 {
     if (DeleteFileW(wpath)) {
         return 1;
@@ -551,8 +695,7 @@ static b32 remove_file(c16 *wpath)
         return 0;
     }
     attribute_tag_info tag = {0};
-    b32 ok = GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag,
-                                          sizeof(tag));
+    b32 ok = get_info(ctx, h, FileAttributeTagInfo, &tag, sizeof(tag));
     if (link) {
         ok = ok && (tag.attributes & FILE_ATTRIBUTE_DIRECTORY) &&
              reparse_link(tag);
@@ -571,18 +714,14 @@ static b32 remove_file(c16 *wpath)
     basic_info info = {0};
     info.attributes = FILE_ATTRIBUTE_NORMAL;
     if (!(tag.attributes & FILE_ATTRIBUTE_READONLY)) {
-        deleted = SetFileInformationByHandle(h, FileDispositionInfo,
-                                             &discard, 1);
+        deleted = set_info(ctx, h, FileDispositionInfo, &discard, 1);
         err = GetLastError();
-    } else if (SetFileInformationByHandle(h, FileBasicInfo, &info,
-                                          sizeof(info))) {
-        deleted = SetFileInformationByHandle(h, FileDispositionInfo,
-                                             &discard, 1);
+    } else if (set_info(ctx, h, FileBasicInfo, &info, sizeof(info))) {
+        deleted = set_info(ctx, h, FileDispositionInfo, &discard, 1);
         err = GetLastError();
         if (!link || !deleted) {
             info.attributes = tag.attributes;
-            SetFileInformationByHandle(h, FileBasicInfo, &info,
-                                       sizeof(info));
+            set_info(ctx, h, FileBasicInfo, &info, sizeof(info));
         }
     } else {
         err = GetLastError();
@@ -598,7 +737,7 @@ static b32 remove_file(c16 *wpath)
 static i32 open_output(os *ctx, i32 fd, c16 *wpath, i32 mode)
 {
     u32 kept = 0;  // why a name to replace could not be removed
-    if (mode & OS_FORCE && !remove_file(wpath)) {
+    if (mode & OS_FORCE && !remove_file(ctx, wpath)) {
         // Replace rather than write through a link
         kept = GetLastError();
         kept = kept==ERROR_FILE_NOT_FOUND ? 0 : kept;
@@ -638,8 +777,7 @@ static i32 open_output(os *ctx, i32 fd, c16 *wpath, i32 mode)
         return OS_ERR;
     }
     u8 discard = 1;
-    if (!SetFileInformationByHandle(h, FileDispositionInfo,
-                                    &discard, sizeof(discard))) {
+    if (!set_info(ctx, h, FileDispositionInfo, &discard, sizeof(discard))) {
         CloseHandle(h);
         DeleteFileW(wpath);
         return OS_ERR;
@@ -664,7 +802,7 @@ static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
         return open_output(ctx, fd, wpath, mode);
     }
     iptr h = 0;
-    i32 err = open_input(wpath, mode, &h);
+    i32 err = open_input(ctx, wpath, mode, &h);
     if (err) {
         // A wildcard that matched nothing stays as it is, as a POSIX
         // shell leaves it, and as there names no file, though Windows
@@ -698,8 +836,8 @@ static b32 os_close(os *ctx, i32 fd)
 [[maybe_unused]] static b32 os_keep(os *ctx, i32 fd)
 {
     u8 keep = 0;
-    return SetFileInformationByHandle(ctx->handles[fd], FileDispositionInfo,
-                                      &keep, sizeof(keep));
+    return set_info(ctx, ctx->handles[fd], FileDispositionInfo, &keep,
+                    sizeof(keep));
 }
 
 // Read a console as UTF-16, converted to WTF-8, since ReadFile would
@@ -922,7 +1060,7 @@ static s8 os_error(os *ctx)
         SetLastError(ERROR_INVALID_NAME);  // as in os_open
         return 0;
     }
-    return remove_file(wpath);
+    return remove_file(ctx, wpath);
 }
 
 // Unix seconds from a FILETIME, rounding down.
@@ -930,6 +1068,29 @@ static i64 unixtime(u32 const ft[2])
 {
     i64 t = (i64)((u64)ft[1]<<32 | ft[0]) - 116444736000000000;
     return t>=0 ? t/10000000 : -((-t + 9999999)/10000000);
+}
+
+// The first entry of a listing, which skips short names, fetching many
+// entries at a time, with Windows 7's FindExInfoBasic and
+// FIND_FIRST_EX_LARGE_FETCH. Older versions refuse both as an invalid
+// parameter: then list as they do, from then on once that works.
+static iptr find_first(os *ctx, c16 *pattern, find_data *fd)
+{
+    if (ctx->api.oldfind) {
+        return FindFirstFileExW(pattern, 0, fd, 0, 0, 0);
+    }
+    iptr h = INVALID_HANDLE_VALUE;
+    if (FORCE_XP) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+    } else {
+        h = FindFirstFileExW(pattern, 1, fd, 0, 0, FIND_FIRST_EX_LARGE_FETCH);
+    }
+    if (h==INVALID_HANDLE_VALUE && GetLastError()==ERROR_INVALID_PARAMETER) {
+        h = FindFirstFileExW(pattern, 0, fd, 0, 0, 0);
+        ctx->api.oldfind |= h!=INVALID_HANDLE_VALUE ||
+                            GetLastError()!=ERROR_INVALID_PARAMETER;
+    }
+    return h;
 }
 
 // Hidden and system entries are judged by the attributes in the listing,
@@ -951,7 +1112,6 @@ static i64 unixtime(u32 const ft[2])
 static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
                              arena *a)
 {
-    (void)ctx;
     arena tmp   = *a;
     c16  *wpath = winpath(&tmp, path);
     if (!wpath) {
@@ -970,8 +1130,7 @@ static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
     u8 *last  = first;                              // and end
     iz  n     = 0;
     find_data fd = {0};
-    iptr h = FindFirstFileExW(pattern, 1, &fd, 0, 0,
-                              FIND_FIRST_EX_LARGE_FETCH);
+    iptr h = find_first(ctx, pattern, &fd);
     if (h == INVALID_HANDLE_VALUE) {
         // Nothing matched: an empty directory without . and .., such as
         // an empty drive's root. A missing directory is PATH_NOT_FOUND.
@@ -1065,9 +1224,10 @@ static void os_exit(os *ctx, i32 status)
     ExitProcess((u32)status);
 }
 
-// Initialize standard handles.
+// Initialize standard handles, and find the functions XP lacks.
 static void os_init(os *ctx)
 {
+    load_api(&ctx->api);
     ctx->handles[0] = GetStdHandle((u32)-10);
     ctx->handles[1] = GetStdHandle((u32)-11);
     ctx->handles[2] = GetStdHandle((u32)-12);

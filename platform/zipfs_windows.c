@@ -27,8 +27,6 @@ W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 #define MB_ERR_INVALID_CHARS       0x8u
 #define ERROR_ENVVAR_NOT_FOUND     203u
 
-enum { FileIdInfo = 18 };
-
 // zip's memory is one reserved range of address space, committed a
 // chunk at a time as it is used, so that the commit charge grows with
 // use: perm from the bottom up, and scratch from the top down. As much
@@ -80,12 +78,12 @@ static void os_extend(os *ctx, arena *a, iz need)
     }
 }
 
-static b32 handle_info(iptr h, os_info *info)
+static b32 handle_info(os *ctx, iptr h, os_info *info)
 {
     by_handle_info bh = {0};
     file_id_info   id = {0};
     b32 ok   = GetFileInformationByHandle(h, &bh);
-    b32 isid = GetFileInformationByHandleEx(h, FileIdInfo, &id, sizeof(id));
+    b32 isid = get_info(ctx, h, FileIdInfo, &id, sizeof(id));
     u32 type = GetFileType(h);
     if (!ok && (type==FILE_TYPE_DISK || type==FILE_TYPE_UNKNOWN)) {
         return 0;
@@ -128,7 +126,6 @@ static b32 handle_info(iptr h, os_info *info)
 static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
                    arena scratch)
 {
-    (void)ctx;
     c16 *wpath = winpath(&scratch, path);
     if (!wpath) {
         SetLastError(ERROR_INVALID_NAME);  // no file can have it
@@ -150,11 +147,10 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
         info->type = FT_OTHER;
         return 1;
     }
-    b32 ok = handle_info(h, info);
+    b32 ok = handle_info(ctx, h, info);
     attribute_tag_info tag = {0};
     if (ok && !follow && (info->attr & FILE_ATTRIBUTE_REPARSE) &&
-        GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag,
-                                     sizeof(tag)) &&
+        get_info(ctx, h, FileAttributeTagInfo, &tag, sizeof(tag)) &&
         reparse_link(tag)) {
         info->type = FT_LINK;
     }
@@ -164,7 +160,7 @@ static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
 
 static b32 os_fstat(os *ctx, i32 fd, os_info *info)
 {
-    return handle_info(ctx->handles[fd], info);
+    return handle_info(ctx, ctx->handles[fd], info);
 }
 
 static i32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)

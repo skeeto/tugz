@@ -64,6 +64,8 @@ option(TUGZ_DEFLATE64 "Decode Deflate64 in the library (TUGZ_RAW64)" OFF)
 set(TUGZ_LIBMEMORY AUTO CACHE STRING
     "Link Windows programs with w64devkit's libmemory (AUTO, ON, OFF)")
 set_property(CACHE TUGZ_LIBMEMORY PROPERTY STRINGS AUTO ON OFF)
+option(TUGZ_FORCE_XP
+    "Windows programs take their Windows XP fallbacks, to test them" OFF)
 
 include(CheckCSourceCompiles)
 include(CMakePushCheckState)
@@ -171,6 +173,9 @@ function(tugz_crtfree tgt)
     cmake_parse_arguments(PARSE_ARGV 1 arg NOSTRIP "" "")
     target_compile_options(${tgt} PRIVATE
         -fno-builtin -fno-asynchronous-unwind-tables)
+    if(TUGZ_FORCE_XP)
+        target_compile_definitions(${tgt} PRIVATE TUGZ_FORCE_XP)
+    endif()
     if(tugz_msvc_abi)
         # lld-link or link.exe, which strip unless asked for /DEBUG
         target_link_options(${tgt} PRIVATE -nostartfiles LINKER:/OPT:REF)
@@ -503,6 +508,10 @@ if(TUGZ_BUILD_TESTS)
         add_test(NAME zip-windows
             COMMAND ${TUGZ_SH} ${PROJECT_SOURCE_DIR}/test/zip_windows.sh
                     $<TARGET_FILE:${zip}>)
+        if(TUGZ_FORCE_XP)
+            set_tests_properties(zip-windows PROPERTIES
+                ENVIRONMENT "TUGZ_FORCE_XP=1")
+        endif()
         if(TARGET tugz_unzip)
             set(unzip tugz_unzip)
         else()

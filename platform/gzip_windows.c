@@ -30,8 +30,8 @@ struct osmeta {
 static osmeta *os_getmeta(os *ctx, i32 fd, arena *a)
 {
     osmeta *m = new(a, 1, osmeta);
-    b32 ok = GetFileInformationByHandleEx(ctx->handles[fd], FileBasicInfo,
-                                          &m->info, sizeof(m->info));
+    b32 ok = get_info(ctx, ctx->handles[fd], FileBasicInfo, &m->info,
+                      sizeof(m->info));
     return ok ? m : 0;
 }
 
@@ -53,8 +53,7 @@ static b32 os_setmeta(os *ctx, i32 fd, osmeta *m)
     if (m->info.attributes & kept) {
         set.attributes = (m->info.attributes & kept) | FILE_ATTRIBUTE_ARCHIVE;
     }
-    return SetFileInformationByHandle(ctx->handles[fd], FileBasicInfo,
-                                      &set, sizeof(set));
+    return set_info(ctx, ctx->handles[fd], FileBasicInfo, &set, sizeof(set));
 }
 
 // A match: its path packed after the last, with a terminator, in the

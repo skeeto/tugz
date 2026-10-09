@@ -13,27 +13,13 @@
 #include "windows.c"
 #include "zipfs_windows.c"
 
-typedef struct {
-    u32  flags;  // FileRenameInfoEx, else a BOOLEAN ReplaceIfExists
-    iptr root;
-    u32  len;    // bytes
-    c16  name[];
-} rename_info;
-
 W32(b32)  FlushFileBuffers(iptr);
-W32(u32)  GetFinalPathNameByHandleW(iptr, c16 *, u32, u32);
 
 #define FILE_ATTRIBUTE_ARCHIVE     0x20u
 #define FILE_ATTRIBUTE_NOT_INDEXED 0x2000u
 #define FILE_FLAG_DELETE_ON_CLOSE  0x04000000u
 #define FILE_RENAME_REPLACE        1u
 #define FILE_RENAME_POSIX          2u
-
-enum {
-    FileRenameInfo    = 3,
-    FileEndOfFileInfo = 6,
-    FileRenameInfoEx  = 22,
-};
 
 static s8 os_readlink(os *ctx, s8 path, arena *a)
 {
@@ -45,14 +31,36 @@ static s8 os_readlink(os *ctx, s8 path, arena *a)
 
 // The final path of an open file, a \\?\ path, with its volume named
 // one way: as a drive letter path (DOS), by its GUID, or by its NT
-// device. Null if the system has no such name for it.
+// device. Null if the system has no such name for it. XP, which lacks
+// GetFinalPathNameByHandleW, has only the NT one, from the object
+// manager (NtQueryObject's ObjectNameInformation): the path past any
+// junctions, as GetFinalPathNameByHandleW gives it, but for any short
+// names and the case of each name, which stay as they were opened.
 enum { VOLUME_NAME_DOS, VOLUME_NAME_GUID, VOLUME_NAME_NT };
-static c16 *final_path(iptr h, u32 how, arena *a)
+static c16 *final_path(os *ctx, iptr h, u32 how, arena *a)
 {
-    u32  cap = GetFinalPathNameByHandleW(h, 0, 0, how);  // including the null
-    c16 *buf = cap ? new(a, cap, c16) : 0;
-    u32  len = buf ? GetFinalPathNameByHandleW(h, buf, cap, how) : 0;
-    return len && len<cap ? buf : 0;
+    winapi *w = &ctx->api;
+    if (w->finalpath) {
+        u32  cap = w->finalpath(h, 0, 0, how);  // including the null
+        c16 *buf = cap ? new(a, cap, c16) : 0;
+        u32  len = buf ? w->finalpath(h, buf, cap, how) : 0;
+        return len && len<cap ? buf : 0;
+    } else if (how!=VOLUME_NAME_NT || !w->ntname) {
+        return 0;
+    }
+
+    // A UNICODE_STRING, then the name, at most 65,534 bytes
+    u32 cap = (u32)sizeof(unicode_string) + 0x10000;
+    unicode_string *name = (unicode_string *)newbytes(a, cap);
+    u32 len = 0;
+    if (!ntresult(w, w->ntname(h, 1, name, cap, &len)) || !name->len) {
+        return 0;
+    }
+    iz   n = name->len / 2;
+    c16 *r = new(a, n+1, c16);
+    bytecopy(r, name->s, n*(iz)sizeof(c16));
+    r[n] = 0;
+    return r;
 }
 
 // A link (or junction) at the end of the path is followed by opening the
@@ -92,9 +100,9 @@ static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
         return (s8){0};  // e.g. a loop
     }
     u32  how    = VOLUME_NAME_DOS;
-    c16 *target = final_path(h, how, &scratch);
+    c16 *target = final_path(ctx, h, how, &scratch);
     while (!target && how<VOLUME_NAME_NT) {
-        target = final_path(h, ++how, &scratch);
+        target = final_path(ctx, h, ++how, &scratch);
     }
     CloseHandle(h);
     if (!target) {
@@ -113,7 +121,7 @@ static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
                             OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0);
     s16 base = {0};
     if (dh != INVALID_HANDLE_VALUE) {
-        c16 *final = final_path(dh, how, &scratch);
+        c16 *final = final_path(ctx, dh, how, &scratch);
         base = final ? s16lit(final) : base;
         CloseHandle(dh);
     }
@@ -141,7 +149,6 @@ static s8 os_resolve(os *ctx, s8 path, arena *perm, arena scratch)
 // still tell files apart, following links as os_stat does.
 static s8 os_fullpath(os *ctx, s8 path, arena *perm, arena scratch)
 {
-    (void)ctx;
     c16 *wpath = winpath(&scratch, path);
     iptr h     = !wpath ? INVALID_HANDLE_VALUE :
                  CreateFileW(wpath, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, 0,
@@ -151,7 +158,7 @@ static s8 os_fullpath(os *ctx, s8 path, arena *perm, arena scratch)
     }
     c16 *full = 0;
     for (u32 how = VOLUME_NAME_DOS; !full && how<=VOLUME_NAME_NT; how++) {
-        full = final_path(h, how, &scratch);
+        full = final_path(ctx, h, how, &scratch);
     }
     CloseHandle(h);
     return full ? towtf8(perm, full) : (s8){0};
@@ -212,8 +219,8 @@ static b32 os_writeat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
 
 static b32 os_truncate(os *ctx, i32 fd, i64 len)
 {
-    return SetFileInformationByHandle(ctx->handles[fd], FileEndOfFileInfo,
-                                      &len, sizeof(len));
+    return set_info(ctx, ctx->handles[fd], FileEndOfFileInfo, &len,
+                    sizeof(len));
 }
 
 // Rename by handle while the file is still open, replacing the target
@@ -260,7 +267,7 @@ static i32 os_commit(os *ctx, i32 fd, s8 temp, s8 path, b32 replace,
     if (old!=INVALID_FILE_ATTRIBUTES && (old & kept)) {
         basic_info info = {0};
         info.attributes = (old & kept) | FILE_ATTRIBUTE_ARCHIVE;
-        SetFileInformationByHandle(h, FileBasicInfo, &info, sizeof(info));
+        set_info(ctx, h, FileBasicInfo, &info, sizeof(info));
     }
 
     s16 name = s16lit(wpath);
@@ -272,26 +279,25 @@ static i32 os_commit(os *ctx, i32 fd, s8 temp, s8 path, b32 replace,
     bytecopy(ri->name, name.s, name.len*(iz)sizeof(c16));
 
     u8 keep = 0;
-    if (!SetFileInformationByHandle(h, FileDispositionInfo, &keep, 1)) {
+    if (!set_info(ctx, h, FileDispositionInfo, &keep, 1)) {
         u32 err = GetLastError();
         os_close(ctx, fd);  // still delete-pending
         release_guard(ctx);
         SetLastError(err);
         return COMMIT_EREPLACE;
     }
-    if (!SetFileInformationByHandle(h, FileRenameInfoEx, ri, (u32)size)) {
+    if (!set_info(ctx, h, FileRenameInfoEx, ri, (u32)size)) {
         // Older Windows, or a file system without POSIX semantics
         // (FAT, some SMB servers), which also refuses while os_writable
         // holds the archive
         release_guard(ctx);
         ri->flags = !!replace;  // ReplaceIfExists
-        if (!SetFileInformationByHandle(h, FileRenameInfo, ri, (u32)size)) {
+        if (!set_info(ctx, h, FileRenameInfo, ri, (u32)size)) {
             // Discard it again, else, as when a network session has been
             // lost with the handle, delete it by name once closed
             u32 err     = GetLastError();
             u8  discard = 1;
-            b32 marked  = SetFileInformationByHandle(h, FileDispositionInfo,
-                                                     &discard, 1);
+            b32 marked  = set_info(ctx, h, FileDispositionInfo, &discard, 1);
             os_close(ctx, fd);
             if (!marked) {
                 DeleteFileW(wtemp);

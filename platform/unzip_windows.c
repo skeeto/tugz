@@ -133,15 +133,14 @@ static i32 os_setattrs(os *ctx, i32 fd, osattrs *attrs, s8 *why, arena *a)
         return 0;
     }
     basic_info info = basic(attrs, flags);
-    if (SetFileInformationByHandle(h, FileBasicInfo, &info, sizeof(info))) {
+    if (set_info(ctx, h, FileBasicInfo, &info, sizeof(info))) {
         return 0;
     }
     i32 failed = 0;
     for (i32 f = OS_AMODE; f <= OS_ATIMES; f <<= 1) {
         info = basic(attrs, f);
         if ((flags & f) &&
-            !SetFileInformationByHandle(h, FileBasicInfo, &info,
-                                        sizeof(info))) {
+            !set_info(ctx, h, FileBasicInfo, &info, sizeof(info))) {
             failure(ctx, f, why, a);
             failed |= f;
         }
@@ -176,8 +175,7 @@ static i32 os_setdirattrs(os *ctx, s8 path, osattrs *attrs, s8 *why,
         return flags;
     }
     attribute_tag_info tag = {0};
-    b32 ok = GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag,
-                                          sizeof(tag));
+    b32 ok = get_info(ctx, h, FileAttributeTagInfo, &tag, sizeof(tag));
     if (ok && (tag.attributes & FILE_ATTRIBUTE_REPARSE)) {
         ok = 0;
         SetLastError(ERROR_CANT_RESOLVE_FILENAME);
@@ -187,8 +185,7 @@ static i32 os_setdirattrs(os *ctx, s8 path, osattrs *attrs, s8 *why,
     }
     if (ok) {
         basic_info info = basic(attrs, flags);
-        ok = SetFileInformationByHandle(h, FileBasicInfo, &info,
-                                        sizeof(info));
+        ok = set_info(ctx, h, FileBasicInfo, &info, sizeof(info));
     }
     if (!ok) {
         failure(ctx, flags, why, a);

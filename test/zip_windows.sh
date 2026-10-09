@@ -4,6 +4,8 @@
 # in libdeflate issue #323), .NET's Expand-Archive, and tar (libarchive).
 # Also covers wildcards, hidden files, Unicode names, and long paths.
 # Usage: sh test/zip_windows.sh ./zip.exe
+# Set TUGZ_FORCE_XP=1 for a zip.exe built with that define, which names
+# files only as XP can (see the temporary file through a link).
 set -e
 
 unset ZIPOPT ZIP  # options for zip, and ZIP unexported for the binary
@@ -699,8 +701,13 @@ ls al/dist al/store | grep -q '^zi[0-9]' &&
 
 # Through a link, a temporary file that cannot be created is named as
 # the archive was, from its directory if the target is there, else by
-# a plain drive path (not \\?\)
+# a plain drive path (not \\?\), or before Vista, with no drive letter
+# path to the final file, by its NT device
 mkdir tf tfo
+elsewhere='.:\\.*\\tfo\\zi[0-9]*'
+if [ -n "$TUGZ_FORCE_XP" ]; then
+    elsewhere='\\\\?\\GLOBALROOT\\Device\\.*\\tfo\\zi[0-9]*'
+fi
 "$ZIP" -q tf/real.zip tree/a.txt
 "$ZIP" -q tfo/real.zip tree/a.txt
 if cmd /c 'mklink tf\in.zip real.zip' >/dev/null 2>&1; then
@@ -716,7 +723,7 @@ if cmd /c 'mklink tf\in.zip real.zip' >/dev/null 2>&1; then
     [ $st1 = 10 ] && grep -q 'Temporary file failure (tf/zi[0-9]*)' err1 ||
         fail "linked archive temp name: $st1 $(cat err1)"
     [ $st2 = 10 ] &&
-        grep -q 'Temporary file failure (.:\\.*\\tfo\\zi[0-9]*)' err2 ||
+        grep -q "Temporary file failure ($elsewhere)" err2 ||
         fail "linked archive temp name elsewhere: $st2 $(cat err2)"
     "$ZIP" -q tf/in.zip tree/b.txt
     [ -L tf/in.zip ] && [ "$(list tf/real.zip | wc -l)" = 2 ] ||
@@ -833,11 +840,22 @@ got=$(ps "(Get-Item -Force ha.zip).Attributes" | tr -d '\r')
     fail "replaced archive attributes: $got"
 
 # Replacing an archive that another process holds open with delete
-# sharing, as scanners and indexers do
-ps "\$f = [IO.File]::Open('m.zip', 'Open', 'Read', 'ReadWrite, Delete');
-    & '$ZIP' -q m.zip tree/one; \$s = \$LASTEXITCODE; \$f.Close();
-    exit \$s" || fail "replacing an archive held open"
-list m.zip | grep -q one || fail "archive held open: contents"
+# sharing, as scanners and indexers do, which takes the POSIX rename of
+# Windows 10: before it, the rename fails, leaving the archive as it was
+# and no temporary file
+held() {
+    ps "\$f = [IO.File]::Open('m.zip', 'Open', 'Read', 'ReadWrite, Delete');
+        & '$ZIP' -q m.zip tree/one 2>\$null; \$s = \$LASTEXITCODE;
+        \$f.Close(); exit \$s"
+}
+if [ -z "$TUGZ_FORCE_XP" ]; then
+    held || fail "replacing an archive held open"
+    list m.zip | grep -q one || fail "archive held open: contents"
+else
+    held && fail "replaced an archive held open without the POSIX rename"
+    list m.zip | grep -q one && fail "archive held open: contents changed"
+    ls | grep -q '^zi[0-9]' && fail "archive held open: temporary file left"
+fi
 
 # Concurrent runs in one directory: each skips the temporary file that
 # the other holds delete-pending
