@@ -402,6 +402,30 @@ write("csizepast.zip", build([
     Entry("r", b"x", method=0, csize=268435457,
           lsizes=(zlib.crc32(b"x"), 1, 1)),
     Entry("c.txt", TEXT, method=0)]))
+
+
+def past(where):
+    """An entry whose offset lies past where its local header could be,
+    at where(cdoff, size) for the archive's central directory offset and
+    size, between two that are fine."""
+    def entries(off):
+        return [Entry("a.txt", TEXT),
+                Entry("b.txt", b"bbb\n", method=0, offset=off),
+                Entry("c.txt", TEXT, method=0)]
+    z = build(entries(0))
+    cdoff = struct.unpack("<I", z[-6:-2])[0]
+    return build(entries(where(cdoff, len(z))))
+
+
+# Past the end of the file, where UnZip's read fails at the header
+# ("EOF"), or at its 8 KiB block ("lseek"), and where its block, from
+# its 32-bit offset, begins at 4 GiB - 8 KiB; in the central directory,
+# and in the end record
+write("pasteof.zip", past(lambda cdoff, size: size + 100))
+write("pastfar.zip", past(lambda cdoff, size: 1 << 30))
+write("pastmax.zip", past(lambda cdoff, size: 0xFFFFFFFE))
+write("pastcd.zip", past(lambda cdoff, size: cdoff + 10))
+write("pastend.zip", past(lambda cdoff, size: size - 20))
 nested = Entry("inner.txt", b"inner\n", method=0)
 outer = Entry("outer.bin", b"", method=0)
 body = nested.local_header() + nested.comp

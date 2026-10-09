@@ -1164,15 +1164,24 @@ for entries.
   bomb)" (12), and one in the central directory is found before anything
   is written, the `-d` directory included. Debian's UnZip finds overlaps
   entry by entry, as it reads them, and does not check the central
-  directory. The shared parser bounds only each local header by the
-  central directory for unzip (`zip_parse_header`'s `fit`), so that a
+  directory. The shared parser bounds neither entries' data nor their
+  local headers by the central directory for unzip (`zip_parse_header`'s
+  `fit`, and a bound of 2^62 on offsets, `ZAR_MAXOFF`), so that a
   compressed size reaching past it, even past the end of the file (up to
   2^63 - 1 with Zip64), is listed by `-l`, `-v`, and `-z` as UnZip lists
   it, where it once was "start of central directory not found" (3), and
   then found by this check, its arithmetic free of overflow, should the
   entry be read; zip still refuses it as the archive's structure, and
   `zip_parse_central` too (`unzip.sh`, `csizepast.zip`; `test_bomb`;
-  `ziptests`).
+  `ziptests`). So is an offset past the central directory listed: one
+  in it, or in the end records, is an overlap once read, as Debian's
+  UnZip finds it (`pastcd.zip`, `pastend.zip`), but one past the end of
+  the file is no entry to check: once read, it is UnZip's "bad zipfile
+  offset", where its read fails, at the 8 KiB block that holds the
+  header ("lseek"), or failing that, at the header ("EOF"), with UnZip's
+  status (3), and the other entries are read (`pasteof.zip`,
+  `pastfar.zip`, `pastmax.zip`; `test_past`), where that once ended the
+  directory there.
 - Decoding: an entry is read by its central header's method, flags,
   sizes, and CRC. Its local header gives the data's offset, its DOS time
   and extra fields (times and owner, as UnZip takes them from there),
@@ -1437,7 +1446,11 @@ ones as invariants. Those that no test asserts are marked untested.
   includes a central compressed size reaching past the central
   directory, which Info-ZIP's UnZip, listing it as tugz does, tests and
   extracts by its local header's size (12 for `-t`, `-p`, and
-  extraction, unless the entry is left out; `csizepast.zip`).
+  extraction, unless the entry is left out; `csizepast.zip`), and an
+  offset in the central directory or the end records, or too near the
+  directory to hold a local header before it, where Apple's UnZip finds
+  no local header there and reads the others (2; `pastcd.zip`,
+  `pastend.zip`, compared with a Debian `REF`).
 - Sizes: an entry is read by its central header's sizes, method, and
   CRC, the central directory checked whole first, rather than by its
   local header's, as UnZip reads it unless a data descriptor follows

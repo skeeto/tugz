@@ -1024,6 +1024,10 @@ static i32 list_files(unzip *u, zarchive *ar, arena scratch)
 
 enum { DIR_BLKSIZ = 16384 };  // entries checked, then processed
 
+// UnZip's input buffer, whose start, a multiple of its size, it seeks to
+// read an entry's local header
+enum { UZ_INBUFSIZ = 8192 };
+
 // The version of the format this reads, UnZip's UNZIP_VERSION with
 // Zip64, and VMS_UNZIP_VERSION.
 enum { UZ_CANDO = 45, UZ_CANDO_VMS = 42 };
@@ -1099,6 +1103,17 @@ static b32 store_info(unzip *u, zentry *e, s8 name, arena scratch)
         return 0;
     }
     return 1;
+}
+
+// Whether an entry's local header lies past the end of the archive, as
+// examined, where UnZip, seeking it, finds nothing, reports it, and goes
+// on to the next entry: an entry not read, so not among those whose
+// overlaps are checked (zar_spans), but reported as it comes (do_member).
+// One that begins anywhere before that end, in the central directory
+// too, is checked for overlaps, as Debian's UnZip checks it.
+static b32 beyond(zarchive *ar, zentry *e)
+{
+    return e->offset >= ar->size;
 }
 
 // The index of the entry to be read that begins at off (zar_spans), or
@@ -2131,6 +2146,19 @@ static i32 finish_dirs(unzip *u, arena scratch)
 static i32 do_member(unzip *u, zarchive *ar, zentry *e, s8 name, i64 filnum,
                      u8 *read, b32 *stop, arena scratch)
 {
+    if (beyond(ar, e)) {
+        // As UnZip's read fails there: at the 8 KiB block that holds
+        // it, if that too lies past the end ("lseek"), else at the
+        // header ("EOF"), neither re-compensated
+        i64 block = e->offset & -(i64)UZ_INBUFSIZ;
+        b32 seek  = block >= ar->size;
+        info(u, MSG_STDERR, JOIN(&scratch, S("file #"),
+             unum(&scratch, (u64)filnum, 0, 0), S(":  bad zipfile offset ("),
+             seek ? S("lseek") : S("EOF"), S("):  "),
+             znum(&scratch, seek ? block : e->offset), S("\n")));
+        return PK_BADERR;
+    }
+
     // As its central header is read again, it must be one that the
     // overlap check found, and read only once, lest the archive have
     // changed since
@@ -2218,7 +2246,7 @@ static void plan(unzip *u, zarchive *ar, arena *scratch)
         next_entry(u, ar, &off, &e, &tmp);
         s8     name = entry_name(u, &e, &tmp);
         def64 |= e.method == ZIP_DEFLATE64;
-        if (!readable(&e) || !wanted(u, name, 0, 0)) {
+        if (!readable(&e) || !wanted(u, name, 0, 0) || beyond(ar, &e)) {
             continue;
         }
         ar->spans[ar->nspans++] = e.offset;
@@ -2311,6 +2339,7 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
     // any are read, the least each could take, a local header and its
     // data, and once each local header is read, what it does take. No
     // two begin at once, and each ends by where the next one begins.
+    // (One that begins past the end of the file is not read: beyond.)
     plan(u, ar, &scratch);
     zar_spans(ar);
     u8 *read = new(&scratch, (ar->nspans+7)/8, u8);  // a bit for each
@@ -2326,7 +2355,8 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
         s8     name = entry_name(u, &e, &tmp);
         // (a compressed size, which listings take as it is, may reach
         // anywhere, up to 2^63: zar_overlaps subtracts)
-        bomb = readable(&e) && wanted(u, name, 0, 0) && zar_overlaps(ar, &e);
+        bomb = readable(&e) && wanted(u, name, 0, 0) && !beyond(ar, &e) &&
+               zar_overlaps(ar, &e);
     }
     if (bomb) {
         info(u, MSG_STDERR, bomb_msg);

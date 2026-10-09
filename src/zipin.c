@@ -278,8 +278,8 @@ typedef struct {
     i64     bad;     // the header that ZAR_EFORMAT refused, or -1
     i64     found;   // headers in a directory not of its count, or -1
     i64     shift;   // added to entries' offsets (unzip's extra bytes)
-    i64     cdlim;   // entries' local headers, and but for unzip, their
-                     // data, lie before this, as offsets read
+    i64     cdlim;   // entries' local headers and data lie before this,
+                     // as offsets read, but for unzip, ZAR_MAXOFF
     iz      maxhdr;  // the longest central header read
     zin     cd;      // the central directory's own window (zar_reread)
     i64    *spans;   // where entries to be read begin, ascending
@@ -292,6 +292,7 @@ typedef struct {
     b32     nosig64; // no Zip64 end record there either (ZAR_EFORMAT)
     i64     nread;   // central headers read, past the end record's count
     b32     endsig;  // an end signature follows the last header read
+    i64     size;    // of the archive, as examined
 } zarchive;
 
 // Results of reading an archive (zar_open, zar_entries, zar_local)
@@ -386,6 +387,7 @@ static i32 zar_open(zarchive *ar, os *ctx, i32 fd, i64 size, arena *perm)
     zin *in = &ar->in;
     ar->bad   = -1;
     ar->found = -1;
+    ar->size  = size;
     in->ctx   = ctx;
     if (!in->mem) {
         in->fd    = fd;
@@ -512,6 +514,11 @@ static i32 zar_miscount(zarchive *ar, i64 bad)
     return ZAR_EFORMAT;
 }
 
+// How far, for unzip, an entry's local header may lie, read as UnZip
+// reads it, wherever its offset says, even past the end of the file, but
+// short of overflowing once shifted
+#define ZAR_MAXOFF ((i64)1 << 62)
+
 // Read the central directory that zar_open found, given perm keeping its
 // entries there, else only checking them, as unzip does before reading
 // them again (zar_reread). Given a shift (ar->shift), the end record's
@@ -565,7 +572,7 @@ static i32 zar_walk(zarchive *ar, arena *perm, arena scratch)
     } else if ((u64)count > (uz)-1>>1) {
         os_oom(in->ctx);  // larger than the address space (32-bit hosts)
     }
-    ar->cdlim  = cdoff;
+    ar->cdlim  = ar->unzip ? ZAR_MAXOFF : cdoff;
     ar->maxhdr = 0;
     ar->nread  = 0;
     ar->endsig = 0;
@@ -577,8 +584,8 @@ static i32 zar_walk(zarchive *ar, arena *perm, arena scratch)
     for (i64 i = 0; past ? off<cdend : i<count; i++) {
         zentry *e   = perm ? ar->entries+i : &one;
         iz      len = 0;
-        i32     r   = zar_header(in, off, cdend, cdoff, !ar->unzip, in->cap,
-                                 e, &len);
+        i32     r   = zar_header(in, off, cdend, ar->cdlim, !ar->unzip,
+                                 in->cap, e, &len);
         if (r == ZAR_ENONAME) {
             ar->noname = i;
             return r;

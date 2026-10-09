@@ -560,6 +560,27 @@ sed 's/ -214748365% / -214748364% /' ref.out >ref.v
 cmp -s ours.st ref.st && cmp -s ours.out ref.v && cmp -s ours.err ref.err ||
     fail "-v csizepast.zip: $(diff ref.v ours.out)"
 
+# An entry whose offset lies past the end of the file is listed, and once
+# read, reported as UnZip reports it (3), the others read as they come;
+# one in the central directory or the end record is an overlap (12),
+# found before any entry is read, as Debian's UnZip finds it once it
+# gets there, where Apple's finds no local header there (2)
+for z in pasteof pastfar pastmax pastcd pastend; do
+    same -l $z.zip
+    same -v $z.zip
+done
+for z in pasteof pastfar pastmax; do
+    same -t $z.zip
+    same -tq $z.zip
+    same -p $z.zip
+done
+for z in pastcd pastend; do
+    printf 'Archive:  %s.zip\nerror: invalid zip file with overlapped components (possible zip bomb)\n' $z >want
+    ours 12 want none -t $z.zip
+    [ $debian = 0 ] || same -tq $z.zip
+    same -t $z.zip a.txt c.txt
+done
+
 # Output beyond an entry's size is not written: an overrun, which UnZip
 # writes out before finding the CRC wrong
 printf 'hello hell' >want
@@ -890,6 +911,10 @@ for z in overlap inner overlapcd csizepast; do
     xours 12 want want.err ../$z.zip
     [ ! -s ours.tree ] || fail "$z.zip: $(cat ours.tree)"
 done
+# An entry whose offset lies past the end of the file is reported, the
+# others extracted
+xsame ../pasteof.zip
+xsame ../pastfar.zip
 
 # A write that fails, here past a limit on file sizes (its signal
 # ignored), asks as UnZip does whether to go on (y), else stops, the

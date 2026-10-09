@@ -1665,6 +1665,42 @@ static void test_factor(os *ctx)
     free(mem);
 }
 
+// An entry whose offset lies past the end of the file is listed, and
+// once read, reported as UnZip reports it, the others read: at its
+// header ("EOF"), or at the 8 KiB block that holds it ("lseek").
+static void test_past(os *ctx)
+{
+    for (i32 far = 0; far < 2; far++) {
+        xspec spec[] = {
+            {.name="a.txt", .data=TEXT, .method=8},
+            {.name="b.txt", .data="bbb\n", .offset=(i64)1<<30},
+            {.name="c.txt", .data=TEXT},
+        };
+        s8  z = build(spec, countof(spec), 0);
+        u8 *b = z.s + get32(z.s+z.len-22+16) + 46+5;  // the second's header
+        put32(b+42, far ? 0xfffffffe : (u32)z.len+100);
+        mfs_reset(ctx);
+        put_archive(ctx, "a.zip", z);
+        UNZIP(ctx, 0, "-l", "a.zip");
+        TEST(output_has(ctx, 1, "3 files\n"));
+        char msg[64];
+        snprintf(msg, sizeof(msg),
+                 "file #2:  bad zipfile offset (%s):  %lld\n",
+                 far ? "lseek" : "EOF",
+                 far ? 0xffffe000ll : (long long)z.len+100);
+        UNZIP(ctx, 3, "-t", "a.zip");
+        TEST(output_has(ctx, 1, "    testing: a.txt                    OK\n"));
+        TEST(output_has(ctx, 1, msg));
+        TEST(output_has(ctx, 1, "    testing: c.txt                    OK\n"));
+        ctx->dest = S("out/");
+        UNZIP(ctx, 3, "-q", "-d", "out", "a.zip");
+        TEST(output_is(ctx, 2, msg));
+        TEST(mfs_get(ctx, "out/a.txt") && mfs_get(ctx, "out/c.txt"));
+        TEST(!mfs_get(ctx, "out/b.txt"));
+        free(z.s);
+    }
+}
+
 // Data decoding past an entry's size is all of it where a writer without
 // Zip64 wrapped that size to 32 bits: by 4 GiB or a multiple of it, the
 // size from its 32-bit field, the CRC right, and not stored (whose data
@@ -1733,6 +1769,7 @@ int main(void)
     test_comments(ctx);
     test_factor(ctx);
     test_wrapped(ctx);
+    test_past(ctx);
     test_local_name(ctx);
     unzipos_free(ctx);
     puts("all unzip program tests pass");
