@@ -120,6 +120,8 @@ static buf tcompress_with(tugz_deflator *d, u8 const *p, iz len,
     b.in = p;
     b.inlen = 1;
     TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_EUSAGE);
+    b.inlen = 0;
+    TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_DONE);  // not sticky
     return r;
 }
 
@@ -295,6 +297,11 @@ static void test_memory(void)
     TEST(!tugz_deflate_size(-1));
     TEST(!tugz_inflate_init(0, 1<<30, TUGZ_RAW));
     TEST(!tugz_deflate_init(0, 1<<30, TUGZ_RAW, 6));
+    // A state's size is the same for every format (but TUGZ_RAW64)
+    for (int format = TUGZ_ZLIB; format <= TUGZ_GZIP; format++) {
+        TEST(tugz_inflate_size(format) == tugz_inflate_size(TUGZ_RAW));
+        TEST(tugz_deflate_size(format) == tugz_deflate_size(TUGZ_RAW));
+    }
     test_misaligned();
 }
 
@@ -317,6 +324,29 @@ static void *test_alloc(void *ctx, void *ptr, ptrdiff_t old, ptrdiff_t new)
     TEST(ptr==st->last && old==st->size && !new);
     st->frees++;
     free(ptr);
+    return 0;
+}
+
+static void *fail_alloc(void *ctx, void *ptr, ptrdiff_t old, ptrdiff_t new)
+{
+    (void)ctx;
+    TEST(!ptr && !old && new>0);
+    return 0;
+}
+
+// Allocations an odd byte past malloc's, so misaligned.
+static void *odd_alloc(void *ctx, void *ptr, ptrdiff_t old, ptrdiff_t new)
+{
+    allocstats *st = ctx;
+    if (!ptr) {
+        TEST(!old && new>0);
+        st->allocs++;
+        u8 *p = malloc((uz)new + 1);
+        return p ? p+1 : 0;
+    }
+    TEST(old>0 && !new);
+    st->frees++;
+    free((u8 *)ptr - 1);
     return 0;
 }
 
@@ -344,7 +374,24 @@ static void test_allocator(void)
 
     TEST(!tugz_inflate_new(test_alloc, &st, 7));
     tugz_inflate_free(0, test_alloc, &st);
+    tugz_deflate_free(0, test_alloc, &st);
     TEST(st.allocs==1 && st.frees==1);
+
+    // A null allocation fails new, and memory need not be aligned
+    TEST(!tugz_inflate_new(fail_alloc, 0, TUGZ_GZIP));
+    TEST(!tugz_deflate_new(fail_alloc, 0, TUGZ_GZIP, 6));
+    st = (allocstats){0};
+    d = tugz_deflate_new(odd_alloc, &st, TUGZ_RAW, 6);
+    z = tugz_inflate_new(odd_alloc, &st, TUGZ_RAW);
+    TEST(d && z && st.allocs==2);
+    b = (tugz_buf){(u8 const *)"hello", 5, out, countof(out)};
+    TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_DONE);
+    b = (tugz_buf){out, countof(out)-b.outlen, back, countof(back)};
+    TEST(tugz_inflate(z, &b) == TUGZ_DONE);
+    TEST(b.outlen==3 && !memcmp(back, "hello", 5));
+    tugz_inflate_free(z, odd_alloc, &st);
+    tugz_deflate_free(d, odd_alloc, &st);
+    TEST(st.frees == 2);
 }
 
 // Levels outside 1-9 are reserved: init and new reject them, new without
@@ -786,6 +833,30 @@ static void test_gzip_errors(void)
     r = tdecompress(TUGZ_GZIP, c.s, c.len, 1, 1);
     TEST(r.status == TUGZ_ELENGTH);
     free(r.out.s);
+    c.s[c.len-4] ^= 1;
+    c.s[2] = 9;  // CM
+    r = tdecompress(TUGZ_GZIP, c.s, c.len, 0, 0);
+    TEST(r.status == TUGZ_EHEADER);
+    free(r.out.s);
+    c.s[2] = 8;
+
+    // A header CRC (FHCRC) is checked
+    u8 *h = malloc((uz)c.len + 2);
+    memcpy(h, c.s, 10);
+    h[3] = 2;
+    uLong hcrc = crc32(0, h, 10);
+    h[10] = (u8)hcrc;
+    h[11] = (u8)(hcrc >> 8);
+    memcpy(h+12, c.s+10, (uz)c.len-10);
+    r = tdecompress(TUGZ_GZIP, h, c.len+2, 0, 0);
+    TEST(r.status==TUGZ_DONE && same(r.out, (u8 const *)"abc", 3));
+    free(r.out.s);
+    h[11] ^= 1;
+    r = tdecompress(TUGZ_GZIP, h, c.len+2, 0, 0);
+    TEST(r.status == TUGZ_EHEADER);
+    free(r.out.s);
+    free(h);
+
     c.s[3] = 0x20;
     r = tdecompress(TUGZ_GZIP, c.s, c.len, 0, 0);
     TEST(r.status == TUGZ_EHEADER);
@@ -875,6 +946,24 @@ static void test_flush(void)
     TEST(ok && !o.len);
     free(o.s);
     free(mem);
+
+    // Only a repeat of an unfinished flush does not flush again: a
+    // no-input flush right after a completed one in the same mode adds
+    // another empty stored block
+    for (int fmode = TUGZ_SYNC; fmode <= TUGZ_FULL; fmode++) {
+        mem = mem_deflator(TUGZ_RAW, 6, &d);
+        b = (tugz_buf){text, 100, z, countof(z)};
+        TEST(tugz_deflate(d, &b, fmode) == TUGZ_DONE);
+        u8 *first = b.out;
+        TEST(!memcmp(first-4, "\0\0\xff\xff", 4));
+        TEST(tugz_deflate(d, &b, fmode) == TUGZ_DONE);
+        TEST(b.out-first==5 && !memcmp(first, "\0\0\0\xff\xff", 5));
+        TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_DONE);
+        result r = tdecompress(TUGZ_RAW, z, countof(z)-b.outlen, 0, 0);
+        TEST(r.status==TUGZ_DONE && same(r.out, text, 100));
+        free(r.out.s);
+        free(mem);
+    }
     free(text);
 }
 
@@ -2155,13 +2244,89 @@ static void test_usage(void)
     TEST(tugz_inflate(z, &b) == TUGZ_NEED_INPUT);
     b = (tugz_buf){0};
     TEST(tugz_inflate(z, &b) == TUGZ_NEED_INPUT);
+    TEST(tugz_inflate(z, 0) == TUGZ_EUSAGE);
+    u8 c[64];
+    b = (tugz_buf){0, 0, 0, -1};
+    TEST(tugz_inflate(z, &b) == TUGZ_EUSAGE);
+    b = (tugz_buf){0, 0, 0, 1};
+    TEST(tugz_inflate(z, &b) == TUGZ_EUSAGE);
     free(mem);
 
+    // Each misuse is refused, changing nothing, and the stream goes on
     tugz_deflator *d;
     mem = mem_deflator(TUGZ_RAW, 6, &d);
+    b = (tugz_buf){0};
     TEST(tugz_deflate(d, &b, 4) == TUGZ_EUSAGE);
+    TEST(tugz_deflate(d, &b, -1) == TUGZ_EUSAGE);
+    TEST(tugz_deflate(d, 0, TUGZ_FINISH) == TUGZ_EUSAGE);
+    TEST(tugz_deflate(0, &b, TUGZ_FINISH) == TUGZ_EUSAGE);
     TEST(tugz_deflate(d, &b, TUGZ_NONE) == TUGZ_NEED_INPUT);
+    b = (tugz_buf){(u8 const *)"usage", -1, c, countof(c)};
+    TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_EUSAGE);
+    b = (tugz_buf){0, 5, c, countof(c)};
+    TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_EUSAGE);
+    b = (tugz_buf){(u8 const *)"usage", 5, c, -1};
+    TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_EUSAGE);
+    b = (tugz_buf){(u8 const *)"usage", 5, 0, 1};
+    TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_EUSAGE);
+    TEST(b.inlen == 5);
+    b = (tugz_buf){(u8 const *)"usage", 5, c, countof(c)};
+    TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_DONE);
+    result r = tdecompress(TUGZ_RAW, c, countof(c)-b.outlen, 0, 0);
+    TEST(r.status==TUGZ_DONE && same(r.out, (u8 const *)"usage", 5));
+    free(r.out.s);
+
+    // TUGZ_NONE consumes input with no output space
+    tugz_deflate_reset(d, 6);
+    b = (tugz_buf){(u8 const *)"usage", 5, 0, 0};
+    TEST(tugz_deflate(d, &b, TUGZ_NONE) == TUGZ_NEED_INPUT && !b.inlen);
     free(mem);
+}
+
+// After an inflate error, later calls return it again, consuming and
+// producing nothing, whatever buffers they pass, until a reset.
+static void test_error_repeat(void)
+{
+    iz n = 2000;
+    u8 *text = textbytes(n, 31);
+    for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
+        buf c = tcompress(format, 6, text, n, 0, 0, 0, 0);
+        for (i32 k = 0; k < 4; k++) {
+            // Corrupt the header, the data, or each trailer field
+            // (raw: block type 3 only, as it may not notice the others)
+            iz at = k==0 ? 0 : k==1 ? c.len/2 : c.len - (k==2 ? 1 : 5);
+            if ((format==TUGZ_RAW && k) || (format==TUGZ_ZLIB && k==3)) {
+                continue;
+            }
+            u8 *bad = malloc((uz)c.len);
+            memcpy(bad, c.s, (uz)c.len);
+            if (format == TUGZ_RAW) {
+                bad[at] |= 6;
+            } else {
+                bad[at] ^= 0x10;
+            }
+            tugz_inflator *z;
+            void *mem = mem_inflator(format, &z);
+            result r = tdecompress_with(z, bad, c.len, 0, 0);
+            TEST(r.status<0 && r.status!=TUGZ_EUSAGE);
+            u8 out[16];
+            for (i32 i = 0; i < 3; i++) {
+                tugz_buf b = {c.s, i ? c.len : 0, out, i<2 ? 16 : 0};
+                tugz_buf before = b;
+                TEST(tugz_inflate(z, &b) == r.status);
+                TEST(!memcmp(&b, &before, sizeof(b)));
+            }
+            tugz_inflate_reset(z);
+            result ok = tdecompress_with(z, c.s, c.len, 0, 0);
+            TEST(ok.status==TUGZ_DONE && same(ok.out, text, n));
+            free(ok.out.s);
+            free(r.out.s);
+            free(mem);
+            free(bad);
+        }
+        free(c.s);
+    }
+    free(text);
 }
 
 // tugz_crc32 and tugz_adler32 against zlib's crc32 and adler32: every
@@ -2404,6 +2569,7 @@ int main(void)
     test_allocator();
     test_levels();
     test_usage();
+    test_error_repeat();
     test_zlib_format();
     test_gzip_errors();
     test_members();
