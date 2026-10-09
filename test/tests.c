@@ -644,6 +644,7 @@ static void dyn_begin(bits *b, dyncode *c)
 
 static void dyn_lit(bits *b, dyncode *c, i32 sym)
 {
+    TEST(sym>=0 && sym<countof(c->lcodes));
     TEST(c->lens[sym]);
     bcode(b, c->lcodes[sym], c->lens[sym]);
 }
@@ -2658,7 +2659,7 @@ static void test_cli(os *ctx, arena a)
             s8 out = {0}, err = {0}, plain[countof(zs)];
             i32 code = EXIT_OK;
             for (i32 i = 0; i < nz; i++) {
-                char alone[32];
+                char alone[128];
                 snprintf(alone, sizeof(alone), "%s %s", modes[m], names[i]);
                 code = exit_combine(code, run(ctx, a, alone));
                 s8 o = mfs_get(ctx, "<stdout>");
