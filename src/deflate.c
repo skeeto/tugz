@@ -632,6 +632,8 @@ static void flush_block(deflator *d, b32 final)
 
     u64 cd = cost_dyn(d, b);
     u64 cf = 3 + cost_tokens(d, &d->fixlit, &d->fixdist);
+    // Always true, as a block ends before a slide would discard its data
+    // (see slide_ends_block), but checked, as storing reads the window.
     b32 can_store = d->blk_start>=d->base &&
                     d->blk_start-d->base+d->blk_len <= (u64)d->win_len;
     u64 cs = can_store ? cost_stored(d) : (u64)-1;
@@ -947,6 +949,19 @@ static void slide_table(u32 *t, i32 n, u32 lim, u32 shift)
     }
 }
 
+// Whether the next slide would discard data of the block in progress,
+// which must then end first, so that every block may be stored. Else a
+// block of incompressible data that straddled a slide was coded with
+// Huffman codes at a little over 8 bits per byte (on random data, 55
+// bytes more than stored, for every other slide), and no simple bound
+// on output held. This ends at most one block per slide (about 1 MiB of
+// input), and that block is over 32 KiB long.
+static b32 slide_ends_block(deflator *d)
+{
+    iz shift = d->pos - DEF_WSIZE;
+    return d->ntok && shift>0 && d->blk_start<d->base+(u64)shift;
+}
+
 // Discard window contents more than WSIZE behind the parse position.
 static void slide(deflator *d)
 {
@@ -1230,7 +1245,9 @@ static i32 deflate_stream(deflator *d, zbuf *b, i32 flush)
             d->blkready = 0;
         } else if (d->win_len == WIN_CAP) {
             parse(d, WIN_CAP - LOOKAHEAD);
-            if (!d->blkready) {
+            if (!d->blkready && slide_ends_block(d)) {
+                d->blkready = 1;  // emitted on the next pass, then slide
+            } else if (!d->blkready) {
                 if (!def_room(d)) {
                     return GZ_NEEDOUT;
                 }

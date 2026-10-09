@@ -2227,13 +2227,14 @@ static u8 *golden_input(iz len, b32 letters)
 // even one that still decodes: CRC-32s of the gzip format at each level,
 // recorded from commit eb73afb, of text long enough to slide the window
 // and of data favoring 3-byte matches. Levels 1 and 9 were recorded
-// again when the header's XFL came to mark them (4 and 2).
+// again when the header's XFL came to mark them (4 and 2), and the text
+// when a block came to end before a slide would discard its data.
 static void test_golden(arena a)
 {
     static iz const lens[] = {1100000, 200000};
     static u32 const crcs[2][9] = {
-        {0xb8b2b1c6, 0x9aa4a7b6, 0xf61fdcd7, 0x12b51908,
-         0x62d88a64, 0x401c9543, 0x12d61d4f, 0x2c3f4802, 0x9408a18a},
+        {0xce68cf9b, 0xc46fb006, 0xad259eff, 0x8c7b3bf3,
+         0x303e0578, 0xbb618142, 0xd8db5c61, 0x334e6e23, 0xaf1a2001},
         {0x8a201df9, 0x61c7c7d0, 0x36266ef9, 0xe63b2e04,
          0x9456a39d, 0x9456a39d, 0x112f0260, 0x112f0260, 0xd394721e},
     };

@@ -168,6 +168,19 @@ output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
   Lacking room, parsing pauses at the block boundary. Output therefore
   depends only on input bytes and flush points, never on buffer sizes
   (checked by tests and fuzzers).
+- A block ends before a window slide would discard its start, so that
+  every block can be stored. A block may otherwise outlive the data a
+  slide keeps (32 KiB behind the parse position), and was then coded
+  with Huffman codes even when larger than stored: on random data, half
+  the slides (one per MiB) cost 55 bytes each, 27,586 bytes over 256
+  MiB against 20,485 for stored blocks alone, and no simple bound on
+  the output held (`tugz_deflate_bound`, below). The extra block costs a
+  block header per MiB at most. Over 64 MiB at levels 1-9: random data
+  1,165 bytes smaller; text (`textbytes`) 1,000-1,600 bytes (0.01%)
+  larger; mixed text and random runs 1,850-4,070 bytes smaller at most
+  levels, 1,568 larger at level 4; zeros (294 KB at levels 1-3, 66 KB
+  at 4-9) 743 bytes (0.25%) and 688 (1%) larger. The golden test's 1.1
+  MB text, which slides once, changed at every level.
 - SYNC emits an empty stored block (`00 00 ff ff`); FULL also clears the
   hash chains so no match reaches behind the flush. zlib headers match
   zlib's byte for byte (FLEVEL). gzip decoding stops after each member;
