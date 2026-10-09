@@ -95,6 +95,10 @@ before including it to embed the library in another program.
 data, as zlib's `crc32` and `adler32` do: start with 0 or 1
 respectively, and pass each result to the next call. CRC-32 uses the
 hardware CRC-32 described above, and neither keeps state.
+`tugz_deflate_bound(format, len)` is the most output deflate produces
+from `len` bytes with no flush but FINISH (each SYNC or FULL may add
+16 bytes), so that one FINISH call can compress into a buffer that
+large.
 
 `TUGZ_VERSION` is the release as a string, "MAJOR.MINOR.PATCH", and
 `TUGZ_VERSION_MAJOR`, `TUGZ_VERSION_MINOR`, and `TUGZ_VERSION_PATCH` its

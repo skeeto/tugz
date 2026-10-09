@@ -56,6 +56,7 @@ int main(void)
         TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_DONE);
         ptrdiff_t zlen = (ptrdiff_t)sizeof(z) - b.outlen;
         TEST(zlen > 0 && zlen < N/4);
+        TEST(zlen <= tugz_deflate_bound(format, N));
         free(dmem);
 
         ptrdiff_t      ilen = tugz_inflate_size(format);

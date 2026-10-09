@@ -152,6 +152,15 @@ TUGZ_DEF ptrdiff_t tugz_deflate_size(int format)
     return (iz)sizeof(tugz_deflator) + 64 + encoder_memsize();
 }
 
+TUGZ_DEF ptrdiff_t tugz_deflate_bound(int format, ptrdiff_t len)
+{
+    if (!valid_format(format) || len<0) {
+        return 0;
+    }
+    u64 n = encoder_bound(format, (u64)len);
+    return n>(u64)((uz)-1>>1) ? 0 : (iz)n;
+}
+
 TUGZ_DEF tugz_deflator *tugz_deflate_init(void *mem, ptrdiff_t len,
                                           int format, int level)
 {

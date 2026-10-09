@@ -1051,6 +1051,41 @@ static void deflate_setlevel(deflator *d, i32 level)
     d->lvl = deflate_levels[MAX(1, MIN(level, 9))];
 }
 
+// Most bits a stored chunk's header takes: BFINAL and BTYPE, padding to
+// a byte boundary, then LEN and NLEN. Padding is 5 bits from a boundary,
+// and 7 when 6 or 7 bits were pending.
+#define DEF_CHUNK_BITS  (3 + 7 + 32)
+#define DEF_SLIDE_MIN   (WIN_CAP - LOOKAHEAD - DEF_WSIZE)  // least shift
+
+// Most bytes of raw output for len bytes of input in a stream with no
+// flush but FINISH. Output is 8 bits per input byte, plus at most
+// DEF_CHUNK_BITS per "header", plus at most 7 bits of final padding:
+// - A stored chunk is its header and its data. Full chunks (65,535
+//   bytes) number at most len/65535. Partial ones come only when held
+//   back data is flushed: before a Huffman block, at a slide, and at the
+//   end (or else an empty final block of 10 bits).
+// - A Huffman block is chosen only when its cost is no more than storing
+//   its L bytes alone: one header per 65,535 bytes or part, so at most
+//   L/65535 + 1 headers and 8L bits. This holds because a block always
+//   may be stored (see slide_ends_block).
+// - A block ends early, by its statistics (should_split), only once it
+//   holds at least MIN_BLOCK bytes, and otherwise at TOK_LIMIT tokens,
+//   which is longer, or before a slide, by then over 32 KiB. Of blocks
+//   B, all but the last are at least MIN_BLOCK, so B <= len/MIN_BLOCK+1.
+// - Slides discard at least DEF_SLIDE_MIN bytes each.
+// So headers number at most len/65535 + 2B + len/DEF_SLIDE_MIN + 1.
+// Each SYNC or FULL flush adds at most DEF_FLUSH_BOUND bytes: a block it
+// ends (at most two headers if Huffman, its own and the held-back data
+// before it, else one, flushing its own held-back data), and its empty
+// stored block (one more).
+#define DEF_FLUSH_BOUND  ((3*DEF_CHUNK_BITS + 7) / 8)
+[[maybe_unused]] static u64 deflate_bound(u64 len)
+{
+    u64 blocks  = len/MIN_BLOCK + 1;
+    u64 headers = len/65535 + 2*blocks + len/DEF_SLIDE_MIN + 1;
+    return len + (headers*DEF_CHUNK_BITS + 7 + 7)/8;
+}
+
 // Memory needed by deflate_new, including alignment padding.
 static iz deflate_memsize(void)
 {

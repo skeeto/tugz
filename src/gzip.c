@@ -394,6 +394,15 @@ static void encoder_reset(encoder *e, i32 level)
     }
 }
 
+// Most bytes of output for len bytes of input in one stream of the
+// format with no flush but FINISH: the raw bound plus the header and
+// trailer. Each SYNC or FULL flush may add DEF_FLUSH_BOUND more.
+[[maybe_unused]] static u64 encoder_bound(i32 format, u64 len)
+{
+    u64 wrap = format==FMT_GZIP ? 10+8 : format==FMT_ZLIB ? 2+4 : 0;
+    return deflate_bound(len) + wrap;
+}
+
 static encoder *encoder_new(arena *a, i32 format, i32 level)
 {
     encoder *e = new(a, 1, encoder);

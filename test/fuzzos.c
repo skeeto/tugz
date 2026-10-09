@@ -300,7 +300,8 @@ static fuzzseg fuzz_segment(u32 *seed, iz off, iz len, b32 finishing)
 // an empty segment's flush then falls due behind unfinished ones. But
 // not where the next segment is empty and in the mode of the latest
 // flush, which would then only complete that flush rather than flush
-// again as when waited for. Returns a malloc'd buffer.
+// again as when waited for. Output must be within the bound, allowing
+// for its flushes. Returns a malloc'd buffer.
 static s8 fuzz_encode(fuzzenv *env, i32 format, i32 level, u8 const *in,
                       iz len, iz inpiece, iz outpiece, u32 seed)
 {
@@ -309,6 +310,7 @@ static s8 fuzz_encode(fuzzenv *env, i32 format, i32 level, u8 const *in,
     iz cap = 8*len + (1<<16);
     s8 r = {malloc((uz)cap), 0};
     iz off = 0;
+    iz nflush = 0;  // SYNC and FULL flushes, each within DEF_FLUSH_BOUND
     i32 latest = DEF_NONE;  // latest flush, unless input completed it
     fuzzseg seg = fuzz_segment(&seed, 0, len, 0);
     for (b32 last = 0; !last;) {
@@ -348,7 +350,10 @@ static s8 fuzz_encode(fuzzenv *env, i32 format, i32 level, u8 const *in,
             CHECK(off==end && flush!=DEF_NONE);
             break;
         }
+        nflush += flush==DEF_SYNC || flush==DEF_FULL;
         seg = next;
     }
+    CHECK((u64)r.len <= encoder_bound(format, (u64)len) +
+                        DEF_FLUSH_BOUND*(u64)nflush);
     return r;
 }

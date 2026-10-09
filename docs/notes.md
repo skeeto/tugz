@@ -199,6 +199,35 @@ with no data, so a null pointer needs no special case in a chain.
   levels, 1,568 larger at level 4; zeros (294 KB at levels 1-3, 66 KB
   at 4-9) 743 bytes (0.25%) and 688 (1%) larger. The golden test's 1.1
   MB text, which slides once, changed at every level.
+- `tugz_deflate_bound(format, len)` (`deflate_bound` and
+  `encoder_bound` inside) is derived from the encoder, in bits: 8 per
+  input byte, plus at most 42 per "header" (a stored chunk's 3 header
+  bits, up to 7 of padding, and LEN and NLEN; a Huffman block is chosen
+  only when it costs no more than storing its data alone, so it counts
+  as headers too), plus 7 bits of final padding. Headers number at most
+  len/65535 (full stored chunks), plus two per block (a Huffman block's
+  own, and the held-back stored data it flushes before it), plus one per
+  slide (which flushes held-back data), plus one at the end. Blocks
+  number at most len/10000 + 1, as only the last may be shorter than
+  `MIN_BLOCK` (splits need that much, `TOK_LIMIT` blocks hold more, and
+  slides now end only blocks past 32 KiB), and slides at most
+  len/1048286. So the bound is len + 0.114% + 17 bytes, and the
+  container's 6 or 18. It is loose: random data takes 5 bytes per
+  65,535 (0.008%), as every block is stored and merges with the next,
+  while the bound allows blocks that alternate stored and Huffman codes
+  every 10,000 bytes. A SYNC or FULL flush adds at most three headers,
+  16 bytes: the block it ends (two if Huffman, else one, which also
+  flushes its held-back data), and its empty stored block; random data
+  flushed every 1 to 9,999 bytes measured 6 to 10 bytes per flush. Zero
+  is returned for an invalid format or negative length, as the size
+  functions return zero for an invalid format, and for a bound past
+  `PTRDIFF_MAX`, which no buffer could hold anyway. `test_bound`
+  compresses into a buffer of exactly the bound with one FINISH call at
+  every length to 1000 and every level, around multiples of 65,535 and
+  65,536, and past slides, of random, mixed, and text data, and with
+  flushes as often as every byte; `fuzz-roundtrip` checks every
+  FINISH-only stream against it, and `fuzz_encode` (`fuzz-diff-deflate`)
+  every stream, allowing 16 bytes per flush.
 - SYNC emits an empty stored block (`00 00 ff ff`); FULL also clears the
   hash chains so no match reaches behind the flush. zlib headers match
   zlib's byte for byte (FLEVEL). gzip decoding stops after each member;

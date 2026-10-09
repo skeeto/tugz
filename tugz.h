@@ -177,6 +177,14 @@ TUGZ_API int            tugz_inflate(tugz_inflator *, tugz_buf *);
 TUGZ_API void           tugz_inflate_reset(tugz_inflator *);
 
 TUGZ_API ptrdiff_t      tugz_deflate_size(int format);
+// Most bytes deflate produces from len bytes of input in one stream in
+// the format, at any level, when TUGZ_FINISH is the only flush: with an
+// output buffer this large, one TUGZ_FINISH call given all the input
+// returns TUGZ_DONE. Each SYNC or FULL flush may add 16 bytes more. The
+// bound is len plus at most 0.12%, plus 17 bytes and the format's header
+// and trailer (6 bytes for zlib, 18 for gzip). Returns zero for a format
+// deflate does not take, a negative len, or a bound past PTRDIFF_MAX.
+TUGZ_API ptrdiff_t      tugz_deflate_bound(int format, ptrdiff_t len);
 // Returns null if the memory is too small, or the format or level is
 // invalid.
 TUGZ_API tugz_deflator *tugz_deflate_init(void *mem, ptrdiff_t len,

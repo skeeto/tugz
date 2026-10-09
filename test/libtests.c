@@ -2248,6 +2248,112 @@ static void test_checksums(void)
     free(r);
 }
 
+// Compress all of p with one TUGZ_FINISH call into a buffer of exactly
+// the bound, which must suffice, returning the output's length.
+static iz bound_one(tugz_deflator *d, int format, u8 const *p, iz len,
+                    u8 *out)
+{
+    iz cap = tugz_deflate_bound(format, len);
+    TEST(cap > len);
+    tugz_buf b = {p, len, out, cap};
+    TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_DONE);
+    TEST(!b.inlen);
+    return cap - b.outlen;
+}
+
+// Mixed runs of random bytes and of a few letters, so that blocks change
+// between stored and Huffman codes.
+static u8 *mixedbytes(iz len, u64 seed)
+{
+    u8 *p = malloc((uz)len + 1);
+    for (iz i = 0; i < len;) {
+        seed = seed*0x3243f6a8885a308d + 1;
+        iz  run  = 1000 + (iz)(seed>>40 & 0x7fff);
+        b32 rand = seed>>33 & 1;
+        for (iz j = 0; j<run && i<len; j++) {
+            seed = seed*0x3243f6a8885a308d + 1;
+            p[i++] = rand ? (u8)(seed>>56) : (u8)"abcab"[seed>>61 & 3];
+        }
+    }
+    return p;
+}
+
+// tugz_deflate_bound holds, as one FINISH call into a buffer of exactly
+// its size, in every format: at every length to 1000 at every level, and
+// around multiples of 65,535 and 65,536 (stored chunks), and past window
+// slides, at levels 1, 5, and 9, of random, mixed, and text data. Each
+// SYNC or FULL flush adds at most 16 bytes.
+static void test_bound(void)
+{
+    // Invalid arguments, and the formula's small end
+    TEST(!tugz_deflate_bound(TUGZ_RAW64, 0));
+    TEST(!tugz_deflate_bound(-1, 0));
+    TEST(!tugz_deflate_bound(TUGZ_GZIP+1, 0));
+    TEST(!tugz_deflate_bound(TUGZ_RAW, -1));
+    TEST(!tugz_deflate_bound(TUGZ_GZIP, (iz)((uz)-1>>1)));
+    TEST(tugz_deflate_bound(TUGZ_RAW, 0) == 17);
+    TEST(tugz_deflate_bound(TUGZ_ZLIB, 0) == 17+6);
+    TEST(tugz_deflate_bound(TUGZ_GZIP, 0) == 17+18);
+    TEST(DEF_FLUSH_BOUND == 16);
+    iz big = (iz)((uz)-1>>1) / 2;
+    TEST(tugz_deflate_bound(TUGZ_RAW, big) > big);
+    for (iz n = 1; n < big; n = n*2 + 1) {
+        iz b = tugz_deflate_bound(TUGZ_RAW, n);
+        TEST(b>n && b<=n + n/870 + 18);  // 0.12% and 17 bytes
+        TEST(b >= tugz_deflate_bound(TUGZ_RAW, n-1));
+    }
+
+    enum { BIG = 3<<20 };
+    u8 *kinds[] = {randbytes(BIG, 80), mixedbytes(BIG, 81), textbytes(BIG, 82)};
+    u8 *out = malloc((uz)tugz_deflate_bound(TUGZ_GZIP, BIG));
+    for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
+        tugz_deflator *d;
+        void *mem = mem_deflator(format, 1, &d);
+        for (int level = 1; level <= 9; level++) {
+            for (iz len = 0; len <= 1000; len++) {
+                TEST(!tugz_deflate_reset(d, level));
+                bound_one(d, format, kinds[len%3], len, out);
+            }
+            for (iz k = 1; level%4==1 && k<=4; k++) {
+                for (iz e = -2; e <= 2; e++) {
+                    iz lens[] = {k*65535 + e, k*65536 + e};
+                    for (i32 j = 0; j < 2; j++) {
+                        TEST(!tugz_deflate_reset(d, level));
+                        bound_one(d, format, kinds[0], lens[j], out);
+                    }
+                }
+            }
+        }
+        for (int level = 1; level <= 9; level += 4) {
+            for (i32 k = 0; k < 3; k++) {
+                TEST(!tugz_deflate_reset(d, level));
+                bound_one(d, format, kinds[k], BIG, out);
+            }
+        }
+        free(mem);
+    }
+
+    // Flushes: each may add 16 bytes, as often as every byte
+    static iz const every[] = {1, 7, 100, 9999, 70000};
+    for (i32 i = 0; i < countof(every); i++) {
+        iz len = MIN(every[i]*300, 400000);
+        iz k = (len - 1)/every[i];  // flushes before the FINISH
+        for (int mode = TUGZ_SYNC; mode <= TUGZ_FULL; mode++) {
+            for (i32 j = 0; j < 2; j++) {
+                buf r = tcompress(TUGZ_GZIP, 6, kinds[j], len, 0, 0, mode,
+                                  every[i]);
+                TEST(r.len <= tugz_deflate_bound(TUGZ_GZIP, len) + 16*k);
+                free(r.s);
+            }
+        }
+    }
+
+    free(out);
+    for (i32 k = 0; k < countof(kinds); k++) {
+        free(kinds[k]);
+    }
+}
+
 // The library's version is the header's, whose numbers make its string.
 static void test_version(void)
 {
@@ -2265,6 +2371,7 @@ int main(void)
 {
     test_version();
     test_checksums();
+    test_bound();
     test_memory();
     test_allocator();
     test_levels();

@@ -1,8 +1,9 @@
 // libFuzzer harness: compress then decompress must reproduce the input
 // The first bytes select the level, push size, and stream offset. Output
 // must also be identical regardless of push size and offset, and from an
-// encoder reset after other streams, in each format, and must decompress
-// identically under zlib.
+// encoder reset after other streams, in each format, must be within the
+// bound (tugz_deflate_bound's), and must decompress identically under
+// zlib.
 // $ clang -g -O1 -fsanitize=fuzzer,address,undefined test/fuzz_roundtrip.c -lz
 #include "fuzzos.c"
 #include <zlib.h>
@@ -60,9 +61,11 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     u8 const *in = data + 3;
     iz len = (iz)size - 3;
 
-    // Reference: one push, zero base
+    // Reference: one push, zero base, within the bound, as FINISH is the
+    // only flush
     fuzz_deflate(env, in, len, level, 0, 0);
     iz zlen = env->ctx.outlen;
+    CHECK((u64)zlen <= deflate_bound((u64)len));
     u8 *z = malloc((uz)zlen + 1);
     memcpy(z, env->ctx.out, (uz)zlen);
 
@@ -75,6 +78,7 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     if (format != FMT_RAW) {
         ref = fuzz_encode(env, format, level, in, len, 0, 0, 0);
     }
+    CHECK((u64)ref.len <= encoder_bound(format, (u64)len));
     reused_encode(env, format, in, len, level, data[2]);
     CHECK(env->ctx.outlen == ref.len);
     CHECK(!memcmp(env->ctx.out, ref.s, (uz)ref.len));
