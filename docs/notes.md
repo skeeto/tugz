@@ -104,7 +104,14 @@ output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
   deflate. The optional allocator has the Lua shape `(ctx, ptr, old,
   new)` and is called once to allocate and once to free, with the size.
   Init on the same memory starts over, as does a reset, which for
-  deflate is far cheaper (below). `os_oom` traps in the library: init
+  deflate is far cheaper (below). Init carves the state from an arena
+  over the memory, which aligns it, so for misaligned memory the state
+  begins past it: callers keep and free their own pointer (the header's
+  example once passed `malloc` straight to init, losing it), and `new`
+  and `free` keep the allocation's pointer and size in the state. The
+  state points into its own memory (decoder, window, tables), so it
+  cannot be copied or moved; a copy function would need to rebase
+  them. `os_oom` traps in the library: init
   checks the size first, so it is unreachable. Programs allocate their
   codecs from exactly-sized sub-arenas, so every program run checks the
   size calculation.

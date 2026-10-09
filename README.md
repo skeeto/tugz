@@ -59,10 +59,17 @@ size; sizes are `ptrdiff_t`.
 
 ```c
 ptrdiff_t      len = tugz_inflate_size(TUGZ_GZIP);
-tugz_inflator *z   = tugz_inflate_init(malloc(len), len, TUGZ_GZIP);
+void          *mem = malloc(len);
+tugz_inflator *z   = tugz_inflate_init(mem, len, TUGZ_GZIP);  // null if mem is null
 tugz_buf       b   = {in, inlen, out, outlen};
 int status = tugz_inflate(z, &b);  // TUGZ_DONE, NEED_INPUT, NEED_OUTPUT, or error
+// ...
+free(mem);  // not z
 ```
+
+The state lies inside the caller's memory, aligned, so it may begin
+past `mem`: keep `mem` to free it. A state holds pointers into itself,
+so it may not be copied or moved.
 
 Levels are 1 through 9; others are reserved, and init, `new`, and
 reset reject them. Deflate supports SYNC, FULL, and FINISH flushes,

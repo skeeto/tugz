@@ -5,15 +5,27 @@
 // of any size, as many times as needed:
 //
 //   ptrdiff_t      len = tugz_inflate_size(TUGZ_GZIP);
-//   tugz_inflator *z   = tugz_inflate_init(malloc(len), len, TUGZ_GZIP);
+//   void          *mem = malloc(len);
+//   tugz_inflator *z   = tugz_inflate_init(mem, len, TUGZ_GZIP);
 //   tugz_buf       b   = {in, inlen, out, outlen};
 //   int status = tugz_inflate(z, &b);
+//   ...
+//   free(mem);
 //
 // Each call advances b.in/b.out and decreases b.inlen/b.outlen by what it
 // consumed and produced. The state is fixed in size and never grows, so
 // it needs no cleanup beyond releasing its memory. States are
 // independent, so separate states may be used concurrently from
 // different threads.
+//
+// Init places the state inside mem, aligned, so the state it returns
+// need not be mem: the caller keeps mem to release it, and must never
+// free the state itself. Init returns null for null mem, and memory
+// beyond the size goes unused. A state holds pointers into its own
+// memory, so it works only where init placed it and may not be copied
+// or moved (as by memcpy or realloc). Init on the same memory again
+// starts over, and the memory is free for other uses once the state is
+// no longer used.
 //
 // To compress many streams, reset one state rather than init it again:
 // init clears about 512 KiB and builds tables, while a reset takes time
@@ -162,7 +174,11 @@ TUGZ_API int            tugz_deflate(tugz_deflator *, tugz_buf *,
 // invalid level or a null state.
 TUGZ_API int            tugz_deflate_reset(tugz_deflator *, int level);
 
-// Convenience: one allocation of the state's size, freed with its size.
+// Convenience: one allocation of the state's size through the allocator,
+// which free releases with that size, given the state new returned (not
+// one from init); free with a null state does nothing. New returns null
+// if the allocator does, or, allocating nothing, if the format (or
+// level) is invalid.
 TUGZ_API tugz_inflator *tugz_inflate_new(tugz_allocator *, void *ctx,
                                          int format);
 TUGZ_API void           tugz_inflate_free(tugz_inflator *,

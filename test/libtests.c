@@ -226,6 +226,38 @@ static buf zlib_prefix(int format, u8 const *p, iz len, int *how)
 
 static iz const pieces[] = {0, 1, 2, 3, 7, 16, 17, 100, 4096};
 
+// Init places the state inside the caller's memory, aligned, so for
+// misaligned memory it returns a pointer past it, which the caller does
+// not free: it frees its own pointer. Larger memory is fine. The state
+// works where it lies and the memory needs nothing else to release it.
+static void test_misaligned(void)
+{
+    u8 const *msg = (u8 const *)"misaligned misaligned";
+    for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
+        ptrdiff_t dlen = tugz_deflate_size(format);
+        ptrdiff_t ilen = tugz_inflate_size(format);
+        for (iz extra = 0; extra <= 1000; extra += 1000) {
+            u8 *dmem = malloc((uz)(dlen + extra) + 1);
+            u8 *imem = malloc((uz)(ilen + extra) + 1);
+            tugz_deflator *d = tugz_deflate_init(dmem+1, dlen+extra, format, 6);
+            tugz_inflator *z = tugz_inflate_init(imem+1, ilen+extra, format);
+            TEST((u8 *)d>dmem+1 && (u8 *)d<dmem+1+dlen);
+            TEST((u8 *)z>imem+1 && (u8 *)z<imem+1+ilen);
+            TEST(!((uz)d % _Alignof(void *)));
+            TEST(!((uz)z % _Alignof(void *)));
+
+            u8 c[64], back[64];
+            tugz_buf b = {msg, 21, c, countof(c)};
+            TEST(tugz_deflate(d, &b, TUGZ_FINISH) == TUGZ_DONE);
+            b = (tugz_buf){c, countof(c)-b.outlen, back, countof(back)};
+            TEST(tugz_inflate(z, &b) == TUGZ_DONE);
+            TEST(countof(back)-b.outlen==21 && !memcmp(back, msg, 21));
+            free(imem);
+            free(dmem);
+        }
+    }
+}
+
 static void test_memory(void)
 {
     for (int format = TUGZ_RAW; format <= TUGZ_GZIP; format++) {
@@ -262,6 +294,8 @@ static void test_memory(void)
     TEST(!tugz_inflate_size(TUGZ_RAW64+1));
     TEST(!tugz_deflate_size(-1));
     TEST(!tugz_inflate_init(0, 1<<30, TUGZ_RAW));
+    TEST(!tugz_deflate_init(0, 1<<30, TUGZ_RAW, 6));
+    test_misaligned();
 }
 
 typedef struct {
