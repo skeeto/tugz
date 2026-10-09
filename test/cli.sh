@@ -934,9 +934,11 @@ if [ -n "$windows" ]; then
         "$GZIP" -c "$p" 2>why.err
         st=$?
         set -e
-        why='No such file or directory'
+        # (some systems answer a missing share with "not supported",
+        # which the C runtime words as an invalid argument)
+        why='(No such file or directory|Invalid argument)'
         [ "$p" = 'a<b' ] && why='Invalid argument'
-        [ $st = 1 ] && grep -q "^gzip: $p: $why\$" why.err ||
+        [ $st = 1 ] && grep -Eq "^gzip: $p: $why\$" why.err ||
             fail "$p: $st $(cat why.err)"
     done
 fi

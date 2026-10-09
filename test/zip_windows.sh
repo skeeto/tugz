@@ -775,13 +775,14 @@ long=$(printf 'n%.0s' $(seq 260)).zip
 for a in //localhost/nosuchshare/x.zip 'a<b.zip' "$long" loop.zip; do
     why='Invalid argument'
     case $a in
-    //*) why='No such file or directory';;
+    //*) why='(No such file or directory|Invalid argument)';;  # or
+         # "not supported", which some systems answer for a missing share
     loop.zip) cmd /c 'mklink loop.zip loop.zip' >/dev/null 2>&1 || continue;;
     esac
     set +e
     "$ZIP" "$a" tree/a.txt >out 2>err; st=$?
     set -e
-    [ $st = 15 ] && grep -qx "zip I/O error: $why" err &&
+    [ $st = 15 ] && grep -Eqx "zip I/O error: $why" err &&
         grep -qx "zip error: Could not create output file ($a)" err ||
         fail "unexaminable archive $a: $st $(cat err)"
     grep -q adding out && fail "unexaminable archive $a: work done first"
