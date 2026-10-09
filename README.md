@@ -248,6 +248,7 @@ C11 alone lacks the C23 attributes. Options:
 | `TUGZ_INSTALL` | top level | install rules and the package |
 | `TUGZ_WARNINGS` | top level | warnings for tugz's own targets |
 | `TUGZ_SANITIZE` | if supported | ASan and UBSan in the tests |
+| `TUGZ_TEST_SCRIPTS` | not cross | the programs' shell-script tests |
 | `TUGZ_LIBMEMORY` | AUTO | Windows programs with w64devkit's `-lmemory` |
 | `TUGZ_DEFLATE64` | OFF | the library with Deflate64 (`TUGZ_RAW64`) |
 
@@ -540,6 +541,22 @@ archives. Configuring warns of a test skipped or disabled for want of
 one. Tested on macOS, Linux (x86-64, i386, aarch64, big-endian PowerPC),
 and Windows (x86-64, i686). See [docs/notes.md](docs/notes.md) for
 design decisions, test coverage, and the optimization log.
+
+Cross builds use a toolchain file from `cmake/`: `mingw-x86_64.cmake`
+and `mingw-i686.cmake` for Windows, and `linux-powerpc.cmake` for
+32-bit big-endian PowerPC, whose tests CTest runs under QEMU user mode
+(`qemu-ppc`). Cross-compiling, the tests are off by default
+(`-DTUGZ_BUILD_TESTS=ON`), and their zlib is a build for the target,
+found under `CMAKE_FIND_ROOT_PATH`:
+
+    $ cmake -B build-ppc -DCMAKE_TOOLCHAIN_FILE=cmake/linux-powerpc.cmake \
+            -DTUGZ_BUILD_TESTS=ON -DCMAKE_FIND_ROOT_PATH=/opt/ppc-zlib
+    $ cmake --build build-ppc && ctest --test-dir build-ppc -j4
+
+The shell-script tests run the programs directly rather than through the
+emulator, so a cross build disables them unless `-DTUGZ_TEST_SCRIPTS=ON`
+says the host runs the target's programs itself (binfmt_misc, with
+`QEMU_LD_PREFIX=/usr/powerpc-linux-gnu` for the sanitized ones, or Wine).
 
 [RFC 1950]: https://www.rfc-editor.org/rfc/rfc1950
 [RFC 1951]: https://www.rfc-editor.org/rfc/rfc1951

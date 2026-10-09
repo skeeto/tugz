@@ -1747,6 +1747,12 @@ ones as invariants. Those that no test asserts are marked untested.
                                # Win32 builds (or cmake -G Ninja natively
                                # under w64devkit, which runs zip-windows
                                # and unzip-windows)
+    cmake -B build-ppc -DCMAKE_TOOLCHAIN_FILE=cmake/linux-powerpc.cmake \
+          -DTUGZ_BUILD_TESTS=ON -DCMAKE_FIND_ROOT_PATH=/opt/ppc-zlib
+    ctest --test-dir build-ppc -j4 # big-endian, under qemu-ppc (a zlib
+                               # built for powerpc-linux-gnu at that
+                               # prefix; the scripts need
+                               # -DTUGZ_TEST_SCRIPTS=ON and binfmt_misc)
     cmake -B build-fuzz -DCMAKE_C_COMPILER=clang -DTUGZ_BUILD_FUZZ=ON
     cmake --build build-fuzz   # the seven fuzzers (LLVM clang)
     cmake --build build-fuzz --target tugz_fuzz_seeds  # fuzz/corpus/

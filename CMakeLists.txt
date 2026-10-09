@@ -405,6 +405,18 @@ if(TUGZ_BUILD_TESTS)
     set_property(GLOBAL APPEND PROPERTY tugz_test_targets
                  tugz_gzip_debug tugz_zip_debug tugz_unzip_debug)
 
+    # The shell scripts run the programs directly, not through
+    # CMAKE_CROSSCOMPILING_EMULATOR, so a cross build has them only if
+    # the host runs the target's programs itself (binfmt_misc, Wine)
+    if(CMAKE_CROSSCOMPILING)
+        set(tugz_scripts_default OFF)
+    else()
+        set(tugz_scripts_default ON)
+    endif()
+    option(TUGZ_TEST_SCRIPTS
+        "Run the programs' end-to-end shell-script tests"
+        ${tugz_scripts_default})
+
     find_program(TUGZ_SH sh)
     if(EXISTS /usr/bin/gzip)
         set(TUGZ_REF_GZIP /usr/bin/gzip CACHE FILEPATH
@@ -454,7 +466,7 @@ if(TUGZ_BUILD_TESTS)
         set_tests_properties(zip-cli PROPERTIES
             ENVIRONMENT "ZIPOOM=$<TARGET_FILE:tugz_zip>")
     endif()
-    if(NOT tugz_have_unzip OR NOT tugz_have_zipinfo)
+    if(TUGZ_TEST_SCRIPTS AND (NOT tugz_have_unzip OR NOT tugz_have_zipinfo))
         message(WARNING
             "tugz: zip-cli disabled: it needs Info-ZIP's unzip and zipinfo")
         set_tests_properties(zip-cli PROPERTIES DISABLED ON)
@@ -475,7 +487,7 @@ if(TUGZ_BUILD_TESTS)
         endif()
         set_tests_properties(unzip-cli PROPERTIES ENVIRONMENT
             "${tugz_unzip_env}")
-        if(NOT tugz_have_unzip)
+        if(TUGZ_TEST_SCRIPTS AND NOT tugz_have_unzip)
             message(WARNING
                 "tugz: unzip-cli disabled: it needs Info-ZIP's unzip")
             set_tests_properties(unzip-cli PROPERTIES DISABLED ON)
@@ -532,6 +544,17 @@ if(TUGZ_BUILD_TESTS)
     tugz_sanitize_test(amalgamation-deflate64)
     set_property(GLOBAL APPEND PROPERTY tugz_test_targets
                  tugz_amalgamation_lib tugz_tests_amalg tugz_tests_amalg64)
+
+    if(NOT TUGZ_TEST_SCRIPTS)
+        message(STATUS "tugz: the shell-script tests are disabled "
+                "(TUGZ_TEST_SCRIPTS=OFF, the default when cross-compiling)")
+        foreach(test IN ITEMS gzip-cli zip-cli unzip-cli
+                              zip-windows unzip-windows)
+            if(TEST ${test})
+                set_tests_properties(${test} PROPERTIES DISABLED ON)
+            endif()
+        endforeach()
+    endif()
 
     # Builds what the tests need and runs them
     if(PROJECT_IS_TOP_LEVEL)
