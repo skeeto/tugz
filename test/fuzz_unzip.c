@@ -28,7 +28,7 @@
 // With FUZZ_UNZIP_SHOW in the environment, each run's status and output
 // are shown, as when reproducing a crash.
 // $ clang -g -O1 -fsanitize=fuzzer,address,undefined test/fuzz_unzip.c -lz
-// $ ./a.out -max_len=8192 corpus/
+// $ ./a.out -max_len=70000 corpus/
 #include "unzipos.c"
 
 #include <stdint.h>

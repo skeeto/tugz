@@ -1622,7 +1622,7 @@ ones as invariants. Those that no test asserts are marked untested.
     build-fuzz/fuzz-roundtrip -fork=3 -max_len=1200000 fuzz/corpus/roundtrip
     build-fuzz/fuzz-diff-deflate -fork=3 -max_len=1200000 fuzz/corpus/diff-deflate
     build-fuzz/fuzz-zipread -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zipread
-    build-fuzz/fuzz-zip -jobs=6 -workers=6 -max_len=8192 fuzz/corpus/zip
+    build-fuzz/fuzz-zip -jobs=6 -workers=6 -max_len=70000 fuzz/corpus/zip
     build-fuzz/fuzz-unzip -jobs=6 -workers=6 -max_len=70000 fuzz/corpus/unzip
     cmake -B build -DTUGZ_BUILD_BENCH=ON && cmake --build build
     build/bench -l 1,6,9 bench_corpus/silesia/*
@@ -1681,7 +1681,11 @@ Fuzzers:
   (unless deleted), those copied from no overlapping spans of the old,
   and which it reads back; it must leave no temporary file, nor claim
   memory once it has created one. Inputs need more than 64 KiB
-  (`-max_len`) for copies to read through the window again.
+  (`-max_len=70000`, as for `fuzz-unzip`) for copies to read through the
+  window again: an archive within the final 64 KiB or so, which finding
+  the end records reads into the window, is all there, so that copying
+  its entries never fills the window again. At 8192, as it once was
+  documented, that path went unfuzzed.
 - `fuzz-unzip`: the unzip program itself (`unzip_main`, in memory,
   `test/unzipos.c`), with arbitrary bytes as its archive, in sixteen
   modes (extraction with `-o`, the prompt, `-n`, `-j`, `-x`, `-f`, `-u`,

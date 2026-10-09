@@ -15,7 +15,7 @@
 // remain, and zip may claim no memory once it has created one (but after
 // a fault).
 // $ clang -g -O1 -fsanitize=fuzzer,address,undefined test/fuzz_zip.c
-// $ ./a.out -max_len=8192 corpus/
+// $ ./a.out -max_len=70000 corpus/
 #include "zipos.c"
 
 #include <stdint.h>
