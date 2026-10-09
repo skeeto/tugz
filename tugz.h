@@ -168,9 +168,9 @@
 // The release this header belongs to, as a string and as numbers for
 // #if. It is the one place the version is set: the programs report it,
 // and the build, the amalgamations, and the release workflow read it.
-#define TUGZ_VERSION "0.4.0"
+#define TUGZ_VERSION "0.5.0"
 #define TUGZ_VERSION_MAJOR 0
-#define TUGZ_VERSION_MINOR 4
+#define TUGZ_VERSION_MINOR 5
 #define TUGZ_VERSION_PATCH 0
 
 #include <stddef.h>

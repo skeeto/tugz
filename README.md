@@ -231,14 +231,14 @@ builds only the library, `tugz::tugz`:
 ```cmake
 include(FetchContent)
 FetchContent_Declare(tugz
-    URL https://github.com/skeeto/tugz/releases/download/v0.4.0/tugz-0.4.0.tar.gz
+    URL https://github.com/skeeto/tugz/releases/download/v0.5.0/tugz-0.5.0.tar.gz
     URL_HASH SHA256=<the asset's digest on the release page>
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(tugz)
 target_link_libraries(app PRIVATE tugz::tugz)
 ```
 
-Or, after `cmake --install`, `find_package(tugz 0.4 CONFIG REQUIRED)`
+Or, after `cmake --install`, `find_package(tugz 0.5 CONFIG REQUIRED)`
 provides the same target. The library is static unless
 `BUILD_SHARED_LIBS` is set, and position-independent code is the
 consumer's choice (`CMAKE_POSITION_INDEPENDENT_CODE`). A shared Windows

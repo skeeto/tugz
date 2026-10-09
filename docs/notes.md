@@ -3,8 +3,8 @@
 tugz (tiny unity gzip/zip) is a from-specification implementation of gzip
 (RFC 1952), zlib (RFC 1950), and DEFLATE (RFC 1951): a drop-in `gzip`
 command, a streaming library (`tugz.h`), and Info-ZIP compatible `zip`
-and `unzip`. The commands identify themselves as `gzip (tugz) 0.4.0`,
-`tugz zip 0.4.0`, and `tugz unzip 0.4.0, a subset of Info-ZIP UnZip
+and `unzip`. The commands identify themselves as `gzip (tugz) 0.5.0`,
+`tugz zip 0.5.0`, and `tugz unzip 0.5.0, a subset of Info-ZIP UnZip
 6.0`, and are installed under the names `gzip`, `zip`, and `unzip`.
 
 ## Layout
@@ -1568,7 +1568,7 @@ ones as invariants. Those that no test asserts are marked untested.
   UnZip takes it for a member (`unzip.sh`, "options after the archive"),
   and an archive of `-` is standard input, implying `-n` unless `-o`
   (`unzip.sh`, "Standard input as the archive"; `tests-unzipcli`,
-  `test_stdin`). `-v` alone prints one line, "tugz unzip 0.4.0, a subset
+  `test_stdin`). `-v` alone prints one line, "tugz unzip 0.5.0, a subset
   of Info-ZIP UnZip 6.0", rather than UnZip's version report, and the
   usage and `-hh` are tugz's own (`unzip.sh`, "Usage"). UnZip's options
   that tugz lacks are refused (10) rather than taken (`unzip.sh`).
