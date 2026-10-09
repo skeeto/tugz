@@ -1891,6 +1891,15 @@ Fuzzers:
   amalgamation, and the i686 build, and the amalgamation, built by its
   header's command, imports only KERNEL32 and SHELL32, with no stack
   frame over 4000 bytes.
+- Windows XP, untested on XP itself (no machine): on Windows 11 with
+  w64devkit GCC 16, the x86-64 and i686 programs, and the amalgamations,
+  built normally and with `-DTUGZ_FORCE_XP`, pass `test/cli.sh`,
+  `test/zip_windows.sh` (with `TUGZ_FORCE_XP=1` for the forced builds),
+  and `test/unzip_windows.sh`, but for the missing-share case, which
+  fails the same way before the change on that machine. Each program
+  imports the same functions in every build, 34 in all across the three,
+  from KERNEL32 and SHELL32 alone, each documented for Windows XP or
+  earlier.
 - zip speed versus Info-ZIP 3.0 on the 267 MB benchmark corpus (Apple
   M-series): -1 2.2 s vs 1.9 s (4% smaller), -6 3.1 s vs 4.9 s, -9 6.8 s
   vs 12.6 s (smaller). 10,000 small files (64 B to 8 KiB, -6): 0.32 s vs
@@ -2121,6 +2130,47 @@ Fuzzers:
   one, and on Windows a name another process holds delete-pending) is
   an error (1), as in GNU gzip, while without `-f` it is refused with a
   warning (2).
+- Windows XP (i686, and x86-64 on XP x64) is a target, though untested
+  on XP itself. The programs import only kernel32 and shell32 functions
+  that XP has (`GetModuleHandleW` and `GetProcAddress` among them, both
+  XP's); GNU ld's PE headers already ask for no newer Windows (OS 4.0,
+  subsystem 4.0 for i686 and 5.2 for x86-64). Vista's
+  `GetFileInformationByHandleEx`, `SetFileInformationByHandle`, and
+  `GetFinalPathNameByHandleW` are looked up once at startup (`winapi`
+  in the context, as the Windows layer keeps no globals), and where
+  missing, the same work goes through ntdll, also looked up, so there
+  is no ntdll import: `NtQueryInformationFile` and
+  `NtSetInformationFile` with the native classes whose structures are
+  the kernel32 ones (basic 4, rename 10, disposition 13, end of file 20,
+  attribute tag 35), each NTSTATUS mapped by `RtlNtStatusToDosError` to
+  the last error, as kernel32 maps it, so messages read the same. A
+  rename goes to an NT path, where kernel32 converts a Win32 one: `\\?\`
+  becomes `\??\`. Classes XP lacks (the 128-bit file ID, the POSIX
+  rename) fail as an invalid parameter, as they do on Windows 7, where
+  the existing fallbacks take over (the 64-bit index, the classic
+  rename). For the final path, XP has only the NT name, from
+  `NtQueryObject`'s `ObjectNameInformation`, which names the file past
+  any junctions as `GetFinalPathNameByHandleW` does with
+  `VOLUME_NAME_NT`, but keeps short names and case as opened: so zip
+  still replaces a linked archive's target rather than the link, naming
+  it in messages as `\\?\GLOBALROOT\Device\...` when it lies outside the
+  directory named (on XP itself, which has no file symlinks, such a link
+  can only be a junction, to a directory, which zip refuses anyway), and
+  files on a drive without file IDs are told apart by that name. `FindFirstFileExW` takes Windows 7's `FindExInfoBasic`
+  and `FIND_FIRST_EX_LARGE_FETCH`, which older versions refuse as an
+  invalid parameter: a listing refused so is retried with XP's
+  arguments, and once that works, the process lists that way. Built
+  with `-DTUGZ_FORCE_XP` (CMake's `TUGZ_FORCE_XP`), the programs find
+  none of Vista's functions and take that retry, so every fallback runs
+  on a current Windows. Without the POSIX rename (before Windows 10),
+  zip cannot replace an archive that another process holds open, even
+  with delete sharing: it fails, leaving the archive as it was
+  (`zip_windows.sh`, which `TUGZ_FORCE_XP=1` tells to expect that and
+  the NT name). Not covered: XP's time zone functions apply one
+  rule to every year (no dynamic DST), and the MSVC runtime that the
+  clang build takes its mem functions from may itself need newer
+  Windows; a mingw build without `-lmemory` imports them from msvcrt
+  (XP has it) or the UCRT (XP does not).
 - Windows paths get the `\\?\` prefix, lifting MAX_PATH. It turns off
   Win32 parsing, so paths are first resolved as Win32 would: against the
   current directory (UNC or not), a drive's, or the root, dropping `.`,

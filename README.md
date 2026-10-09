@@ -51,6 +51,16 @@ cmake/amalgamate.cmake` writes from a source tree:
     $ cc -O2 -nostartfiles -o zip.exe zip.c -lmemory
     $ cc -O2 -nostartfiles -o unzip.exe unzip.c -lmemory
 
+The Windows programs are meant to run on Windows XP and later (i686 on
+XP, x86-64 on XP x64), built as above with w64devkit, whose `-lmemory`
+leaves them importing only kernel32 and shell32 functions that XP has.
+Those Vista added are looked up at run time, and where missing, the
+programs do their work through ntdll's native calls instead. This is
+untested on XP itself: each fallback is tested on Windows 11 by
+building with `-DTUGZ_FORCE_XP`, which makes the programs take them all
+(see [docs/notes.md](docs/notes.md)). Built with clang targeting MSVC,
+the runtime's static library may need a newer Windows.
+
 ## Library
 
 `tugz.h` declares a streaming interface for raw DEFLATE, zlib, and gzip.
@@ -250,6 +260,7 @@ C11 alone lacks the C23 attributes. Options:
 | `TUGZ_SANITIZE` | if supported | ASan and UBSan in the tests |
 | `TUGZ_TEST_SCRIPTS` | not cross | the programs' shell-script tests |
 | `TUGZ_LIBMEMORY` | AUTO | Windows programs with w64devkit's `-lmemory` |
+| `TUGZ_FORCE_XP` | OFF | Windows programs taking their XP fallbacks (testing) |
 | `TUGZ_DEFLATE64` | OFF | the library with Deflate64 (`TUGZ_RAW64`) |
 
 Built by clang targeting MSVC, the programs link the static runtime's
