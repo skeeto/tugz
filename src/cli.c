@@ -30,9 +30,10 @@ typedef struct {
 } options;
 
 // GNU gzip 1.14's --help, its layout and wording, listing only the
-// options tugz accepts: none refused, and of the accepted no-ops those
-// GNU lists (-n, --rsyncable; not its hidden -H and -m). GNU's footer
-// for reporting bugs to its list is left out.
+// options tugz accepts: none refused, and of the accepted no-ops only
+// -n, whose line holds for tugz; --rsyncable, whose doesn't, is hidden
+// like GNU's -H and -m. GNU's footer for reporting bugs to its list is
+// left out.
 static s8 const usage_text = S8(
     "Usage: gzip [OPTION]... [FILE]...\n"
     "Compress or uncompress FILEs "
@@ -47,7 +48,6 @@ static s8 const usage_text = S8(
     "  -n, --no-name     do not save or restore "
                          "the original name and timestamp\n"
     "  -q, --quiet       suppress all warnings\n"
-    "      --rsyncable   make rsync-friendly archive\n"
     "  -t, --test        test compressed file integrity\n"
     "  -V, --version     display version number\n"
     "  -1, --fast        compress faster\n"

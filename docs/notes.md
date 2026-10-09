@@ -1897,8 +1897,9 @@ Fuzzers:
   less the lines for options tugz refuses (`-l`, `-L`, `-N`, `-r`, `-S`,
   `-v`, `--synchronous`) and GNU's closing line for reporting bugs to
   its list; the line on mandatory arguments goes too, as no option left
-  takes one. Accepted no-ops GNU lists stay (`-n`, `--rsyncable`, in
-  GNU's wording); its hidden `-H` and `-m` stay hidden. It names `gzip`
+  takes one. Of the accepted no-ops, `-n` stays, as its line holds;
+  `--rsyncable`, whose line would promise rsync-friendly output, is
+  hidden like GNU's hidden `-H` and `-m`. It names `gzip`
   under any program name, as GNU's does.
 - Names follow GNU gzip's default suffixes, in any case: `.gz`, `.z`,
   `-gz`, `-z`, `_z`, and `.tgz` and `.taz`, which stand for `.tar`.
