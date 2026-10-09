@@ -485,15 +485,22 @@ static b32 crc32_has_pclmul(void)
 
 // Kept in the caller's state rather than a global, keeping the core free
 // of mutable globals: 1 for PCLMULQDQ, -1 for none, 0 not yet asked.
+// Unless the target always has it (-mpclmul, or a -march with it), when
+// there is nothing to ask.
 static u32 crc32_update(u32 crc, u8 const *p, iz len, i32 *cpu)
 {
     if (len >= 64) {
+#if __PCLMUL__ && __SSE2__
+        (void)cpu;
+        return crc32_pclmul(crc, p, len);
+#else
         if (!*cpu) {
             *cpu = crc32_has_pclmul() ? 1 : -1;
         }
         if (*cpu > 0) {
             return crc32_pclmul(crc, p, len);
         }
+#endif
     }
     return crc32_slice8(crc, p, len);
 }
@@ -504,3 +511,20 @@ static u32 crc32_update(u32 crc, u8 const *p, iz len, i32 *cpu)
     return crc32_slice8(crc, p, len);
 }
 #endif
+
+// Update a CRC for a caller that keeps no state, as the library's
+// tugz_crc32 does not, where *cpu must be asked anew each time. It is
+// asked only for updates long enough to repay the question even where a
+// hypervisor traps it: on an i9-12900 under Windows 11 with
+// virtualization-based security CPUID took 1 us, slicing-by-8 0.46 ns
+// per byte, and PCLMUL 0.05 (at 4 KiB, asking and folding took 1.6 us,
+// the table 1.9 us; at 2 KiB, 1.2 and 1.0). Shorter updates take the
+// table, -1 meaning "none" to crc32_update, unless the target always has
+// the instructions (ARMv8 CRC, or PCLMUL as above).
+#define CRC32_ASK_MIN 4096
+
+[[maybe_unused]] static u32 crc32_stateless(u32 crc, u8 const *p, iz len)
+{
+    i32 cpu = len<CRC32_ASK_MIN ? -1 : 0;
+    return crc32_update(crc, p, len, &cpu);
+}

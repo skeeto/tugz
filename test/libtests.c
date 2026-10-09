@@ -2164,6 +2164,90 @@ static void test_usage(void)
     free(mem);
 }
 
+// tugz_crc32 and tugz_adler32 against zlib's crc32 and adler32: every
+// length to 2048 at 16 alignments, chained at every split, from any
+// start, past the length that asks the CPU and Adler-32's NMAX, and over
+// sums near its modulus. Also the CRC paths against the table.
+static void test_checksums(void)
+{
+    enum { MAX = 2048, BIG = 1<<20 };
+    u8 *r = randbytes(BIG + 64, 79);
+    for (iz align = 0; align < 16; align++) {
+        u8 const *p = r + align;
+        for (iz len = 0; len <= MAX; len++) {
+            TEST(tugz_crc32(0, p, len) == crc32(0, p, (uInt)len));
+            TEST(tugz_adler32(1, p, len) == adler32(1, p, (uInt)len));
+        }
+    }
+
+    // Chained at every split, from start values zlib also takes
+    iz len = 3000;
+    u32 crc = (u32)crc32(0x12345678, r, (uInt)len);
+    u32 adl = (u32)adler32(0xfff00ff0, r, (uInt)len);
+    for (iz i = 0; i <= len; i++) {
+        uint32_t c = tugz_crc32(0x12345678, r, i);
+        TEST(tugz_crc32(c, r+i, len-i) == crc);
+        uint32_t a = tugz_adler32(0xfff00ff0, r, i);
+        TEST(tugz_adler32(a, r+i, len-i) == adl);
+    }
+
+    // Long and boundary lengths, whole and in pieces
+    static iz const lens[] = {
+        CRC32_ASK_MIN-1, CRC32_ASK_MIN, CRC32_ASK_MIN+1, ADLER_NMAX-1,
+        ADLER_NMAX, ADLER_NMAX+1, 65535, 65536, 100003, BIG,
+    };
+    for (i32 k = 0; k < countof(lens); k++) {
+        iz n = lens[k];
+        crc = (u32)crc32(0, r+1, (uInt)n);
+        adl = (u32)adler32(1, r+1, (uInt)n);
+        TEST(tugz_crc32(0, r+1, n) == crc);
+        TEST(tugz_adler32(1, r+1, n) == adl);
+        uint32_t c = 0, a = 1;
+        for (iz off = 0, step = 1; off < n; off += step, step = step*2 + 1) {
+            iz m = MIN(step, n-off);
+            c = tugz_crc32(c, r+1+off, m);
+            a = tugz_adler32(a, r+1+off, m);
+        }
+        TEST(c==crc && a==adl);
+    }
+
+    // Sums near Adler-32's modulus
+    u8 *ff = malloc(BIG);
+    memset(ff, 0xff, BIG);
+    for (iz n = 0; n <= BIG; n = n*3 + 1) {
+        TEST(tugz_adler32(1, ff, n) == adler32(1, ff, (uInt)n));
+        TEST(tugz_crc32(0, ff, n) == crc32(0, ff, (uInt)n));
+    }
+    free(ff);
+
+    // Check values, no data, and lengths of zero or less
+    TEST(tugz_crc32(0, "123456789", 9) == 0xcbf43926);
+    TEST(tugz_adler32(1, "Wikipedia", 9) == 0x11e60398);
+    TEST(tugz_crc32(0, 0, 0) == 0);
+    TEST(tugz_adler32(1, 0, 0) == 1);
+    TEST(tugz_crc32(0xdeadbeef, 0, 0) == 0xdeadbeef);
+    TEST(tugz_crc32(0xdeadbeef, r, -1) == 0xdeadbeef);
+    TEST(tugz_adler32(0x00010002, r, -5) == 0x00010002);
+
+    // Each CRC path the CPU offers against the table: the update with
+    // no CPU (-1), and as asked (0), which on x86 may take PCLMUL
+    for (iz n = 0; n <= 5000; n += 1 + n/16) {
+        for (iz align = 0; align < 16; align += 5) {
+            u32 want = crc32_slice8(0, r+align, n);
+            i32 none = -1, ask = 0;
+            TEST(crc32_update(0, r+align, n, &none) == want);
+            TEST(crc32_update(0, r+align, n, &ask) == want);
+            TEST(crc32_stateless(0, r+align, n) == want);
+#if (__x86_64__ || __i386__) && !__ARM_FEATURE_CRC32
+            if (n>=64 && crc32_has_pclmul()) {
+                TEST(crc32_pclmul(0, r+align, n) == want);
+            }
+#endif
+        }
+    }
+    free(r);
+}
+
 // The library's version is the header's, whose numbers make its string.
 static void test_version(void)
 {
@@ -2180,6 +2264,7 @@ static void test_version(void)
 int main(void)
 {
     test_version();
+    test_checksums();
     test_memory();
     test_allocator();
     test_levels();

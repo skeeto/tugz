@@ -116,6 +116,7 @@
 #define TUGZ_VERSION_PATCH 0
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifndef TUGZ_API
 #  define TUGZ_API
@@ -200,6 +201,21 @@ TUGZ_API tugz_deflator *tugz_deflate_new(tugz_allocator *, void *ctx,
                                          int format, int level);
 TUGZ_API void           tugz_deflate_free(tugz_deflator *,
                                           tugz_allocator *, void *ctx);
+
+// CRC-32 (as gzip and ZIP use it: zlib's crc32) and Adler-32 (as the
+// zlib format uses it: zlib's adler32) of len bytes at p, continued from
+// an earlier result: start with 0 for CRC-32, or 1 for Adler-32, the
+// checks of no data, and pass each result to the next call. A len of
+// zero or less returns the check unchanged, and p may then be null.
+// Neither keeps any state, so both may be called from any thread. CRC-32
+// uses the CPU's CRC instructions where the target has them (ARMv8), or
+// carry-less multiplication (x86 with -mpclmul). Otherwise, on x86, it
+// asks the CPU for the latter on each call of 4 KiB or more, as asking
+// can take a microsecond under a hypervisor: larger pieces are faster.
+TUGZ_API uint32_t       tugz_crc32(uint32_t crc, void const *p,
+                                   ptrdiff_t len);
+TUGZ_API uint32_t       tugz_adler32(uint32_t adler, void const *p,
+                                     ptrdiff_t len);
 
 // The library's TUGZ_VERSION, as it was built, which for a shared
 // library may differ from the header's.

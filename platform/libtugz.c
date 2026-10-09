@@ -228,6 +228,16 @@ TUGZ_DEF void tugz_deflate_free(tugz_deflator *s, tugz_allocator *alloc,
     }
 }
 
+TUGZ_DEF uint32_t tugz_crc32(uint32_t crc, void const *p, ptrdiff_t len)
+{
+    return len>0 ? crc32_stateless(crc, p, len) : crc;
+}
+
+TUGZ_DEF uint32_t tugz_adler32(uint32_t adler, void const *p, ptrdiff_t len)
+{
+    return len>0 ? adler32_update(adler, p, len) : adler;
+}
+
 TUGZ_DEF char const *tugz_version(void)
 {
     return TUGZ_VERSION;

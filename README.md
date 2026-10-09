@@ -91,6 +91,11 @@ use the `tugz.c` in a release's amalgams zip (or `cmake
 amalgamation with the header inlined. Define `TUGZ_API` as `static`
 before including it to embed the library in another program.
 
+`tugz_crc32` and `tugz_adler32` compute the formats' checks over any
+data, as zlib's `crc32` and `adler32` do: start with 0 or 1
+respectively, and pass each result to the next call. CRC-32 uses the
+hardware CRC-32 described above, and neither keeps state.
+
 `TUGZ_VERSION` is the release as a string, "MAJOR.MINOR.PATCH", and
 `TUGZ_VERSION_MAJOR`, `TUGZ_VERSION_MINOR`, and `TUGZ_VERSION_PATCH` its
 numbers, for `#if`; `tugz_version()` returns the string the library was

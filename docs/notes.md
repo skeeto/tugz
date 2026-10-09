@@ -93,6 +93,24 @@ on the i9-12900) and in WSL2 (650 ns). Library inflate into 256-byte
 output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
 698, now 790.
 
+The library's `tugz_crc32` keeps no state, so it cannot keep the answer:
+it asks only on calls of 4 KiB or more (`CRC32_ASK_MIN`,
+`crc32_stateless`) and otherwise takes the table. Measured again on the
+i9-12900 under VBS: CPUID 1.05 us, slicing-by-8 0.46 ns/byte, PCLMUL
+0.04-0.05. At 2 KiB, asking and folding took 1.2 us against the table's
+1.0; at 4 KiB 1.6 against 1.9; at 64 KiB 3.5 against 30. Natively CPUID
+costs about 100 cycles, so there shorter calls forgo up to 10x (452 ns
+against 41 at 1 KiB), but are never slower than the table. Two other designs
+were rejected: a cache in a global, even a relaxed atomic one, would be
+the core's first mutable global state, against the header's promise of
+independent states and none global; and a caller-held cache argument
+would expose an implementation detail that ARM and `-mpclmul` builds
+ignore. Where the target has PCLMUL (`-mpclmul`, or a `-march` with it),
+`crc32_update` now uses it without asking, for every caller. Unlike
+zlib's, which return their start values (0 and 1) for a null pointer,
+`tugz_crc32` and `tugz_adler32` return the check passed for any call
+with no data, so a null pointer needs no special case in a chain.
+
 ## Library
 
 `tugz.h` documents the interface. Design points:
