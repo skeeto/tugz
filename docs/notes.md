@@ -118,7 +118,7 @@ with no data, so a null pointer needs no special case in a chain.
 - Sizes are `ptrdiff_t`; statuses, formats, levels, and flushes are
   `int`. No `long`, no `size_t`.
 - State is fixed-size and lives in caller memory of any alignment
-  (`tugz_*_size`, `tugz_*_init`): 308 KB to inflate and 2.7 MB to
+  (`tugz_*_size`, `tugz_*_init`): 301 KiB to inflate and 2.6 MiB to
   deflate. The optional allocator has the Lua shape `(ctx, ptr, old,
   new)` and is called once to allocate and once to free, with the size.
   Init on the same memory starts over, as does a reset, which for
@@ -335,8 +335,8 @@ with no data, so a null pointer needs no special case in a chain.
   with `TUGZ_DEFLATE64` (CMake option of that name, off by default, a
   `PRIVATE` define on `tugz`): a raw decoder (`decoder64_new` in
   `src/gzip.c`, the container code with `inflate64_new`'s inflator),
-  inflate only, as zlib and gzip never carry it. Its state is 407 KB
-  against 308 KB. The enumerator is declared in every build, rather
+  inflate only, as zlib and gzip never carry it. Its state is 398 KiB
+  against 301 KiB. The enumerator is declared in every build, rather
   than under the macro: the installed header is then the same whatever
   the library was built with, consumers need no define (none to forget,
   or to mismatch with a separately compiled `tugz.c`), and a program
@@ -1352,7 +1352,7 @@ for entries.
   GiB one, not one of 64 MiB) is decoded as UnZip's `USE_DEFLATE64`
   build does, and listed as `Def64N` (with the level as for `Defl:N`);
   its inflator, with a 64 KiB history and room for a 65538-byte match
-  (407 KB, to Deflate's 308 KB), is claimed only for an archive with
+  (398 KiB, to Deflate's 301 KiB), is claimed only for an archive with
   entries by it, after its central directory. Output goes out 64 KiB at
   a time, as UnZip flushes its slide, so that an error in a short
   entry's data leaves none of it on standard output, and there each

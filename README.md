@@ -69,27 +69,43 @@ free(mem);  // not z
 
 The state lies inside the caller's memory, aligned, so it may begin
 past `mem`: keep `mem` to free it. A state holds pointers into itself,
-so it may not be copied or moved. A gzip state decodes concatenated
-members, returning `TUGZ_DONE` at the end of each. Once input runs
-out, `TUGZ_DONE` means the stream (or the last member) is complete and
-`TUGZ_NEED_INPUT` that it is truncated; a raw or zlib state stays done,
-leaving any data after the stream in `b.in`.
+so it may not be copied or moved. Its size is the same for every format
+and level: currently about 301 KiB to inflate and 2.6 MiB to deflate.
+Sizes may change between releases, so always ask `tugz_inflate_size`
+and `tugz_deflate_size`. The library has no global state, so any
+function may be called from any thread, and separate states used
+concurrently.
+
+Calls return `TUGZ_DONE` (zero), a positive status asking to be called
+again with more input (`TUGZ_NEED_INPUT`) or more output space
+(`TUGZ_NEED_OUTPUT`), or a negative error. Errors are sticky until a
+reset, except `TUGZ_EUSAGE`, which refuses a misused call and changes
+nothing. Releases 1.x may add statuses of either sign, so test the sign
+rather than switch over today's values. `tugz.h` lists exactly what
+each error means and, as a table, how deflate's flushes proceed.
+
+A gzip state decodes concatenated members, returning `TUGZ_DONE` at the
+end of each. Once input runs out, `TUGZ_DONE` means the stream (or the
+last member) is complete and `TUGZ_NEED_INPUT` that it is truncated; a
+raw or zlib state stays done, leaving any data after the stream in
+`b.in`.
 
 Levels are 1 through 9; others are reserved, and init, `new`, and
-reset reject them. Deflate supports SYNC, FULL, and FINISH flushes,
-and a Lua-style allocator callback is available in place of caller
-memory. To compress many streams, reset a state rather than initialize
-it again: `tugz_deflate_reset` (which also sets the level) takes time in
-proportion to at most the first 1 KiB of the previous stream's input,
-rather than init's clearing of 512 KiB, so 100-byte streams compress
-about 4x faster. One in 2,048 of the resets and FULL flushes that follow
-a longer history still clears as init does. Inflate init and
-`tugz_inflate_reset` both take a small constant time. Build
-`platform/libtugz.c` as an object (`cc -c -O2 platform/libtugz.c`), or
-use the `tugz.c` in a release's amalgams zip (or `cmake
--DTUGZ_ARTIFACT=tugz -P cmake/amalgamate.cmake`), a single-file
-amalgamation with the header inlined. Define `TUGZ_API` as `static`
-before including it to embed the library in another program.
+reset reject them. Deflate supports SYNC, FULL, and FINISH flushes. In
+place of caller memory, `tugz_inflate_new` and `tugz_deflate_new` take
+a Lua-style allocator callback, called once to allocate and once to
+free, never to resize. To compress many streams, reset a state rather
+than initialize it again: `tugz_deflate_reset` (which also sets the
+level) takes time in proportion to at most the first 1 KiB of the
+previous stream's input, rather than init's clearing of 512 KiB, so
+100-byte streams compress about 4x faster. One in 2,048 of the resets
+and FULL flushes that follow a longer history still clears as init
+does. Inflate init and `tugz_inflate_reset` both take a small constant
+time. Build `platform/libtugz.c` as an object (`cc -c -O2
+platform/libtugz.c`), or use the `tugz.c` in a release's amalgams zip
+(or `cmake -DTUGZ_ARTIFACT=tugz -P cmake/amalgamate.cmake`), a
+single-file amalgamation with the header inlined. Define `TUGZ_API` as
+`static` before including it to embed the library in another program.
 
 `tugz_crc32` and `tugz_adler32` compute the formats' checks over any
 data, as zlib's `crc32` and `adler32` do: start with 0 or 1
@@ -109,12 +125,93 @@ Deflate64 (ZIP method 9, as unzip reads it) is an option, off by
 default: compiled with `TUGZ_DEFLATE64` defined (`cc -c -O2
 -DTUGZ_DEFLATE64 platform/libtugz.c`, the same before compiling or
 including `tugz.c`, or the CMake option below), the library inflates
-raw Deflate64 streams as format `TUGZ_RAW64`, with a state of 407 KB
-rather than 308 KB. It only decodes: deflate rejects the format.
+raw Deflate64 streams as format `TUGZ_RAW64`, with a state of 398 KiB
+rather than 301 KiB. It only decodes: deflate rejects the format.
 `TUGZ_RAW64` is declared either way, and a library built without the
 option rejects it as any invalid format (`tugz_inflate_size` returns
 zero), so the header is the same for both builds and a program can ask
 at run time. Without the option, the library is as it was.
+
+### Streaming examples
+
+A gzip decompressor from standard input to standard output. Input after
+a member's `TUGZ_DONE` begins the next member, and at the end of input
+`TUGZ_DONE` means it ended cleanly, so a truncated stream, even one cut
+just past a member, is told apart without tracking member boundaries
+(on Windows, first set both to binary mode):
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include "tugz.h"
+
+int main(void)
+{
+    static unsigned char in[1<<16], out[1<<16];
+    ptrdiff_t      len = tugz_inflate_size(TUGZ_GZIP);
+    void          *mem = malloc(len);
+    tugz_inflator *z   = tugz_inflate_init(mem, len, TUGZ_GZIP);
+    if (!z) return 1;
+
+    tugz_buf b      = {0};
+    int      status = TUGZ_NEED_INPUT;
+    for (;;) {
+        if (!b.inlen && status!=TUGZ_NEED_OUTPUT) {
+            b.in    = in;
+            b.inlen = (ptrdiff_t)fread(in, 1, sizeof(in), stdin);
+            if (!b.inlen) break;  // end of input
+        }
+        b.out    = out;
+        b.outlen = sizeof(out);
+        status   = tugz_inflate(z, &b);  // after DONE, input starts a member
+        fwrite(out, 1, b.out-out, stdout);
+        if (status < 0) break;
+    }
+    free(mem);
+
+    if (status == TUGZ_NEED_INPUT) {
+        fprintf(stderr, "gunzip: truncated input\n");
+    } else if (status != TUGZ_DONE) {  // DONE: whole members, cleanly ended
+        fprintf(stderr, "gunzip: %s\n", tugz_strerror(status));
+    }
+    fflush(stdout);
+    return status!=TUGZ_DONE || ferror(stdin) || ferror(stdout);
+}
+```
+
+A compressor, which finishes the stream at the end of input:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include "tugz.h"
+
+int main(void)
+{
+    static unsigned char in[1<<16], out[1<<16];
+    ptrdiff_t      len = tugz_deflate_size(TUGZ_GZIP);
+    void          *mem = malloc(len);
+    tugz_deflator *d   = tugz_deflate_init(mem, len, TUGZ_GZIP, 6);
+    if (!d) return 1;
+
+    int status;
+    do {
+        ptrdiff_t n     = (ptrdiff_t)fread(in, 1, sizeof(in), stdin);
+        tugz_buf  b     = {in, n, 0, 0};
+        int       flush = n ? TUGZ_NONE : TUGZ_FINISH;  // FINISH at the end
+        do {
+            b.out    = out;
+            b.outlen = sizeof(out);
+            status   = tugz_deflate(d, &b, flush);
+            fwrite(out, 1, b.out-out, stdout);
+        } while (status == TUGZ_NEED_OUTPUT);
+    } while (status == TUGZ_NEED_INPUT);
+    free(mem);
+
+    fflush(stdout);
+    return status!=TUGZ_DONE || ferror(stdin) || ferror(stdout);
+}
+```
 
 ### Using the library from CMake
 
@@ -134,7 +231,10 @@ target_link_libraries(app PRIVATE tugz::tugz)
 Or, after `cmake --install`, `find_package(tugz 0.4 CONFIG REQUIRED)`
 provides the same target. The library is static unless
 `BUILD_SHARED_LIBS` is set, and position-independent code is the
-consumer's choice (`CMAKE_POSITION_INDEPENDENT_CODE`). The targets keep
+consumer's choice (`CMAKE_POSITION_INDEPENDENT_CODE`). A shared Windows
+build exports its functions by a generated module-definition file, and
+programs need no `__declspec(dllimport)`: with MinGW and MSVC-ABI
+toolchains alike, calls link through the import library. The targets keep
 the compiler's default C standard whatever `CMAKE_C_STANDARD` says, as
 C11 alone lacks the C23 attributes. Options:
 

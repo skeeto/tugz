@@ -13,10 +13,20 @@
 //   free(mem);
 //
 // Each call advances b.in/b.out and decreases b.inlen/b.outlen by what it
-// consumed and produced. The state is fixed in size and never grows, so
-// it needs no cleanup beyond releasing its memory. States are
-// independent, so separate states may be used concurrently from
-// different threads.
+// consumed and produced, failing calls included. A pointer may be null
+// when its length is zero. The input and output must not overlap. A null
+// state or tugz_buf, a negative length, or a null pointer with a positive
+// length gets TUGZ_EUSAGE.
+//
+// Statuses: TUGZ_DONE is zero. A positive status asks for a call again
+// with what it names, more input or more output space. A negative status
+// is an error. Errors are sticky: once returned, later calls return the
+// same error, consuming and producing nothing, until a reset (or init).
+// TUGZ_EUSAGE alone is not sticky: it refuses that call, changing
+// nothing. Releases 1.x may add statuses of either sign, so test the sign
+// rather than switch over the values here: a new positive status will
+// still ask for another call, and a new negative one will be an error.
+// tugz_strerror describes any of them.
 //
 // Init places the state inside mem, aligned, so the state it returns
 // need not be mem: the caller keeps mem to release it, and must never
@@ -25,75 +35,119 @@
 // memory, so it works only where init placed it and may not be copied
 // or moved (as by memcpy or realloc). Init on the same memory again
 // starts over, and the memory is free for other uses once the state is
-// no longer used.
+// no longer used. The state is fixed in size and never grows, so it
+// needs no cleanup beyond releasing its memory.
 //
-// To compress many streams, reset one state rather than init it again:
-// init clears about 512 KiB and builds tables, while a reset takes time
-// in proportion to the previous stream's input up to about 1 KiB of it.
-// One in 2,048 of the resets and FULL flushes that follow a longer
-// history clears 512 KiB instead. For 100-byte streams this makes
-// deflate about 4x faster. Inflate init and reset both take a small
-// constant time. A reset may come at any point in a stream and keeps
-// the format. The deflate reset sets the level, so a deflate state's
-// size depends only on its format.
+// A state's size is the same for every format and level, but for
+// TUGZ_RAW64: currently about 301 KiB to inflate (398 KiB for TUGZ_RAW64)
+// and 2.6 MiB to deflate. Sizes may change between releases, and there is
+// no compile-time constant for them: always ask tugz_inflate_size or
+// tugz_deflate_size. The library has no global or lazily initialized
+// state, so every function may be called from any thread at any time,
+// and separate states may be used concurrently. One state may be used by
+// only one thread at a time.
 //
-// Inflate returns TUGZ_NEED_OUTPUT when the output buffer is full and
-// decoded output remains: call again with more space (and any input
-// left). Any other result means that all output decoded so far has been
-// delivered. TUGZ_DONE marks the end of the stream (for gzip, the end of
-// each member), with b.in pointing just past its last byte. A raw or
-// zlib state then stays done: later calls return TUGZ_DONE and consume
-// nothing, leaving any data after the stream in b.in for the caller.
-// Calling again on a gzip state with input decodes the next member, and
-// bytes that do not begin a member produce TUGZ_ENOTGZ (as in GNU gzip,
-// though not zlib, a member may begin with the old magic 1f 9e), while a
-// call with no input returns TUGZ_DONE again. TUGZ_NEED_INPUT means all
-// input was consumed: supply more, or if there is no more, the stream is
-// truncated. So at the end of input, TUGZ_DONE always means a complete
-// stream (or whole gzip members) and TUGZ_NEED_INPUT a truncated one,
-// with no need to track where gzip members end.
-// Errors are sticky, and reported once the output before them has been
-// delivered. Preset dictionaries are unsupported: a zlib stream with one
-// (FDICT) gets TUGZ_EHEADER once its dictionary ID has been read, where
-// zlib asks for the dictionary.
+// A reset starts another stream in the same state and format, and may
+// come at any point in a stream. To compress many streams, reset rather
+// than init: a deflate init clears 512 KiB and builds tables, while a
+// reset usually takes time in proportion to the previous stream's first
+// 1 KiB of input, making deflate about 4x faster for 100-byte streams.
+// Inflate init and reset both take a small constant time. (Timings here
+// are informative, not promises.)
 //
-// Deflate with TUGZ_NONE returns TUGZ_NEED_INPUT once it has consumed all
-// input, though output may remain staged internally. Staging is bounded,
-// so with the output buffer full it may instead return TUGZ_NEED_OUTPUT
-// with input left: supply output space and call again with the rest.
-// With TUGZ_SYNC (byte-align and emit everything so far), TUGZ_FULL (also
-// forget history, so decoding can restart there), or TUGZ_FINISH, call
-// until it returns TUGZ_DONE, supplying output space whenever it returns
-// TUGZ_NEED_OUTPUT. A flush falls due once its call has consumed all
-// input. Due flushes complete, in order, before a later call consumes
-// input (it returns TUGZ_NEED_OUTPUT until they do), and a later SYNC,
-// FULL, or FINISH call with no input falls due at once, behind them. So
-// the caller need not wait for TUGZ_DONE to move on, as to more input,
+// Inflate returns:
+//
+//   TUGZ_NEED_INPUT   all input consumed: supply more, or if there is no
+//                     more, the stream is truncated
+//   TUGZ_NEED_OUTPUT  the output buffer is full and decoded output
+//                     remains: call again with more space (and any input
+//                     left)
+//   TUGZ_DONE         the end of the stream (for gzip, of each member),
+//                     with b.in pointing just past its last byte
+//
+// or an error. So it consumes all input unless the output buffer fills,
+// the stream (or member) ends, or an error stops it. Any result but
+// TUGZ_NEED_OUTPUT means that all output decoded so far has been
+// delivered, and an error is returned only once the output before it
+// has been. A raw or zlib state stays done: later calls return TUGZ_DONE
+// and consume nothing, leaving any data after the stream in b.in for the
+// caller. Calling again on a gzip state with input decodes the next
+// member, and bytes that do not begin a member produce TUGZ_ENOTGZ, while
+// a call with no input returns TUGZ_DONE again. So at the end of input,
+// TUGZ_DONE always means a complete stream (or whole gzip members) and
+// TUGZ_NEED_INPUT a truncated one, with no need to track where gzip
+// members end.
+//
+// Inflate errors:
+//
+//   TUGZ_EDATA    invalid compressed data
+//   TUGZ_ENOTGZ   gzip only: a member does not begin 1f 8b (or, as in GNU
+//                 gzip, though not zlib, the old magic 1f 9e), including
+//                 bytes after a member, such as zero padding
+//   TUGZ_EHEADER  gzip: a method (CM) other than 8, reserved flag bits
+//                 set, or a header CRC (FHCRC) mismatch; zlib: a bad
+//                 header check (FCHECK), a method other than 8, a window
+//                 over 32 KiB, or a preset dictionary (FDICT, which is
+//                 unsupported), reported once its ID has been read, where
+//                 zlib would ask for the dictionary
+//   TUGZ_ECHECK   CRC-32 (gzip) or Adler-32 (zlib) mismatch
+//   TUGZ_ELENGTH  gzip length (ISIZE) mismatch
+//   TUGZ_EUSAGE   an invalid argument, as above
+//
+// With TUGZ_ECHECK and TUGZ_ELENGTH, the stream's output has already been
+// delivered and must not be trusted. Where b.in stops in a failing call
+// is otherwise unspecified, so to find data after a stream, look at b.in
+// after TUGZ_DONE. tugz_inflate_reset clears any error, along with all
+// stream and gzip member state.
+//
+// Deflate takes a flush mode with each call:
+//
+//   TUGZ_NONE    compress, with output perhaps staged internally
+//   TUGZ_SYNC    also emit all output so far, byte-aligned, ending in an
+//                empty stored block (00 00 FF FF)
+//   TUGZ_FULL    as SYNC, and forget history, so decoding can restart
+//                there
+//   TUGZ_FINISH  end the stream
+//
+// A SYNC, FULL, or FINISH falls due once its call has consumed all
+// input, and is complete once all its output has been delivered. A call
+// does the first of these that applies, by its mode, whether it has
+// input, and whether due flushes are incomplete:
+//
+//   mode                input  incomplete  the call
+//   any but FINISH      any    -           after a FINISH falls due:
+//   FINISH              yes    -             returns TUGZ_EUSAGE
+//   FINISH              none   -             completes all: TUGZ_DONE
+//   latest due's mode   none   yes         completes them, returning
+//                                          TUGZ_DONE (a repeat)
+//   SYNC, FULL, FINISH  none   yes         falls due behind them, and
+//                                          completes all: TUGZ_DONE
+//   any                 any    yes         completes them, consuming no
+//                                          input, then goes on below
+//   NONE                any    no          consumes all input, returning
+//                                          TUGZ_NEED_INPUT
+//   SYNC, FULL, FINISH  any    no          consumes all input, falls due,
+//                                          and completes: TUGZ_DONE
+//
+// Any call returns TUGZ_NEED_OUTPUT when the output buffer is full and it
+// cannot go on: call again with more space (and any input left). A call
+// returning TUGZ_DONE has completed its flush and every flush before it.
+// The caller need not wait for TUGZ_DONE to move on, as to more input,
 // another flush, or TUGZ_FINISH at the end of input: the stream is the
-// one it would get by waiting for each flush, whatever the buffer
-// sizes. The exception is a call with no input in the mode of the
-// latest due flush while that is unfinished: it does not flush again,
-// but only completes the due flushes, returning TUGZ_DONE once all have
-// (to flush twice in one mode, wait for the first). Once TUGZ_FINISH
-// falls due, even behind other flushes, only TUGZ_FINISH with no input
-// is accepted (others return TUGZ_EUSAGE), and it returns TUGZ_DONE once
-// all output is delivered.
+// one it would get by waiting for each flush, whatever the buffer sizes.
+// Only a repeat does not flush again, so a no-input SYNC right after a
+// completed SYNC adds another empty stored block. TUGZ_NONE never
+// returns TUGZ_DONE, and consumes input even with no output space until
+// its internal staging, which is bounded, fills.
+// Once a FINISH falls due, the stream is over until a reset. TUGZ_EUSAGE,
+// deflate's only error, changes nothing: a misused call, as after a
+// FINISH, does not spoil the stream.
 //
 // Compression levels are 1 (fastest) through 9 (smallest). Others are
 // rejected, and reserved, as 0 and those above 9 may gain meanings: init
 // and new return null, and reset returns TUGZ_EUSAGE and leaves the
 // state as it was. The gzip header records no name or time, and its XFL
 // marks levels 1 and 9 as GNU gzip and zlib mark them.
-//
-// Deflate64 (PKWARE's "Enhanced Deflating", ZIP method 9: a 64 KiB
-// window, matches up to 65538 bytes) inflates as format TUGZ_RAW64 when
-// the library is compiled with TUGZ_DEFLATE64 defined (CMake option
-// TUGZ_DEFLATE64), with a state about 100 KB larger. It is raw only, as
-// zlib and gzip never carry it, and decode only: deflate rejects it as an
-// invalid format. TUGZ_RAW64 is declared in every build, and a library
-// without Deflate64 rejects it too, so tugz_inflate_size(TUGZ_RAW64)
-// tells whether it is available. RAW decodes no Deflate64-only codes:
-// distance codes 30 and 31 are TUGZ_EDATA, and length code 285 is 258.
 //
 // Define TUGZ_API (e.g. as static) to control the linkage of definitions.
 // The single-file tugz.c (in each release, or from cmake -P
@@ -103,7 +157,11 @@
 // type names are renamed (u8 to tugz__u8, and so on).
 // Its other internal names are not: static functions such as alloc and
 // enumerators such as GZ_OK. Should those collide with the program's,
-// compile tugz.c on its own instead.
+// compile tugz.c on its own instead. A shared Windows build (CMake with
+// BUILD_SHARED_LIBS) exports the functions by a module-definition file,
+// and they are functions only, so programs need not define TUGZ_API as
+// __declspec(dllimport): with MinGW and MSVC-ABI toolchains alike, calls
+// link through the import library's stubs.
 #ifndef TUGZ_H
 #define TUGZ_H
 
@@ -126,6 +184,17 @@
 extern "C" {
 #endif
 
+// Deflate64 (PKWARE's "Enhanced Deflating", ZIP method 9: a 64 KiB
+// window, matches up to 65538 bytes) inflates as format TUGZ_RAW64 when
+// the library is compiled with TUGZ_DEFLATE64 defined (CMake option
+// TUGZ_DEFLATE64), with a state about 97 KiB larger. It is raw only, as
+// zlib and gzip never carry it, and decode only: deflate rejects it as an
+// invalid format, and tugz_deflate_size(TUGZ_RAW64) is zero. TUGZ_RAW64
+// is declared in every build, and a library without Deflate64 rejects it
+// too, so tugz_inflate_size(TUGZ_RAW64) tells whether it is available.
+// The option changes nothing else, such as other formats' sizes. RAW
+// decodes no Deflate64-only codes: distance codes 30 and 31 are
+// TUGZ_EDATA, and length code 285 is 258.
 enum {  // formats
     TUGZ_RAW,
     TUGZ_ZLIB,
@@ -140,7 +209,7 @@ enum {  // deflate flush modes
     TUGZ_FINISH,
 };
 
-enum {  // results
+enum {  // results (see above)
     TUGZ_DONE        =  0,
     TUGZ_NEED_INPUT  =  1,
     TUGZ_NEED_OUTPUT =  2,
@@ -162,20 +231,26 @@ typedef struct {
     ptrdiff_t            outlen;
 } tugz_buf;
 
-// Allocate (ptr null, oldsize zero) or free (newsize zero), Lua-style.
+// For new and free: called with ptr null, oldsize zero, and newsize the
+// state's size to allocate memory, which need not be aligned, returning
+// null on failure; and with ptr and oldsize from that allocation and
+// newsize zero to free it, its result then ignored. Never to resize.
 typedef void *tugz_allocator(void *ctx, void *ptr, ptrdiff_t oldsize,
                              ptrdiff_t newsize);
 
 // Size of the state for a format, or zero if the format is invalid (as
 // TUGZ_RAW64 is without TUGZ_DEFLATE64).
 TUGZ_API ptrdiff_t      tugz_inflate_size(int format);
-// Returns null if the memory is too small or the format is invalid.
+// Returns null if the memory is null or too small, or the format is
+// invalid.
 TUGZ_API tugz_inflator *tugz_inflate_init(void *mem, ptrdiff_t len,
                                           int format);
 TUGZ_API int            tugz_inflate(tugz_inflator *, tugz_buf *);
-// Discard the current stream and start another in the same format.
+// Discard the current stream, and any error, and start another in the
+// same format. A null state is ignored.
 TUGZ_API void           tugz_inflate_reset(tugz_inflator *);
 
+// Size of the state for a format, or zero if deflate does not take it.
 TUGZ_API ptrdiff_t      tugz_deflate_size(int format);
 // Most bytes deflate produces from len bytes of input in one stream in
 // the format, at any level, when TUGZ_FINISH is the only flush: with an
@@ -185,8 +260,8 @@ TUGZ_API ptrdiff_t      tugz_deflate_size(int format);
 // and trailer (6 bytes for zlib, 18 for gzip). Returns zero for a format
 // deflate does not take, a negative len, or a bound past PTRDIFF_MAX.
 TUGZ_API ptrdiff_t      tugz_deflate_bound(int format, ptrdiff_t len);
-// Returns null if the memory is too small, or the format or level is
-// invalid.
+// Returns null if the memory is null or too small, or the format or
+// level is invalid.
 TUGZ_API tugz_deflator *tugz_deflate_init(void *mem, ptrdiff_t len,
                                           int format, int level);
 TUGZ_API int            tugz_deflate(tugz_deflator *, tugz_buf *,
@@ -197,10 +272,10 @@ TUGZ_API int            tugz_deflate(tugz_deflator *, tugz_buf *,
 TUGZ_API int            tugz_deflate_reset(tugz_deflator *, int level);
 
 // Convenience: one allocation of the state's size through the allocator,
-// which free releases with that size, given the state new returned (not
-// one from init); free with a null state does nothing. New returns null
-// if the allocator does, or, allocating nothing, if the format (or
-// level) is invalid.
+// which must not be null, and free releases it, given the state new
+// returned (not one from init); free with a null state does nothing. New
+// returns null if the allocator does, or, allocating nothing, if the
+// format (or level) is invalid.
 TUGZ_API tugz_inflator *tugz_inflate_new(tugz_allocator *, void *ctx,
                                          int format);
 TUGZ_API void           tugz_inflate_free(tugz_inflator *,
@@ -215,11 +290,11 @@ TUGZ_API void           tugz_deflate_free(tugz_deflator *,
 // an earlier result: start with 0 for CRC-32, or 1 for Adler-32, the
 // checks of no data, and pass each result to the next call. A len of
 // zero or less returns the check unchanged, and p may then be null.
-// Neither keeps any state, so both may be called from any thread. CRC-32
-// uses the CPU's CRC instructions where the target has them (ARMv8), or
-// carry-less multiplication (x86 with -mpclmul). Otherwise, on x86, it
-// asks the CPU for the latter on each call of 4 KiB or more, as asking
-// can take a microsecond under a hypervisor: larger pieces are faster.
+// Neither keeps any state. CRC-32 uses the CPU's CRC instructions where
+// the target has them (ARMv8), or carry-less multiplication (x86 with
+// -mpclmul). Otherwise, on x86, it asks the CPU for the latter on each
+// call of 4 KiB or more, as asking can take a microsecond under a
+// hypervisor: larger pieces are faster.
 TUGZ_API uint32_t       tugz_crc32(uint32_t crc, void const *p,
                                    ptrdiff_t len);
 TUGZ_API uint32_t       tugz_adler32(uint32_t adler, void const *p,
