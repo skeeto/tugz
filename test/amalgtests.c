@@ -36,6 +36,7 @@ int main(void)
     TEST(!strcmp(tugz_version(), TUGZ_VERSION));
     TEST(tugz_crc32(tugz_crc32(0, "1234", 4), "56789", 5) == 0xcbf43926);
     TEST(tugz_adler32(tugz_adler32(1, "Wiki", 4), "pedia", 5) == 0x11e60398);
+    TEST(!strcmp(tugz_strerror(TUGZ_ECHECK), "checksum mismatch"));
 
     enum { N = 1 << 16 };
     static unsigned char in[N], z[2*N], out[N];

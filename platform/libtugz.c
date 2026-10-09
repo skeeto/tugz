@@ -247,6 +247,22 @@ TUGZ_DEF uint32_t tugz_adler32(uint32_t adler, void const *p, ptrdiff_t len)
     return len>0 ? adler32_update(adler, p, len) : adler;
 }
 
+TUGZ_DEF char const *tugz_strerror(int status)
+{
+    switch (status) {
+    case TUGZ_DONE:        return "done";
+    case TUGZ_NEED_INPUT:  return "more input needed";
+    case TUGZ_NEED_OUTPUT: return "more output space needed";
+    case TUGZ_EDATA:       return "invalid compressed data";
+    case TUGZ_ENOTGZ:      return "not gzip data";
+    case TUGZ_EHEADER:     return "invalid or unsupported header";
+    case TUGZ_ECHECK:      return "checksum mismatch";
+    case TUGZ_ELENGTH:     return "length mismatch";
+    case TUGZ_EUSAGE:      return "invalid argument or call sequence";
+    }
+    return "unknown status";
+}
+
 TUGZ_DEF char const *tugz_version(void)
 {
     return TUGZ_VERSION;

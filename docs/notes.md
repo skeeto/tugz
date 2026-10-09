@@ -228,6 +228,11 @@ with no data, so a null pointer needs no special case in a chain.
   flushes as often as every byte; `fuzz-roundtrip` checks every
   FINISH-only stream against it, and `fuzz_encode` (`fuzz-diff-deflate`)
   every stream, allowing 16 bytes per flush.
+- `tugz_strerror(status)` gives a short constant message for each
+  status, those that are not errors too ("done", "more input needed"),
+  so that a caller can print whatever a call returned, and "unknown
+  status" for any other value, which a newer library's statuses would
+  get from an older one's.
 - SYNC emits an empty stored block (`00 00 ff ff`); FULL also clears the
   hash chains so no match reaches behind the flush. zlib headers match
   zlib's byte for byte (FLEVEL). gzip decoding stops after each member;

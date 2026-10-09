@@ -225,6 +225,11 @@ TUGZ_API uint32_t       tugz_crc32(uint32_t crc, void const *p,
 TUGZ_API uint32_t       tugz_adler32(uint32_t adler, void const *p,
                                      ptrdiff_t len);
 
+// A short, constant message for a status, such as "invalid compressed
+// data": one for each of the results above, those that are not errors
+// included, and "unknown status" for any other value.
+TUGZ_API char const    *tugz_strerror(int status);
+
 // The library's TUGZ_VERSION, as it was built, which for a shared
 // library may differ from the header's.
 TUGZ_API char const    *tugz_version(void);

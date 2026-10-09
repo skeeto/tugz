@@ -2354,6 +2354,33 @@ static void test_bound(void)
     }
 }
 
+// Every status has its own message, and any other value one for all.
+static void test_strerror(void)
+{
+    static int const statuses[] = {
+        TUGZ_DONE, TUGZ_NEED_INPUT, TUGZ_NEED_OUTPUT, TUGZ_EDATA,
+        TUGZ_ENOTGZ, TUGZ_EHEADER, TUGZ_ECHECK, TUGZ_ELENGTH, TUGZ_EUSAGE,
+    };
+    char const *unknown = tugz_strerror(3);
+    TEST(!strcmp(unknown, "unknown status"));
+    for (i32 i = 0; i < countof(statuses); i++) {
+        char const *m = tugz_strerror(statuses[i]);
+        TEST(m && *m && strcmp(m, unknown));
+        for (i32 j = 0; j < i; j++) {
+            TEST(strcmp(m, tugz_strerror(statuses[j])));
+        }
+    }
+    TEST(!strcmp(tugz_strerror(TUGZ_EDATA), "invalid compressed data"));
+    int max = (int)(~0u >> 1);
+    int const others[] = {-7, 3, 100, -1000, max, -max-1};
+    for (i32 i = 0; i < countof(others); i++) {
+        TEST(tugz_strerror(others[i]) == unknown);
+    }
+    for (int s = -100; s <= 100; s++) {
+        TEST(tugz_strerror(s));
+    }
+}
+
 // The library's version is the header's, whose numbers make its string.
 static void test_version(void)
 {
@@ -2372,6 +2399,7 @@ int main(void)
     test_version();
     test_checksums();
     test_bound();
+    test_strerror();
     test_memory();
     test_allocator();
     test_levels();
