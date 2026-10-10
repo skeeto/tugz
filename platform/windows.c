@@ -41,6 +41,7 @@ W32(b32)    GetNamedPipeHandleStateW(iptr, u32 *, u32 *, u32 *, u32 *, c16 *,
                                      u32);
 W32(w32proc) GetProcAddress(iptr, char const *);
 W32(iptr)   GetStdHandle(u32);
+W32(u32)    GetTickCount(void);
 W32(i32)    LCMapStringW(u32, u32, c16 const *, i32, c16 *, i32);
 W32(b32)    ReadConsoleW(iptr, c16 *, u32, u32 *, uptr);
 W32(b32)    ReadFile(iptr, void *, u32, u32 *, uptr);
@@ -990,6 +991,13 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
 static b32 os_isatty(os *ctx, i32 fd)
 {
     return (u32)fd<3 && ctx->consoles>>fd & 1;
+}
+
+// To the system timer's 10-16 ms, wrapping after 49 days
+static i64 os_now(os *ctx)
+{
+    (void)ctx;
+    return GetTickCount();
 }
 
 // Nothing there: no such file, nor a directory on the way to it, rather

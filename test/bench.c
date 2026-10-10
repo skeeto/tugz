@@ -53,6 +53,12 @@ static b32 os_isatty(os *ctx, i32 fd)
     __builtin_trap();
 }
 
+static i64 os_now(os *ctx)
+{
+    (void)ctx;
+    __builtin_trap();  // gzip's writers are never a terminal's
+}
+
 static b32 os_missing(os *ctx)
 {
     (void)ctx;

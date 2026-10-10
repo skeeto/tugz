@@ -55,6 +55,9 @@ static b32  os_remove(os *, s8 path, arena scratch);
 static b32  os_keep(os *, i32 fd);
 // Exit with a status. A created file not yet kept is discarded.
 [[noreturn]] static void os_exit(os *, i32 status);
+// Milliseconds on a monotonic clock, from an arbitrary start, as coarse
+// as a system timer's tick. It may wrap (Windows, after 49 days).
+static i64  os_now(os *);
 
 typedef struct {
     os *ctx;
@@ -97,7 +100,9 @@ typedef struct {
     return 1;
 }
 
-// A writer with a negative descriptor discards output.
+// A writer with a negative descriptor discards output. One to a
+// terminal (tty), which a program sets for its messages, never its data,
+// notes when its buffer last began to fill, for writer_poll.
 typedef struct {
     os *ctx;
     u8 *buf;
@@ -105,7 +110,11 @@ typedef struct {
     iz  cap;
     i32 fd;
     b32 err;
+    b32 tty;
+    i64 since;  // when the buffered text began to wait
 } writer;
+
+enum { WRITER_WAIT = 100 };  // milliseconds, writer_poll's
 
 [[maybe_unused]] static writer *newwriter(arena *a, i32 fd, iz cap)
 {
@@ -144,6 +153,9 @@ typedef struct {
         if (w->len == w->cap) {
             writer_flush(w);
         }
+        if (!w->len && w->tty) {
+            w->since = os_now(w->ctx);
+        }
         iz take = MIN(len, w->cap-w->len);
         bytecopy(w->buf+w->len, p, take);
         w->len += take;
@@ -162,7 +174,28 @@ typedef struct {
     if (w->len == w->cap) {
         writer_flush(w);
     }
+    if (!w->len && w->tty) {
+        w->since = os_now(w->ctx);
+    }
     w->buf[w->len++] = b;
+}
+
+// A check point, called between pieces of a program's work: text to a
+// terminal is flushed once it has waited WRITER_WAIT, as Nagle's
+// algorithm holds small packets. Output is otherwise flushed only when
+// full, or by the program before a message to standard error, or a
+// prompt, and at the end. A line then shows within WRITER_WAIT and a
+// piece of work, a flood of lines is written ten times a second, and a
+// fast run is written at once, at the end. The clock is read only with
+// text waiting, so polling costs nothing for a pipe or file.
+[[maybe_unused]] static void writer_poll(writer *w)
+{
+    if (w->tty && w->len) {
+        i64 now = os_now(w->ctx);
+        if (now-w->since>=WRITER_WAIT || now<w->since) {  // (or wrapped)
+            writer_flush(w);
+        }
+    }
 }
 
 [[maybe_unused]] static b32 s8equals(s8 a, s8 b)

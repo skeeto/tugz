@@ -18,6 +18,7 @@
 #include "../src/dir.c"
 #include "../src/zipin.c"
 #include "../src/zipcli.c"
+#include "fakeclock.c"
 
 #include <setjmp.h>
 #include <stdio.h>
@@ -78,6 +79,7 @@ struct os {
     u8      out[2][MAX_OUTPUT];  // standard output and error, as written
     iz      outlen[2];
     char   *error;    // why the last failing call failed
+    fakeclock clock;  // os_now's, never read: zip writes messages unbuffered
     b32     missing;  // the last failure found nothing there
 
     byte   *mem;      // the reservation
@@ -518,6 +520,11 @@ static b32 os_isatty(os *ctx, i32 fd)
 {
     (void)ctx; (void)fd;
     return 0;
+}
+
+static i64 os_now(os *ctx)
+{
+    return fakeclock_read(&ctx->clock);
 }
 
 static s8 os_error(os *ctx)

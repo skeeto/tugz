@@ -262,6 +262,13 @@ static b32 os_isatty(os *ctx, i32 fd)
     return ctx->tty[fd];
 }
 
+static i64 os_now(os *ctx)
+{
+    (void)ctx;
+    TEST(0);  // gzip's writers are never a terminal's
+    return 0;
+}
+
 static b32 os_missing(os *ctx)
 {
     return ctx->missing;

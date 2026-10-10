@@ -10,6 +10,9 @@
 // than 255 bytes, and paths of 4096, are refused, as on Linux. Standard
 // input is scripted, as the prompts' answers or as an archive (unzip -),
 // and standard output and error are captured, apart and interleaved.
+// Each write to standard output is recorded (writes), with the bytes
+// written to files by then, and the clock is fake (test/fakeclock.c), so
+// that output paced on a terminal is seen deterministically.
 // The umask, which descriptors are terminals, and Windows conventions
 // (names that differ only in ASCII case are one, links are made as files
 // holding their targets, no umask) are set per run; local time is UTC.
@@ -57,6 +60,8 @@
 #include "../src/unzip.c"
 #include "../src/unzipcli.c"
 
+#include "fakeclock.c"
+
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,6 +97,7 @@ enum {
     MFS_PATHMAX = 4096,     // PATH_MAX, with its terminator
     MFS_LINKS   = 40,       // links followed in a path, as Linux's
     MFS_OUTMAX  = 1 << 26,  // a captured stream's, past which writes fail
+    MFS_WRITES  = 64,       // writes to standard output recorded
 };
 
 typedef struct {
@@ -156,6 +162,12 @@ struct os {
     b32     stdinfile;
     mbuf    out[3];   // standard output, error, and both interleaved
     b32     tty[3];   // which standard descriptors are terminals
+    fakeclock clock;  // os_now's, its readings counted per run
+    struct {
+        iz  end;      // standard output's length after a write to it
+        i64 written;  // and the bytes written to files by then
+    } writes[MFS_WRITES];
+    i32     nwrites;  // writes to standard output, per run (all counted)
 
     b32     windows;  // Windows conventions
     u32     umask;
@@ -623,6 +635,11 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
         }
         mbuf_put(b, buf, len);
         mbuf_put(ctx->out+2, buf, len);
+        if (fd==1 && ctx->nwrites<MFS_WRITES) {
+            ctx->writes[ctx->nwrites].end     = b->len;
+            ctx->writes[ctx->nwrites].written = ctx->written;
+        }
+        ctx->nwrites += fd==1;
         if (fd==2 && s8equals((s8){buf, len}, S("new name: "))) {
             ctx->renamed = 1;
         }
@@ -788,6 +805,11 @@ static u32 os_umask(os *ctx)
 static b32 os_isatty(os *ctx, i32 fd)
 {
     return fd>=0 && fd<=2 && ctx->tty[fd];
+}
+
+static i64 os_now(os *ctx)
+{
+    return fakeclock_read(&ctx->clock);
 }
 
 static s8 os_error(os *ctx)
@@ -1106,6 +1128,7 @@ static void mfs_reset(os *ctx)
     ctx->inlen       = ctx->inoff = 0;
     ctx->stdinfile   = 0;
     ctx->tty[0] = ctx->tty[1] = ctx->tty[2] = 0;
+    ctx->clock       = (fakeclock){0};
     ctx->windows     = 0;
     ctx->umask       = 022;
     ctx->dest        = S("");
@@ -1153,6 +1176,7 @@ static i32 unzipos_run(os *ctx, char **argv, i32 argc, char *env, i32 *open)
     ctx->inoff   = 0;
     ctx->written = 0;
     ctx->nmkdir  = ctx->ncreate = ctx->nkeep = ctx->nchanges = 0;
+    ctx->nwrites = ctx->clock.reads = 0;
     for (i32 i = 0; i < 3; i++) {
         ctx->out[i].len = 0;
     }

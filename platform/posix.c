@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 // Nanosecond timestamps: POSIX 2008 names, but macOS predates them
@@ -276,6 +277,14 @@ static b32 os_isatty(os *ctx, i32 fd)
 {
     (void)ctx;
     return isatty(fd);
+}
+
+static i64 os_now(os *ctx)
+{
+    (void)ctx;
+    struct timespec ts = {0};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (i64)ts.tv_sec*1000 + ts.tv_nsec/1000000;
 }
 
 static s8 os_error(os *ctx)
