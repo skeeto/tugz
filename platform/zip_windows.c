@@ -200,6 +200,7 @@ static b32 os_writable(os *ctx, s8 path, arena scratch)
 
 static b32 os_writeat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
 {
+    stop_if_ending();
     while (len) {
         overlapped ov = {0};
         ov.offset      = (u32)off;
@@ -235,6 +236,7 @@ static b32 os_truncate(os *ctx, i32 fd, i64 len)
 static i32 os_commit(os *ctx, i32 fd, s8 temp, s8 path, b32 replace,
                      arena scratch)
 {
+    stop_if_ending();
     iptr h = ctx->handles[fd];
     if (!FlushFileBuffers(h)) {
         // A file system that cannot flush (some network and virtual ones)

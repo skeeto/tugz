@@ -45,8 +45,10 @@ W32(u32)    GetTickCount(void);
 W32(i32)    LCMapStringW(u32, u32, c16 const *, i32, c16 *, i32);
 W32(b32)    ReadConsoleW(iptr, c16 *, u32, u32 *, uptr);
 W32(b32)    ReadFile(iptr, void *, u32, u32 *, uptr);
+W32(b32)    SetConsoleCtrlHandler(b32 (__stdcall *)(u32), b32);
 W32(b32)    SetNamedPipeHandleState(iptr, u32 *, u32 *, u32 *);
 W32(void)   SetLastError(u32);
+W32(void)   Sleep(u32);
 W32(void *) VirtualAlloc(uptr, iz, u32, u32);
 W32(b32)    WriteConsoleW(iptr, c16 const *, u32, u32 *, uptr);
 W32(b32)    WriteFile(iptr, void const *, u32, u32 *, uptr);
@@ -195,6 +197,22 @@ struct os {
     byte *hi;
     winapi api;
 };
+
+// A console control event's handling (see on_ctrl): the writer it is to
+// write, and whether it has begun (1) or is done (2).
+static writer *held_text;
+static i32     ending;
+
+// The program's thread stops here once the process is ending, for its
+// end, rather than make anything more visible.
+static void stop_if_ending(void)
+{
+    if (__atomic_load_n(&ending, __ATOMIC_ACQUIRE)) {
+        for (;;) {
+            Sleep((u32)-1);  // INFINITE
+        }
+    }
+}
 
 // Look up the functions of winapi, once (os_init).
 static void load_api(winapi *w)
@@ -836,6 +854,7 @@ static b32 os_close(os *ctx, i32 fd)
 // should too, but a file system or filter may yet refuse.
 [[maybe_unused]] static b32 os_keep(os *ctx, i32 fd)
 {
+    stop_if_ending();
     u8 keep = 0;
     return set_info(ctx, ctx->handles[fd], FileDispositionInfo, &keep,
                     sizeof(keep));
@@ -971,7 +990,7 @@ static b32 write_console(os *ctx, i32 fd, u8 *buf, iz len)
     return 1;
 }
 
-static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
+static b32 write_fd(os *ctx, i32 fd, u8 *buf, iz len)
 {
     if ((u32)fd<3 && ctx->consoles>>fd & 1) {
         return write_console(ctx, fd, buf, len);
@@ -988,21 +1007,90 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
     return 1;
 }
 
+// A console control event (Ctrl+C, Ctrl+Break, the console closed, a
+// logoff or shutdown) ends the process, as on POSIX a signal does, but
+// its handler runs on a thread of its own, beside the program's. The
+// writer of standard output that zip and unzip hold (os_holdtext) is
+// written there as the process ends, as POSIX's signal handler writes it
+// (a closed console then takes nothing), and the event is then passed to
+// the default handler, which ends the process as it always has
+// (STATUS_CONTROL_C_EXIT, 0xC000013A, for each event). Outputs not yet
+// kept need no handling, as they are delete-pending.
+//
+// The handler claims the writer (writer_claim) by an atomic exchange of
+// its state, idle to claimed, and writes the text buffered by then. While
+// the program's thread is writing (from the buffer or past it), it waits
+// for that write to end, up to 2 s (it may block on a full pipe), then
+// gives up, writing nothing. Once claimed, the program's thread never
+// writes that text, nor touches it: it may go on appending past it, but
+// stops at its next write of the writer, which must first exchange the
+// state idle to writing. No text is written twice, none torn, and none
+// out of order. From the moment the handler begins (ending), the
+// program's thread also stops before anything else it would make
+// visible: any other write (os_write, zip's os_writeat), a file kept or
+// committed, and its exit, so that it neither keeps an output nor ends
+// the process with its own status while the handler writes. Its writer's
+// own writes go on, as the handler waits for them. The thread stops,
+// rather than being suspended, so that it never holds a lock (the
+// console's) that the handler needs. A second event's handler waits for
+// the first's, for a while too.
+static b32 __stdcall on_ctrl(u32 event)
+{
+    (void)event;
+    enum { PATIENCE = 2000 };  // milliseconds
+    u32 start = GetTickCount();
+    i32 none  = 0;
+    if (__atomic_compare_exchange_n(&ending, &none, 1, 0, __ATOMIC_ACQ_REL,
+                                    __ATOMIC_ACQUIRE)) {
+        writer *w = __atomic_load_n(&held_text, __ATOMIC_ACQUIRE);
+        while (w) {
+            iz len = writer_claim(w);
+            if (len >= 0) {
+                if (len && !w->err && w->fd>=0) {
+                    write_fd(w->ctx, w->fd, w->buf, len);
+                }
+                break;
+            } else if (GetTickCount()-start >= PATIENCE) {
+                break;  // its write is blocked: give up
+            }
+            Sleep(10);
+        }
+        __atomic_store_n(&ending, 2, __ATOMIC_RELEASE);
+    } else {
+        // Once the first's write has blocked for a while, another event
+        // ends the process
+        while (__atomic_load_n(&ending, __ATOMIC_ACQUIRE) != 2 &&
+               GetTickCount()-start < PATIENCE) {
+            Sleep(10);
+        }
+    }
+    return 0;  // to the default handler, which ends the process
+}
+
+static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
+{
+    writer *held = __atomic_load_n(&held_text, __ATOMIC_ACQUIRE);
+    if (!held || fd!=held->fd) {
+        stop_if_ending();  // (the held writer's stop at writer_begin)
+    }
+    return write_fd(ctx, fd, buf, len);
+}
+
 static b32 os_isatty(os *ctx, i32 fd)
 {
     return (u32)fd<3 && ctx->consoles>>fd & 1;
 }
 
-// Nothing holds it (zip's and unzip's standard output): Ctrl+C ends the
-// process at once (an output file deleted on close), as no handler is
-// installed, which would run on a thread of its own, beside the one
-// filling the buffer. What is held is lost: a pipe's or file's buffer,
-// or on a console, text that has waited less than 100 ms and a chunk of
-// work.
+// Hold w's text, for a console control event's handler to write (see
+// on_ctrl), installed the first time.
 [[maybe_unused]] static void os_holdtext(os *ctx, writer *w)
 {
     (void)ctx;
-    (void)w;
+    static b32 installed;
+    __atomic_store_n(&held_text, w, __ATOMIC_RELEASE);
+    if (w && !installed) {
+        installed = SetConsoleCtrlHandler(on_ctrl, 1);
+    }
 }
 
 // To the system timer's 10-16 ms, wrapping after 49 days
@@ -1233,6 +1321,7 @@ static s8 os_upcase(os *ctx, s8 name, arena *a)
 // output, which makes it invalid: write it out as U+FFFD.
 static void os_exit(os *ctx, i32 status)
 {
+    stop_if_ending();
     for (i32 fd = 1; fd < 3; fd++) {
         if (ctx->nheld[fd]) {
             c16 bad = 0xfffd;

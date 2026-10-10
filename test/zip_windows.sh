@@ -566,6 +566,44 @@ if [ "$st" != -2 ]; then
     [ "$got" = ok ] || fail "-i @CON typed at a console: entries $got"
 fi
 
+# Interrupted, by Ctrl+C or Ctrl+Break typed at its console, or by the
+# console's closing, zip ends as it did without a handler for these
+# (STATUS_CONTROL_C_EXIT), leaving no archive, but first writes the
+# messages it holds, as on POSIX its signal handler does: standard
+# output, a file, is an uninterrupted run's but for the line of the
+# entry being added, though less than its 64 KiB buffer. zip adds 40
+# small files, then 64 MB of random data, and is interrupted half a
+# second after its temporary file appears. (When zip finishes first, or
+# without pseudo consoles, there is nothing to check.)
+mkdir -p ctrl/in ctrl/out
+for i in $(seq 10 49); do
+    echo "small $i" >ctrl/in/s$i
+done
+head -c 64000000 /dev/urandom >ctrl/in/zbig
+(cd ctrl && "$ZIP" -r out/full.zip in >full.out) || fail "ctrl: status $?"
+rm ctrl/out/full.zip
+grep -v 'adding: in/zbig' ctrl/full.out >ctrl/want.out
+for how in c b x; do
+    st=$(ps "Add-Type -TypeDefinition (Get-Content -Raw pty.cs)
+             \$d = '$here/ctrl'
+             [Pty]::Interrupt('\"$ZIP\" -r out/o.zip in', \$d, \"\$d/o.out\",
+                              \"\$d/o.err\", \"\$d/out\", 'zi*', 500,
+                              '$how')" | tr -d '\r')
+    case $st in
+    none) break;;
+    0|'early 0')
+        echo "zip_windows.sh: zip finished before it was interrupted" >&2
+        rm -f ctrl/out/o.zip
+        continue;;
+    C000013A) ;;
+    *) fail "interrupted ($how): status $st: $(cat ctrl/o.err)";;
+    esac
+    [ -z "$(ls ctrl/out)" ] || fail "interrupted ($how): left $(ls ctrl/out)"
+    cmp -s ctrl/want.out ctrl/o.out ||
+        fail "interrupted ($how): messages: $(cat ctrl/o.out)"
+done
+rm -rf ctrl
+
 # Names in the OEM code page, flag bit 11 clear and no Unicode path
 # field, as Explorer's zip folder writes them, are decoded to match
 # files, as Info-ZIP's port does (0x82 is e-acute in code pages 437 and

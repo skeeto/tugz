@@ -514,6 +514,49 @@ if [ "$st" != -2 ]; then
         fail "prompt at a console (A)"
 fi
 
+# Interrupted, by Ctrl+C or Ctrl+Break typed at its console, or by the
+# console's closing, unzip ends as it did without a handler for these
+# (STATUS_CONTROL_C_EXIT), leaving no partial file, but first writes the
+# messages it holds, as on POSIX its signal handler does: standard
+# output, a file, is a prefix of an uninterrupted run's, through the
+# line naming the file being written, though less than its 64 KiB
+# buffer. unzip writes 40 small files, then 512 MiB of zeros, and is
+# interrupted once the zeros appear. (When unzip finishes first, or
+# without pseudo consoles, there is nothing to check.)
+mkdir -p ctrl/in
+for i in $(seq 10 49); do
+    echo "small $i" >ctrl/in/s$i
+done
+head -c 536870912 /dev/zero >ctrl/in/zeros
+(cd ctrl && "$ZIP" -qr ctrl.zip in) || fail "ctrl.zip: status $?"
+rm -rf ctrl/in
+(cd ctrl && "$UNZIP" ctrl.zip >full.out) || fail "ctrl.zip: status $?"
+rm -rf ctrl/in
+for how in c b x; do
+    st=$(ps "Add-Type -TypeDefinition (Get-Content -Raw pty.cs)
+             \$d = '$(pwd)/ctrl'
+             [Pty]::Interrupt('\"$UNZIP\" ctrl.zip', \$d, \"\$d/o.out\",
+                              \"\$d/o.err\", \"\$d/in\", 'zeros', 0,
+                              '$how')" | tr -d '\r')
+    case $st in
+    none) break;;
+    0|'early 0')
+        echo "unzip_windows.sh: unzip finished before it was interrupted" >&2
+        rm -rf ctrl/in
+        continue;;
+    C000013A) ;;
+    *) fail "interrupted ($how): status $st: $(cat ctrl/o.err)";;
+    esac
+    [ "$(ls ctrl/in | wc -l)" = 40 ] && [ ! -e ctrl/in/zeros ] ||
+        fail "interrupted ($how): left $(ls ctrl/in)"
+    n=$(wc -c <ctrl/o.out)
+    head -c "$n" ctrl/full.out | cmp -s - ctrl/o.out &&
+        grep -q '^  inflating: in/zeros' ctrl/o.out ||
+        fail "interrupted ($how): messages: $(cat ctrl/o.out)"
+    rm -rf ctrl/in
+done
+rm -rf ctrl
+
 # Wildcard archive names, matched as Windows matches names: either
 # separator, any case, *.* for names without a period too
 mkdir -p wz wout

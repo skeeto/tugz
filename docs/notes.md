@@ -843,17 +843,43 @@ container.
   Info-ZIP's handler ends in the C library's `exit`, which writes what
   stdio holds; the writer empties its buffer before writing it, so that
   text being flushed is never written twice, and SIGPIPE is ignored
-  there, so that a closed pipe does not replace the signal. On Windows,
-  Ctrl+C ends the process at once, as no handler is installed (it would
-  run on a thread of its own), losing what is held. On a terminal (a
-  console on Windows) the buffer is paced as unzip's is (see unzip,
-  Output buffering): flushed once its text has waited 100 ms, as found
-  at check points: before each entry (added, updated, freshened, copied,
-  or deleted), and after each chunk of a file's data (each 256 KiB read,
-  stored or deflated) or of an entry's being copied (each read of the
-  archive's 1 MiB window). A line at a time, as Info-ZIP's C library
-  writes a terminal's, is slow on a Windows console: 20,000 one-byte
-  files, `zip -r`, took 0.79 s there (0.39 s with `-q`, 0.43 s to a
+  there, so that a closed pipe does not replace the signal. On Windows
+  a console control handler (`SetConsoleCtrlHandler`) writes it, for
+  Ctrl+C, Ctrl+Break, the console's closing, a logoff, or a shutdown,
+  then hands the event on to the default handler, which ends the process
+  as before, with `STATUS_CONTROL_C_EXIT` (0xC000013A) for each (outputs,
+  delete-pending until kept, need nothing). That handler runs on a
+  thread of its own, beside the program's, which may be appending to
+  the buffer, or writing it, at that moment. The writer's state word
+  hands it over (src/io.c, `writer_claim`): the program's thread
+  exchanges it idle to writing, atomically, around each write of the
+  buffer, which it empties first, and the handler exchanges it idle to
+  claimed, then takes the length, which each append stores (release)
+  after its bytes. Claimed, the program's thread never touches that
+  text again: it may append past it, but stops at its next write,
+  waiting for the end (in `os_exit`), and from the moment the handler
+  begins it also stops before any other write, a file kept or committed,
+  or its own exit, so that it neither keeps an output nor ends with its
+  own status while the handler writes. While a write is under way the
+  handler waits for it, up to 2 s (a full pipe may block it), and then
+  writes nothing. No text is written twice, torn, or out of order, and
+  no thread is suspended, which could leave a lock (the console's) held
+  that the handler needs; a second event's handler waits for the first.
+  The handler and `Sleep` are XP's, and the atomics are the compiler's,
+  not imported (`InterlockedCompareExchange` is no export on x64). The
+  POSIX signal handler, on the program's own thread, needs none of this
+  (`zip_windows.sh`: Ctrl+C and Ctrl+Break typed at a pseudo console,
+  and its closing, during a large file, standard output a file, which
+  holds every line but that file's, and no archive is left). On a
+  terminal (a console on Windows) the buffer is paced as unzip's is
+  (see unzip, Output buffering): flushed once its text has waited
+  100 ms, as found at check points: before each entry (added, updated,
+  freshened, copied, or deleted), and after each chunk of a file's data
+  (each 256 KiB read, stored or deflated) or of an entry's being copied
+  (each read of the archive's 1 MiB window). A line at a time, as
+  Info-ZIP's C library writes a terminal's, is slow on a Windows
+  console: 20,000 one-byte files, `zip -r`, took 0.79 s there (0.39 s
+  with `-q`, 0.43 s to a
   file), 0.45 s paced (0.41 s to a file); on macOS, 0.35 s to a pty
   (0.28 s with `-q`, 0.30 s to `/dev/null`, 0.32 s to a file), 0.29 s
   paced (0.28 s to a file). The bytes are the same in every mode.
@@ -1718,7 +1744,11 @@ ones as invariants. Those that no test asserts are marked untested.
   (see Output buffering), as UnZip's exit writes what stdio holds
   (`unzip.sh`, "an interrupt (SIGINT), or SIGTERM or SIGHUP": standard
   output, a file, is a prefix of an uninterrupted run's, through the
-  line naming the file being written).
+  line naming the file being written). On Windows, Ctrl+C, Ctrl+Break,
+  or the console's closing ends it with `STATUS_CONTROL_C_EXIT`, as
+  before, the file being written discarded as delete-pending, and a
+  console control handler writes the messages first, as zip's does
+  (`unzip_windows.sh`, the same check for each).
 - Links on disk: nothing is written through a link below the `-d`
   directory, whether from the archive or there before: an entry under
   one fails with UnZip's "exists but is not directory" (2), where UnZip
@@ -1793,10 +1823,12 @@ ones as invariants. Those that no test asserts are marked untested.
   its output (GNU gzip's handler, like this one, writes nothing held),
   rather than writing a partial entry's data, with `-c` its name, on
   the way out; UnZip's exit would write it. Either way the output is
-  cut short, and a reader of a pipe cannot tell where. On Windows,
-  Ctrl+C ends the process at once, losing what is held, as for zip
-  (`test_pace`: held while extracting and testing, not under `-p` or
-  `-c`; `unzipos` checks it is released at the end).
+  cut short, and a reader of a pipe cannot tell where. On Windows a
+  console control handler writes what is held, as for zip (see zip,
+  Output buffering), and only that: a Ctrl+C under `-p` or `-c` ends
+  the process at once, as before (`test_pace`: held while extracting
+  and testing, not under `-p` or `-c`; `unzipos` checks it is released
+  at the end).
 - Windows: a link becomes a file holding its target, with a file's
   attributes and times, as in the port, but made last, as on POSIX
   (`unzip_windows.sh`, "Links"; `test_windows`).

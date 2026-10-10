@@ -1,6 +1,8 @@
 // A pseudo console for the Windows tests (zip_windows.sh, unzip_windows.sh):
-// Pty.Run runs a command in one, typing into it as a user would.
+// Pty.Run runs a command in one, typing into it as a user would, and
+// Pty.Interrupt one whose output goes to files, interrupting it.
 using System;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -19,6 +21,12 @@ public static class Pty {
     struct ProcessInfo {
         public IntPtr process, thread;
         public int pid, tid;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct SecurityAttributes {
+        public int len;
+        public IntPtr descriptor;
+        public bool inherit;
     }
     [DllImport("kernel32.dll")]
     static extern bool CreatePipe(out IntPtr r, out IntPtr w, IntPtr sa, int n);
@@ -43,6 +51,12 @@ public static class Pty {
                                       IntPtr env, string dir,
                                       ref StartupInfoEx si,
                                       out ProcessInfo pi);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr CreateFileW(string name, uint access, int share,
+                                     ref SecurityAttributes sa, int disp,
+                                     int flags, IntPtr template);
+    [DllImport("kernel32.dll")]
+    static extern bool SetConsoleCtrlHandler(IntPtr handler, bool add);
     [DllImport("kernel32.dll")]
     static extern bool ReadFile(IntPtr h, byte[] b, int n, out int done,
                                 IntPtr o);
@@ -56,7 +70,7 @@ public static class Pty {
     [DllImport("kernel32.dll")]
     static extern bool TerminateProcess(IntPtr h, int code);
     [DllImport("kernel32.dll")]
-    static extern bool GetExitCodeProcess(IntPtr h, out int code);
+    static extern bool GetExitCodeProcess(IntPtr h, out uint code);
     static IntPtr output;
     static void Drain() {
         byte[] b = new byte[4096];
@@ -105,7 +119,9 @@ public static class Pty {
         }
         int code = -1;
         if (WaitForSingleObject(pi.process, 20000) == 0) {
-            GetExitCodeProcess(pi.process, out code);
+            uint status;
+            GetExitCodeProcess(pi.process, out status);
+            code = (int)status;
         } else {
             TerminateProcess(pi.process, 1);
             WaitForSingleObject(pi.process, -1);
@@ -114,5 +130,102 @@ public static class Pty {
         CloseHandle(outw);
         drain.Join(5000);
         return code;
+    }
+
+    // A file to inherit, created (replaced) for writing.
+    static IntPtr Create(string path) {
+        SecurityAttributes sa = new SecurityAttributes();
+        sa.len = Marshal.SizeOf(sa);
+        sa.inherit = true;
+        return CreateFileW(path, 0x40000000, 7, ref sa, 2, 0x80, IntPtr.Zero);
+    }
+
+    // Run a command in directory dir in a new pseudo console, its standard
+    // output and error to files, and once a file matching pattern is in
+    // directory watch (as listed, so a delete-pending one too), and delay
+    // milliseconds later, interrupt it as a user would: typing Ctrl+C
+    // ('c') or Ctrl+Break ('b', as Windows Terminal sends that key), or
+    // closing its console ('x').
+    // Returns its status in hexadecimal, or "early" and its status if it
+    // ended before the file was seen, "late" if it ran past 20 seconds,
+    // or "none" without pseudo consoles.
+    public static string Interrupt(string cmd, string dir, string output,
+                                   string error, string watch,
+                                   string pattern, int delay, char how) {
+        IntPtr inr, inw, outw, pc;
+        CreatePipe(out inr, out inw, IntPtr.Zero, 0);
+        CreatePipe(out Pty.output, out outw, IntPtr.Zero, 0);
+        Coord size = new Coord();
+        size.x = 120;
+        size.y = 30;
+        try {
+            if (CreatePseudoConsole(size, inr, outw, 0, out pc) != 0) {
+                return "none";
+            }
+        } catch (EntryPointNotFoundException) {
+            return "none";
+        }
+        Thread drain = new Thread(Drain);
+        drain.Start();
+        IntPtr len = IntPtr.Zero;
+        InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref len);
+        StartupInfoEx si = new StartupInfoEx();
+        si.cb = Marshal.SizeOf(si);
+        si.flags = 0x100;  // STARTF_USESTDHANDLES, input the console's
+        si.stdout = Create(output);
+        si.stderr = Create(error);
+        si.attributes = Marshal.AllocHGlobal(len);
+        InitializeProcThreadAttributeList(si.attributes, 1, 0, ref len);
+        UpdateProcThreadAttribute(si.attributes, 0, (IntPtr)0x20016, pc,
+                                  (IntPtr)IntPtr.Size, IntPtr.Zero,
+                                  IntPtr.Zero);  // the pseudo console
+        // Ctrl+C is ignored by a process started so, as by sshd, and by
+        // its children, which inherit that: not by this one's
+        SetConsoleCtrlHandler(IntPtr.Zero, false);
+        ProcessInfo pi;
+        if (!CreateProcessW(null, cmd, IntPtr.Zero, IntPtr.Zero, true,
+                            0x80000, IntPtr.Zero, dir, ref si, out pi)) {
+            return "failed";
+        }
+        CloseHandle(si.stdout);
+        CloseHandle(si.stderr);
+        bool seen = false;
+        for (int i = 0; i < 4000 && !seen; i++) {
+            if (WaitForSingleObject(pi.process, 5) == 0) {
+                break;
+            }
+            seen = Directory.Exists(watch) &&  // (it may be made later)
+                   Directory.GetFiles(watch, pattern).Length > 0;
+        }
+        if (seen) {
+            Thread.Sleep(delay);
+        }
+        if (seen && how == 'x') {
+            ClosePseudoConsole(pc);
+            pc = IntPtr.Zero;
+        } else if (seen) {
+            // Ctrl+Break as a key event (win32-input-mode): VK_CANCEL,
+            // pressed and released, with the left Ctrl key down
+            string key = how == 'c' ? "\x03" :
+                         "\x1b[3;70;0;1;8;1_\x1b[3;70;0;0;8;1_";
+            byte[] b = Encoding.ASCII.GetBytes(key);
+            int done;
+            WriteFile(inw, b, b.Length, out done, IntPtr.Zero);
+        }
+        string r = "late";
+        if (WaitForSingleObject(pi.process, 20000) == 0) {
+            uint code;
+            GetExitCodeProcess(pi.process, out code);
+            r = (seen ? "" : "early ") + code.ToString("X");
+        } else {
+            TerminateProcess(pi.process, 1);
+            WaitForSingleObject(pi.process, -1);
+        }
+        if (pc != IntPtr.Zero) {
+            ClosePseudoConsole(pc);
+        }
+        CloseHandle(outw);
+        drain.Join(5000);
+        return r;
     }
 }
