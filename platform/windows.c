@@ -993,6 +993,18 @@ static b32 os_isatty(os *ctx, i32 fd)
     return (u32)fd<3 && ctx->consoles>>fd & 1;
 }
 
+// Nothing holds it (zip's and unzip's standard output): Ctrl+C ends the
+// process at once (an output file deleted on close), as no handler is
+// installed, which would run on a thread of its own, beside the one
+// filling the buffer. What is held is lost: a pipe's or file's buffer,
+// or on a console, text that has waited less than 100 ms and a chunk of
+// work.
+[[maybe_unused]] static void os_holdtext(os *ctx, writer *w)
+{
+    (void)ctx;
+    (void)w;
+}
+
 // To the system timer's 10-16 ms, wrapping after 49 days
 static i64 os_now(os *ctx)
 {

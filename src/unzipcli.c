@@ -46,6 +46,9 @@ enum {
 
 // Whether a standard descriptor is a terminal (console).
 static b32  os_isatty(os *, i32 fd);
+// Hold the writer of standard output, whose text an interruption that
+// ends the program writes first, where it can (POSIX's signal handler).
+static void os_holdtext(os *, writer *);
 // Why the last failed system call failed, in the words of the C
 // library's strerror, or an empty string if unknown.
 static s8   os_error(os *);
@@ -2936,6 +2939,12 @@ static i32 unzip_main(unzipconfig *conf)
         // shown so too, but without them (-p, or -c quietly) the output
         // is data alone, buffered as to a pipe.
         u->out->tty = os_isatty(u->ctx, 1) && !(u->cflag && u->qflag);
+        // An interruption writes the messages held, but not entries' data
+        // (-p, -c), which stops where it was written, as gzip -c's does,
+        // rather than run on by up to a buffer's worth past it
+        if (!u->cflag) {
+            os_holdtext(u->ctx, u->out);
+        }
         if (u->tflag || u->cflag || u->extract) {
             u->inf    = inflate_new(&u->perm);
             u->window = newbytes(&u->perm, UZ_WSIZE);
@@ -2957,5 +2966,6 @@ static i32 unzip_main(unzipconfig *conf)
         r = process_zipfiles(u, scratch);
     }
     writer_flush(u->out);
+    os_holdtext(u->ctx, 0);
     return r;
 }

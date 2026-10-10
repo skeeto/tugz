@@ -168,6 +168,8 @@ struct os {
         i64 written;  // and the bytes written to files by then
     } writes[MFS_WRITES];
     i32     nwrites;  // writes to standard output, per run (all counted)
+    writer *held;     // os_holdtext's, released as unzip returns
+    b32     washeld;  // something was held during the run
 
     b32     windows;  // Windows conventions
     u32     umask;
@@ -807,6 +809,12 @@ static b32 os_isatty(os *ctx, i32 fd)
     return fd>=0 && fd<=2 && ctx->tty[fd];
 }
 
+static void os_holdtext(os *ctx, writer *w)
+{
+    ctx->held     = w;
+    ctx->washeld |= !!w;
+}
+
 static i64 os_now(os *ctx)
 {
     return fakeclock_read(&ctx->clock);
@@ -1177,6 +1185,8 @@ static i32 unzipos_run(os *ctx, char **argv, i32 argc, char *env, i32 *open)
     ctx->written = 0;
     ctx->nmkdir  = ctx->ncreate = ctx->nkeep = ctx->nchanges = 0;
     ctx->nwrites = ctx->clock.reads = 0;
+    ctx->held    = 0;
+    ctx->washeld = 0;
     for (i32 i = 0; i < 3; i++) {
         ctx->out[i].len = 0;
     }
@@ -1200,6 +1210,7 @@ static i32 unzipos_run(os *ctx, char **argv, i32 argc, char *env, i32 *open)
     } else {
         status = unzip_main(&conf);
     }
+    CHECK(ctx->exited || !ctx->held);  // released at its return
     i32 left = 0;
     for (i32 fd = 3; fd < MFS_FDS; fd++) {
         if (ctx->fds[fd].open) {

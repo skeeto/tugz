@@ -1213,13 +1213,15 @@ The driver, `src/unzipcli.c` (`unzip_main`), follows UnZip's `unzip.c`,
 at each function, with Debian's additions: ISO dates in listings and the
 check for overlapped components. Beyond zip's file system functions
 (`platform/zipfs_*.c`), its platform hooks, declared at the top of
-`src/unzipcli.c`, are `os_isatty`, `os_error`, `os_mkdir`, `os_umask`,
-`os_mktime` (Unix seconds from a local time, the inverse of
-`os_localtime`), `os_setattrs` (owner, mode, and times, on the
-descriptor of a file not yet kept), `os_setdirattrs` (a directory's,
-through a handle that refuses a link at its end), and `os_symlink`, in
-`platform/unzip_posix.c` and `platform/unzip_windows.c`, which also hold
-the entry points. Neither expands member arguments, which are patterns
+`src/unzipcli.c`, are `os_isatty`, `os_holdtext` (standard output's
+writer, as zip's), `os_error`, `os_mkdir`, `os_umask`, `os_mktime` (Unix
+seconds from a local time, the inverse of `os_localtime`),
+`os_setattrs` (owner, mode, and times, on the descriptor of a file not
+yet kept), `os_setdirattrs` (a directory's, through a handle that
+refuses a link at its end), and `os_symlink`, in
+`platform/unzip_posix.c` and `platform/unzip_windows.c` (or, for
+`os_holdtext`, the shared `platform/posix.c` and `platform/windows.c`),
+which also hold the entry points. Neither expands member arguments, which are patterns
 for entries.
 
 - Scope: busybox unzip's features, and UnZip 6.0's that are cheap:
@@ -1711,8 +1713,12 @@ ones as invariants. Those that no test asserts are marked untested.
   UnZip, writing data there as messages, ignores it and exits 0
   (`unzip.sh`, to `/dev/full` where there is one; `test_faults`). An
   interrupted run removes the file being written and dies by the signal,
-  as gzip and zip do, where UnZip exits 80 (`unzip.sh`, "an interrupt
-  (SIGINT)", POSIX only).
+  as gzip and zip do, where UnZip exits 80. On POSIX the handler first
+  deletes that file, then writes the messages held for standard output
+  (see Output buffering), as UnZip's exit writes what stdio holds
+  (`unzip.sh`, "an interrupt (SIGINT), or SIGTERM or SIGHUP": standard
+  output, a file, is a prefix of an uninterrupted run's, through the
+  line naming the file being written).
 - Links on disk: nothing is written through a link below the `-d`
   directory, whether from the archive or there before: an entry under
   one fails with UnZip's "exists but is not directory" (2), where UnZip
@@ -1779,7 +1785,18 @@ ones as invariants. Those that no test asserts are marked untested.
   large entry's line flushed after its first window, the bytes
   unchanged, a pipe never paced. `fuzz-unzip` paces at random clock
   rates.) zip buffers and paces its messages so too (see zip, Output
-  buffering).
+  buffering). On POSIX the buffer is held (`os_holdtext`) for the signal
+  handler, which writes it before the program dies by the signal, as
+  zip's, but only when it carries messages alone: under `-p` and `-c`
+  it carries entries' data, which an interruption leaves where it was
+  written, up to 64 KiB short of what was decoded, as `gzip -c` leaves
+  its output (GNU gzip's handler, like this one, writes nothing held),
+  rather than writing a partial entry's data, with `-c` its name, on
+  the way out; UnZip's exit would write it. Either way the output is
+  cut short, and a reader of a pipe cannot tell where. On Windows,
+  Ctrl+C ends the process at once, losing what is held, as for zip
+  (`test_pace`: held while extracting and testing, not under `-p` or
+  `-c`; `unzipos` checks it is released at the end).
 - Windows: a link becomes a file holding its target, with a file's
   attributes and times, as in the port, but made last, as on POSIX
   (`unzip_windows.sh`, "Links"; `test_windows`).

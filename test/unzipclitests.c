@@ -1820,6 +1820,16 @@ static void test_pace(os *ctx)
     TEST(ctx->nwrites > 1);
     UNZIP(ctx, 0, "-t", "a.zip");
     TEST(ctx->nwrites > 1);
+
+    // Messages are held for a signal to write, but not entries' data
+    UNZIP(ctx, 0, "-o", "a.zip");
+    TEST(ctx->washeld);
+    UNZIP(ctx, 0, "-t", "a.zip");
+    TEST(ctx->washeld);
+    UNZIP(ctx, 0, "-p", "a.zip");
+    TEST(!ctx->washeld);
+    UNZIP(ctx, 0, "-c", "a.zip");
+    TEST(!ctx->washeld);
     free(z.s);
 
     // One small stored entry: the clock read as "Archive:" begins to

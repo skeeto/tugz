@@ -21,9 +21,10 @@
 // this variable, and pending_text, are global.
 static char *volatile pending_output;
 
-// Text held for standard output (zip's messages), which the signal
-// handler writes before the program dies, as the C library's exit writes
-// what stdio holds, so that an interruption loses no line already made.
+// Text held for standard output (zip's and unzip's messages), which the
+// signal handler writes before the program dies, after deleting the
+// pending output, as the C library's exit writes what stdio holds, so
+// that an interruption loses no line already made.
 // Bytes not yet counted in its length are not written, nor those being
 // flushed, as writer_flush empties the buffer first: none twice.
 static writer *volatile pending_text;
