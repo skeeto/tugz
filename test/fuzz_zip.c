@@ -6,14 +6,16 @@
 // the arguments, POSIX or Windows conventions, and a fault, and the
 // second where the fault strikes: the archive shrinking, or its reads
 // failing, from when it is opened or from when the temporary file is
-// created, or the temporary file's writes failing. Whatever zip does
-// must leave the archive as it was, or else, having succeeded, replace
-// it with one that src/zip.c parses, whose entries are the old ones in
-// order, each copied as it was (none twice: their spans do not overlap)
-// or replaced by a file's, and then files' (some modes delete entries),
-// and from which zip reads every entry back. No temporary file may
-// remain, and zip may claim no memory once it has created one (but after
-// a fault).
+// created, or the temporary file's writes failing. Without a fault, it
+// says whether standard output is a terminal (bit 0), its messages
+// paced, and the milliseconds the fake clock advances at each reading
+// (bits 1-7). Whatever zip does must leave the archive as it was, or
+// else, having succeeded, replace it with one that src/zip.c parses,
+// whose entries are the old ones in order, each copied as it was (none
+// twice: their spans do not overlap) or replaced by a file's, and then
+// files' (some modes delete entries), and from which zip reads every
+// entry back. No temporary file may remain, and zip may claim no memory
+// once it has created one (but after a fault).
 // $ clang -g -O1 -fsanitize=fuzzer,address,undefined test/fuzz_zip.c
 // $ ./a.out -max_len=70000 corpus/
 #include "zipos.c"
@@ -179,6 +181,10 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     mfs_put(ctx, "d/h", FT_FILE, "", 0, 1700000000);
     mfs_put(ctx, "d/l", FT_LINK, "g", 1, 1700000000);
     switch (how>>4 & 7) {
+    case 0:
+        ctx->tty[1]     = at & 1;
+        ctx->clock.tick = at >> 1;
+        break;
     case 1: case 2:
         ctx->when     = how>>4 & 1 ? FAULT_OPEN : FAULT_TEMP;
         ctx->shrinkto = in.len * at / 256;

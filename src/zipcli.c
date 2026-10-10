@@ -65,6 +65,9 @@ static i32  os_commit(os *, i32 fd, s8 temp, s8 path, b32 replace,
                       arena scratch);
 // Whether a standard descriptor is a terminal (console).
 static b32  os_isatty(os *, i32 fd);
+// Hold the writer of standard output, whose text an interruption that
+// ends the program writes first, where it can (POSIX's signal handler).
+static void os_holdtext(os *, writer *);
 // Why the last failed system call failed, in the words of the C
 // library's strerror, as Info-ZIP reports I/O errors, or an empty string
 // if unknown. The text may last only until the next call, as the BSDs'
@@ -74,9 +77,18 @@ static s8   os_error(os *);
 // file IDs are unknown (Windows), or a null string.
 static s8   os_fullpath(os *, s8 path, arena *perm, arena scratch);
 
+// Standard output's writer, flushed by os_oom, which the platform calls
+// with only its context, the reason this is global. Memory is claimed
+// before the archive is written, and with it the progress lines, all but
+// a failure's reason, copied into perm once a read or write has failed.
+static writer *oom_out;
+
 static void os_oom(os *ctx)
 {
     s8 msg = S("\nzip error: Out of memory\n");
+    if (oom_out) {
+        writer_flush(oom_out);
+    }
     os_write(ctx, 2, msg.s, msg.len);
     os_exit(ctx, ZE_MEM);
 }
@@ -162,6 +174,8 @@ typedef struct {
 typedef struct {
     os     *ctx;
     arena   perm;
+    writer *out;  // standard output, flushed before standard error, and
+                  // at check points on a terminal (writer_poll)
     i32     level;
     i32     mode;
     b32     quiet;
@@ -250,9 +264,16 @@ static iz *zmap_upsert(zmap **m, s8 key, i32 fold, arena *perm)
     return &(*m)->value;
 }
 
+// Write a message to standard output (1), or error (2), first flushing
+// standard output, so that the two keep their order on one terminal.
 static void say(zip *z, i32 fd, s8 msg)
 {
-    os_write(z->ctx, fd, msg.s, msg.len);
+    if (fd == 1) {
+        writer_s8(z->out, msg);
+    } else {
+        writer_flush(z->out);
+        os_write(z->ctx, fd, msg.s, msg.len);
+    }
 }
 
 static void warn(zip *z, s8 msg, s8 arg, arena scratch)
@@ -1393,15 +1414,16 @@ static i32 read_archive(zip *z, zarchive *ar, arena scratch)
 // Output: buffered positioned writes into the temporary file
 
 typedef struct {
-    os    *ctx;
-    arena *perm;  // for why
-    i32    fd;
-    u8    *buf;
-    iz     len;
-    iz     cap;
-    i64    pos;  // file offset of buf[0]
-    b32    err;
-    s8     why;  // of the error, as it occurred
+    os     *ctx;
+    arena  *perm;  // for why
+    i32     fd;
+    u8     *buf;
+    iz      len;
+    iz      cap;
+    i64     pos;   // file offset of buf[0]
+    b32     err;
+    s8      why;   // of the error, as it occurred
+    writer *msgs;  // standard output, polled while copying
 } zout;
 
 static void zout_writeat(zout *w, u8 *p, iz n, i64 off)
@@ -1469,6 +1491,7 @@ static void zout_patch(zout *w, i64 off, u8 *p, iz n)
 static i32 zin_copy(zin *r, zout *w, i64 off, i64 len)
 {
     while (len > 0) {
+        writer_poll(w->msgs);
         b32 hit = off>=r->pos && off-r->pos<r->len;
         i32 got = hit ? 1 : zin_fill(r, off, (iz)MIN(len, r->cap));
         if (got <= 0) {
@@ -1576,6 +1599,7 @@ static void store_data(zip *z, zwork *k, zsrc *s, u32 *crc, i64 *usize)
         *crc = crc32_update(*crc, k->buf, n, &z->crccpu);
         *usize += n;
         zout_write(k->out, k->buf, n);
+        writer_poll(z->out);
     }
 }
 
@@ -1602,6 +1626,7 @@ static b32 deflate_data(zip *z, zwork *k, zsrc *s, u32 *crc, i64 *usize)
                 break;
             }
         }
+        writer_poll(z->out);
     }
     return *usize == first;
 }
@@ -2018,6 +2043,7 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     zout w = {0};
     w.ctx  = z->ctx;
     w.perm = &z->perm;
+    w.msgs = z->out;
     w.cap  = 1 << 20;
     w.buf  = newbytes(&scratch, w.cap);
 
@@ -2062,6 +2088,7 @@ static i32 write_archive(zip *z, zarchive *ar, zitems *items, arena scratch)
     for (iz i = 0, n = 0; i<items->len && !w.err; i++) {
         zitem  *it   = items->data + i;
         zentry *copy = 0;
+        writer_poll(z->out);  // as each entry is added, copied, or deleted
         switch (it->kind) {
         case ITEM_DELETE:
             report(z, S("deleting: "), shown_name(ar, it->old), 0, scratch);
@@ -2665,13 +2692,8 @@ static i32 nothing_to_do(zip *z, arena scratch)
     return fail(z, ZE_NONE, S("Nothing to do!"), hint, scratch);
 }
 
-static i32 zip_main(zipconfig *conf)
+static i32 zip_run(zip *z, zipconfig *conf)
 {
-    zip *z = new(&conf->perm, 1, zip);
-    z->ctx     = conf->perm.ctx;
-    z->perm    = conf->perm;
-    z->level   = 6;
-    z->windows = conf->windows;
     arena scratch = conf->scratch;
 
     // Without arguments, Info-ZIP streams standard input to standard
@@ -2935,4 +2957,31 @@ static i32 zip_main(zipconfig *conf)
     }
     err = write_archive(z, ar, &items, scratch);
     return err ? err : z->status;
+}
+
+static i32 zip_main(zipconfig *conf)
+{
+    zip *z = new(&conf->perm, 1, zip);
+    z->ctx     = conf->perm.ctx;
+    z->perm    = conf->perm;
+    z->level   = 6;
+    z->windows = conf->windows;
+
+    // Messages to standard output are buffered, as Info-ZIP's C library
+    // buffers a pipe or file, rather than written a piece at a time, two
+    // or three writes for each entry. A terminal's too, which that
+    // library writes a line at a time, but flushed once its text has
+    // waited a moment, at check points between entries and between
+    // chunks of their data, lest a slow run show nothing for long, then
+    // pages at once; a line at a time is slow on a Windows console given
+    // many small files. The archive never goes to standard output.
+    z->out      = newwriter(&z->perm, 1, 1<<16);
+    z->out->tty = os_isatty(z->ctx, 1);
+    os_holdtext(z->ctx, z->out);
+    oom_out = z->out;
+    i32 r = zip_run(z, conf);
+    writer_flush(z->out);
+    os_holdtext(z->ctx, 0);
+    oom_out = 0;
+    return r;
 }

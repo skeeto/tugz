@@ -29,6 +29,17 @@ static s8 os_readlink(os *ctx, s8 path, arena *a)
     return (s8){0};  // never asked: links are followed
 }
 
+// Nothing holds it: Ctrl+C ends the process at once (its temporary file
+// deleted on close), as no handler is installed, which would run on a
+// thread of its own, beside the one filling the buffer. What is held is
+// lost: a pipe's or file's buffer, or on a console, text that has waited
+// less than 100 ms and a chunk of work.
+static void os_holdtext(os *ctx, writer *w)
+{
+    (void)ctx;
+    (void)w;
+}
+
 // The final path of an open file, a \\?\ path, with its volume named
 // one way: as a drive letter path (DOS), by its GUID, or by its NT
 // device. Null if the system has no such name for it. XP, which lacks

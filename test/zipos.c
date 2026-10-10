@@ -8,7 +8,12 @@
 // whatever grows with its work before any output, so that running out of
 // memory cannot strike once output has started (except, here, for an
 // error's reason after an injected fault). Under AddressSanitizer, the
-// uncommitted part of the reservation is poisoned.
+// uncommitted part of the reservation is poisoned. Standard output and
+// error are captured, apart and interleaved, and each write to standard
+// output recorded (writes), with the bytes written to the archive by
+// then; which descriptors are terminals is set per test, and the clock
+// is fake (test/fakeclock.c), so that output paced on a terminal is seen
+// deterministically.
 #include "../src/base.c"
 #include "../src/crc32.c"
 #include "../src/deflate.c"
@@ -49,6 +54,7 @@
     } while (0)
 
 enum { MAX_FILES = 32, MAX_FDS = 16, MAX_OUTPUT = 1<<16, MAX_SIZE = 1<<26 };
+enum { MAX_WRITES = 64 };  // writes to standard output recorded
 
 typedef struct {
     s8  name;
@@ -76,10 +82,18 @@ struct os {
         b32 open;
         b32 created;  // discarded on close unless committed
     } fds[MAX_FDS];
-    u8      out[2][MAX_OUTPUT];  // standard output and error, as written
-    iz      outlen[2];
+    u8      out[3][MAX_OUTPUT];  // standard output, error, and both
+    iz      outlen[3];
+    b32     tty[3];   // which standard descriptors are terminals
+    fakeclock clock;  // os_now's, its readings counted per run
+    struct {
+        iz  end;      // standard output's length after a write to it
+        i64 written;  // and the bytes written to the archive by then
+    } writes[MAX_WRITES];
+    i32     nwrites;  // writes to standard output, per run (all counted)
+    i64     written;
+    writer *held;     // os_holdtext's
     char   *error;    // why the last failing call failed
-    fakeclock clock;  // os_now's, never read: zip writes messages unbuffered
     b32     missing;  // the last failure found nothing there
 
     byte   *mem;      // the reservation
@@ -184,7 +198,9 @@ static void mfs_reset(os *ctx)
     for (i32 i = 0; i < MAX_FDS; i++) {
         ctx->fds[i].open = 0;
     }
-    ctx->outlen[0] = ctx->outlen[1] = 0;
+    ctx->outlen[0] = ctx->outlen[1] = ctx->outlen[2] = 0;
+    ctx->tty[0] = ctx->tty[1] = ctx->tty[2] = 0;
+    ctx->clock       = (fakeclock){0};
     ctx->archive     = "a.zip";
     ctx->when        = 0;
     ctx->shrinkto    = -1;
@@ -342,10 +358,18 @@ static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
 static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
 {
     CHECK(fd==1 || fd==2);
-    iz *n    = ctx->outlen + fd - 1;
-    iz  take = MIN(len, MAX_OUTPUT - *n);
-    bytecopy(ctx->out[fd-1] + *n, buf, take);
-    *n += take;
+    for (i32 i = 0; i < 2; i++) {
+        i32 s    = i ? 2 : fd-1;
+        iz *n    = ctx->outlen + s;
+        iz  take = MIN(len, MAX_OUTPUT - *n);
+        bytecopy(ctx->out[s] + *n, buf, take);
+        *n += take;
+    }
+    if (fd==1 && ctx->nwrites<MAX_WRITES) {
+        ctx->writes[ctx->nwrites].end     = ctx->outlen[0];
+        ctx->writes[ctx->nwrites].written = ctx->written;
+    }
+    ctx->nwrites += fd==1;
     return 1;
 }
 
@@ -363,8 +387,11 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
     return 0;
 }
 
+// Only running out of memory exits, after flushing standard output, so
+// that no progress line is lost
 static void os_exit(os *ctx, i32 status)
 {
+    CHECK(!ctx->held || !ctx->held->len);
     ctx->status = status;
     longjmp(ctx->jmp, 1);
 }
@@ -461,6 +488,7 @@ static b32 os_writeat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
         mfs_setlen(f, (iz)(off+len));
     }
     bytecopy(f->data+off, buf, len);
+    ctx->written += len;
     return 1;
 }
 
@@ -518,8 +546,12 @@ static void os_localtime(os *ctx, i64 t, i32 tm[6])
 
 static b32 os_isatty(os *ctx, i32 fd)
 {
-    (void)ctx; (void)fd;
-    return 0;
+    return fd>=0 && fd<=2 && ctx->tty[fd];
+}
+
+static void os_holdtext(os *ctx, writer *w)
+{
+    ctx->held = w;
 }
 
 static i64 os_now(os *ctx)
@@ -638,7 +670,9 @@ static i32 zipos_run(os *ctx, char **argv, i32 argc, b32 windows)
     ctx->hi = ctx->mem + ctx->cap;
     ctx->writing = ctx->faulted = ctx->armed = 0;
     ctx->error   = 0;
-    ctx->outlen[0] = ctx->outlen[1] = 0;
+    ctx->outlen[0] = ctx->outlen[1] = ctx->outlen[2] = 0;
+    ctx->nwrites = ctx->clock.reads = 0;
+    ctx->written = 0;
 
     s8 args[16];
     CHECK(argc <= countof(args));
@@ -666,7 +700,8 @@ static i32 zipos_run(os *ctx, char **argv, i32 argc, b32 windows)
     return status;
 }
 
-// What zip wrote to standard output (1) or error (2).
+// What zip wrote to standard output (1), error (2), or both (3), as
+// interleaved.
 static s8 zipos_output(os *ctx, i32 fd)
 {
     return (s8){ctx->out[fd-1], ctx->outlen[fd-1]};

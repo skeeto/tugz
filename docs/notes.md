@@ -407,11 +407,13 @@ functions, declared at the top of `src/zipin.c`, `src/zipcli.c`, and
 links at the archive's path lead to), `os_writable` (whether the archive
 may be replaced), `os_commit` (atomic rename over the target, only once
 the file is closed, or on Windows flushed, without error),
-`os_localtime`, `os_isatty`, `os_error` (the last failure's reason),
-and, needed only on Windows (POSIX stubs them), `os_fromcp` (a name in a
-code page), `os_fullpath` (a file's final path, to tell files apart
-without IDs), and `os_upcase` (a name in upper case, as the file system
-ignores case). It needs neither inflate nor the gzip container.
+`os_localtime`, `os_isatty`, `os_holdtext` (standard output's writer,
+whose text POSIX's signal handler writes), `os_error` (the last
+failure's reason), and, needed only on Windows (POSIX stubs them),
+`os_fromcp` (a name in a code page), `os_fullpath` (a file's final path,
+to tell files apart without IDs), and `os_upcase` (a name in upper case,
+as the file system ignores case). It needs neither inflate nor the gzip
+container.
 
 - Scope: batch use by release scripts. Other options, everything
   interactive or legacy among them (encryption, comments, splits, SFX
@@ -822,6 +824,44 @@ ignores case). It needs neither inflate nor the gzip container.
   can lag for a file changed through another of its hard links, as
   Microsoft notes.) Only a letter is a drive: `1:x` names stream `x` of
   file `1`.
+- Output buffering: messages to standard output (the progress lines,
+  "Archive is current", the usage, version, and license) go through a
+  64 KiB buffer, allocated with the rest of perm before any work, as
+  Info-ZIP's C library buffers a pipe or file, where zip wrote each
+  piece straight to its descriptor, two or three writes for each entry.
+  It is flushed when full, before anything written to standard error
+  (every warning and error goes through `say`, which flushes first, so
+  the streams keep their order where they are one, as `zip.sh` captures
+  them with `2>&1`), and at the end, on every return from `zip_main`.
+  The archive never goes to standard output (streaming is refused), so
+  nothing else shares it. Only running out of memory exits otherwise,
+  which can strike once the progress lines begin only as a failure's
+  reason is copied (see Memory), and `os_oom` flushes first, through the
+  program's one global, as the platform calls it with only its context
+  (`zipos` checks that nothing is held at an exit). On POSIX the signal
+  handler writes what is held before the program dies by the signal, as
+  Info-ZIP's handler ends in the C library's `exit`, which writes what
+  stdio holds; the writer empties its buffer before writing it, so that
+  text being flushed is never written twice, and SIGPIPE is ignored
+  there, so that a closed pipe does not replace the signal. On Windows,
+  Ctrl+C ends the process at once, as no handler is installed (it would
+  run on a thread of its own), losing what is held. On a terminal (a
+  console on Windows) the buffer is paced as unzip's is (see unzip,
+  Output buffering): flushed once its text has waited 100 ms, as found
+  at check points: before each entry (added, updated, freshened, copied,
+  or deleted), and after each chunk of a file's data (each 256 KiB read,
+  stored or deflated) or of an entry's being copied (each read of the
+  archive's 1 MiB window). A line at a time, as Info-ZIP's C library
+  writes a terminal's, is slow on a Windows console: 20,000 one-byte
+  files, `zip -r`, took 0.79 s there (0.39 s with `-q`, 0.43 s to a
+  file), 0.45 s paced (0.41 s to a file); on macOS, 0.35 s to a pty
+  (0.28 s with `-q`, 0.30 s to `/dev/null`, 0.32 s to a file), 0.29 s
+  paced (0.28 s to a file). The bytes are the same in every mode.
+  (`test_pace`, with a fake clock: a pipe written once and never paced,
+  a terminal flushed at entries and within a large file's data, stored
+  or deflated, and a large entry's copy; `test_order`: a vanished file's
+  warnings between progress lines, and a failed write keeping every line
+  before its error. `fuzz-zip` paces at random clock rates.)
 - Memory: zip has no fixed cap. Its memory is one reservation of address
   space, as much as the system lends up to 16 GiB on 64-bit POSIX hosts
   and 64 GiB on 64-bit Windows (1 GiB for 32-bit processes), halving on
@@ -1738,7 +1778,8 @@ ones as invariants. Those that no test asserts are marked untested.
   (`test_pace`, with a fake clock: nothing flushed before 100 ms, a
   large entry's line flushed after its first window, the bytes
   unchanged, a pipe never paced. `fuzz-unzip` paces at random clock
-  rates.) zip writes each message straight to its descriptor, unbuffered.
+  rates.) zip buffers and paces its messages so too (see zip, Output
+  buffering).
 - Windows: a link becomes a file holding its target, with a file's
   attributes and times, as in the port, but made last, as on POSIX
   (`unzip_windows.sh`, "Links"; `test_windows`).

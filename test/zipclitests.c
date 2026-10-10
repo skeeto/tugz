@@ -1,9 +1,10 @@
 // Unit tests of the zip program (src/zipcli.c), run in memory
 // (test/zipos.c): reading an existing archive through its window, out of
 // order and across the window's edge; an archive that shrinks, or whose
-// reads or writes fail; a file swapped for a link as zip reads it; and,
-// in every run, memory claimed only before any output. On success prints
-// "all zip program tests pass". A failure traps.
+// reads or writes fail; a file swapped for a link as zip reads it;
+// messages held, paced on a terminal, and kept in order with standard
+// error; and, in every run, memory claimed only before any output. On
+// success prints "all zip program tests pass". A failure traps.
 // $ cc -g3 -fsanitize=address,undefined -o tests-zipcli test/zipclitests.c
 #include "zipos.c"
 
@@ -378,6 +379,166 @@ static void test_write_failure(os *ctx)
     free(data.s);
 }
 
+// Small files to add, a to e, and their progress lines
+static void put_small(os *ctx)
+{
+    mfs_reset(ctx);
+    for (char name[2] = "a"; name[0] <= 'e'; name[0]++) {
+        mfs_put(ctx, name, FT_FILE, name, 1, 1700000000);
+    }
+}
+static char const small_lines[] =
+    "  adding: a (stored 0%)\n  adding: b (stored 0%)\n"
+    "  adding: c (stored 0%)\n  adding: d (stored 0%)\n"
+    "  adding: e (stored 0%)\n";
+#define ZIP_SMALL(ctx, status) \
+    ZIP(ctx, status, "a.zip", "a", "b", "c", "d", "e")
+
+// Messages to standard output are held, for a pipe or file until the
+// end, and for a terminal until a check point (each entry, and each
+// chunk of its data, read or copied) finds them waiting 100 ms since the
+// buffer began to fill, the clock read only for a terminal with text
+// waiting; the bytes are the same either way
+static void test_pace(os *ctx)
+{
+    // Not a terminal: written once, no clock, however slow
+    put_small(ctx);
+    ZIP_SMALL(ctx, 0);
+    TEST(equals(zipos_output(ctx, 1), small_lines));
+    TEST(ctx->nwrites==1 && !ctx->clock.reads);
+    TEST(!ctx->held);  // let go at the end
+    put_small(ctx);
+    ctx->clock.tick = 1000;
+    ZIP_SMALL(ctx, 0);
+    TEST(equals(zipos_output(ctx, 1), small_lines));
+    TEST(ctx->nwrites==1 && !ctx->clock.reads);
+
+    // A terminal, fast: the clock read, nothing flushed early
+    put_small(ctx);
+    ctx->tty[1] = 1;
+    ZIP_SMALL(ctx, 0);
+    TEST(equals(zipos_output(ctx, 1), small_lines));
+    TEST(ctx->nwrites==1 && ctx->clock.reads);
+
+    // Slow: flushed now and then, a flush taking at least two readings,
+    // as the buffer begins to fill and at a check point. 100 ms apart,
+    // each line is flushed at the next entry's first check point; 20 ms
+    // apart, a few lines at a time.
+    for (i64 tick = 20; tick <= 100; tick += 80) {
+        put_small(ctx);
+        ctx->tty[1]     = 1;
+        ctx->clock.tick = tick;
+        ZIP_SMALL(ctx, 0);
+        TEST(equals(zipos_output(ctx, 1), small_lines));
+        TEST(tick==100 ? ctx->nwrites==5
+                       : ctx->nwrites>1 && ctx->nwrites<5);
+        TEST(ctx->nwrites <= ctx->clock.reads/2 + 1);
+    }
+
+    // A large file, stored or deflated: the line before it is flushed
+    // between chunks of its data (256 KiB reads), before all is written
+    s8 big  = some_bytes((iz)1 << 21, 5);
+    s8 text = some_bytes((iz)1 << 21, 6);
+    for (iz i = 0; i < text.len; i++) {
+        text.s[i] = (u8)('a' + (text.s[i]&3));
+    }
+    for (i32 level = 0; level < 2; level++) {
+        mfs_reset(ctx);
+        mfs_put(ctx, "a", FT_FILE, "a", 1, 1700000000);
+        mfs_put(ctx, "big", FT_FILE, level ? text.s : big.s, big.len,
+                1700000000);
+        ctx->tty[1]     = 1;
+        ctx->clock.tick = 50;
+        ZIP(ctx, 0, level ? "-1" : "-0", "a.zip", "a", "big");
+        TEST(ctx->nwrites == 2);
+        s8 line = S("  adding: a (stored 0%)\n");
+        s8 out  = zipos_output(ctx, 1);
+        TEST(ctx->writes[0].end == line.len);
+        TEST(ctx->writes[0].written < big.len);
+        TEST(s8equals((s8){out.s, line.len}, line));
+        TEST(equals((s8){out.s+line.len, out.len-line.len}, level
+            ? "  adding: big (deflated 69%)\n"
+            : "  adding: big (stored 0%)\n"));
+    }
+    free(text.s);
+
+    // Copying a large entry: the line before it is flushed as its data
+    // is copied, as a pipe's is only at the end
+    zspec spec[2] = {{S("x"), S("x\n")}, {S("big"), big}};
+    s8    z       = build(spec, 2, 0);
+    for (i32 tty = 0; tty < 2; tty++) {
+        mfs_reset(ctx);
+        mfs_put(ctx, "a.zip", FT_FILE, z.s, z.len, 1600000000);
+        ctx->tty[1]     = tty;
+        ctx->clock.tick = 50;
+        ZIP(ctx, 0, "-d", "a.zip", "x");
+        TEST(equals(zipos_output(ctx, 1), "deleting: x\n"));
+        TEST(ctx->nwrites == 1);
+        TEST(tty ? ctx->writes[0].written<big.len
+                 : ctx->writes[0].written>big.len);
+    }
+    free(z.s);
+    free(big.s);
+
+    // The usage, on a terminal, and the version, flushed at the end
+    mfs_reset(ctx);
+    ctx->tty[1] = 1;
+    TEST(zipos_run(ctx, 0, 0, 0) == 0);
+    s8 usage = zipos_output(ctx, 1);
+    TEST(usage.len == zip_usage.len+zip_usage_posix.len+zip_usage_tail.len);
+    TEST(s8equals((s8){usage.s, zip_usage.len}, zip_usage));
+    TEST(ctx->nwrites == 1);
+    ZIP(ctx, 0, "-v");
+    s8 version = zipos_output(ctx, 1);
+    TEST(version.len && version.s[version.len-1]=='\n');
+    TEST(s8equals(version, (s8){zip_usage.s, version.len}));
+}
+
+// Standard output is flushed before anything written to standard error,
+// so that the two keep their order where they are one (a terminal, or a
+// file given both), and a run that fails keeps all its output
+static void test_order(os *ctx)
+{
+    for (i32 tty = 0; tty < 2; tty++) {
+        // A file gone as it is read, between two others, after a name
+        // that matches nothing
+        mfs_reset(ctx);
+        mfs_put(ctx, "a", FT_FILE, "a", 1, 1700000000);
+        mfs_put(ctx, "f", FT_FILE, "f", 1, 1700000000);
+        mfs_put(ctx, "b", FT_FILE, "b", 1, 1700000000);
+        ctx->swapname   = "f";
+        ctx->swapto     = "nowhere";
+        ctx->tty[1]     = tty;
+        ctx->clock.tick = 1;
+        ZIP(ctx, ZE_OPEN, "a.zip", "a", "missing", "f", "b");
+        TEST(equals(zipos_output(ctx, 3),
+            "zip warning: name not matched: missing\n"
+            "  adding: a (stored 0%)\n"
+            "  adding: f\n"
+            "zip warning: No such file or directory\n"
+            "zip warning: could not open for reading: f\n"
+            "  adding: b (stored 0%)\n"
+            "\nzip warning: Not all files were readable\n"
+            "  files/entries read:  2 (2 bytes)  skipped:  1 (1 bytes)\n"));
+        TEST(ctx->nwrites == 2);
+
+        // A write that fails once all the lines are made: none is lost
+        put_small(ctx);
+        ctx->failwriteat = 100;
+        ctx->tty[1]      = tty;
+        ZIP_SMALL(ctx, ZE_WRITE);
+        TEST(equals(zipos_output(ctx, 1), small_lines));
+        TEST(ctx->nwrites == 1);
+        s8 both = zipos_output(ctx, 3);
+        iz n    = (iz)strlen(small_lines);
+        TEST(both.len>n && !memcmp(both.s, small_lines, (uz)n));
+        TEST(equals((s8){both.s+n, both.len-n},
+                    "zip I/O error: No space left on device\nzip error: "
+                    "Output file write failure (write error on zip file)\n"));
+        TEST(no_temp(ctx));
+    }
+}
+
 int main(void)
 {
     (void)bytemove;
@@ -394,6 +555,8 @@ int main(void)
     test_shrunk(ctx);
     test_write_failure(ctx);
     test_swapped_link(ctx, a);
+    test_pace(ctx);
+    test_order(ctx);
 
     free(a.beg);
     zipos_free(ctx);
