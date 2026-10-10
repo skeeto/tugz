@@ -53,7 +53,9 @@ static b32  os_remove(os *, s8 path, arena scratch);
 // Returns false if it cannot be kept (on Windows, where the file system
 // refuses to cancel its deletion), and closing it still discards it.
 static b32  os_keep(os *, i32 fd);
-// Exit with a status. A created file not yet kept is discarded.
+// Exit with a status. A created file not yet kept is discarded. On
+// Windows, once a console control event is ending the process, it waits
+// for that end instead (see writer_claim).
 [[noreturn]] static void os_exit(os *, i32 status);
 // Milliseconds on a monotonic clock, from an arbitrary start, as coarse
 // as a system timer's tick. It may wrap (Windows, after 49 days).
@@ -106,13 +108,18 @@ typedef struct {
 typedef struct {
     os *ctx;
     u8 *buf;
-    iz  len;
+    iz  len;    // stored with release, for writer_claim
     iz  cap;
     i32 fd;
     b32 err;
     b32 tty;
+    i32 state;  // WRITER_*, for writer_claim
     i64 since;  // when the buffered text began to wait
 } writer;
+
+// A writer's state: idle, writing its buffer (or a large write past it),
+// or claimed by another thread (writer_claim), never to write again.
+enum { WRITER_IDLE, WRITER_WRITING, WRITER_CLAIMED };
 
 enum { WRITER_WAIT = 100 };  // milliseconds, writer_poll's
 
@@ -126,14 +133,53 @@ enum { WRITER_WAIT = 100 };  // milliseconds, writer_poll's
     return w;
 }
 
+// Mark the writer writing, around each write, unless another thread has
+// claimed it (writer_claim): then this one stops, as os_exit waits for
+// the process to end.
+[[maybe_unused]] static void writer_begin(writer *w)
+{
+    i32 idle = WRITER_IDLE;
+    if (!__atomic_compare_exchange_n(&w->state, &idle, WRITER_WRITING, 0,
+                                     __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE)) {
+        os_exit(w->ctx, 1);
+    }
+}
+
+[[maybe_unused]] static void writer_end(writer *w)
+{
+    __atomic_store_n(&w->state, WRITER_IDLE, __ATOMIC_RELEASE);
+}
+
+// Claim the writer for a thread of the process's last moments, a console
+// control handler on Windows, which writes what it holds as the process
+// ends. Returns the length of its text, buf[0, len), or -1 while the
+// writer's own thread is writing (try again). Once claimed, that thread
+// stops at its next write (writer_begin), never touching that text: it
+// only appends past the length taken, whose bytes it stored before it
+// stored the length (release, here acquire), and its buffer, error, and
+// length are changed back only while writing, which it now cannot.
+[[maybe_unused]] static iz writer_claim(writer *w)
+{
+    i32 idle = WRITER_IDLE;
+    if (!__atomic_compare_exchange_n(&w->state, &idle, WRITER_CLAIMED, 0,
+                                     __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE)) {
+        return -1;
+    }
+    return __atomic_load_n(&w->len, __ATOMIC_ACQUIRE);
+}
+
 // The buffer is emptied before it is written, so that a signal handler
 // that writes what is buffered (zip's, on POSIX) never writes it twice.
 [[maybe_unused]] static b32 writer_flush(writer *w)
 {
     iz len = w->len;
-    w->len = 0;
-    if (!w->err && len && w->fd>=0) {
-        w->err = !os_write(w->ctx, w->fd, w->buf, len);
+    if (len) {
+        writer_begin(w);
+        w->len = 0;
+        if (!w->err && w->fd>=0) {
+            w->err = !os_write(w->ctx, w->fd, w->buf, len);
+        }
+        writer_end(w);
     }
     return !w->err;
 }
@@ -146,9 +192,11 @@ enum { WRITER_WAIT = 100 };  // milliseconds, writer_poll's
         writer_flush(w);
         if (len >= w->cap) {
             // Large writes bypass the buffer
+            writer_begin(w);
             if (!w->err) {
                 w->err = !os_write(w->ctx, w->fd, (u8 *)p, len);
             }
+            writer_end(w);
             return;
         }
     }
@@ -161,7 +209,7 @@ enum { WRITER_WAIT = 100 };  // milliseconds, writer_poll's
         }
         iz take = MIN(len, w->cap-w->len);
         bytecopy(w->buf+w->len, p, take);
-        w->len += take;
+        __atomic_store_n(&w->len, w->len+take, __ATOMIC_RELEASE);
         p += take;
         len -= take;
     }
@@ -180,7 +228,8 @@ enum { WRITER_WAIT = 100 };  // milliseconds, writer_poll's
     if (!w->len && w->tty) {
         w->since = os_now(w->ctx);
     }
-    w->buf[w->len++] = b;
+    w->buf[w->len] = b;
+    __atomic_store_n(&w->len, w->len+1, __ATOMIC_RELEASE);
 }
 
 // A check point, called between pieces of a program's work: text to a
