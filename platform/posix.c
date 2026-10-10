@@ -18,8 +18,15 @@
 
 // Path of the output file being written, deleted if a signal interrupts
 // the program, and null once the file is kept. The signal handler is why
-// this one variable is global.
+// this variable, and pending_text, are global.
 static char *volatile pending_output;
+
+// Text held for standard output (zip's messages), which the signal
+// handler writes before the program dies, as the C library's exit writes
+// what stdio holds, so that an interruption loses no line already made.
+// Bytes not yet counted in its length are not written, nor those being
+// flushed, as writer_flush empties the buffer first: none twice.
+static writer *volatile pending_text;
 
 struct os {
     i32   outfd;     // descriptor of the created output file, or -1
@@ -60,6 +67,15 @@ static void on_signal(int sig)
     char *path = pending_output;
     if (path) {
         unlink(path);
+    }
+    writer *w = pending_text;
+    if (w && !w->err && w->len>0 && w->fd>=0) {
+        // A closed pipe there must not end the program by SIGPIPE instead
+        // (if that is this signal, another is held until this returns)
+        if (sig != SIGPIPE) {
+            signal(SIGPIPE, SIG_IGN);
+        }
+        os_write(0, w->fd, w->buf, w->len);
     }
     signal(sig, SIG_DFL);
     raise(sig);
@@ -277,6 +293,13 @@ static b32 os_isatty(os *ctx, i32 fd)
 {
     (void)ctx;
     return isatty(fd);
+}
+
+// Hold w's text for the signal handler to write (see pending_text).
+[[maybe_unused]] static void os_holdtext(os *ctx, writer *w)
+{
+    (void)ctx;
+    pending_text = w;
 }
 
 static i64 os_now(os *ctx)

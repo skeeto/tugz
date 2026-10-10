@@ -126,12 +126,15 @@ enum { WRITER_WAIT = 100 };  // milliseconds, writer_poll's
     return w;
 }
 
+// The buffer is emptied before it is written, so that a signal handler
+// that writes what is buffered (zip's, on POSIX) never writes it twice.
 [[maybe_unused]] static b32 writer_flush(writer *w)
 {
-    if (!w->err && w->len && w->fd>=0) {
-        w->err = !os_write(w->ctx, w->fd, w->buf, w->len);
-    }
+    iz len = w->len;
     w->len = 0;
+    if (!w->err && len && w->fd>=0) {
+        w->err = !os_write(w->ctx, w->fd, w->buf, len);
+    }
     return !w->err;
 }
 
