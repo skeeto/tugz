@@ -67,6 +67,7 @@ with unzip in `platform/zipfs_*.c`.
 | `test/unziptests.c`      | unzip rule tests, with tables from UnZip 6.0    |
 | `test/unzipclitests.c`   | unzip program tests, in memory                  |
 | `test/unzipos.c`         | in-memory platform layer for the unzip program  |
+| `test/fakeclock.c`       | the in-memory layers' clock (`os_now`)          |
 | `test/cli.sh`            | end-to-end gzip tests                           |
 | `test/zip.sh`            | end-to-end zip tests (unzip, zipinfo, Python)   |
 | `test/zipcheck.py`       | zip.sh's verifier through Python's `zipfile`    |
@@ -1714,6 +1715,30 @@ ones as invariants. Those that no test asserts are marked untested.
   "-214748365%" (a size of 1 compressed to 268,435,457), or " 200%" (to
   2^63 - 1) (`test_factor`; `unzip.sh`, `ratio.zip` and
   `csizepast.zip`, under the sanitizers).
+- Output buffering: standard output goes through a 64 KiB buffer,
+  flushed when full, before anything written to standard error (so the
+  streams keep their order), before a prompt, and at the end. UnZip's C
+  library line-buffers a terminal instead, but a line at a time is slow
+  on a Windows console given many small files, and a whole buffer at a
+  time would leave a slow run silent, then show pages at once. So on a
+  terminal (a console on Windows) the buffer is flushed, Nagle-like,
+  once its text has waited 100 ms since the buffer began to fill, as
+  found at check points: before each entry (and each listed) and
+  between chunks of an entry's data (each 1 MiB read, each 64 KiB
+  window decoded). A large entry's line shows within about 100 ms, a
+  flood of small entries' lines ten times a second, and a run that
+  takes less than 100 ms is written at once at its end. src/io.c's
+  writer does this for any writer marked a terminal's (`tty`, polled by
+  `writer_poll`), reading the clock (`os_now`: `CLOCK_MONOTONIC`, or
+  `GetTickCount`) only with text waiting, so a pipe or file is
+  untouched, and costs nothing measurable on a terminal (20,000 small
+  entries or a 300 MB one tested or extracted to a pty, macOS, and to a
+  pseudo console, Windows 11). `-p` is data, and so is `-c` under `-q`:
+  buffered as to a pipe; `-c` with its names is paced as messages are.
+  (`test_pace`, with a fake clock: nothing flushed before 100 ms, a
+  large entry's line flushed after its first window, the bytes
+  unchanged, a pipe never paced. `fuzz-unzip` paces at random clock
+  rates.) zip writes each message straight to its descriptor, unbuffered.
 - Windows: a link becomes a file holding its target, with a file's
   attributes and times, as in the port, but made last, as on POSIX
   (`unzip_windows.sh`, "Links"; `test_windows`).

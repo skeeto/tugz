@@ -296,7 +296,8 @@ typedef struct {
     b32     allfiles; // UnZip's process_all_files: no list, no -x
 
     // Output
-    writer *out;      // standard output, flushed before standard error
+    writer *out;      // standard output, flushed before standard error,
+                      // and at check points on a terminal (writer_poll)
     b32     sol;      // at the start of a line, on either stream
     b32     dup;      // -t errors also to standard error (UnZip's)
 
@@ -958,6 +959,7 @@ static i32 list_files(unzip *u, zarchive *ar, arena scratch)
         arena   tmp  = scratch;
         zentry  ent  = {0};
         zentry *e    = &ent;
+        writer_poll(u->out);
         next_entry(u, ar, &off, e, &tmp);
         s8      name = entry_name(u, e, &tmp);
         if (!wanted(u, name, 0, 0)) {
@@ -1245,6 +1247,7 @@ static i32 test_member(unzip *u, zarchive *ar, zentry *e, zlocal *l,
         b.outlen = UZ_WSIZE;
         out = crc = 0;
         for (b32 done = 0; !done;) {
+            writer_poll(u->out);
             if (!b.inlen && left) {
                 u8 *p = 0;
                 iz  n = (iz)MIN(left, ZIN_CAP);
@@ -2441,6 +2444,7 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
                 (e.method==ZIP_DEFLATE64 && !u->inf64)) {
                 reread_failed(u);
             }
+            writer_poll(u->out);
             i32 r = do_member(u, ar, &e, name, ++filnum, read, &stop, tmp);
             err = MAX(err, r);
         }
@@ -2923,6 +2927,15 @@ static i32 unzip_main(unzipconfig *conf)
     i32 r = unzip_args(u, conf, scratch);
     if (r < 0) {
         u->dup = u->tflag && !os_isatty(u->ctx, 1) && os_isatty(u->ctx, 2);
+        // On a terminal, output is flushed once it has waited a moment,
+        // at check points between entries and between chunks of their
+        // data, lest a slow run show nothing for long, then pages at
+        // once, while flushing each line, as UnZip's C library does a
+        // terminal's, is slow on a Windows console given many small
+        // files. Under -c, names are interleaved with the data, which is
+        // shown so too, but without them (-p, or -c quietly) the output
+        // is data alone, buffered as to a pipe.
+        u->out->tty = os_isatty(u->ctx, 1) && !(u->cflag && u->qflag);
         if (u->tflag || u->cflag || u->extract) {
             u->inf    = inflate_new(&u->perm);
             u->window = newbytes(&u->perm, UZ_WSIZE);

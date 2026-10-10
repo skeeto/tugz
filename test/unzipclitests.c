@@ -1778,6 +1778,114 @@ static void test_stdin(os *ctx)
     free(z.s);
 }
 
+// Output to a terminal, otherwise held until full as to a pipe, is
+// flushed at a check point (between entries, and chunks of their data)
+// once it has waited 100 ms since the buffer began to fill, the clock
+// read only for a terminal with text waiting; the bytes are the same
+static void test_pace(os *ctx)
+{
+    s8 z = six_files();
+    mfs_reset(ctx);
+    put_archive(ctx, "a.zip", z);
+    UNZIP(ctx, 0, "-o", "a.zip");
+    s8 want = unzipos_output(ctx, 1);
+    want.s = memcpy(malloc((uz)want.len), want.s, (uz)want.len);
+    TEST(ctx->nwrites==1 && !ctx->clock.reads);
+
+    // Not a terminal: no clock, however slow
+    ctx->clock.tick = 1000;
+    UNZIP(ctx, 0, "-o", "a.zip");
+    TEST(ctx->nwrites==1 && !ctx->clock.reads);
+    TEST(s8equals(unzipos_output(ctx, 1), want));
+
+    // A terminal, fast: the clock read, nothing flushed early
+    ctx->tty[1]     = 1;
+    ctx->clock.tick = 0;
+    UNZIP(ctx, 0, "-o", "a.zip");
+    TEST(ctx->nwrites==1 && ctx->clock.reads);
+    TEST(s8equals(unzipos_output(ctx, 1), want));
+
+    // Slow: flushed now and then, a flush taking at least two readings,
+    // when the buffer begins to fill and at a check point
+    for (i64 tick = 50; tick <= 100; tick += 50) {
+        ctx->clock.tick = tick;
+        UNZIP(ctx, 0, "-o", "a.zip");
+        TEST(s8equals(unzipos_output(ctx, 1), want));
+        TEST(ctx->nwrites > 1);
+        TEST(ctx->nwrites <= ctx->clock.reads/2 + 1);
+    }
+
+    // Listing and testing, an entry at a time
+    UNZIP(ctx, 0, "-l", "a.zip");
+    TEST(ctx->nwrites > 1);
+    UNZIP(ctx, 0, "-t", "a.zip");
+    TEST(ctx->nwrites > 1);
+    free(z.s);
+
+    // One small stored entry: the clock read as "Archive:" begins to
+    // fill the buffer, then at two check points, before the entry and in
+    // its data, so 49 ms apart nothing is flushed early, 50 ms apart its
+    // line is, unfinished, before its data is written
+    xspec one[] = {{.name="f", .data="f\n"}};
+    z = build(one, countof(one), 0);
+    mfs_reset(ctx);
+    put_archive(ctx, "a.zip", z);
+    ctx->tty[1]     = 1;
+    ctx->clock.tick = 49;
+    UNZIP(ctx, 0, "-o", "a.zip");
+    TEST(ctx->clock.reads==3 && ctx->nwrites==1);
+    ctx->clock.tick = 50;
+    UNZIP(ctx, 0, "-o", "a.zip");
+    TEST(ctx->clock.reads==4 && ctx->nwrites==2);  // and its "\n"
+    TEST(ctx->writes[0].end == (iz)strlen(
+        "Archive:  a.zip\n extracting: f                       "));
+    TEST(ctx->writes[0].written == 0);
+    TEST(output_is(ctx, 1, "Archive:  a.zip\n"
+                           " extracting: f                       \n"));
+    free(z.s);
+
+    // A large entry: its line is flushed during its data once the clock
+    // has advanced, and its data, under -c, likewise, in pieces, but
+    // never under -p, which is data alone
+    iz    len  = (iz)1 << 20;
+    char *data = malloc((uz)len);
+    TEST(data);
+    u32 rng = 1;
+    for (iz i = 0; i < len; i++) {
+        rng = rng*1103515245u + 12345u;
+        data[i] = (char)('a' + (rng>>16)%26);
+    }
+    xspec big[] = {{.name="big", .data=data, .datalen=(i32)len, .method=8}};
+    z = build(big, countof(big), 0);
+    mfs_reset(ctx);
+    put_archive(ctx, "a.zip", z);
+    ctx->tty[1]     = 1;
+    ctx->clock.tick = 40;
+    UNZIP(ctx, 0, "-o", "a.zip");
+    TEST(file_data(ctx, "big").len == len);
+    TEST(ctx->nwrites == 2);
+    TEST(ctx->writes[0].end == (iz)strlen(
+        "Archive:  a.zip\n  inflating: big                     "));
+    TEST(ctx->writes[0].written == UZ_WSIZE);  // the first window only
+    TEST(output_is(ctx, 1, "Archive:  a.zip\n"
+                           "  inflating: big                     \n"));
+
+    UNZIP(ctx, 0, "-c", "a.zip");
+    TEST(ctx->nwrites > 2);
+    s8 out = unzipos_output(ctx, 1);
+    s8 head = S("Archive:  a.zip\n  inflating: big                     \n");
+    TEST(out.len == head.len+len+1);
+    TEST(s8equals((s8){out.s, head.len}, head));
+    TEST(!memcmp(out.s+head.len, data, (uz)len));
+
+    UNZIP(ctx, 0, "-p", "a.zip");
+    TEST(!ctx->clock.reads);
+    TEST(unzipos_output(ctx, 1).len == len);
+    free(z.s);
+    free(data);
+    free(want.s);
+}
+
 int main(void)
 {
     (void)bytemove;
@@ -1801,6 +1909,7 @@ int main(void)
     test_past(ctx);
     test_unwrap(ctx);
     test_local_name(ctx);
+    test_pace(ctx);
     unzipos_free(ctx);
     puts("all unzip program tests pass");
     return 0;

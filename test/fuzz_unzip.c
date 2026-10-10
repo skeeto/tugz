@@ -9,7 +9,9 @@
 //   opened, or shrinking or failing to read once extraction began;
 //   writes failing; the nth directory, file, or keep failing, and
 //   attributes or links.
-// - at: where or when the fault strikes.
+// - at: where or when the fault strikes, or without one, whether
+//   standard output is a terminal (bit 0), its output paced, and the
+//   milliseconds the fake clock advances at each reading (bits 1-7).
 // - cfg: the umask (bits 0-1), standard error a terminal (bit 2), the
 //   archive on standard input a regular file (bit 3), and the answers
 //   to the prompts (bits 4-7), unless given:
@@ -270,6 +272,10 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     mfs_put(ctx, "out/new", FT_LINK, "../outside/new", 14, 1);
     mfs_put(ctx, "out/loop", FT_LINK, "loop", 4, 1);
     switch (how>>5 & 7) {
+    case 0:
+        ctx->tty[1]     = at & 1;
+        ctx->clock.tick = at >> 1;
+        break;
     case 1: case 2:
         ctx->when     = how>>5 & 1 ? FAULT_OPEN : FAULT_CHANGE;
         ctx->shrinkto = in.len * at / 256;
