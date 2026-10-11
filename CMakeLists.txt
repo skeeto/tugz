@@ -522,6 +522,11 @@ if(TUGZ_BUILD_TESTS)
                     $<TARGET_FILE:${unzip}>)
         set_tests_properties(unzip-windows PROPERTIES
             ENVIRONMENT "TUGZ_ZIP=$<TARGET_FILE:${zip}>")
+        # ...and all three as on Windows XP, with nothing newer
+        add_test(NAME xp-windows
+            COMMAND ${TUGZ_SH} ${PROJECT_SOURCE_DIR}/test/xp.sh
+                    $<TARGET_FILE:${gzip}> $<TARGET_FILE:${zip}>
+                    $<TARGET_FILE:${unzip}>)
     endif()
 
     # The single-file library, compiled alone, and embedded in a program
@@ -558,7 +563,7 @@ if(TUGZ_BUILD_TESTS)
         message(STATUS "tugz: the shell-script tests are disabled "
                 "(TUGZ_TEST_SCRIPTS=OFF, the default when cross-compiling)")
         foreach(test IN ITEMS gzip-cli zip-cli unzip-cli
-                              zip-windows unzip-windows)
+                              zip-windows unzip-windows xp-windows)
             if(TEST ${test})
                 set_tests_properties(${test} PROPERTIES DISABLED ON)
             endif()

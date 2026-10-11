@@ -55,8 +55,9 @@ The Windows programs are meant to run on Windows XP and later (i686 on
 XP, x86-64 on XP x64), built as above with w64devkit, whose `-lmemory`
 leaves them importing only kernel32 and shell32 functions that XP has.
 Those Vista added are looked up at run time, and where missing, the
-programs do their work through ntdll's native calls instead. This is
-untested on XP itself: each fallback is tested on Windows 11 by
+programs do their work through ntdll's native calls instead. On XP
+itself (i686), `test/cli.sh` and `test/xp.sh`, which need only
+w64devkit, test them, and on later Windows each fallback is tested by
 building with `-DTUGZ_FORCE_XP`, which makes the programs take them all
 (see [docs/notes.md](docs/notes.md)). Built with clang targeting MSVC,
 the runtime's static library may need a newer Windows.
@@ -536,10 +537,12 @@ its statuses, output, and extracted trees with Info-ZIP's (`REF=unzip sh
 test/unzip.sh build/unzip`); on Windows, `unzip-windows` runs
 `test/unzip_windows.sh` under w64devkit instead (`TUGZ_ZIP=zip.exe sh
 test/unzip_windows.sh unzip.exe`), comparing with Explorer, .NET, and
-tar. Options add the libFuzzer harnesses, `fuzz-unzip` among them, and
-differential ones (`-DTUGZ_BUILD_FUZZ=ON`, with LLVM clang as
-`CMAKE_C_COMPILER`), and a benchmark against zlib and libdeflate
-(`-DTUGZ_BUILD_BENCH=ON`).
+tar, and `xp-windows` runs `test/xp.sh`, the platform's checks for all
+three programs that need nothing newer than XP (`sh test/xp.sh gzip.exe
+zip.exe unzip.exe`). Options add the libFuzzer harnesses, `fuzz-unzip`
+among them, and differential ones (`-DTUGZ_BUILD_FUZZ=ON`, with LLVM
+clang as `CMAKE_C_COMPILER`), and a benchmark against zlib and
+libdeflate (`-DTUGZ_BUILD_BENCH=ON`).
 
 Tests and benchmarks use zlib and libdeflate as references, and zip
 archives are verified with unzip, Python's zipfile, and on Windows with

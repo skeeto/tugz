@@ -76,6 +76,10 @@ with unzip in `platform/zipfs_*.c`.
 | `test/unzipcraft.py`     | unzip.sh's crafted archives (Python)            |
 | `test/unzip_windows.sh`  | unzip.exe beside Windows' own extractors        |
 | `test/pty.cs`            | pseudo console for the Windows tests' prompts   |
+| `test/xp.sh`             | all three on Windows XP (and later): times,     |
+|                          | attributes, long and Unicode names, Ctrl+C      |
+| `test/winhelp.c`         | cli.sh's and xp.sh's Windows steps, built by    |
+|                          | them: attributes, junctions, Ctrl+C, long paths |
 | `test/seeds.py`          | fuzzing seed corpus generator                   |
 
 The only conditional compilation in the core is CPU architecture and
@@ -870,7 +874,10 @@ container.
   POSIX signal handler, on the program's own thread, needs none of this
   (`zip_windows.sh`: Ctrl+C and Ctrl+Break typed at a pseudo console,
   and its closing, during a large file, standard output a file, which
-  holds every line but that file's, and no archive is left). On a
+  holds every line but that file's, and no archive is left; `xp.sh`,
+  on XP too: the same, the events sent by `GenerateConsoleCtrlEvent`
+  in a console of the helper's own, and for unzip, text that begins a
+  full run's and no partial file). On a
   terminal (a console on Windows) the buffer is paced as unzip's is
   (see unzip, Output buffering): flushed once its text has waited
   100 ms, as found at check points: before each entry (added, updated,
@@ -1860,8 +1867,8 @@ ones as invariants. Those that no test asserts are marked untested.
     SLOW=1 sh test/cli.sh build/gzip   # adds a 5 GiB stream (>4 GiB offsets)
     cmake -B build-w64 -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-x86_64.cmake
                                # Win32 builds (or cmake -G Ninja natively
-                               # under w64devkit, which runs zip-windows
-                               # and unzip-windows)
+                               # under w64devkit, which runs zip-windows,
+                               # unzip-windows, and xp-windows)
     cmake -B build-ppc -DCMAKE_TOOLCHAIN_FILE=cmake/linux-powerpc.cmake \
           -DTUGZ_BUILD_TESTS=ON -DCMAKE_FIND_ROOT_PATH=/opt/ppc-zlib
     ctest --test-dir build-ppc -j4 # big-endian, under qemu-ppc (a zlib
@@ -1891,6 +1898,7 @@ ones as invariants. Those that no test asserts are marked untested.
     UNZIP_D64=dir TUGZ_ZIP=./zip.exe sh test/unzip_windows.sh ./unzip.exe
                                        # adds Explorer's Deflate64 archives
                                        # in dir (about 5 GB free in TMPDIR)
+    sh test/xp.sh ./gzip.exe ./zip.exe ./unzip.exe  # on Windows, XP too
 
 Fuzzers:
 
@@ -2006,12 +2014,16 @@ Fuzzers:
   amalgamation, and the i686 build, and the amalgamation, built by its
   header's command, imports only KERNEL32 and SHELL32, with no stack
   frame over 4000 bytes.
-- Windows XP, untested on XP itself (no machine): on Windows 11 with
-  w64devkit GCC 16, the x86-64 and i686 programs, and the amalgamations,
-  built normally and with `-DTUGZ_FORCE_XP`, pass `test/cli.sh`,
-  `test/zip_windows.sh` (with `TUGZ_FORCE_XP=1` for the forced builds),
-  and `test/unzip_windows.sh`, but for the missing-share case, which
-  fails the same way before the change on that machine. Each program
+- Windows XP: on XP itself (5.1.2600, i686, one core) with w64devkit
+  GCC 16, the i686 programs pass `test/cli.sh` (its REF a renamed copy
+  of tugz's gzip, there being no other gzip there) and `test/xp.sh`,
+  over SSH. On Windows 11 with w64devkit GCC 16, the x86-64 and i686
+  programs, and the amalgamations, built normally and with
+  `-DTUGZ_FORCE_XP`, pass `test/cli.sh`, `test/zip_windows.sh` (with
+  `TUGZ_FORCE_XP=1` for the forced builds), and `test/unzip_windows.sh`,
+  but for the missing-share case, which fails the same way before the
+  change on that machine, and the x86-64 programs, both ways, pass
+  `test/xp.sh`. Each program
   imports the same functions in every build, 34 in all across the three,
   from KERNEL32 and SHELL32 alone, each documented for Windows XP or
   earlier.
