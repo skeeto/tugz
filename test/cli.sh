@@ -5,6 +5,7 @@
 set -e
 
 GZIP=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+testdir=$(cd "$(dirname "$0")" && pwd)
 REF=${REF:-/usr/bin/gzip}
 # Any other gzip is an independent codec, but tugz would test itself
 if "$REF" --version 2>/dev/null | head -n 1 | grep -q '(tugz)'; then
@@ -379,6 +380,12 @@ names/gunzip$ext n.gz
 # Metadata: timestamps everywhere, permissions where they mean something
 windows=
 [ "$(uname -s)" = Windows_NT ] && windows=1
+# ...where a helper takes the steps a shell cannot, without PowerShell
+# or tools newer than XP (test/winhelp.c), built by the compiler at hand
+if [ -n "$windows" ]; then
+    WH=$tmp/winhelp.exe
+    ${CC:-cc} -o "$WH" "$testdir/winhelp.c" || fail "cannot build winhelp.c"
+fi
 printf 'meta\n' >meta
 touch -t 200102030405 meta ref
 [ -z "$windows" ] && chmod 640 meta
@@ -512,10 +519,9 @@ chmod 444 roin
 # zip keeps a replaced archive's, with the archive bit set
 if [ -n "$windows" ]; then
     printf attrs >attrs
-    attrib +r +h +s +i -a attrs
+    "$WH" attrib +r +h +s +i -a attrs
     "$GZIP" attrs || fail "attributes: status $?"
-    got=$(powershell -NoProfile -NonInteractive -Command \
-          "(Get-Item -Force attrs.gz).Attributes" | tr -d '\r')
+    got=$("$WH" attrs attrs.gz | tr -d '\r')
     [ "$got" = "ReadOnly, Hidden, System, Archive, NotContentIndexed" ] ||
         fail "attributes: $got"
 fi
@@ -559,16 +565,14 @@ if [ -n "$windows" ]; then
     # Win32 would parse again, stripping them
     mkdir dots
     printf plain >dots/name
-    powershell -NoProfile -NonInteractive -Command "
-        Set-Content -NoNewline -LiteralPath '\\\\?\\$win\\dots\\name.' dot
-        Set-Content -NoNewline -LiteralPath '\\\\?\\$win\\dots\\sp ' sp"
+    "$WH" write "\\\\?\\$win\\dots\\name." dot
+    "$WH" write "\\\\?\\$win\\dots\\sp " sp
     for p in "//./$here/dots/" "\\\\.\\$win\\dots\\" "//?/$here/dots/"; do
         [ "$("$GZIP" -c "${p}name." | "$GZIP" -dc)" = dot ] &&
             [ "$("$GZIP" -c "${p}sp " | "$GZIP" -dc)" = sp ] ||
             fail "-c ${p}name. or sp"
     done
-    powershell -NoProfile -NonInteractive -Command "
-        Remove-Item -LiteralPath '\\\\?\\$win\\dots' -Recurse -Force"
+    "$WH" rmtree "\\\\?\\$win\\dots"
     # ...but one missing its device, server, or share names nothing
     for p in "//?/" "//./" "//?/UNC/localhost/" "\\\\localhost\\" "//"; do
         expect_status 1 "$GZIP" -c "$p"
@@ -587,8 +591,8 @@ if [ -n "$windows" ]; then
     printf c >wild/c.txtx
     printf h >wild/h.txt
     printf s >wild/s.txt
-    attrib +h 'wild\h.txt'
-    attrib +s 'wild\s.txt'
+    "$WH" attrib +h 'wild\h.txt'
+    "$WH" attrib +s 'wild\s.txt'
     printf x >wild/da/x.txt
     printf y >wild/db/x.txt
     printf n >wild/noext
@@ -637,7 +641,7 @@ if [ -n "$windows" ]; then
     "$GZIP" -k ro
     cp ro.gz ro.old
     ln ro.gz ro.link
-    attrib +r ro.gz
+    "$WH" attrib +r ro.gz
     printf new >ro
     expect_status 2 "$GZIP" -k ro
     cmp -s ro.gz ro.old || fail "read-only output replaced without -f"
@@ -647,7 +651,7 @@ if [ -n "$windows" ]; then
     if (: >>ro.link) 2>/dev/null; then
         fail "-f read-only output: other link writable"
     fi
-    attrib -r ro.link
+    "$WH" attrib -r ro.link
 fi
 
 # Windows: -f replaces a junction at the output's name, as unlinking a
@@ -658,7 +662,7 @@ if [ -n "$windows" ]; then
     mkdir jt
     printf keep >jt/keep
     printf data >jx
-    cmd /c 'mklink /J jx.gz jt' >/dev/null
+    "$WH" junction jx.gz jt
     expect_status 2 "$GZIP" -k jx
     [ "$(cat jt/keep)" = keep ] || fail "junction output: target changed"
     "$GZIP" -kf jx || fail "-f over a junction"
@@ -667,7 +671,7 @@ if [ -n "$windows" ]; then
     [ "$(ls jt)" = keep ] && [ "$(cat jt/keep)" = keep ] ||
         fail "-f over a junction: target changed: $(ls jt)"
     mv jx.gz jy.gz
-    cmd /c 'mklink /J jy jt' >/dev/null
+    "$WH" junction jy jt
     "$GZIP" -df jy.gz || fail "-df over a junction"
     [ -f jy ] && [ "$(cat jy)" = data ] || fail "-df over a junction: jy"
     [ "$(ls jt)" = keep ] && [ "$(cat jt/keep)" = keep ] ||
@@ -681,33 +685,7 @@ fi
 # gzip holds its own until done, is refused, an error under -f
 if [ -n "$windows" ]; then
     printf p >pend
-    cat >pend.cs <<'EOF'
-using System.IO;
-using System.Runtime.InteropServices;
-using System.Security.AccessControl;
-public static class Pend {
-    [DllImport("kernel32.dll")]
-    static extern bool SetFileInformationByHandle(System.IntPtr h, int c,
-                                                  ref byte discard, int n);
-    public static FileStream Hold(string path) {
-        FileStream f = new FileStream(path, FileMode.CreateNew,
-            FileSystemRights.Write | FileSystemRights.Delete,
-            FileShare.None, 1, FileOptions.None);
-        byte discard = 1;
-        SetFileInformationByHandle(f.SafeFileHandle.DangerousGetHandle(),
-                                   4, ref discard, 1);  // FileDispositionInfo
-        return f;
-    }
-}
-EOF
-    powershell -NoProfile -NonInteractive -Command "
-        Add-Type -TypeDefinition (Get-Content -Raw pend.cs)
-        \$f = [Pend]::Hold((Join-Path (Get-Location) pend.gz))
-        Set-Content held ''
-        for (\$i = 0; \$i -lt 600 -and !(Test-Path done); \$i++) {
-            Start-Sleep -Milliseconds 50
-        }
-        \$f.Close()" &
+    "$WH" pend pend.gz held done &
     pid=$!
     for i in 1 2 3 4 5 6 7 8 9 10; do [ -e held ] && break; sleep 1; done
     set +e
@@ -729,13 +707,7 @@ EOF
     rm -f held done
     printf h >hold
     printf old >hold.gz
-    powershell -NoProfile -NonInteractive -Command "
-        \$f = [IO.File]::Open('hold.gz', 'Open', 'ReadWrite', 'None')
-        Set-Content held ''
-        for (\$i = 0; \$i -lt 600 -and !(Test-Path done); \$i++) {
-            Start-Sleep -Milliseconds 50
-        }
-        \$f.Close()" &
+    "$WH" hold hold.gz held done &
     pid=$!
     for i in 1 2 3 4 5 6 7 8 9 10; do [ -e held ] && break; sleep 1; done
     set +e
@@ -793,106 +765,8 @@ done
 # where a read returns part of a message longer than its buffer.
 PY=
 if [ -n "$windows" ]; then
-    cat >nowait.cs <<'EOF'
-using System;
-using System.IO;
-using System.Runtime.InteropServices;
-using System.Threading;
-public static class NoWait {
-    [DllImport("kernel32.dll")]
-    static extern bool CreatePipe(out IntPtr r, out IntPtr w, IntPtr sa, int n);
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-    static extern IntPtr CreateNamedPipeW(string name, int open, int mode,
-                                          int max, int outsize, int insize,
-                                          int timeout, IntPtr sa);
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-    static extern IntPtr CreateFileW(string name, int access, int share,
-                                     IntPtr sa, int disposition, int flags,
-                                     IntPtr template);
-    [DllImport("kernel32.dll")]
-    static extern bool SetNamedPipeHandleState(IntPtr h, ref int mode,
-                                               IntPtr n, IntPtr t);
-    [DllImport("kernel32.dll")]
-    static extern bool SetHandleInformation(IntPtr h, int mask, int flags);
-    [DllImport("kernel32.dll")]
-    static extern bool WriteFile(IntPtr h, byte[] b, int n, out int done,
-                                 IntPtr o);
-    [DllImport("kernel32.dll")]
-    static extern bool CloseHandle(IntPtr h);
-    [DllImport("kernel32.dll")]
-    static extern int WaitForSingleObject(IntPtr h, int ms);
-    [DllImport("kernel32.dll")]
-    static extern bool GetExitCodeProcess(IntPtr h, out int code);
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    struct StartupInfo {
-        public int cb;
-        public string reserved, desktop, title;
-        public int x, y, w, h, cols, rows, fill, flags;
-        public short show, reserved2;
-        public IntPtr reserved3, stdin, stdout, stderr;
-    }
-    [StructLayout(LayoutKind.Sequential)]
-    struct ProcessInfo {
-        public IntPtr process, thread;
-        public int pid, tid;
-    }
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-    static extern bool CreateProcessW(string app, string cmd, IntPtr pa,
-                                      IntPtr ta, bool inherit, int flags,
-                                      IntPtr env, string dir,
-                                      ref StartupInfo si, out ProcessInfo pi);
-    // Run a command with standard input from a pipe left PIPE_NOWAIT, or
-    // given message, from one read as messages, written only after a
-    // second, as one message, and its output and errors to files.
-    public static int Run(string cmd, string input, string output,
-                          string errors, bool message) {
-        IntPtr r, w;
-        if (message) {
-            string name = @"\\.\pipe\tugz-" + Guid.NewGuid();
-            r = CreateNamedPipeW(name, 1, 6, 1, 0, 0, 0,
-                                 IntPtr.Zero);  // inbound, of messages
-            w = CreateFileW(name, 0x40000000, 0, IntPtr.Zero, 3, 0,
-                            IntPtr.Zero);  // GENERIC_WRITE, OPEN_EXISTING
-        } else {
-            CreatePipe(out r, out w, IntPtr.Zero, 0);
-            int mode = 1;  // PIPE_NOWAIT
-            SetNamedPipeHandleState(r, ref mode, IntPtr.Zero, IntPtr.Zero);
-        }
-        FileStream o = File.Create(output);
-        FileStream e = File.Create(errors);
-        StartupInfo si = new StartupInfo();
-        si.cb = Marshal.SizeOf(si);
-        si.flags = 0x100;  // STARTF_USESTDHANDLES
-        si.stdin = r;
-        si.stdout = o.SafeFileHandle.DangerousGetHandle();
-        si.stderr = e.SafeFileHandle.DangerousGetHandle();
-        SetHandleInformation(si.stdin, 1, 1);  // inheritable
-        SetHandleInformation(si.stdout, 1, 1);
-        SetHandleInformation(si.stderr, 1, 1);
-        ProcessInfo pi;
-        if (!CreateProcessW(null, cmd, IntPtr.Zero, IntPtr.Zero, true, 0,
-                            IntPtr.Zero, null, ref si, out pi)) {
-            return -1;
-        }
-        CloseHandle(r);
-        Thread.Sleep(1000);
-        byte[] data = File.ReadAllBytes(input);
-        int done;
-        WriteFile(w, data, data.Length, out done, IntPtr.Zero);
-        CloseHandle(w);
-        WaitForSingleObject(pi.process, -1);
-        int code;
-        GetExitCodeProcess(pi.process, out code);
-        o.Close();
-        e.Close();
-        return code;
-    }
-}
-EOF
-    st=$(powershell -NoProfile -NonInteractive -Command "
-        Add-Type -TypeDefinition (Get-Content -Raw nowait.cs)
-        [NoWait]::Run('\"$GZIP\" -c', 'text', 'nb.gz', 'nb.err', \$false)
-        [NoWait]::Run('\"$GZIP\" -c', 'text', 'mp.gz', 'mp.err', \$true)" |
+    st=$( { "$WH" nowait "\"$GZIP\" -c" text nb.gz nb.err 0
+           "$WH" nowait "\"$GZIP\" -c" text mp.gz mp.err 1; } |
          tr -d '\r' | tr '\n' ' ')
     [ "$st" = '0 0 ' ] ||
         fail "non-blocking or message standard input: $st $(cat nb.err mp.err)"
