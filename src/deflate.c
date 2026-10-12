@@ -757,7 +757,7 @@ static u32 hash3(u32 v)
 }
 
 // Insert position p, returning the previous 3-byte hash chain head.
-static u32 hash_insert(deflator *d, iz p)
+[[gnu::always_inline]] static inline u32 hash_insert(deflator *d, iz p)
 {
     u32 v = load32(d->win + p);
     u32 slot = chain_slot(d, p);
@@ -776,7 +776,9 @@ static u32 hash_insert(deflator *d, iz p)
 }
 
 // Insert all positions through q, returning the 3-byte chain for q.
-static u32 ensure_insert(deflator *d, iz q)
+// Always inlined, like hash_insert and match_at: GCC would otherwise
+// call this and match_at from parse, and hash_insert once they inline.
+[[gnu::always_inline]] static inline u32 ensure_insert(deflator *d, iz q)
 {
     u32 c3 = 0;
     if (q >= d->ins) {
@@ -870,7 +872,8 @@ static match find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth)
 }
 
 // Find the best match at p, inserting p into the hash chains.
-static match match_at(deflator *d, iz p, i32 depth)
+[[gnu::always_inline]]
+static inline match match_at(deflator *d, iz p, i32 depth)
 {
     u32 c3 = ensure_insert(d, p);
     if (p+HASH_LEN <= d->win_len) {
