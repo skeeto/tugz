@@ -689,7 +689,10 @@ static b32 should_split(deflator *d)
     return split;
 }
 
-static void tok_end(deflator *d)
+// The token functions run once per token in parse. Always inlined (with
+// should_split left out of line): GCC would otherwise call tok_end for
+// every token, and tok_lit too once more of parse is inlined.
+[[gnu::always_inline]] static inline void tok_end(deflator *d)
 {
     if (!d->blkready && (d->ntok>=TOK_LIMIT ||
                          (++d->nnewobs==OBS_BATCH && should_split(d)))) {
@@ -697,7 +700,7 @@ static void tok_end(deflator *d)
     }
 }
 
-static void tok_lit(deflator *d, iz p)
+[[gnu::always_inline]] static inline void tok_lit(deflator *d, iz p)
 {
     if (!d->ntok) {
         d->blk_start = d->base + (u64)p;
@@ -710,7 +713,8 @@ static void tok_lit(deflator *d, iz p)
     tok_end(d);
 }
 
-static void tok_match(deflator *d, iz p, i32 len, i32 dist)
+[[gnu::always_inline]]
+static inline void tok_match(deflator *d, iz p, i32 len, i32 dist)
 {
     if (!d->ntok) {
         d->blk_start = d->base + (u64)p;
