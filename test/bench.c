@@ -1,9 +1,34 @@
 // Benchmark platform layer: in-memory gzip compression and decompression
 // throughput versus zlib and libdeflate, all producing the gzip format.
 // $ cc -O2 -o bench test/bench.c -lz -ldeflate
-// $ ./bench [-l LEVELS] [-t SECONDS] FILE...
-// LEVELS is a comma-separated list (default 1,6,9). Decompression speed
-// is measured by each decoder on the same zlib level 6 stream.
+// $ cc -O2 -fno-builtin -DBENCH_REF=0 -o bench test/bench.c  # tugz only
+// $ ./bench [-o] [-l LEVELS] [-t SECONDS] FILE...
+//
+// LEVELS is a comma-separated list (default 1,6,9). -o times only our
+// codec. Built with BENCH_REF=0 there is no zlib or libdeflate at all,
+// so it builds anywhere the codec does (w64devkit: cc -O2 -fno-builtin
+// -o bench.exe test/bench.c). BENCH_REF defaults to 1 only where both
+// zlib.h and libdeflate.h can be included.
+// Each figure is the best single run of at least three that together
+// take at least SECONDS (default 0.5).
+//
+// Every level's output of ours is checked by a round trip through our
+// inflate. Decompression is timed on these streams:
+//   z6  zlib's level 6 output, by each decoder (only with references)
+//   o1  our level 1 output, by ours (only when level 1 is requested)
+//   o6  our level 6 output, by ours (always)
+//   o9  our level 9 output, by ours (only when level 9 is requested)
+//
+// Besides the human table, it prints machine-readable lines, each a
+// '#' word followed by space-separated fields:
+//   #crc FILE LEVEL SIZE CRC          our output for a file and level:
+//                                     its size and CRC-32 (8 hex digits)
+//   #total cLEVEL CODEC IN OUT SECS   compression of all files: input and
+//                                     output bytes, summed best seconds
+//   #total dSRC CODEC BYTES SECS      decompression of all files' SRC
+//                                     streams (above): output bytes, secs
+// CODEC is ours, zlib or libdeflate. Speed is bytes/secs of input for
+// compression, and of output for decompression.
 #include "../src/base.c"
 #include "../src/crc32.c"
 #include "../src/adler32.c"
@@ -13,12 +38,24 @@
 #include "../src/io.c"
 #include "../src/gzipio.c"
 
-#include <libdeflate.h>
+#ifndef BENCH_REF
+#  if __has_include(<zlib.h>) && __has_include(<libdeflate.h>)
+#    define BENCH_REF 1
+#  else
+#    define BENCH_REF 0
+#  endif
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#include <zlib.h>
+#if BENCH_REF
+#  include <libdeflate.h>
+#  include <zlib.h>
+#endif
+#ifndef _WIN32
+#  include <time.h>
+#endif
 
 struct os {
     u8 const *in;
@@ -124,21 +161,42 @@ static void os_exit(os *ctx, i32 status)
     abort();
 }
 
+#ifdef _WIN32
+__declspec(dllimport) i32 __stdcall QueryPerformanceCounter(i64 *);
+__declspec(dllimport) i32 __stdcall QueryPerformanceFrequency(i64 *);
+
+static double now(void)
+{
+    i64 t, f;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&t);
+    return (double)t / (double)f;
+}
+#else
 static double now(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec/1e9;
 }
+#endif
+
+[[noreturn]] static void fail(char const *what, char const *file, i32 level)
+{
+    fflush(stdout);
+    fprintf(stderr, "\nbench: %s: %s, level %d\n", what, file, level);
+    abort();
+}
 
 typedef struct {
-    os    ctx;
-    arena perm;
-    u8   *in;
-    iz    len;
-    u8   *out;
-    iz    cap;
-    u8   *back;  // decompression output
+    os          ctx;
+    arena       perm;
+    u8         *in;
+    iz          len;
+    u8         *out;
+    iz          cap;
+    u8         *back;  // decompression output
+    char const *name;
 } bench;
 
 enum { OURS, ZLIB, LIBDEFLATE, NCODECS };
@@ -147,7 +205,7 @@ static char const *const codec_names[] = {"ours", "zlib", "libdeflate"};
 static iz compress_with(bench *b, i32 codec, i32 level)
 {
     switch (codec) {
-    case OURS:
+    case OURS: {
         b->ctx.in = b->in;
         b->ctx.inlen = b->len;
         b->ctx.inoff = 0;
@@ -156,9 +214,11 @@ static iz compress_with(bench *b, i32 codec, i32 level)
         b->ctx.outcap = b->cap;
         arena a = b->perm;
         if (gzip_compress(gzip_encoder(&a, level), 0, 1, level, a)) {
-            abort();
+            fail("compression failed", b->name, level);
         }
         return b->ctx.outlen;
+    }
+#if BENCH_REF
     case ZLIB: {
         z_stream z = {0};
         deflateInit2(&z, level, Z_DEFLATED, 31, 8, Z_DEFAULT_STRATEGY);
@@ -167,7 +227,7 @@ static iz compress_with(bench *b, i32 codec, i32 level)
         z.next_out = b->out;
         z.avail_out = (u32)b->cap;
         if (deflate(&z, Z_FINISH) != Z_STREAM_END) {
-            abort();
+            fail("zlib compression failed", b->name, level);
         }
         iz r = (iz)z.total_out;
         deflateEnd(&z);
@@ -179,18 +239,20 @@ static iz compress_with(bench *b, i32 codec, i32 level)
                                         (uz)b->cap);
         libdeflate_free_compressor(c);
         if (!r) {
-            abort();
+            fail("libdeflate compression failed", b->name, level);
         }
         return (iz)r;
     }
+#endif
     }
     abort();
 }
 
+// Decompress into b->back, which must then match the input.
 static void decompress_with(bench *b, i32 codec, u8 const *z, iz zlen)
 {
     switch (codec) {
-    case OURS:
+    case OURS: {
         b->ctx.in = z;
         b->ctx.inlen = zlen;
         b->ctx.inoff = 0;
@@ -200,9 +262,11 @@ static void decompress_with(bench *b, i32 codec, u8 const *z, iz zlen)
         arena a = b->perm;
         if (stream_decompress(stream_decoder(&a, FMT_GZIP), 0, 1, 0, a) ||
             b->ctx.outlen!=b->len) {
-            abort();
+            fail("decompression failed", b->name, 0);
         }
         break;
+    }
+#if BENCH_REF
     case ZLIB: {
         z_stream s = {0};
         inflateInit2(&s, 31);
@@ -211,7 +275,7 @@ static void decompress_with(bench *b, i32 codec, u8 const *z, iz zlen)
         s.next_out = b->back;
         s.avail_out = (u32)b->len;
         if (inflate(&s, Z_FINISH)!=Z_STREAM_END || s.total_out!=(uLong)b->len) {
-            abort();
+            fail("zlib decompression failed", b->name, 0);
         }
         inflateEnd(&s);
         break;
@@ -221,17 +285,20 @@ static void decompress_with(bench *b, i32 codec, u8 const *z, iz zlen)
         uz actual;
         if (libdeflate_gzip_decompress(d, z, (uz)zlen, b->back, (uz)b->len,
                                        &actual) != LIBDEFLATE_SUCCESS) {
-            abort();
+            fail("libdeflate decompression failed", b->name, 0);
         }
         libdeflate_free_decompressor(d);
         break;
     }
+#endif
+    default:
+        abort();
     }
 }
 
-static double mbps(iz len, double secs)
+static double mbps(double len, double secs)
 {
-    return (double)len / secs / 1e6;
+    return len / secs / 1e6;
 }
 
 // Best time of repeated runs totaling at least mintime seconds.
@@ -263,11 +330,22 @@ static u8 *loadfile(char const *path, iz *len)
     return p;
 }
 
+// A decompression source: a stream, and the decoders that time it.
+typedef struct {
+    char  name[4];
+    i32   level;    // 0 for zlib's level 6 stream
+    i32   ncodecs;
+    u8   *z;
+    iz    zlen;
+    double time[NCODECS];
+} source;
+
 int main(int argc, char **argv)
 {
     i32 levels[10] = {1, 6, 9};
     i32 nlevels = 3;
     double mintime = 0.5;
+    b32 oursonly = 0;
 
     i32 i = 1;
     for (; i < argc && argv[i][0] == '-'; i++) {
@@ -279,9 +357,38 @@ int main(int argc, char **argv)
             }
         } else if (!strcmp(argv[i], "-t") && i+1<argc) {
             mintime = strtod(argv[++i], 0);
+        } else if (!strcmp(argv[i], "-o")) {
+            oursonly = 1;
         } else {
-            fprintf(stderr, "usage: bench [-l LEVELS] [-t SECONDS] FILE...\n");
+            fprintf(stderr,
+                    "usage: bench [-o] [-l LEVELS] [-t SECONDS] FILE...\n");
             return 1;
+        }
+    }
+    for (i32 l = 0; l < nlevels; l++) {
+        if (levels[l]<1 || levels[l]>9) {
+            fprintf(stderr, "bench: invalid level %d\n", levels[l]);
+            return 1;
+        }
+    }
+    i32 ncodecs = BENCH_REF && !oursonly ? NCODECS : 1;
+
+    source srcs[4] = {0};
+    i32 nsrcs = 0;
+    if (BENCH_REF) {
+        srcs[nsrcs++] = (source){"z6", 0, ncodecs, 0, 0, {0}};
+    }
+    for (i32 l = 0; l < nlevels; l++) {
+        if (levels[l] == 1) {
+            srcs[nsrcs++] = (source){"o1", 1, 1, 0, 0, {0}};
+            break;
+        }
+    }
+    srcs[nsrcs++] = (source){"o6", 6, 1, 0, 0, {0}};
+    for (i32 l = 0; l < nlevels; l++) {
+        if (levels[l] == 9) {
+            srcs[nsrcs++] = (source){"o9", 9, 1, 0, 0, {0}};
+            break;
         }
     }
 
@@ -292,17 +399,27 @@ int main(int argc, char **argv)
     b.perm.ctx = &b.ctx;
 
     double ctime[10][NCODECS] = {{0}};
-    double dtime[NCODECS] = {0};
-    iz csize[10][NCODECS] = {{0}};
-    iz total = 0;
+    double csize[10][NCODECS] = {{0}};
+    u32    crcs[10] = {0};  // per file: our output's CRC and size
+    iz     osize[10] = {0};
+    double total = 0;
 
     printf("%-12s %10s", "file", "size");
     for (i32 l = 0; l < nlevels; l++) {
-        for (i32 c = 0; c < NCODECS; c++) {
-            printf("  %c%d:%-10.10s", "OZL"[c], levels[l], codec_names[c]);
+        for (i32 c = 0; c < ncodecs; c++) {
+            char col[16];
+            snprintf(col, sizeof(col), "%c%d:%s",
+                     "OZL"[c], levels[l], codec_names[c]);
+            printf("  %-12.12s", col);
         }
     }
-    printf("   decompress MB/s (O/Z/L)\n");
+    printf("  ");
+    for (i32 s = 0; s < nsrcs; s++) {
+        for (i32 c = 0; c < srcs[s].ncodecs; c++) {
+            printf(" %4s:%c", srcs[s].name, "OZL"[c]);
+        }
+    }
+    printf("  (decompress MB/s)\n");
 
     for (; i < argc; i++) {
         b.in = loadfile(argv[i], &b.len);
@@ -313,59 +430,114 @@ int main(int argc, char **argv)
         b.cap = b.len + b.len/8 + (1<<16);
         b.out = malloc((uz)b.cap);
         b.back = malloc((uz)b.len + 1);
-        total += b.len;
+        total += (double)b.len;
 
-        char const *name = strrchr(argv[i], '/');
-        name = name ? name+1 : argv[i];
-        printf("%-12.12s %10td", name, b.len);
+        char const *name = argv[i];
+        for (char const *p = argv[i]; *p; p++) {
+            if (*p=='/' || *p=='\\') {
+                name = p + 1;
+            }
+        }
+        b.name = name;
+        printf("%-12.12s %10.0f", name, (double)b.len);
         fflush(stdout);
 
         for (i32 l = 0; l < nlevels; l++) {
-            for (i32 c = 0; c < NCODECS; c++) {
+            for (i32 c = 0; c < ncodecs; c++) {
                 iz zlen = 0;
                 double best;
                 TIMEIT(best, mintime, zlen = compress_with(&b, c, levels[l]));
                 ctime[l][c] += best;
-                csize[l][c] += zlen;
+                csize[l][c] += (double)zlen;
                 printf("  %5.1f%% %5.0f", 100.0*(double)zlen/(double)b.len,
-                       mbps(b.len, best));
+                       mbps((double)b.len, best));
                 fflush(stdout);
+                if (c != OURS) {
+                    continue;
+                }
+
+                // Identity, a round trip, and a copy to time decoding
+                i32 cpu = 0;
+                crcs[l] = crc32_update(0, b.out, zlen, &cpu);
+                osize[l] = zlen;
+                decompress_with(&b, OURS, b.out, zlen);
+                if (memcmp(b.back, b.in, (uz)b.len)) {
+                    fail("round trip mismatch", name, levels[l]);
+                }
+                for (i32 s = 0; s < nsrcs; s++) {
+                    if (srcs[s].level==levels[l] && !srcs[s].z) {
+                        srcs[s].z = malloc((uz)zlen);
+                        srcs[s].zlen = zlen;
+                        memcpy(srcs[s].z, b.out, (uz)zlen);
+                    }
+                }
             }
         }
 
-        // Decompression: every decoder on the same zlib -6 stream
-        iz zlen = compress_with(&b, ZLIB, 6);
-        u8 *z = malloc((uz)zlen);
-        memcpy(z, b.out, (uz)zlen);
-        printf("  ");
-        for (i32 c = 0; c < NCODECS; c++) {
-            double best;
-            TIMEIT(best, mintime, decompress_with(&b, c, z, zlen));
-            if (memcmp(b.back, b.in, (uz)b.len)) {
-                abort();
+        // Streams for decompression not already made above
+        for (i32 s = 0; s < nsrcs; s++) {
+            if (!srcs[s].z) {
+                i32 codec = srcs[s].level ? OURS : ZLIB;
+                i32 level = srcs[s].level ? srcs[s].level : 6;
+                srcs[s].zlen = compress_with(&b, codec, level);
+                srcs[s].z = malloc((uz)srcs[s].zlen);
+                memcpy(srcs[s].z, b.out, (uz)srcs[s].zlen);
             }
-            dtime[c] += best;
-            printf(" %6.0f", mbps(b.len, best));
+        }
+
+        printf("  ");
+        for (i32 s = 0; s < nsrcs; s++) {
+            for (i32 c = 0; c < srcs[s].ncodecs; c++) {
+                double best;
+                TIMEIT(best, mintime,
+                       decompress_with(&b, c, srcs[s].z, srcs[s].zlen));
+                if (memcmp(b.back, b.in, (uz)b.len)) {
+                    fail("decompression mismatch", name, srcs[s].level);
+                }
+                srcs[s].time[c] += best;
+                printf(" %6.0f", mbps((double)b.len, best));
+                fflush(stdout);
+            }
+            free(srcs[s].z);
+            srcs[s].z = 0;
         }
         printf("\n");
-        free(z);
+
+        for (i32 l = 0; l < nlevels; l++) {
+            printf("#crc %s %d %.0f %08x\n", name, levels[l],
+                   (double)osize[l], (unsigned)crcs[l]);
+        }
         free(b.in);
         free(b.out);
         free(b.back);
     }
 
-    printf("%-12s %10td", "TOTAL", total);
+    printf("%-12s %10.0f", "TOTAL", total);
     for (i32 l = 0; l < nlevels; l++) {
-        for (i32 c = 0; c < NCODECS; c++) {
-            printf("  %5.1f%% %5.0f",
-                   100.0*(double)csize[l][c]/(double)total,
+        for (i32 c = 0; c < ncodecs; c++) {
+            printf("  %5.1f%% %5.0f", 100.0*csize[l][c]/total,
                    mbps(total, ctime[l][c]));
         }
     }
     printf("  ");
-    for (i32 c = 0; c < NCODECS; c++) {
-        printf(" %6.0f", mbps(total, dtime[c]));
+    for (i32 s = 0; s < nsrcs; s++) {
+        for (i32 c = 0; c < srcs[s].ncodecs; c++) {
+            printf(" %6.0f", mbps(total, srcs[s].time[c]));
+        }
     }
     printf("\n");
+
+    for (i32 l = 0; l < nlevels; l++) {
+        for (i32 c = 0; c < ncodecs; c++) {
+            printf("#total c%d %s %.0f %.0f %.6f\n", levels[l],
+                   codec_names[c], total, csize[l][c], ctime[l][c]);
+        }
+    }
+    for (i32 s = 0; s < nsrcs; s++) {
+        for (i32 c = 0; c < srcs[s].ncodecs; c++) {
+            printf("#total d%s %s %.0f %.6f\n", srcs[s].name,
+                   codec_names[c], total, srcs[s].time[c]);
+        }
+    }
     return 0;
 }

@@ -1886,6 +1886,10 @@ ones as invariants. Those that no test asserts are marked untested.
     build-fuzz/fuzz-unzip -jobs=6 -workers=6 -max_len=70000 fuzz/corpus/unzip
     cmake -B build -DTUGZ_BUILD_BENCH=ON && cmake --build build
     build/bench -l 1,6,9 bench_corpus/silesia/*
+    cc -O2 -fno-builtin -DBENCH_REF=0 -o bench test/bench.c  # tugz only
+    ./bench -o bench_corpus/silesia/*  # -o: ours only, as are BENCH_REF=0
+                               # builds; its #crc and #total lines are
+                               # for comparing two builds (see bench.c)
     cmake -P cmake/amalgamate.cmake    # gzip.c, zip.c, unzip.c, tugz.c (and
                                        # the build's amalgamation/ has them)
     SLOW=1 sh test/zip.sh build/zip    # adds Zip64: 4 and 5 GiB files, 70,000 entries
