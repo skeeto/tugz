@@ -535,8 +535,9 @@ static void inf_giveback(inflator *s)
     s->bitbuf &= ((u64)1 << s->bitcnt) - 1;
 }
 
-// Look up the entry for the next code, resolving subtables.
-static u32 lookup(u32 const *t, u32 mask, u64 bb)
+// Look up the entry for the next code, resolving subtables. Always
+// inlined: GCC would otherwise call it for every symbol in the hot loop.
+[[gnu::always_inline]] static inline u32 lookup(u32 const *t, u32 mask, u64 bb)
 {
     u32 e = t[bb & mask];
     if (e & F_LINK) {
