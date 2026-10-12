@@ -791,7 +791,8 @@ static u32 hash3(u32 v)
     return c3;
 }
 
-static i32 match_len(u8 const *a, u8 const *b, i32 max)
+[[gnu::always_inline]]
+static inline i32 match_len(u8 const *a, u8 const *b, i32 max)
 {
     i32 len = 0;
     for (; len+8 <= max; len += 8) {
@@ -811,7 +812,10 @@ typedef struct {
 
 // Candidates are hash table entries, from which distances are measured
 // against p's own entry: a forgotten entry is farther than any match.
-static match find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth)
+// Always inlined, with match_len: GCC (and clang) would otherwise call
+// it for every position searched.
+[[gnu::always_inline]]
+static inline match find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth)
 {
     u8 *win = d->win;
     i32 maxlen = (i32)MIN(d->win_len - p, MAX_MATCH);

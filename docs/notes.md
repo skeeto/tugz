@@ -2442,6 +2442,20 @@ Changes, roughly in order of impact:
    harness); level 6 search depth 128 -> 32 kept ratio at zlib parity
    while nearly doubling speed.
 
+Inlining under GCC (2026-10): GCC 16 -O2, which builds w64devkit's
+programs, left `load64le`, `lookup`, `bw_put`, `tok_end`, the hash
+insertion and the match search as calls inside the decode and parse
+loops, and clang left `tok_end`, `match_at` and `find_match`. They are
+now `[[gnu::always_inline]]`, as are `tok_lit`, `tok_match`,
+`hash_insert` and `match_len`, which GCC otherwise makes calls in turn
+as the inlined callers grow. Each step was kept only for a measured
+gain (biron i9-12900, GCC 16, pinned, ABBA): decompression +5% each
+from `load64le` and `lookup`; compression +0.3-1.9% each from
+`load64le`, `bw_put` and the token functions, +0.8-4.5% from insertion
+and `match_at`, and +4-7% from `find_match` (ranges over levels 1-9). Clang gained too (Mac, the whole set:
+compression +6-10%, decompression unchanged). Dropping any of these
+attributes brings its calls back.
+
 Things tried that did not help: inflate chunk size (64 KiB..1 MiB, no
 difference), hash table 14..17 bits (16 is best; 17 is ~3% faster within
 noise for twice the memory), shallower 3-byte chains at level 1.
