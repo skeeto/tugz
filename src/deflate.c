@@ -360,8 +360,9 @@ static void huff_build(htree *t, u32 const *freq, i32 n, i32 maxlen)
 }
 
 // Append n bits, n <= 32. Whole bytes spill into the staging buffer
-// 8 bytes at a time once 32 or more bits accumulate.
-static void bw_put(deflator *d, u64 v, i32 n)
+// 8 bytes at a time once 32 or more bits accumulate. Always inlined:
+// GCC would otherwise call it for every code emit_tokens writes.
+[[gnu::always_inline]] static inline void bw_put(deflator *d, u64 v, i32 n)
 {
     assert(n<=32 && !(v>>n));
     d->bitbuf |= v << d->bitcnt;
