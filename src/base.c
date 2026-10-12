@@ -97,8 +97,9 @@ static void *bytefill(void *dst, i32 c, iz len)
 }
 
 // Explicit little-endian accesses; each compiles to a single unaligned
-// load or store on little-endian targets.
-static u64 load64le(u8 const *p)
+// load or store on little-endian targets. Always inlined: GCC would
+// otherwise leave load64le a call inside inflate's and deflate's loops.
+[[gnu::always_inline]] static inline u64 load64le(u8 const *p)
 {
     return (u64)p[0]     | (u64)p[1]<< 8 | (u64)p[2]<<16 | (u64)p[3]<<24 |
            (u64)p[4]<<32 | (u64)p[5]<<40 | (u64)p[6]<<48 | (u64)p[7]<<56;
