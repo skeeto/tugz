@@ -361,7 +361,8 @@ static void huff_build(htree *t, u32 const *freq, i32 n, i32 maxlen)
 
 // Append n bits, n <= 32. Whole bytes spill into the staging buffer
 // 8 bytes at a time once 32 or more bits accumulate. Always inlined:
-// GCC would otherwise call it for every code emit_tokens writes.
+// GCC would otherwise call it for every code it writes (emit_tokens,
+// which writes most of them, keeps this state in locals instead).
 [[gnu::always_inline]] static inline void bw_put(deflator *d, u64 v, i32 n)
 {
     assert(n<=32 && !(v>>n));
@@ -563,24 +564,71 @@ static void emit_stored(deflator *d, b32 final)
     }
 }
 
+// Emit the block's tokens. The bit buffer, its count and the output
+// position live in locals for the whole loop (stores to the output would
+// otherwise force reloads of the deflator's fields), and whole bytes
+// spill once per match or per up to three literals. After a spill at
+// most 7 bits remain, and a match adds at most 15+5+15+13 = 48 bits and
+// three literals at most 45, so the 64-bit buffer never overflows. Each
+// spill stores 8 bytes but advances only by the whole bytes, which stay
+// within the TOK_CAP*6 bytes of DEF_STAGE_NEED (plus those bw_put held);
+// DEF_STAGE's slack beyond that absorbs the store's overhang.
 static void emit_tokens(deflator *d, htree *lt, htree *dt)
 {
-    for (iz i = 0; i < d->ntok; i++) {
-        token t = d->toks[i];
+    u64    bb   = d->bitbuf;
+    i32    bc   = d->bitcnt;
+    u8    *out  = d->obuf + d->olen;
+    token *toks = d->toks;
+    iz     ntok = d->ntok;
+    assert(DEF_STAGE-d->olen >= ntok*6 + 16);
+
+    // Spill first, as bw_put may have left up to 31 bits
+    store64le(out, bb);
+    out += bc >> 3;
+    bb >>= bc & ~7;
+    bc &= 7;
+
+    #define EMIT_LIT(c) do { \
+        bb |= (u64)lt->code[c] << bc; \
+        bc += lt->len[c]; \
+    } while (0)
+
+    for (iz i = 0; i < ntok;) {
+        token t = toks[i++];
         if (!t.dist) {
-            bw_put(d, lt->code[t.litlen], lt->len[t.litlen]);
+            EMIT_LIT(t.litlen);
+            if (i<ntok && !toks[i].dist) {
+                EMIT_LIT(toks[i].litlen);
+                i++;
+                if (i<ntok && !toks[i].dist) {
+                    EMIT_LIT(toks[i].litlen);
+                    i++;
+                }
+            }
         } else {
             // Code plus extra bits: at most 15+5 and 15+13 bits
             i32 lc = lcode_of(d, t.litlen);
             i32 dc = dcode_of(d, t.dist);
-            u32 lx = (u32)(t.litlen - def_len_base[lc]);
-            u32 dx = (u32)(t.dist - def_dist_base[dc]);
+            u64 lx = (u32)(t.litlen - def_len_base[lc]);
+            u64 dx = (u32)(t.dist - def_dist_base[dc]);
             i32 ln = lt->len[257+lc];
             i32 dn = dt->len[dc];
-            bw_put(d, lt->code[257+lc] | lx<<ln, ln + def_len_extra[lc]);
-            bw_put(d, dt->code[dc] | dx<<dn, dn + def_dist_extra[dc]);
+            bb |= ((u64)lt->code[257+lc] | lx<<ln) << bc;
+            bc += ln + def_len_extra[lc];
+            bb |= ((u64)dt->code[dc] | dx<<dn) << bc;
+            bc += dn + def_dist_extra[dc];
         }
+        assert(bc <= 7+48);
+        store64le(out, bb);
+        out += bc >> 3;
+        bb >>= bc & ~7;
+        bc &= 7;
     }
+    #undef EMIT_LIT
+
+    d->bitbuf = bb;
+    d->bitcnt = bc;
+    d->olen   = out - d->obuf;
     bw_put(d, lt->code[256], lt->len[256]);
 }
 
