@@ -2,10 +2,11 @@
 // throughput versus zlib and libdeflate, all producing the gzip format.
 // $ cc -O2 -o bench test/bench.c -lz -ldeflate
 // $ cc -O2 -fno-builtin -DBENCH_REF=0 -o bench test/bench.c  # tugz only
-// $ ./bench [-o] [-l LEVELS] [-t SECONDS] FILE...
+// $ ./bench [-o] [-d] [-l LEVELS] [-s SIZES] [-t SECONDS] FILE...
 //
 // LEVELS is a comma-separated list (default 1,6,9). -o times only our
-// codec. Built with BENCH_REF=0 there is no zlib or libdeflate at all,
+// codec. -d times only decompression: each stream is still made once,
+// and checked, but its compression is not timed. Built with BENCH_REF=0 there is no zlib or libdeflate at all,
 // so it builds anywhere the codec does (w64devkit: cc -O2 -fno-builtin
 // -o bench.exe test/bench.c). BENCH_REF defaults to 1 only where both
 // zlib.h and libdeflate.h can be included.
@@ -29,6 +30,17 @@
 //                                     streams (above): output bytes, secs
 // CODEC is ours, zlib or libdeflate. Speed is bytes/secs of input for
 // compression, and of output for decompression.
+//
+// -s SIZES, a comma-separated list of sizes, times small streams of
+// ours instead, and nothing else: each file is cut into pieces of each
+// size (the last one shorter), each piece compressed at each level as a
+// gzip stream of its own by one encoder, reset between streams as the
+// gzip program resets its own across files, and the streams decoded by
+// one decoder, reset between streams as gzip and unzip reset theirs.
+// The lines it prints instead, with N the size:
+//   #crc FILE:sN LEVEL SIZE CRC       the file's streams back to back
+//   #total cLEVELsN ours IN OUT SECS  compression of all files' pieces
+//   #total doLEVELsN ours BYTES SECS  decompression of all their streams
 #include "../src/base.c"
 #include "../src/crc32.c"
 #include "../src/adler32.c"
@@ -330,6 +342,177 @@ static u8 *loadfile(char const *path, iz *len)
     return p;
 }
 
+// Small streams (-s): one file's pieces of a size, their gzip streams
+// back to back.
+typedef struct {
+    u8 *z;
+    iz *off;   // stream k is z[off[k]] up to z[off[k+1]]
+    iz  n;     // pieces
+    iz  size;  // of each piece but the last
+    iz  cap;
+} pieces;
+
+// Compress every piece as a stream of its own at a level, with an
+// encoder that gzip_compress resets for each.
+static void compress_pieces(bench *b, encoder *e, arena scratch, pieces *p,
+                            i32 level)
+{
+    iz zlen = 0;
+    p->off[0] = 0;
+    for (iz k = 0; k < p->n; k++) {
+        iz start = k * p->size;
+        b->ctx.in = b->in + start;
+        b->ctx.inlen = MIN(p->size, b->len - start);
+        b->ctx.inoff = 0;
+        b->ctx.out = p->z + zlen;
+        b->ctx.outlen = 0;
+        b->ctx.outcap = p->cap - zlen;
+        if (gzip_compress(e, 0, 1, level, scratch)) {
+            fail("compression failed", b->name, level);
+        }
+        zlen += b->ctx.outlen;
+        p->off[k+1] = zlen;
+    }
+}
+
+// Decompress every stream into b->back, with a decoder that
+// stream_decompress resets for each.
+static void decompress_pieces(bench *b, decoder *d, arena scratch,
+                              pieces *p)
+{
+    for (iz k = 0; k < p->n; k++) {
+        iz start = k * p->size;
+        iz len = MIN(p->size, b->len - start);
+        b->ctx.in = p->z + p->off[k];
+        b->ctx.inlen = p->off[k+1] - p->off[k];
+        b->ctx.inoff = 0;
+        b->ctx.out = b->back + start;
+        b->ctx.outlen = 0;
+        b->ctx.outcap = len;
+        if (stream_decompress(d, 0, 1, 0, scratch) || b->ctx.outlen!=len) {
+            fail("decompression failed", b->name, 0);
+        }
+    }
+}
+
+static i32 small_streams(char **files, i32 nfiles, i32 const *levels,
+                         i32 nlevels, iz const *sizes, i32 nsizes,
+                         double mintime, b32 dectimeonly)
+{
+    bench b = {0};
+    iz cap = (iz)1 << 26;
+    b.perm.beg = malloc((uz)cap);
+    b.perm.end = b.perm.beg + cap;
+    b.perm.ctx = &b.ctx;
+    arena a = b.perm;
+    encoder *e = gzip_encoder(&a, levels[0]);
+    decoder *d = stream_decoder(&a, FMT_GZIP);
+
+    enum { MAXL = 10, MAXS = 8 };
+    double ctime[MAXL][MAXS] = {{0}};
+    double dtime[MAXL][MAXS] = {{0}};
+    double csize[MAXL][MAXS] = {{0}};
+    double total = 0;
+
+    printf("%-12s %10s", "file", "size");
+    for (i32 l = 0; l < nlevels; l++) {
+        for (i32 j = 0; j < nsizes; j++) {
+            char col[32];
+            snprintf(col, sizeof(col), "%ds%lld", levels[l],
+                     (long long)sizes[j]);
+            printf("  %-18s", col);
+        }
+    }
+    printf("  (ratio, compress and decompress MB/s)\n");
+
+    for (i32 f = 0; f < nfiles; f++) {
+        b.in = loadfile(files[f], &b.len);
+        if (!b.in) {
+            fprintf(stderr, "bench: cannot read %s\n", files[f]);
+            return 1;
+        }
+        b.back = malloc((uz)b.len + 1);
+        total += (double)b.len;
+        char const *name = files[f];
+        for (char const *q = files[f]; *q; q++) {
+            if (*q=='/' || *q=='\\') {
+                name = q + 1;
+            }
+        }
+        b.name = name;
+        printf("%-12.12s %10.0f", name, (double)b.len);
+        fflush(stdout);
+
+        u32 crcs[MAXL][MAXS];
+        iz  zsize[MAXL][MAXS];
+        for (i32 l = 0; l < nlevels; l++) {
+            for (i32 j = 0; j < nsizes; j++) {
+                pieces p = {0};
+                p.size = sizes[j];
+                p.n = (b.len + p.size - 1) / p.size;
+                p.cap = b.len + 64*p.n + (1<<16);
+                p.z = malloc((uz)p.cap);
+                p.off = malloc(sizeof(*p.off) * (uz)(p.n + 1));
+
+                double best = 0;
+                if (dectimeonly) {
+                    compress_pieces(&b, e, a, &p, levels[l]);
+                } else {
+                    TIMEIT(best, mintime,
+                           compress_pieces(&b, e, a, &p, levels[l]));
+                }
+                ctime[l][j] += best;
+                iz zlen = p.off[p.n];
+                csize[l][j] += (double)zlen;
+                i32 cpu = 0;
+                crcs[l][j] = crc32_update(0, p.z, zlen, &cpu);
+                zsize[l][j] = zlen;
+
+                double dbest;
+                TIMEIT(dbest, mintime, decompress_pieces(&b, d, a, &p));
+                if (memcmp(b.back, b.in, (uz)b.len)) {
+                    fail("small-stream round trip mismatch", name, levels[l]);
+                }
+                dtime[l][j] += dbest;
+                printf("  %5.1f%% %5.0f %5.0f",
+                       100.0*(double)zlen/(double)b.len,
+                       dectimeonly ? 0.0 : mbps((double)b.len, best),
+                       mbps((double)b.len, dbest));
+                fflush(stdout);
+                free(p.off);
+                free(p.z);
+            }
+        }
+        printf("\n");
+        for (i32 l = 0; l < nlevels; l++) {
+            for (i32 j = 0; j < nsizes; j++) {
+                printf("#crc %s:s%lld %d %.0f %08x\n", name,
+                       (long long)sizes[j], levels[l],
+                       (double)zsize[l][j], (unsigned)crcs[l][j]);
+            }
+        }
+        free(b.in);
+        free(b.back);
+    }
+
+    for (i32 l = 0; l < nlevels; l++) {
+        for (i32 j = 0; j < nsizes; j++) {
+            if (!dectimeonly) {
+                printf("#total c%ds%lld ours %.0f %.0f %.6f\n", levels[l],
+                       (long long)sizes[j], total, csize[l][j],
+                       ctime[l][j]);
+            }
+        }
+    }
+    for (i32 l = 0; l < nlevels; l++) {
+        for (i32 j = 0; j < nsizes; j++) {
+            printf("#total do%ds%lld ours %.0f %.6f\n", levels[l],
+                   (long long)sizes[j], total, dtime[l][j]);
+        }
+    }
+    return 0;
+}
+
 // A decompression source: a stream, and the decoders that time it.
 typedef struct {
     char  name[4];
@@ -346,6 +529,9 @@ int main(int argc, char **argv)
     i32 nlevels = 3;
     double mintime = 0.5;
     b32 oursonly = 0;
+    b32 dectimeonly = 0;
+    iz  sizes[8];
+    i32 nsizes = 0;
 
     i32 i = 1;
     for (; i < argc && argv[i][0] == '-'; i++) {
@@ -359,9 +545,24 @@ int main(int argc, char **argv)
             mintime = strtod(argv[++i], 0);
         } else if (!strcmp(argv[i], "-o")) {
             oursonly = 1;
+        } else if (!strcmp(argv[i], "-d")) {
+            dectimeonly = 1;
+        } else if (!strcmp(argv[i], "-s") && i+1<argc) {
+            nsizes = 0;
+            for (char *p = argv[++i]; *p && nsizes<8;) {
+                sizes[nsizes++] = (iz)strtoll(p, &p, 10);
+                p += *p == ',';
+            }
         } else {
-            fprintf(stderr,
-                    "usage: bench [-o] [-l LEVELS] [-t SECONDS] FILE...\n");
+            fprintf(stderr, "usage: bench [-o] [-d] [-l LEVELS] [-s SIZES] "
+                    "[-t SECONDS] FILE...\n");
+            return 1;
+        }
+    }
+    for (i32 j = 0; j < nsizes; j++) {
+        if (sizes[j] < 1) {
+            fprintf(stderr, "bench: invalid size %lld\n",
+                    (long long)sizes[j]);
             return 1;
         }
     }
@@ -370,6 +571,10 @@ int main(int argc, char **argv)
             fprintf(stderr, "bench: invalid level %d\n", levels[l]);
             return 1;
         }
+    }
+    if (nsizes) {
+        return small_streams(argv+i, argc-i, levels, nlevels, sizes, nsizes,
+                             mintime, dectimeonly);
     }
     i32 ncodecs = BENCH_REF && !oursonly ? NCODECS : 1;
 
@@ -445,12 +650,17 @@ int main(int argc, char **argv)
         for (i32 l = 0; l < nlevels; l++) {
             for (i32 c = 0; c < ncodecs; c++) {
                 iz zlen = 0;
-                double best;
-                TIMEIT(best, mintime, zlen = compress_with(&b, c, levels[l]));
+                double best = 0;
+                if (dectimeonly) {
+                    zlen = compress_with(&b, c, levels[l]);
+                } else {
+                    TIMEIT(best, mintime,
+                           zlen = compress_with(&b, c, levels[l]));
+                }
                 ctime[l][c] += best;
                 csize[l][c] += (double)zlen;
                 printf("  %5.1f%% %5.0f", 100.0*(double)zlen/(double)b.len,
-                       mbps((double)b.len, best));
+                       dectimeonly ? 0.0 : mbps((double)b.len, best));
                 fflush(stdout);
                 if (c != OURS) {
                     continue;
@@ -516,7 +726,7 @@ int main(int argc, char **argv)
     for (i32 l = 0; l < nlevels; l++) {
         for (i32 c = 0; c < ncodecs; c++) {
             printf("  %5.1f%% %5.0f", 100.0*csize[l][c]/total,
-                   mbps(total, ctime[l][c]));
+                   dectimeonly ? 0.0 : mbps(total, ctime[l][c]));
         }
     }
     printf("  ");
@@ -527,7 +737,7 @@ int main(int argc, char **argv)
     }
     printf("\n");
 
-    for (i32 l = 0; l < nlevels; l++) {
+    for (i32 l = 0; l < nlevels && !dectimeonly; l++) {
         for (i32 c = 0; c < ncodecs; c++) {
             printf("#total c%d %s %.0f %.0f %.6f\n", levels[l],
                    codec_names[c], total, csize[l][c], ctime[l][c]);
