@@ -891,6 +891,11 @@ typedef struct {
 
 // Candidates are hash table entries, from which distances are measured
 // against p's own entry: a forgotten entry is farther than any match.
+// A candidate counts only if longer than the best match so far, so once
+// there is one it must share p's first 4 bytes and the 4 ending at the
+// best length: two 32-bit compares rule out most candidates before
+// match_len, which then starts at the fifth byte. Until a first match,
+// a candidate (whose 4-byte hash may merely collide) needs 3 bytes.
 // Always inlined, with match_len: GCC (and clang) would otherwise call
 // it for every position searched.
 [[gnu::always_inline]]
@@ -901,7 +906,35 @@ static inline match find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth
     i32 best = MIN_MATCH - 1;
     iz  best_pos = 0;
     u32 here = (u32)p + 1 + d->stamp;
+    u32 p4 = cand ? load32(win+p) : 0;  // p+HASH_LEN <= win_len
 
+    // Until a first match (see the next loop's comments)
+    for (; best<MIN_MATCH && cand && depth>0; depth--) {
+        u32 dist = here - cand;
+        if (dist > DEF_WSIZE) {
+            cand = 0;
+            break;
+        }
+        iz c = p - (iz)dist;
+        if (dist == DEF_WSIZE) {
+            depth = 1;
+        }
+        cand = d->prev[entry_slot(d, cand)];
+        u32 x = load32(win+c) ^ p4;
+        if (!(x & 0xffffff)) {
+            best = x ? 3 : 4 + match_len(win+c+4, win+p+4, maxlen-4);
+            best_pos = c;
+            if (best>=d->lvl.nice || best==maxlen) {
+                cand = 0;
+                break;
+            }
+            if (best>=d->lvl.good && depth>8) {
+                depth = 8;
+            }
+        }
+    }
+
+    // Once best >= MIN_MATCH
     for (; cand && depth > 0; depth--) {
         u32 dist = here - cand;
         if (dist > DEF_WSIZE) {
@@ -915,8 +948,9 @@ static inline match find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth
             depth = 1;
         }
         cand = d->prev[entry_slot(d, cand)];
-        if (win[c+best]==win[p+best] && win[c]==win[p]) {
-            i32 len = match_len(win+c, win+p, maxlen);
+        if (load32(win+c+best-3)==load32(win+p+best-3) &&
+            load32(win+c)==p4) {
+            i32 len = 4 + match_len(win+c+4, win+p+4, maxlen-4);
             if (len > best) {
                 best = len;
                 best_pos = c;
