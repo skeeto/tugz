@@ -806,17 +806,38 @@ static inline void tok_match(deflator *d, iz p, i32 len, i32 dist)
     tok_end(d);
 }
 
+// The match finder's state, which parse keeps in a local: stores to the
+// hash tables and to the block's statistics, all u32 arrays, might alias
+// the deflator's fields, which GCC would then reload after every
+// insertion and token. (See also parse_with.)
+typedef struct {
+    u8  *win;
+    u32 *head;
+    u32 *prev;
+    u32 *head3;
+    u32 *prev3;
+    iz   win_len;
+    iz   lim;    // positions below have HASH_LEN bytes to hash
+    iz   ins;    // next position to insert into hash chains
+    u32  h;      // hashes of ins, when below lim, computed ahead
+    u32  h3;
+    u32  base;   // low bits of the stream offset of win[0]
+    u32  stamp;
+    b32  use3;
+    deflate_level lvl;
+} finder;
+
 // Index into prev tables for window position p.
-static u32 chain_slot(deflator *d, iz p)
+static u32 chain_slot(finder *f, iz p)
 {
-    return (u32)(d->base + (u64)p) & DEF_WMASK;
+    return (f->base + (u32)p) & DEF_WMASK;
 }
 
 // Index into prev tables for a hash table entry's position. Stamps are
 // multiples of the window size, so they drop out.
-static u32 entry_slot(deflator *d, u32 entry)
+static u32 entry_slot(finder *f, u32 entry)
 {
-    return ((u32)d->base + entry - 1) & DEF_WMASK;
+    return (f->base + entry - 1) & DEF_WMASK;
 }
 
 // Little-endian, so hashes (and therefore output) match across hosts.
@@ -835,39 +856,56 @@ static u32 hash3(u32 v)
     return ((v & 0xffffff) * 2654435761u) >> (32 - HASH_BITS);
 }
 
-// Insert position p, returning the previous 3-byte hash chain head.
-[[gnu::always_inline]] static inline u32 hash_insert(deflator *d, iz p)
+// Hash position x ahead of its insertion, prefetching its hash table
+// entries, which the insertion and the search after it would otherwise
+// wait for.
+[[gnu::always_inline]] static inline void hash_ahead(finder *f, iz x)
 {
-    u32 v = load32(d->win + p);
-    u32 slot = chain_slot(d, p);
-    u32 entry = (u32)p + 1 + d->stamp;
-    u32 h = hash4(v);
-    d->prev[slot] = d->head[h];
-    d->head[h] = entry;
-    u32 prev3 = 0;
-    if (d->use3) {
-        u32 h3 = hash3(v);
-        prev3 = d->head3[h3];
-        d->prev3[slot] = prev3;
-        d->head3[h3] = entry;
+    if (x < f->lim) {
+        u32 v = load32(f->win + x);
+        f->h = hash4(v);
+        __builtin_prefetch(f->head + f->h);
+        if (f->use3) {
+            f->h3 = hash3(v);
+            __builtin_prefetch(f->head3 + f->h3);
+        }
     }
-    return prev3;
 }
 
-// Insert all positions through q, returning the 3-byte chain for q.
-// Always inlined, like hash_insert and match_at: GCC would otherwise
-// call this and match_at from parse, and hash_insert once they inline.
-[[gnu::always_inline]] static inline u32 ensure_insert(deflator *d, iz q)
+typedef struct {
+    u32 c4;  // the chains' previous heads
+    u32 c3;  // (zero when not using 3-byte chains)
+} heads;
+
+// Insert ins, which must be below lim, and hash the position after it.
+[[gnu::always_inline]] static inline heads hash_insert(finder *f)
 {
-    u32 c3 = 0;
-    if (q >= d->ins) {
-        iz lim = d->win_len - (HASH_LEN - 1);
-        for (iz x = d->ins; x<=q && x<lim; x++) {
-            c3 = hash_insert(d, x);
-        }
-        d->ins = q + 1;
+    iz  x  = f->ins++;
+    u32 h  = f->h;
+    u32 h3 = f->h3;
+    hash_ahead(f, x+1);
+    u32 slot  = chain_slot(f, x);
+    u32 entry = (u32)x + 1 + f->stamp;
+    heads r = {f->head[h], 0};
+    f->prev[slot] = r.c4;
+    f->head[h] = entry;
+    if (f->use3) {
+        r.c3 = f->head3[h3];
+        f->prev3[slot] = r.c3;
+        f->head3[h3] = entry;
     }
-    return c3;
+    return r;
+}
+
+// Insert all positions through q. Always inlined, like hash_insert and
+// match_at: GCC would otherwise call this and match_at from parse, and
+// hash_insert once they inline.
+[[gnu::always_inline]] static inline void ensure_insert(finder *f, iz q)
+{
+    while (f->ins<=q && f->ins<f->lim) {
+        hash_insert(f);
+    }
+    f->ins = MAX(f->ins, q + 1);
 }
 
 [[gnu::always_inline]]
@@ -908,14 +946,14 @@ typedef struct {
 // Always inlined, with match_len: GCC (and clang) would otherwise call
 // it for every position searched.
 [[gnu::always_inline]] static inline match
-find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth, i32 best)
+find_match(finder *f, iz p, u32 cand, u32 cand3, i32 depth, i32 best)
 {
-    u8 *win = d->win;
-    i32 maxlen = (i32)MIN(d->win_len - p, MAX_MATCH);
+    u8 *win = f->win;
+    i32 maxlen = (i32)MIN(f->win_len - p, MAX_MATCH);
     assert(maxlen >= MIN_MATCH);  // p+MIN_MATCH <= win_len
     i32 least = best;
     iz  best_pos = 0;
-    u32 here = (u32)p + 1 + d->stamp;
+    u32 here = (u32)p + 1 + f->stamp;
     if (best >= maxlen) {
         cand = 0;  // nothing longer fits
     }
@@ -932,16 +970,16 @@ find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth, i32 best)
         if (dist == DEF_WSIZE) {
             depth = 1;
         }
-        cand = d->prev[entry_slot(d, cand)];
+        cand = f->prev[entry_slot(f, cand)];
         u32 x = load32(win+c) ^ p4;
         if (!(x & 0xffffff)) {
             best = x ? 3 : 4 + match_len(win+c+4, win+p+4, maxlen-4);
             best_pos = c;
-            if (best>=d->lvl.nice || best==maxlen) {
+            if (best>=f->lvl.nice || best==maxlen) {
                 cand = 0;
                 break;
             }
-            if (best>=d->lvl.good && depth>8) {
+            if (best>=f->lvl.good && depth>8) {
                 depth = 8;
             }
         }
@@ -960,17 +998,17 @@ find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth, i32 best)
         if (dist == DEF_WSIZE) {
             depth = 1;
         }
-        cand = d->prev[entry_slot(d, cand)];
+        cand = f->prev[entry_slot(f, cand)];
         if (load32(win+c+best-3)==load32(win+p+best-3) &&
             load32(win+c)==p4) {
             i32 len = 4 + match_len(win+c+4, win+p+4, maxlen-4);
             if (len > best) {
                 best = len;
                 best_pos = c;
-                if (best>=d->lvl.nice || best==maxlen) {
+                if (best>=f->lvl.nice || best==maxlen) {
                     break;
                 }
-                if (best>=d->lvl.good && depth>8) {
+                if (best>=f->lvl.good && depth>8) {
                     depth = 8;
                 }
             }
@@ -978,7 +1016,7 @@ find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth, i32 best)
     }
 
     // Fall back to short, close 3-byte matches
-    i32 depth3 = best<MIN_MATCH ? d->lvl.depth3 : 0;
+    i32 depth3 = best<MIN_MATCH ? f->lvl.depth3 : 0;
     for (; cand3 && depth3 > 0; depth3--) {
         u32 dist = here - cand3;
         if (dist > D3_MAX) {
@@ -990,7 +1028,7 @@ find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth, i32 best)
             best_pos = c;
             break;
         }
-        cand3 = d->prev3[entry_slot(d, cand3)];
+        cand3 = f->prev3[entry_slot(f, cand3)];
     }
 
     match r = {0, 0};
@@ -1001,17 +1039,20 @@ find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth, i32 best)
     return r;
 }
 
-// Find the best match at p longer than best, inserting p into the hash
-// chains.
+// Find the best match at p longer than best, inserting p, the next
+// position to insert, into the hash chains.
 [[gnu::always_inline]]
-static inline match match_at(deflator *d, iz p, i32 depth, i32 best)
+static inline match match_at(finder *f, iz p, i32 depth, i32 best)
 {
-    u32 c3 = ensure_insert(d, p);
-    if (p+HASH_LEN <= d->win_len) {
-        return find_match(d, p, d->prev[chain_slot(d, p)], c3, depth, best);
-    } else if (d->use3 && p+MIN_MATCH <= d->win_len) {
-        u32 v = (u32)d->win[p] | (u32)d->win[p+1]<<8 | (u32)d->win[p+2]<<16;
-        return find_match(d, p, 0, d->head3[hash3(v)], depth, best);
+    assert(p == f->ins);
+    if (p < f->lim) {  // p+HASH_LEN <= win_len
+        heads c = hash_insert(f);
+        return find_match(f, p, c.c4, c.c3, depth, best);
+    }
+    f->ins = p + 1;
+    if (f->use3 && p+MIN_MATCH <= f->win_len) {
+        u32 v = (u32)f->win[p] | (u32)f->win[p+1]<<8 | (u32)f->win[p+2]<<16;
+        return find_match(f, p, 0, f->head3[hash3(v)], depth, best);
     }
     return (match){0, 0};
 }
@@ -1037,22 +1078,43 @@ static void sample(deflator *d)
     d->use3 = (u64)hits*10 < (u64)(n - 3)*7;
 }
 
-static void parse(deflator *d, iz end)
+// Parse with use3 and lazy (whether the level evaluates lazily) as
+// constants: each combination has an instance (below), which carries
+// only the state and code it uses (the greedy levels drop lazy
+// evaluation), so that GCC can keep more of it in x86-64's few
+// registers.
+[[gnu::always_inline]]
+static inline void parse_with(deflator *d, iz end, b32 use3, b32 lazy)
 {
-    if (!d->sampled) {
-        sample(d);
+    finder f = {
+        .win     = d->win,
+        .head    = d->head,
+        .prev    = d->prev,
+        .head3   = d->head3,
+        .prev3   = d->prev3,
+        .win_len = d->win_len,
+        .lim     = d->win_len - (HASH_LEN - 1),
+        .ins     = d->ins,
+        .base    = (u32)d->base,
+        .stamp   = d->stamp,
+        .use3    = use3,
+        .lvl     = d->lvl,
+    };
+    if (!lazy) {
+        f.lvl.lazy = 0;
     }
+    hash_ahead(&f, f.ins);
 
     iz p = d->pos;
     while (p<end && !d->blkready) {
-        match m = match_at(d, p, d->lvl.depth, MIN_MATCH-1);
+        match m = match_at(&f, p, f.lvl.depth, MIN_MATCH-1);
 
         // Lazy matching: prefer a longer match starting one byte later
-        for (i32 step = 0; step < d->lvl.lazy; step++) {
-            if (m.len<MIN_MATCH || m.len>=d->lvl.good || p+1>=d->win_len) {
+        for (i32 step = 0; step < f.lvl.lazy; step++) {
+            if (m.len<MIN_MATCH || m.len>=f.lvl.good || p+1>=f.win_len) {
                 break;
             }
-            match m2 = match_at(d, p+1, d->lvl.depth>>1, m.len);
+            match m2 = match_at(&f, p+1, f.lvl.depth>>1, m.len);
             if (m2.len <= m.len) {
                 break;
             }
@@ -1062,10 +1124,11 @@ static void parse(deflator *d, iz end)
 
         if (m.len >= MIN_MATCH) {
             tok_match(d, p, m.len, m.dist);
-            if (m.len <= d->lvl.insert) {
-                ensure_insert(d, p + m.len - 1);
+            if (m.len <= f.lvl.insert) {
+                ensure_insert(&f, p + m.len - 1);
             } else {
-                d->ins = MAX(d->ins, p + m.len);
+                f.ins = MAX(f.ins, p + m.len);
+                hash_ahead(&f, f.ins);
             }
             p += m.len;
         } else {
@@ -1073,6 +1136,41 @@ static void parse(deflator *d, iz end)
         }
     }
     d->pos = p;
+    d->ins = f.ins;
+}
+
+// The instances, each a function of its own, which GCC compiles, and
+// allocates registers for, alone
+[[gnu::noinline]] static void parse_greedy(deflator *d, iz end)
+{
+    parse_with(d, end, 0, 0);
+}
+
+[[gnu::noinline]] static void parse_greedy3(deflator *d, iz end)
+{
+    parse_with(d, end, 1, 0);
+}
+
+[[gnu::noinline]] static void parse_lazy(deflator *d, iz end)
+{
+    parse_with(d, end, 0, 1);
+}
+
+[[gnu::noinline]] static void parse_lazy3(deflator *d, iz end)
+{
+    parse_with(d, end, 1, 1);
+}
+
+static void parse(deflator *d, iz end)
+{
+    if (!d->sampled) {
+        sample(d);
+    }
+    if (d->lvl.lazy) {
+        d->use3 ? parse_lazy3(d, end) : parse_lazy(d, end);
+    } else {
+        d->use3 ? parse_greedy3(d, end) : parse_greedy(d, end);
+    }
 }
 
 // Rebase a table's entries, emptying those whose positions fall out of
