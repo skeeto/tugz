@@ -584,14 +584,21 @@ static void inf_giveback(inflator *s)
     s->bitbuf &= ((u64)1 << s->bitcnt) - 1;
 }
 
+// The entry for a code longer than the root, from the root's link.
+[[gnu::always_inline]] static inline u32 sublookup(u32 const *t, u32 link,
+                                                   u64 bb)
+{
+    u32 sub = (u32)(bb >> ENT_CODELEN(link)) & ((1u << ENT_SUBBITS(link)) - 1);
+    return t[ENT_VAL(link) + sub];
+}
+
 // Look up the entry for the next code, resolving subtables. Always
 // inlined: GCC would otherwise call it for every symbol in the hot loop.
 [[gnu::always_inline]] static inline u32 lookup(u32 const *t, u32 mask, u64 bb)
 {
     u32 e = t[bb & mask];
     if (e & F_LINK) {
-        u32 sub = (u32)(bb >> ENT_CODELEN(e)) & ((1u << ENT_SUBBITS(e)) - 1);
-        e = t[ENT_VAL(e) + sub];
+        e = sublookup(t, e, bb);
     }
     return e;
 }
@@ -744,6 +751,13 @@ static void store64(u8 *p, u64 v)
     // leaving 15, still enough), and its length code 285 takes 16, after
     // which the buffer refills again before the distance. Its iterations
     // then read at most 16 bytes, which the loop's test leaves.
+    //
+    // Literal/length entries are looked up early in the root alone, so
+    // the literal path never tests for a link. A link, for a code longer
+    // than the root, rarely needed, fails the tests for literals and for
+    // lengths alike, and its entry is then looked up at the top of an
+    // iteration, which takes it as any other, with no bits yet consumed
+    // since the refill.
     #define REFILL() \
         bb |= load64le(in) << bc; \
         in += (63 - bc) >> 3; \
@@ -756,23 +770,23 @@ static void store64(u8 *p, u64 v)
 
     if (inend-in>=16 && out<=outlim) {
         REFILL();
-        u32 e = lookup(lte, lmask, bb);
+        u32 e = lte[bb & lmask];
         for (;;) {
             if (e & F_LIT) {
                 CONSUME(e);
                 *out++ = (u8)ENT_VAL(e);
-                e = lookup(lte, lmask, bb);
+                e = lte[bb & lmask];
                 if (e & F_LIT) {
                     CONSUME(e);
                     *out++ = (u8)ENT_VAL(e);
-                    e = lookup(lte, lmask, bb);
+                    e = lte[bb & lmask];
                     if (e & F_LIT) {
                         CONSUME(e);
                         *out++ = (u8)ENT_VAL(e);
-                        e = lookup(lte, lmask, bb);
+                        e = lte[bb & lmask];
                     }
                 }
-            } else if (!(e & F_SPECIAL)) {
+            } else if (!(e & (F_SPECIAL|F_LINK))) {
                 iz  len    = ENT_VAL(e) + EXTRA(e);
                 b32 refill = d64 && ENT_TOTAL(e)>15+5;
                 CONSUME(e);
@@ -780,10 +794,15 @@ static void store64(u8 *p, u64 v)
                     REFILL();
                 }
 
-                e = lookup(dte, dmask, bb);
-                if (e & F_SPECIAL) {
-                    s->err = GZ_EDATA;
-                    break;
+                e = dte[bb & dmask];
+                if (e & (F_SPECIAL|F_LINK)) {
+                    if (e & F_LINK) {
+                        e = sublookup(dte, e, bb);
+                    }
+                    if (e & F_SPECIAL) {
+                        s->err = GZ_EDATA;
+                        break;
+                    }
                 }
                 iz dist = (d64 ? ENT_VAL64(e) : ENT_VAL(e)) + EXTRA(e);
                 CONSUME(e);
@@ -792,8 +811,11 @@ static void store64(u8 *p, u64 v)
                     break;
                 }
 
-                e = lookup(lte, lmask, bb);
+                e = lte[bb & lmask];
                 out = copy_match(out, dist, len);
+            } else if (e & F_LINK) {
+                e = sublookup(lte, e, bb);
+                continue;  // never a link, and no bits consumed: no refill
             } else {
                 eob = !!(e & F_EOB);
                 if (!eob) {
