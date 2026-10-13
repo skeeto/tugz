@@ -151,6 +151,7 @@ typedef struct {
 
     u8 lcode[MAX_MATCH+1];  // length -> length code index
     u8 dcode[512];          // see dcode_of
+    u32 lenbits[MAX_MATCH+1];  // block's length codes, see emit_tokens
 } deflator;
 
 static u16 const def_len_base[29] = {
@@ -603,6 +604,16 @@ static void emit_tokens(deflator *d, htree *lt, htree *dt)
     iz     ntok = d->ntok;
     assert(DEF_STAGE-d->olen >= ntok*6 + 16);
 
+    // Each length's code and extra bits under this block's code (at most
+    // 15+5 bits) above the low 8 bits, which hold their count
+    for (i32 len = MIN_MATCH; len <= MAX_MATCH; len++) {
+        i32 lc = lcode_of(d, len);
+        i32 ln = lt->len[257+lc];
+        u32 lx = (u32)(len - def_len_base[lc]);
+        u32 v  = lt->code[257+lc] | lx<<ln;
+        d->lenbits[len] = v<<8 | (u32)(ln + def_len_extra[lc]);
+    }
+
     // Spill first, as bw_put may have left up to 31 bits
     store64le(out, bb);
     out += bc >> 3;
@@ -627,15 +638,14 @@ static void emit_tokens(deflator *d, htree *lt, htree *dt)
                 }
             }
         } else {
-            // Code plus extra bits: at most 15+5 and 15+13 bits
-            i32 lc = lcode_of(d, t.litlen);
+            // The length's bits from the table, then the distance's code
+            // plus extra bits: at most 15+13 bits
+            u32 le = d->lenbits[t.litlen];
             i32 dc = dcode_of(d, t.dist);
-            u64 lx = (u32)(t.litlen - def_len_base[lc]);
             u64 dx = (u32)(t.dist - def_dist_base[dc]);
-            i32 ln = lt->len[257+lc];
             i32 dn = dt->len[dc];
-            bb |= ((u64)lt->code[257+lc] | lx<<ln) << bc;
-            bc += ln + def_len_extra[lc];
+            bb |= (u64)(le >> 8) << bc;
+            bc += (i32)(le & 0xff);
             bb |= ((u64)dt->code[dc] | dx<<dn) << bc;
             bc += dn + def_dist_extra[dc];
         }
