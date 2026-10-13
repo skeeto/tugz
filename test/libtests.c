@@ -2450,16 +2450,16 @@ static void test_checksums(void)
     TEST(tugz_adler32(0x00010002, r, -5) == 0x00010002);
 
     // Each CRC path the CPU offers against the table: the update with
-    // no CPU (-1), and as asked (0), which on x86 may take PCLMUL
+    // no CPU (CPU_ASKED), and as asked (0), which on x86 may take PCLMUL
     for (iz n = 0; n <= 5000; n += 1 + n/16) {
         for (iz align = 0; align < 16; align += 5) {
             u32 want = crc32_slice8(0, r+align, n);
-            i32 none = -1, ask = 0;
+            i32 none = CPU_ASKED, ask = 0;
             TEST(crc32_update(0, r+align, n, &none) == want);
             TEST(crc32_update(0, r+align, n, &ask) == want);
             TEST(crc32_stateless(0, r+align, n) == want);
 #if (__x86_64__ || __i386__) && !__ARM_FEATURE_CRC32
-            if (n>=64 && crc32_has_pclmul()) {
+            if (n>=64 && (cpu_ask(-1) & CPU_PCLMUL)) {
                 TEST(crc32_pclmul(0, r+align, n) == want);
             }
 #endif

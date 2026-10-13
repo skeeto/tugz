@@ -79,7 +79,6 @@ typedef struct {
     u32 hcrc;
     i32 flg;
     i32 xlen;
-    i32 cpu;      // for crc32_update, kept across resets
 } decoder;
 
 static iz decoder_memsize(void)
@@ -164,7 +163,7 @@ static i32 gzip_header_byte(decoder *z, u8 c)
         }
         z->flg = z->buf[3];
         if (z->flg & FHCRC) {
-            z->hcrc = crc32_update(0, z->buf, 10, &z->cpu);
+            z->hcrc = crc32_update(0, z->buf, 10, &z->inf->cpu);
         }
         z->len = 0;
         z->xlen = 0;
@@ -172,7 +171,7 @@ static i32 gzip_header_byte(decoder *z, u8 c)
         break;
     case DEC_XLEN:
         if (z->flg & FHCRC) {
-            z->hcrc = crc32_update(z->hcrc, &c, 1, &z->cpu);
+            z->hcrc = crc32_update(z->hcrc, &c, 1, &z->inf->cpu);
         }
         z->xlen |= c << 8*z->len++;
         if (z->len < 2) {
@@ -212,7 +211,7 @@ static void gzip_header_span(decoder *z, zbuf *b)
         n += done;  // the terminating zero
     }
     if (z->flg & FHCRC) {
-        z->hcrc = crc32_update(z->hcrc, b->in, n, &z->cpu);
+        z->hcrc = crc32_update(z->hcrc, b->in, n, &z->inf->cpu);
     }
     z->hpos = (i32)MIN(z->hpos+MIN(n, 2), 2);  // fields may pass 2^31
     b->in += n;
@@ -310,7 +309,7 @@ static i32 decoder_run(decoder *z, zbuf *b)
             iz  n = avail - b->outlen;
             if (z->format != FMT_RAW) {
                 z->check = check_update(z->format, z->check, out, n,
-                                        &z->cpu);
+                                        &z->inf->cpu);
             }
             z->total += (u64)n;
             if (r != GZ_OK) {

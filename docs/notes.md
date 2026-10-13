@@ -83,7 +83,8 @@ with unzip in `platform/zipfs_*.c`.
 | `test/seeds.py`          | fuzzing seed corpus generator                   |
 
 The only conditional compilation in the core is CPU architecture and
-feature tests in `src/crc32.c`. ARMv8 uses its CRC instructions when
+feature tests in `src/crc32.c`, and inflate's BMI2 loops (below) in
+`src/inflate.c`. ARMv8 uses its CRC instructions when
 `__ARM_FEATURE_CRC32` is set (by default for Apple and most ARMv8.1+
 targets). On x86 with GCC or Clang, a PCLMULQDQ folding function is
 compiled with `__attribute((target("pclmul,sse2")))` and selected at run
@@ -98,9 +99,37 @@ on the i9-12900) and in WSL2 (650 ns). Library inflate into 256-byte
 output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
 698, now 790.
 
+The answer is a feature mask (`CPU_ASKED`, `CPU_PCLMUL`, `CPU_BMI2`;
+`cpu_features` in `src/crc32.c`), zero until asked, and every feature
+is asked for at once, CPUID leaves 0, 1 and 7, the first time any is
+needed. On x86-64, inflate's DEFLATE fast loop (`decode_fast_as`, wide
+and narrow) is also compiled under `target("bmi2")`, which GCC and Clang
+turn into shrx/shlx and bzhi with the counts in any register, where
+otherwise each variable shift's count must pass through cl; the
+inflator chooses by its own mask, `inflator.cpu`, which the gzip and
+zlib decoder's check shares. It is asked when the fast loop first runs,
+not in `inf_new` or `inflate_reset`, and kept across resets, so a
+decoder reused for small streams asks once, and a state whose streams
+never reach the fast loop (stored, or under 16 bytes) never asks.
+Builds whose target has BMI2 (`-mbmi2`, `-march=haswell`) compile the
+loop once and never ask; i686 (the XP laptop has no BMI2) and
+Deflate64, rare, keep the one loop. On the i9-12900 (w64devkit GCC 16,
+-O2), decoding Silesia gained 6.3% at level 1, 6.0% at 6 and 5.9% at 9
+(10/10 rounds each), and streams of 100 B, 1000 B, 4 KiB and 64 KiB
+1.7%, 2.2%, 4% and 5.8% (10/10), the CPU asked once per decoder; WSL
+clang 19, 4.9-5.5%; the Mac, which compiles none of it, unchanged.
+Without BMI2 the loops are as before, only placed differently. GCC
+masks the extra bits with shlx, not, and rather than bzhi; a count it
+can see is under 32 (the entry's low byte) gives bzhi, but gained
+nothing more. Both paths were checked under QEMU's Nehalem, Westmere
+and Haswell models (forcing BMI2 on Nehalem traps, so the BMI2 loop
+runs only where chosen), and `test_inflate_cpu` compares the two on
+every stream it can.
+
 The library's `tugz_crc32` keeps no state, so it cannot keep the answer:
 it asks only on calls of 4 KiB or more (`CRC32_ASK_MIN`,
-`crc32_stateless`) and otherwise takes the table. Measured again on the
+`crc32_stateless`), and then for PCLMULQDQ alone (leaves 0 and 1, as
+before the mask), and otherwise takes the table. Measured again on the
 i9-12900 under VBS: CPUID 1.05 us, slicing-by-8 0.46 ns/byte, PCLMUL
 0.04-0.05. At 2 KiB, asking and folding took 1.2 us against the table's
 1.0; at 4 KiB 1.6 against 1.9; at 64 KiB 3.5 against 30. Natively CPUID

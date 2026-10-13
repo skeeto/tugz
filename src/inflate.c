@@ -156,6 +156,10 @@ typedef struct {
 
     u32  lit_entries[LIT_ENOUGH];
     u32 *dist_entries;  // DIST_ENOUGH, or DIST64_ENOUGH for Deflate64
+
+    // The CPU's features (crc32.c), asked when the fast loop first runs,
+    // and kept across resets. A gzip or zlib decoder's check shares it.
+    i32 cpu;
 } inflator;
 
 static u16 const inf_len_base[29] = {
@@ -508,11 +512,12 @@ static void inflate_reset(inflator *s)
     s->stashlen = 0;
 }
 
-// Only the fields inflate_reset sets need a value: each block header
-// sets lt, dt and wide (a dynamic one through its code lengths, which
-// it starts) before any symbol is decoded, every code length is written
-// before it is read, and the stash is filled before it is read. So the
-// state starts uncleared, and costs no more to set up than to reset.
+// Only the fields inflate_reset sets, and cpu, need a value: each block
+// header sets lt, dt and wide (a dynamic one through its code lengths,
+// which it starts) before any symbol is decoded, every code length is
+// written before it is read, and the stash is filled before it is read.
+// So the state starts uncleared, and costs no more to set up than to
+// reset. The CPU is not asked here, but when the fast loop first runs.
 static inflator *inf_new(arena *a, b32 d64)
 {
     inflator *s = alloc(a, 1, sizeof(inflator), _Alignof(inflator), 0);
@@ -520,6 +525,7 @@ static inflator *inf_new(arena *a, b32 d64)
     s->dist_entries = alloc(a, d64 ? DIST64_ENOUGH : DIST_ENOUGH,
                             sizeof(u32), _Alignof(u32), 0);
     s->win = newbytes(a, d64 ? INF64_WINCAP : INF_WINCAP);
+    s->cpu = 0;
     inflate_reset(s);
     return s;
 }
@@ -875,6 +881,39 @@ static b32 decode_fast64(inflator *s)
     return decode_fast_as(s, 1, 1);
 }
 
+// On x86-64 the DEFLATE loops are compiled again for BMI2, chosen at run
+// time unless the target always has it. BMI2's shifts (shlx, shrx) take
+// any register for the count, leave the flags alone, and need no copy
+// of the source, and bzhi takes the low bits in one instruction, where
+// without BMI2 a shift's count must be in cl. Deflate64, rare, keeps
+// its one loop.
+#if __x86_64__ && !__BMI2__
+#define INF_BMI2 1
+__attribute((target("bmi2"))) static b32 decode_fast_bmi2(inflator *s)
+{
+    return decode_fast_as(s, 0, 1);
+}
+
+__attribute((target("bmi2"))) static b32 decode_narrow_bmi2(inflator *s)
+{
+    return decode_fast_as(s, 0, 0);
+}
+#endif
+
+// Run the fast loop for the block's format and tables, and the CPU.
+[[gnu::always_inline]] static inline b32 inf_fast(inflator *s)
+{
+    if (s->d64) {
+        return decode_fast64(s);
+    }
+#if INF_BMI2
+    if (cpu_features(&s->cpu) & CPU_BMI2) {
+        return s->wide ? decode_fast_bmi2(s) : decode_narrow_bmi2(s);
+    }
+#endif
+    return s->wide ? decode_fast(s) : decode_narrow(s);
+}
+
 // Careful path: decode one literal, length/distance pair, or end of
 // block. Output is only written once the whole unit has been decoded.
 // Like zlib, each field is finished before the next begins, so input
@@ -1134,8 +1173,7 @@ static i32 inf_run(inflator *s)
         } continue;
         case INF_SYMBOLS:
             if (s->inend-s->in >= 16) {
-                b32 eob = s->d64 ? decode_fast64(s) :
-                          s->wide ? decode_fast(s) : decode_narrow(s);
+                b32 eob = inf_fast(s);
                 if (eob) {
                     s->state = s->final ? INF_END : INF_HEAD;
                 }

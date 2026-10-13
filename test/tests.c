@@ -713,8 +713,8 @@ static void test_tables(void)
     u32 parts = crc32_update(crc32_update(0, p, 33333, &cpu), p+33333,
                              66667, &cpu);
     TEST(whole==parts && cpu==asked);
-    i32 none = -1;
-    TEST(crc32_update(0, p, 100000, &none)==whole && none==-1);
+    i32 none = CPU_ASKED;
+    TEST(crc32_update(0, p, 100000, &none)==whole && none==CPU_ASKED);
     for (iz len = 64; len < 300; len++) {
         TEST(crc32_update(0, p+len, len, &cpu) == crc32_slice8(0, p+len, len));
     }
@@ -1909,6 +1909,98 @@ static void test_inflate_subtables(os *ctx, arena a)
     free(out.s);
     check_splits(a, b.buf, b.len);
     free(want);
+}
+
+// Decode a raw stream whole with the given CPU features (0: as asked),
+// returning the status and, through cpu, the inflator's features after.
+static i32 inflate_cpu(arena a, s8 z, i32 *cpu, s8 *out)
+{
+    decoder *d = decoder_new(&a, FMT_RAW);
+    TEST(!d->inf->cpu);  // not asked at init
+    d->inf->cpu = *cpu;
+    zbuf b = {z.s, z.len, out->s, out->len};
+    i32 r = decoder_run(d, &b);
+    out->len -= b.outlen;
+    *cpu = d->inf->cpu;
+    return r;
+}
+
+// On x86-64 the fast loop is also compiled for BMI2, which the CPU
+// features in the inflator choose (inf_fast). Every loop the CPU offers
+// must decode alike, with wide and narrow tables, and errors alike, so
+// each stream is decoded with no features and as the CPU has them. The
+// CPU is asked only once the fast loop first runs, never at init or
+// reset, and once per inflator.
+static void test_inflate_cpu(os *ctx, arena a)
+{
+    i32 all = CPU_ASKED;
+#if __x86_64__ || __i386__
+    all = cpu_ask(-1);
+#endif
+    enum { CAP = 1<<17 };
+    static iz const sizes[] = {20, 100, 1000, 5000, 70000};
+    u8 *buf[2] = {malloc(CAP), malloc(CAP)};
+    for (i32 kind = 0; kind < 6; kind++) {
+        for (i32 si = 0; si < countof(sizes); si++) {
+            iz len = sizes[si];
+            u8 *p = randbytes(len, kind);
+            for (i32 level = 1; level <= 9; level += 4) {
+                s8 z = do_deflate(ctx, a, p, len, level, 0, 0);
+                for (i32 m = 0; m < 2; m++) {
+                    i32 cpu = m ? all : CPU_ASKED;
+                    s8 out = {buf[m], CAP};
+                    TEST(inflate_cpu(a, z, &cpu, &out) == GZ_OK);
+                    TEST(equals(out, p, len) && cpu==(m ? all : CPU_ASKED));
+                }
+
+                // Damaged streams: the same status and output either way
+                for (i32 n = 0; n < 8 && z.len > 4; n++) {
+                    iz at = 2 + (iz)(rand32() % (u32)(z.len-2));
+                    u8 was = z.s[at];
+                    z.s[at] ^= (u8)(1 + rand32()%255);
+                    s8 o[2];
+                    i32 r[2];
+                    for (i32 m = 0; m < 2; m++) {
+                        i32 cpu = m ? all : CPU_ASKED;
+                        o[m] = (s8){buf[m], CAP};
+                        r[m] = inflate_cpu(a, z, &cpu, &o[m]);
+                    }
+                    TEST(r[0]==r[1] && s8equals(o[0], o[1]));
+                    z.s[at] = was;
+                }
+                free(z.s);
+            }
+            free(p);
+        }
+    }
+
+    // Asked lazily: not for a stream too short for the fast loop, nor on
+    // reset, then once by the fast loop, and kept across resets
+    u8 *p = randbytes(70000, 2);
+    s8 z  = do_deflate(ctx, a, p, 70000, 6, 0, 0);
+    s8 z0 = do_deflate(ctx, a, p, 3, 6, 0, 0);
+    arena t = a;
+    decoder *d = decoder_new(&t, FMT_RAW);
+    zbuf b = {z0.s, z0.len, buf[0], CAP};
+    TEST(decoder_run(d, &b)==GZ_OK && CAP-b.outlen==3);
+    TEST(!d->inf->cpu);
+    decoder_reset(d);
+    TEST(!d->inf->cpu);
+    b = (zbuf){z.s, z.len, buf[0], CAP};
+    TEST(decoder_run(d, &b)==GZ_OK && !memcmp(buf[0], p, 70000));
+#if INF_BMI2
+    TEST(d->inf->cpu == all);
+#else
+    TEST(!d->inf->cpu);  // nothing to ask
+#endif
+    i32 asked = d->inf->cpu;
+    decoder_reset(d);
+    TEST(d->inf->cpu == asked);
+    free(z0.s);
+    free(z.s);
+    free(p);
+    free(buf[1]);
+    free(buf[0]);
 }
 
 // A dynamic block's code lengths resume where input ran out, as zlib's
@@ -3767,6 +3859,7 @@ int main(void)
     test_inflate_repeats(&ctx, a);
     test_inflate_splits(a);
     test_inflate_subtables(&ctx, a);
+    test_inflate_cpu(&ctx, a);
     test_inflate_resume(a);
     test_deflate64(&ctx, a);
     test_container(&ctx, a);

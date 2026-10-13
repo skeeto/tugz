@@ -385,17 +385,66 @@ static u32 crc32_slice8(u32 crc, u8 const *p, iz len)
     return ~crc;
 }
 
+// CPU features that code compiled for them at run time may use (x86,
+// where CPUID tells): a mask kept in a codec's state, zero until asked,
+// then CPU_ASKED and the features found. Every feature is asked for at
+// once, the first time any is needed, and only then, so that a state
+// asks at most once, never per update or stream, and a state that needs
+// none never asks. CPUID costs about 100 cycles natively, but a
+// hypervisor traps it, at around 700 ns to 1 us (WSL2, virtual
+// machines, and Windows 11 with virtualization-based security), which a
+// library caller's small updates once paid every time. There is no
+// global cache: the core keeps no mutable global state.
+enum {
+    CPU_ASKED  = 1 << 0,  // alone: asked, nothing found (or not x86)
+    CPU_PCLMUL = 1 << 1,  // PCLMULQDQ and SSE2: crc32_pclmul
+    CPU_BMI2   = 1 << 2,  // BMI2 (shlx, shrx, bzhi): inflate's fast loop
+};
+
+#if __x86_64__ || __i386__
+#include <cpuid.h>
+
+// Ask the CPU: leaf 0 for the highest leaf, then leaf 1, and leaf 7
+// unless only PCLMULQDQ is wanted (crc32_stateless), so three CPUIDs, or
+// two. On i686, __get_cpuid_max also checks that CPUID exists.
+static i32 cpu_ask(i32 want)
+{
+    i32 r = CPU_ASKED;
+    u32 max = __get_cpuid_max(0, 0);
+    u32 a, b, c, d;
+    if (max >= 1) {
+        __cpuid(1, a, b, c, d);
+        if ((c & bit_PCLMUL) && (d & bit_SSE2)) {
+            r |= CPU_PCLMUL;
+        }
+    }
+    if ((want & CPU_BMI2) && max>=7) {
+        __cpuid_count(7, 0, a, b, c, d);
+        if (b & bit_BMI2) {
+            r |= CPU_BMI2;
+        }
+    }
+    return r;
+}
+
+// The features in *cpu, asking the CPU only if not yet asked.
+[[maybe_unused]] static i32 cpu_features(i32 *cpu)
+{
+    if (!*cpu) {
+        *cpu = cpu_ask(-1);
+    }
+    return *cpu;
+}
+#endif
+
 // Update a CRC with more data. Start with 0, the CRC of empty input.
 // These are CPU feature tests, not platform tests: ARMv8 has instructions
 // for exactly this polynomial, and x86 can fold with carry-less multiply.
 // (The SSE4.2 crc32 instruction computes CRC-32C, a different CRC.)
 //
-// Where the CPU must be asked whether it can (x86, by CPUID), *cpu keeps
-// the answer: callers keep it in their state, zero at first, so that the
-// question is asked once per state, not once per update. CPUID costs
-// about 100 cycles natively, but a hypervisor traps it, at around 700 ns
-// (WSL2, virtual machines, and Windows 11 with virtualization-based
-// security), which a library caller's small updates paid every time.
+// Where the CPU must be asked whether it can (x86, by CPUID), *cpu is the
+// caller's feature mask (above), so that the question is asked once per
+// state, not once per update.
 #if __ARM_FEATURE_CRC32
 #include <arm_acle.h>
 static u32 crc32_update(u32 crc, u8 const *p, iz len, i32 *cpu)
@@ -417,7 +466,6 @@ static u32 crc32_update(u32 crc, u8 const *p, iz len, i32 *cpu)
 //
 // No x86 baseline includes PCLMULQDQ, so this one function is compiled
 // for it via the target attribute and selected at run time.
-#include <cpuid.h>
 #include <immintrin.h>
 __attribute((target("pclmul,sse2")))
 static u32 crc32_pclmul(u32 crc, u8 const *p, iz len)
@@ -477,16 +525,8 @@ static u32 crc32_pclmul(u32 crc, u8 const *p, iz len)
     return crc32_slice8(~crc, p, len);
 }
 
-[[maybe_unused]] static b32 crc32_has_pclmul(void)
-{
-    u32 a, b, c, d;
-    return __get_cpuid(1, &a, &b, &c, &d) && (c & bit_PCLMUL) && (d & bit_SSE2);
-}
-
-// Kept in the caller's state rather than a global, keeping the core free
-// of mutable globals: 1 for PCLMULQDQ, -1 for none, 0 not yet asked.
-// Unless the target always has it (-mpclmul, or a -march with it), when
-// there is nothing to ask.
+// Asks the CPU through *cpu, unless the target always has PCLMULQDQ
+// (-mpclmul, or a -march with it), when there is nothing to ask.
 static u32 crc32_update(u32 crc, u8 const *p, iz len, i32 *cpu)
 {
     if (len >= 64) {
@@ -494,10 +534,7 @@ static u32 crc32_update(u32 crc, u8 const *p, iz len, i32 *cpu)
         (void)cpu;
         return crc32_pclmul(crc, p, len);
 #else
-        if (!*cpu) {
-            *cpu = crc32_has_pclmul() ? 1 : -1;
-        }
-        if (*cpu > 0) {
+        if (cpu_features(cpu) & CPU_PCLMUL) {
             return crc32_pclmul(crc, p, len);
         }
 #endif
@@ -519,12 +556,18 @@ static u32 crc32_update(u32 crc, u8 const *p, iz len, i32 *cpu)
 // virtualization-based security CPUID took 1 us, slicing-by-8 0.46 ns
 // per byte, and PCLMUL 0.05 (at 4 KiB, asking and folding took 1.6 us,
 // the table 1.9 us; at 2 KiB, 1.2 and 1.0). Shorter updates take the
-// table, -1 meaning "none" to crc32_update, unless the target always has
-// the instructions (ARMv8 CRC, or PCLMUL as above).
+// table, CPU_ASKED alone meaning "none" to crc32_update, unless the
+// target always has the instructions (ARMv8 CRC, or PCLMUL as above).
+// Longer ones ask only for PCLMULQDQ, which takes one CPUID fewer.
 #define CRC32_ASK_MIN 4096
 
 [[maybe_unused]] static u32 crc32_stateless(u32 crc, u8 const *p, iz len)
 {
-    i32 cpu = len<CRC32_ASK_MIN ? -1 : 0;
+    i32 cpu = CPU_ASKED;
+#if (__x86_64__ || __i386__) && !(__PCLMUL__ && __SSE2__)
+    if (len >= CRC32_ASK_MIN) {
+        cpu = cpu_ask(CPU_PCLMUL);
+    }
+#endif
     return crc32_update(crc, p, len, &cpu);
 }
