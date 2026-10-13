@@ -1688,6 +1688,104 @@ static void test_inflate_splits(arena a)
     }
 }
 
+// A literal/length code whose longest codes, over the 11-bit root, are
+// literals, lengths with and without extra bits, and the end of block:
+// symbol, length; 1 to 10, then two each at 12, 13 and 14, four at 15.
+static i32 const deep_lits[][2] = {
+    {'a', 1}, {'b', 2}, {257, 3}, {'c', 4}, {265, 5}, {'d', 6}, {'e', 7},
+    {'f', 8}, {270, 9}, {'g', 10}, {'W', 12}, {266, 12}, {'X', 13},
+    {273, 13}, {'Y', 14}, {280, 14}, {'Z', 15}, {284, 15}, {285, 15},
+    {256, 15},
+};
+static u8 const deep_text[] = "abcdefgWXYZ";
+
+// Codes longer than the roots, 11 bits for literals and lengths and 8
+// for distances, have their entries in subtables. Literals, lengths and
+// the end of block there, and distances, with up to 48 bits for a length
+// and distance (284 and 29: 15+5+15+13) and 45 for three literals, as
+// the fast loop takes them given the whole input, and the careful path
+// at every split, against zlib. test_deflate64 has Deflate64's.
+static void test_inflate_subtables(os *ctx, arena a)
+{
+    // Distances: one at each length from 1 to 14, two at 15
+    static i32 const dists[][2] = {
+        {0, 1}, {1, 2}, {3, 3}, {5, 4}, {7, 5}, {9, 6}, {11, 7}, {13, 8},
+        {2, 9}, {15, 10}, {17, 11}, {19, 12}, {21, 13}, {23, 14}, {25, 15},
+        {29, 15},
+    };
+    static i32 const lsyms[] = {257, 265, 266, 270, 273, 280, 284, 285};
+    dyncode c = {0};
+    c.hlit  = 286;
+    c.hdist = 30;
+    for (i32 i = 0; i < countof(deep_lits); i++) {
+        c.lens[deep_lits[i][0]] = (u8)deep_lits[i][1];
+    }
+    for (i32 i = 0; i < countof(dists); i++) {
+        c.lens[286+dists[i][0]] = (u8)dists[i][1];
+    }
+
+    enum { CAP = 60000 };
+    u8 *want = malloc(CAP);
+    iz  len  = 0;
+    bits b = {0};
+    bdynamic(&b, 0, c.hlit, c.hdist, c.lens);
+    canonical(c.lens, c.hlit, c.lcodes);
+    canonical(c.lens+c.hlit, c.hdist, c.dcodes);
+    i32 seen[30] = {0};
+    for (i32 i = 0; len < CAP-300; i++) {
+        TEST(b.len < countof(b.buf)-64);
+        if (i<64 || rand32()%3==0) {
+            u8 v = deep_text[rand32() % (countof(deep_text)-1)];
+            dyn_lit(&b, &c, v);
+            want[len++] = v;
+            continue;
+        }
+
+        // A length, then a distance at most the output so far, with
+        // random extra bits: past 24 KiB, distance code 29's too
+        i32 sym = lsyms[rand32() % countof(lsyms)];
+        i32 lextra = inf_len_extra[sym-257];
+        u32 lv = rand32() & ((1u<<lextra) - 1);
+        i32 mlen = inf_len_base[sym-257] + (i32)lv;
+        i32 d;
+        do {
+            d = dists[rand32() % countof(dists)][0];
+        } while (inf_dist_base[d] > len);
+        i32 dextra = inf_dist_extra[d];
+        u32 dv = rand32() & ((1u<<dextra) - 1);
+        dv = MIN(dv, (u32)(len - inf_dist_base[d]));
+        i32 dist = inf_dist_base[d] + (i32)dv;
+        dyn_lit(&b, &c, sym);
+        bput(&b, lv, lextra);
+        dyn_dist(&b, &c, d);
+        bput(&b, dv, dextra);
+        seen[d]++;
+        for (i32 k = 0; k < mlen; k++, len++) {
+            want[len] = want[len-dist];
+        }
+    }
+    dyn_lit(&b, &c, 256);
+    TEST(seen[29] && seen[25] && seen[2]);
+
+    // Then a final block of fixed codes, long enough that the fast loop
+    // decodes the end of the first
+    bput(&b, 1, 1);
+    bput(&b, 1, 2);
+    for (i32 i = 0; i < 64; i++) {
+        u8 v = (u8)('A' + i%26);
+        bfixed(&b, v);
+        want[len++] = v;
+    }
+    bfixed(&b, 256);
+
+    s8 out;
+    TEST(do_inflate(ctx, a, b.buf, b.len, &out) == GZ_OK);
+    TEST(equals(out, want, len));
+    free(out.s);
+    check_splits(a, b.buf, b.len);
+    free(want);
+}
+
 // A dynamic block's code lengths resume where input ran out, as zlib's
 // do, rather than the whole header being decoded again from its first
 // bit on each call, which costs quadratic time for input in tiny pieces.
@@ -1936,6 +2034,34 @@ static void test_deflate64(os *ctx, arena a)
             d64_lit(&e, (u8)('a' + (i+j)%7));
         }
         d64_match(&e, 3 + i%6, 1 + i%2, 0);
+    }
+    d64_sym(&e, 256);
+
+    // Literals and the end of block over the 11-bit root too, with the
+    // same distances: up to 128 back, and codes 30 and 31 at 15 bits
+    static i32 const deeplens[] = {
+        3, 11, 12, 13, 14, 23, 26, 35, 42, 115, 130, 227, 257, 258,
+    };
+    dyncode u = t;
+    memset(u.lens, 0, 286);
+    for (i32 i = 0; i < countof(deep_lits); i++) {
+        u.lens[deep_lits[i][0]] = (u8)deep_lits[i][1];
+    }
+    bdynamic(&e.b, 0, u.hlit, u.hdist, u.lens);
+    canonical(u.lens, u.hlit, u.lcodes);
+    canonical(u.lens+u.hlit, u.hdist, u.dcodes);
+    e.c = &u;
+    for (i32 i = 0; i < 160; i++) {
+        if (i<16 || rand32()%3==0) {
+            d64_lit(&e, deep_text[rand32() % (countof(deep_text)-1)]);
+        } else {
+            b32 use285 = rand32()%4 == 0;
+            i32 mlen = deeplens[rand32() % countof(deeplens)];
+            mlen = rand32()%8 ? mlen : 259 + (i32)(rand32()%3000);
+            i32 dist = rand32()%2 ? 1 + (i32)(rand32()%128)
+                                  : 32769 + (i32)(rand32()%32768);
+            d64_match(&e, mlen, dist, use285);
+        }
     }
     d64_sym(&e, 256);
 
@@ -3515,6 +3641,7 @@ int main(void)
     test_inflate_vectors(&ctx, a);
     test_inflate_repeats(&ctx, a);
     test_inflate_splits(a);
+    test_inflate_subtables(&ctx, a);
     test_inflate_resume(a);
     test_deflate64(&ctx, a);
     test_container(&ctx, a);
