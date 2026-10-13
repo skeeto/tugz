@@ -2147,6 +2147,61 @@ static void test_raw64(void)
     TEST(st.allocs == 1);
 }
 
+// Overlapping copies: every distance from 1 to 15 with every length from
+// 3 to 258, and for Deflate64 longer ones, each after a few literals so
+// that matches start at every alignment. The output passes the point
+// where history slides more than once, so copies also land near the
+// fast loop's limit, whose slack absorbs their overrun. Each of several
+// streams shifts the positions with a different number of leading
+// literals, and decodes in one piece and in small output pieces.
+static void test_short_copies(void)
+{
+    static char const *const lits[] = {"", "x", "yz", "0123456"};
+    static i32 const longs[] = {259, 300, 1000, 4097, 65538};
+    enum { NTOK = 2*(15*(256+countof(longs))) + 2 };
+    d64tok *t = malloc(NTOK * sizeof(*t));
+    for (i32 d64 = 0; d64 < 2; d64++) {
+        for (i32 shift = 0; shift < 8; shift++) {
+            iz n = 0;
+            t[n++] = (d64tok){&"ABCDEFGHIJKLMNOPQRSTUVW"[7-shift], 0, 0};
+            i32 k = 0;
+            for (i32 dist = 1; dist <= 15; dist++) {
+                for (i32 len = 3; len <= 258; len++, k++) {
+                    t[n++] = (d64tok){lits[(k+shift)%countof(lits)], 0, 0};
+                    t[n++] = (d64tok){0, len, dist};
+                }
+                for (i32 i = 0; d64 && i < countof(longs); i++, k++) {
+                    t[n++] = (d64tok){lits[(k+shift)%countof(lits)], 0, 0};
+                    t[n++] = (d64tok){0, longs[i], dist};
+                }
+            }
+            TEST(n <= NTOK);
+            buf want = d64_expand(t, n);
+            buf c = d64_fixed(t, n, d64);
+            int format = d64 ? TUGZ_RAW64 : TUGZ_RAW;
+            static iz const outs[] = {0, 7, 1000};
+            for (i32 o = 0; o < countof(outs); o++) {
+                if (outs[o] && shift%4) {
+                    continue;  // slow, and covered by other shifts
+                }
+                result r = tdecompress(format, c.s, c.len, 0, outs[o]);
+                TEST(r.status==TUGZ_DONE && r.used==c.len);
+                TEST(same(r.out, want.s, want.len));
+                free(r.out.s);
+            }
+            if (!d64) {
+                b32 ok;
+                buf z = zlib_inflate(-15, c.s, c.len, &ok);
+                TEST(ok && same(z, want.s, want.len));
+                free(z.s);
+            }
+            free(c.s);
+            free(want.s);
+        }
+    }
+    free(t);
+}
+
 // Deflate64's codes are not DEFLATE's: distance codes 30 and 31 are
 // errors in RAW, length code 285 differs, and RAW64 rejects distances
 // before the start of the stream.
@@ -2592,6 +2647,7 @@ int main(void)
 #ifdef TUGZ_DEFLATE64
     test_raw64();
     test_raw64_errors();
+    test_short_copies();
     puts("all library tests pass, with Deflate64");
 #else
     puts("all library tests pass");
