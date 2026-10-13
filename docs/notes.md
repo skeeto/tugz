@@ -306,7 +306,14 @@ with no data, so a null pointer needs no special case in a chain.
   tokens are written before use, and chains lead only to links that
   insertions wrote. A slide rebases every link, written or not, so it
   neither branches on one nor passes one to a call, either of which
-  MemorySanitizer reports (as it did at -O0). Forgetting history (a FULL
+  MemorySanitizer reports (as it did at -O0). Levels 5 to 9 link their
+  chains by 16-bit distances back instead (saturated: anything over a
+  window ends a walk), in the first half of the same tables, which
+  slides leave alone: their long walks gain more from the halved
+  footprint in the cache than saturating each link costs, which levels
+  1 to 4 would lose. As a reset may change the level, and so what the
+  tables hold, slides read and write links through memcpy. Forgetting
+  history (a FULL
   flush, or `deflate_reset` before a new stream) must empty the heads.
   After at most 1024 inserted positions, it rehashes them and clears
   their slots. After more, rather than clear 512 KiB, it advances a

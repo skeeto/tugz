@@ -5,7 +5,8 @@
 // and flush points, not on how input and output buffers are split
 // across calls. Hash chains store window-relative positions plus one
 // (zero is "none") plus a stamp (see forget), rebased whenever the
-// window slides.
+// window slides, except that the levels that search deepest link their
+// chains by distances (see chain_link).
 //
 // Output is staged in a buffer from which the caller drains it. Each
 // emission step (one block, a window slide, or a flush) requires
@@ -36,6 +37,7 @@
 #define OBS_BATCH     512   // observations between block split checks
 #define MIN_BLOCK     10000 // minimum block size in bytes for splitting
 #define FORGET_REHASH 1024  // longest history to clear by rehashing
+#define NARROW_LEVEL  5     // levels from here on link by distances
 #define STAMP_STEP    (1u << 21)  // stamps' unit; see forget
 #define STAMP_LAST    (0u - STAMP_STEP)
 
@@ -152,6 +154,7 @@ typedef struct {
     u8 lcode[MAX_MATCH+1];  // length -> length code index
     u8 dcode[512];          // see dcode_of
     u32 lenbits[MAX_MATCH+1];  // block's length codes, see emit_tokens
+    b32 narrow;   // the level links chains by distances (see chain_link)
 } deflator;
 
 static u16 const def_len_base[29] = {
@@ -825,6 +828,7 @@ typedef struct {
     u32  stamp;
     b32  use3;
     deflate_level lvl;
+    b32  narrow;
 } finder;
 
 // Index into prev tables for window position p.
@@ -838,6 +842,19 @@ static u32 chain_slot(finder *f, iz p)
 static u32 entry_slot(finder *f, u32 entry)
 {
     return (f->base + entry - 1) & DEF_WMASK;
+}
+
+// A chain link as the levels from NARROW_LEVEL on store it, in the first
+// half of the link tables viewed as u16: the distance from a new entry
+// back to the one it displaces from its head, saturated at LINK_NONE,
+// beyond any match (an empty head, zero, gives one back past position
+// 0). Their long walks of chains gain more from the halved footprint in
+// the cache than the saturation costs each insertion, which the faster
+// levels would not. Such links need no rebasing as the window slides.
+#define LINK_NONE 0xffff
+static u16 chain_link(u32 entry, u32 old)
+{
+    return (u16)MIN(entry - old, LINK_NONE);
 }
 
 // Little-endian, so hashes (and therefore output) match across hosts.
@@ -887,11 +904,19 @@ typedef struct {
     u32 slot  = chain_slot(f, x);
     u32 entry = (u32)x + 1 + f->stamp;
     heads r = {f->head[h], 0};
-    f->prev[slot] = r.c4;
+    if (f->narrow) {
+        ((u16 *)f->prev)[slot] = chain_link(entry, r.c4);
+    } else {
+        f->prev[slot] = r.c4;
+    }
     f->head[h] = entry;
     if (f->use3) {
         r.c3 = f->head3[h3];
-        f->prev3[slot] = r.c3;
+        if (f->narrow) {
+            ((u16 *)f->prev3)[slot] = chain_link(entry, r.c3);
+        } else {
+            f->prev3[slot] = r.c3;
+        }
         f->head3[h3] = entry;
     }
     return r;
@@ -927,6 +952,89 @@ typedef struct {
     i32 dist;
 } match;
 
+// find_match for distance links. Candidates are tracked by the low bits
+// of their stream offsets (cb), as is p (pb), from which their chain
+// slots follow in one step, as from entries. Candidates lie at most a
+// window back, and at or after position 0, which the first from an
+// empty head does not. A candidate exactly WSIZE back shares p's chain
+// slot, where inserting p linked this walk's first candidate: its link
+// leads more than WSIZE back, ending the walk before it would revisit
+// candidates (find_match makes it the last). Otherwise as find_match.
+[[gnu::always_inline]] static inline match
+find_match16(finder *f, iz p, u32 cand, u32 cand3, i32 depth, i32 best)
+{
+    u8  *win  = f->win;
+    u16 *prev = (u16 *)f->prev;
+    i32 maxlen = (i32)MIN(f->win_len - p, MAX_MATCH);
+    assert(maxlen >= MIN_MATCH);  // p+MIN_MATCH <= win_len
+    i32 least = best;
+    iz  best_pos = 0;
+    u32 pb   = f->base + (u32)p;
+    u32 kb   = f->base - 1 - f->stamp;  // an entry's offset, less it
+    u32 cb   = cand + kb;
+    u32 maxd = (u32)MIN(p, DEF_WSIZE);
+    if (best >= maxlen) {
+        cb = pb - LINK_NONE;  // nothing longer fits
+    }
+    u32 p4 = pb-cb<=maxd ? load32(win+p) : 0;  // p+HASH_LEN <= win_len
+
+    for (; best<MIN_MATCH && pb-cb<=maxd && depth>0; depth--) {
+        iz c = p - (iz)(pb - cb);
+        cb -= prev[cb & DEF_WMASK];
+        u32 x = load32(win+c) ^ p4;
+        if (!(x & 0xffffff)) {
+            best = x ? 3 : 4 + match_len(win+c+4, win+p+4, maxlen-4);
+            best_pos = c;
+            if (best>=f->lvl.nice || best==maxlen) {
+                cb = pb - LINK_NONE;
+                break;
+            }
+            if (best>=f->lvl.good && depth>8) {
+                depth = 8;
+            }
+        }
+    }
+
+    for (; pb-cb<=maxd && depth>0; depth--) {
+        iz c = p - (iz)(pb - cb);
+        cb -= prev[cb & DEF_WMASK];
+        if (load32(win+c+best-3)==load32(win+p+best-3) &&
+            load32(win+c)==p4) {
+            i32 len = 4 + match_len(win+c+4, win+p+4, maxlen-4);
+            if (len > best) {
+                best = len;
+                best_pos = c;
+                if (best>=f->lvl.nice || best==maxlen) {
+                    break;
+                }
+                if (best>=f->lvl.good && depth>8) {
+                    depth = 8;
+                }
+            }
+        }
+    }
+
+    u16 *prev3  = (u16 *)f->prev3;
+    i32  depth3 = best<MIN_MATCH ? f->lvl.depth3 : 0;
+    u32  cb3    = cand3 + kb;
+    for (; pb-cb3<=MIN(maxd, D3_MAX) && depth3>0; depth3--) {
+        iz c = p - (iz)(pb - cb3);
+        if (win[c]==win[p] && win[c+1]==win[p+1] && win[c+2]==win[p+2]) {
+            best = MIN_MATCH;
+            best_pos = c;
+            break;
+        }
+        cb3 -= prev3[cb3 & DEF_WMASK];
+    }
+
+    match r = {0, 0};
+    if (best > least) {
+        r.len  = best;
+        r.dist = (i32)(p - best_pos);
+    }
+    return r;
+}
+
 // Candidates are hash table entries, from which distances are measured
 // against p's own entry: a forgotten entry is farther than any match.
 // A candidate counts only if longer than the best match so far, so once
@@ -948,6 +1056,9 @@ typedef struct {
 [[gnu::always_inline]] static inline match
 find_match(finder *f, iz p, u32 cand, u32 cand3, i32 depth, i32 best)
 {
+    if (f->narrow) {
+        return find_match16(f, p, cand, cand3, depth, best);
+    }
     u8 *win = f->win;
     i32 maxlen = (i32)MIN(f->win_len - p, MAX_MATCH);
     assert(maxlen >= MIN_MATCH);  // p+MIN_MATCH <= win_len
@@ -1084,7 +1195,8 @@ static void sample(deflator *d)
 // evaluation), so that GCC can keep more of it in x86-64's few
 // registers.
 [[gnu::always_inline]]
-static inline void parse_with(deflator *d, iz end, b32 use3, b32 lazy)
+static inline void
+parse_with(deflator *d, iz end, b32 use3, b32 lazy, b32 narrow)
 {
     finder f = {
         .win     = d->win,
@@ -1099,6 +1211,7 @@ static inline void parse_with(deflator *d, iz end, b32 use3, b32 lazy)
         .stamp   = d->stamp,
         .use3    = use3,
         .lvl     = d->lvl,
+        .narrow  = narrow,
     };
     if (!lazy) {
         f.lvl.lazy = 0;
@@ -1143,22 +1256,32 @@ static inline void parse_with(deflator *d, iz end, b32 use3, b32 lazy)
 // allocates registers for, alone
 [[gnu::noinline]] static void parse_greedy(deflator *d, iz end)
 {
-    parse_with(d, end, 0, 0);
+    parse_with(d, end, 0, 0, 0);
 }
 
 [[gnu::noinline]] static void parse_greedy3(deflator *d, iz end)
 {
-    parse_with(d, end, 1, 0);
+    parse_with(d, end, 1, 0, 0);
 }
 
 [[gnu::noinline]] static void parse_lazy(deflator *d, iz end)
 {
-    parse_with(d, end, 0, 1);
+    parse_with(d, end, 0, 1, 0);
 }
 
 [[gnu::noinline]] static void parse_lazy3(deflator *d, iz end)
 {
-    parse_with(d, end, 1, 1);
+    parse_with(d, end, 1, 1, 0);
+}
+
+[[gnu::noinline]] static void parse_deep(deflator *d, iz end)
+{
+    parse_with(d, end, 0, 1, 1);
+}
+
+[[gnu::noinline]] static void parse_deep3(deflator *d, iz end)
+{
+    parse_with(d, end, 1, 1, 1);
 }
 
 static void parse(deflator *d, iz end)
@@ -1166,7 +1289,9 @@ static void parse(deflator *d, iz end)
     if (!d->sampled) {
         sample(d);
     }
-    if (d->lvl.lazy) {
+    if (d->narrow) {
+        d->use3 ? parse_deep3(d, end) : parse_deep(d, end);
+    } else if (d->lvl.lazy) {
         d->use3 ? parse_lazy3(d, end) : parse_lazy(d, end);
     } else {
         d->use3 ? parse_greedy3(d, end) : parse_greedy(d, end);
@@ -1183,6 +1308,19 @@ static void slide_table(u32 *t, i32 n, u32 lim, u32 shift)
     for (i32 i = 0; i < n; i++) {
         u32 v = t[i];
         t[i] = (v - shift) & -(u32)(v > lim);
+    }
+}
+
+// The same for a link table, through memcpy, as an earlier stream may
+// have left distance links there. (Distance links need nothing.)
+static void slide_links(u32 *t, u32 lim, u32 shift)
+{
+    u8 *b = (u8 *)t;
+    for (iz i = 0; i < DEF_WSIZE*(iz)sizeof(u32); i += 4) {
+        u32 v;
+        __builtin_memcpy(&v, b+i, 4);
+        v = (v - shift) & -(u32)(v > lim);
+        __builtin_memcpy(b+i, &v, 4);
     }
 }
 
@@ -1218,10 +1356,14 @@ static void slide(deflator *d)
     u32 s = (u32)shift;
     u32 lim = d->stamp + s;
     slide_table(d->head, HASH_SIZE, lim, s);
-    slide_table(d->prev, DEF_WSIZE, lim, s);
+    if (!d->narrow) {
+        slide_links(d->prev, lim, s);
+    }
     if (d->use3) {
         slide_table(d->head3, HASH_SIZE, lim, s);
-        slide_table(d->prev3, DEF_WSIZE, lim, s);
+        if (!d->narrow) {
+            slide_links(d->prev3, lim, s);
+        }
     }
 }
 
@@ -1285,7 +1427,9 @@ static void deflate_reset(deflator *d)
 // Levels 1 through 9; others are clamped. Only at the start of a stream.
 static void deflate_setlevel(deflator *d, i32 level)
 {
-    d->lvl = deflate_levels[MAX(1, MIN(level, 9))];
+    level = MAX(1, MIN(level, 9));
+    d->lvl = deflate_levels[level];
+    d->narrow = level >= NARROW_LEVEL;
 }
 
 // Most bits a stored chunk's header takes: BFINAL and BTYPE, padding to
