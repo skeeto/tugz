@@ -134,6 +134,7 @@ typedef struct {
     i32 state;
     b32 final;
     b32 d64;      // Deflate64
+    b32 wide;     // the block's tables have full roots: see htable_widen
     iz  stored;   // stored block bytes remaining
     htable lt;    // the current block's codes: fixed, or in the entries
     htable dt;
@@ -180,106 +181,115 @@ static u8 const inf_cl_order[19] = {
 };
 
 // Decoding tables for the fixed codes (RFC 1951, 3.2.6), exactly as
-// htable_build makes them from the fixed code lengths: 9-bit and 5-bit
-// root tables, the latter with distance codes 30 and 31 invalid. As
+// htable_build and htable_widen make them from the fixed code lengths:
+// 11-bit and 8-bit roots, for the fast loop's constant masks, the latter
+// with distance codes 30 and 31 invalid. No fixed code is longer than 9
+// or 5 bits, so each is its first 512 or 32 entries over again. As
 // constants they cost an inflator nothing to set up. test_tables in
-// test/tests.c checks them against htable_build.
-static u32 const inf_fixlit[512] = {
-    0xc0000707, 0x00500888, 0x00100888, 0x0073080c, 0x001f0709, 0x00700888,
-    0x00300888, 0x00c00989, 0x000a0707, 0x00600888, 0x00200888, 0x00a00989,
-    0x00000888, 0x00800888, 0x00400888, 0x00e00989, 0x00060707, 0x00580888,
-    0x00180888, 0x00900989, 0x003b070a, 0x00780888, 0x00380888, 0x00d00989,
-    0x00110708, 0x00680888, 0x00280888, 0x00b00989, 0x00080888, 0x00880888,
-    0x00480888, 0x00f00989, 0x00040707, 0x00540888, 0x00140888, 0x00e3080d,
-    0x002b070a, 0x00740888, 0x00340888, 0x00c80989, 0x000d0708, 0x00640888,
-    0x00240888, 0x00a80989, 0x00040888, 0x00840888, 0x00440888, 0x00e80989,
-    0x00080707, 0x005c0888, 0x001c0888, 0x00980989, 0x0053070b, 0x007c0888,
-    0x003c0888, 0x00d80989, 0x00170709, 0x006c0888, 0x002c0888, 0x00b80989,
-    0x000c0888, 0x008c0888, 0x004c0888, 0x00f80989, 0x00030707, 0x00520888,
-    0x00120888, 0x00a3080d, 0x0023070a, 0x00720888, 0x00320888, 0x00c40989,
-    0x000b0708, 0x00620888, 0x00220888, 0x00a40989, 0x00020888, 0x00820888,
-    0x00420888, 0x00e40989, 0x00070707, 0x005a0888, 0x001a0888, 0x00940989,
-    0x0043070b, 0x007a0888, 0x003a0888, 0x00d40989, 0x00130709, 0x006a0888,
-    0x002a0888, 0x00b40989, 0x000a0888, 0x008a0888, 0x004a0888, 0x00f40989,
-    0x00050707, 0x00560888, 0x00160888, 0x80000808, 0x0033070a, 0x00760888,
-    0x00360888, 0x00cc0989, 0x000f0708, 0x00660888, 0x00260888, 0x00ac0989,
-    0x00060888, 0x00860888, 0x00460888, 0x00ec0989, 0x00090707, 0x005e0888,
-    0x001e0888, 0x009c0989, 0x0063070b, 0x007e0888, 0x003e0888, 0x00dc0989,
-    0x001b0709, 0x006e0888, 0x002e0888, 0x00bc0989, 0x000e0888, 0x008e0888,
-    0x004e0888, 0x00fc0989, 0xc0000707, 0x00510888, 0x00110888, 0x0083080d,
-    0x001f0709, 0x00710888, 0x00310888, 0x00c20989, 0x000a0707, 0x00610888,
-    0x00210888, 0x00a20989, 0x00010888, 0x00810888, 0x00410888, 0x00e20989,
-    0x00060707, 0x00590888, 0x00190888, 0x00920989, 0x003b070a, 0x00790888,
-    0x00390888, 0x00d20989, 0x00110708, 0x00690888, 0x00290888, 0x00b20989,
-    0x00090888, 0x00890888, 0x00490888, 0x00f20989, 0x00040707, 0x00550888,
-    0x00150888, 0x01020808, 0x002b070a, 0x00750888, 0x00350888, 0x00ca0989,
-    0x000d0708, 0x00650888, 0x00250888, 0x00aa0989, 0x00050888, 0x00850888,
-    0x00450888, 0x00ea0989, 0x00080707, 0x005d0888, 0x001d0888, 0x009a0989,
-    0x0053070b, 0x007d0888, 0x003d0888, 0x00da0989, 0x00170709, 0x006d0888,
-    0x002d0888, 0x00ba0989, 0x000d0888, 0x008d0888, 0x004d0888, 0x00fa0989,
-    0x00030707, 0x00530888, 0x00130888, 0x00c3080d, 0x0023070a, 0x00730888,
-    0x00330888, 0x00c60989, 0x000b0708, 0x00630888, 0x00230888, 0x00a60989,
-    0x00030888, 0x00830888, 0x00430888, 0x00e60989, 0x00070707, 0x005b0888,
-    0x001b0888, 0x00960989, 0x0043070b, 0x007b0888, 0x003b0888, 0x00d60989,
-    0x00130709, 0x006b0888, 0x002b0888, 0x00b60989, 0x000b0888, 0x008b0888,
-    0x004b0888, 0x00f60989, 0x00050707, 0x00570888, 0x00170888, 0x80000808,
-    0x0033070a, 0x00770888, 0x00370888, 0x00ce0989, 0x000f0708, 0x00670888,
-    0x00270888, 0x00ae0989, 0x00070888, 0x00870888, 0x00470888, 0x00ee0989,
-    0x00090707, 0x005f0888, 0x001f0888, 0x009e0989, 0x0063070b, 0x007f0888,
-    0x003f0888, 0x00de0989, 0x001b0709, 0x006f0888, 0x002f0888, 0x00be0989,
-    0x000f0888, 0x008f0888, 0x004f0888, 0x00fe0989, 0xc0000707, 0x00500888,
-    0x00100888, 0x0073080c, 0x001f0709, 0x00700888, 0x00300888, 0x00c10989,
-    0x000a0707, 0x00600888, 0x00200888, 0x00a10989, 0x00000888, 0x00800888,
-    0x00400888, 0x00e10989, 0x00060707, 0x00580888, 0x00180888, 0x00910989,
-    0x003b070a, 0x00780888, 0x00380888, 0x00d10989, 0x00110708, 0x00680888,
-    0x00280888, 0x00b10989, 0x00080888, 0x00880888, 0x00480888, 0x00f10989,
-    0x00040707, 0x00540888, 0x00140888, 0x00e3080d, 0x002b070a, 0x00740888,
-    0x00340888, 0x00c90989, 0x000d0708, 0x00640888, 0x00240888, 0x00a90989,
-    0x00040888, 0x00840888, 0x00440888, 0x00e90989, 0x00080707, 0x005c0888,
-    0x001c0888, 0x00990989, 0x0053070b, 0x007c0888, 0x003c0888, 0x00d90989,
-    0x00170709, 0x006c0888, 0x002c0888, 0x00b90989, 0x000c0888, 0x008c0888,
-    0x004c0888, 0x00f90989, 0x00030707, 0x00520888, 0x00120888, 0x00a3080d,
-    0x0023070a, 0x00720888, 0x00320888, 0x00c50989, 0x000b0708, 0x00620888,
-    0x00220888, 0x00a50989, 0x00020888, 0x00820888, 0x00420888, 0x00e50989,
-    0x00070707, 0x005a0888, 0x001a0888, 0x00950989, 0x0043070b, 0x007a0888,
-    0x003a0888, 0x00d50989, 0x00130709, 0x006a0888, 0x002a0888, 0x00b50989,
-    0x000a0888, 0x008a0888, 0x004a0888, 0x00f50989, 0x00050707, 0x00560888,
-    0x00160888, 0x80000808, 0x0033070a, 0x00760888, 0x00360888, 0x00cd0989,
-    0x000f0708, 0x00660888, 0x00260888, 0x00ad0989, 0x00060888, 0x00860888,
-    0x00460888, 0x00ed0989, 0x00090707, 0x005e0888, 0x001e0888, 0x009d0989,
-    0x0063070b, 0x007e0888, 0x003e0888, 0x00dd0989, 0x001b0709, 0x006e0888,
-    0x002e0888, 0x00bd0989, 0x000e0888, 0x008e0888, 0x004e0888, 0x00fd0989,
-    0xc0000707, 0x00510888, 0x00110888, 0x0083080d, 0x001f0709, 0x00710888,
-    0x00310888, 0x00c30989, 0x000a0707, 0x00610888, 0x00210888, 0x00a30989,
-    0x00010888, 0x00810888, 0x00410888, 0x00e30989, 0x00060707, 0x00590888,
-    0x00190888, 0x00930989, 0x003b070a, 0x00790888, 0x00390888, 0x00d30989,
-    0x00110708, 0x00690888, 0x00290888, 0x00b30989, 0x00090888, 0x00890888,
-    0x00490888, 0x00f30989, 0x00040707, 0x00550888, 0x00150888, 0x01020808,
-    0x002b070a, 0x00750888, 0x00350888, 0x00cb0989, 0x000d0708, 0x00650888,
-    0x00250888, 0x00ab0989, 0x00050888, 0x00850888, 0x00450888, 0x00eb0989,
-    0x00080707, 0x005d0888, 0x001d0888, 0x009b0989, 0x0053070b, 0x007d0888,
-    0x003d0888, 0x00db0989, 0x00170709, 0x006d0888, 0x002d0888, 0x00bb0989,
-    0x000d0888, 0x008d0888, 0x004d0888, 0x00fb0989, 0x00030707, 0x00530888,
-    0x00130888, 0x00c3080d, 0x0023070a, 0x00730888, 0x00330888, 0x00c70989,
-    0x000b0708, 0x00630888, 0x00230888, 0x00a70989, 0x00030888, 0x00830888,
-    0x00430888, 0x00e70989, 0x00070707, 0x005b0888, 0x001b0888, 0x00970989,
-    0x0043070b, 0x007b0888, 0x003b0888, 0x00d70989, 0x00130709, 0x006b0888,
-    0x002b0888, 0x00b70989, 0x000b0888, 0x008b0888, 0x004b0888, 0x00f70989,
-    0x00050707, 0x00570888, 0x00170888, 0x80000808, 0x0033070a, 0x00770888,
-    0x00370888, 0x00cf0989, 0x000f0708, 0x00670888, 0x00270888, 0x00af0989,
-    0x00070888, 0x00870888, 0x00470888, 0x00ef0989, 0x00090707, 0x005f0888,
-    0x001f0888, 0x009f0989, 0x0063070b, 0x007f0888, 0x003f0888, 0x00df0989,
-    0x001b0709, 0x006f0888, 0x002f0888, 0x00bf0989, 0x000f0888, 0x008f0888,
-    0x004f0888, 0x00ff0989,
+// test/tests.c checks them against htable_build and htable_widen.
+#define INF_FIXLIT9 \
+    0xc0000707, 0x00500888, 0x00100888, 0x0073080c, 0x001f0709, 0x00700888, \
+    0x00300888, 0x00c00989, 0x000a0707, 0x00600888, 0x00200888, 0x00a00989, \
+    0x00000888, 0x00800888, 0x00400888, 0x00e00989, 0x00060707, 0x00580888, \
+    0x00180888, 0x00900989, 0x003b070a, 0x00780888, 0x00380888, 0x00d00989, \
+    0x00110708, 0x00680888, 0x00280888, 0x00b00989, 0x00080888, 0x00880888, \
+    0x00480888, 0x00f00989, 0x00040707, 0x00540888, 0x00140888, 0x00e3080d, \
+    0x002b070a, 0x00740888, 0x00340888, 0x00c80989, 0x000d0708, 0x00640888, \
+    0x00240888, 0x00a80989, 0x00040888, 0x00840888, 0x00440888, 0x00e80989, \
+    0x00080707, 0x005c0888, 0x001c0888, 0x00980989, 0x0053070b, 0x007c0888, \
+    0x003c0888, 0x00d80989, 0x00170709, 0x006c0888, 0x002c0888, 0x00b80989, \
+    0x000c0888, 0x008c0888, 0x004c0888, 0x00f80989, 0x00030707, 0x00520888, \
+    0x00120888, 0x00a3080d, 0x0023070a, 0x00720888, 0x00320888, 0x00c40989, \
+    0x000b0708, 0x00620888, 0x00220888, 0x00a40989, 0x00020888, 0x00820888, \
+    0x00420888, 0x00e40989, 0x00070707, 0x005a0888, 0x001a0888, 0x00940989, \
+    0x0043070b, 0x007a0888, 0x003a0888, 0x00d40989, 0x00130709, 0x006a0888, \
+    0x002a0888, 0x00b40989, 0x000a0888, 0x008a0888, 0x004a0888, 0x00f40989, \
+    0x00050707, 0x00560888, 0x00160888, 0x80000808, 0x0033070a, 0x00760888, \
+    0x00360888, 0x00cc0989, 0x000f0708, 0x00660888, 0x00260888, 0x00ac0989, \
+    0x00060888, 0x00860888, 0x00460888, 0x00ec0989, 0x00090707, 0x005e0888, \
+    0x001e0888, 0x009c0989, 0x0063070b, 0x007e0888, 0x003e0888, 0x00dc0989, \
+    0x001b0709, 0x006e0888, 0x002e0888, 0x00bc0989, 0x000e0888, 0x008e0888, \
+    0x004e0888, 0x00fc0989, 0xc0000707, 0x00510888, 0x00110888, 0x0083080d, \
+    0x001f0709, 0x00710888, 0x00310888, 0x00c20989, 0x000a0707, 0x00610888, \
+    0x00210888, 0x00a20989, 0x00010888, 0x00810888, 0x00410888, 0x00e20989, \
+    0x00060707, 0x00590888, 0x00190888, 0x00920989, 0x003b070a, 0x00790888, \
+    0x00390888, 0x00d20989, 0x00110708, 0x00690888, 0x00290888, 0x00b20989, \
+    0x00090888, 0x00890888, 0x00490888, 0x00f20989, 0x00040707, 0x00550888, \
+    0x00150888, 0x01020808, 0x002b070a, 0x00750888, 0x00350888, 0x00ca0989, \
+    0x000d0708, 0x00650888, 0x00250888, 0x00aa0989, 0x00050888, 0x00850888, \
+    0x00450888, 0x00ea0989, 0x00080707, 0x005d0888, 0x001d0888, 0x009a0989, \
+    0x0053070b, 0x007d0888, 0x003d0888, 0x00da0989, 0x00170709, 0x006d0888, \
+    0x002d0888, 0x00ba0989, 0x000d0888, 0x008d0888, 0x004d0888, 0x00fa0989, \
+    0x00030707, 0x00530888, 0x00130888, 0x00c3080d, 0x0023070a, 0x00730888, \
+    0x00330888, 0x00c60989, 0x000b0708, 0x00630888, 0x00230888, 0x00a60989, \
+    0x00030888, 0x00830888, 0x00430888, 0x00e60989, 0x00070707, 0x005b0888, \
+    0x001b0888, 0x00960989, 0x0043070b, 0x007b0888, 0x003b0888, 0x00d60989, \
+    0x00130709, 0x006b0888, 0x002b0888, 0x00b60989, 0x000b0888, 0x008b0888, \
+    0x004b0888, 0x00f60989, 0x00050707, 0x00570888, 0x00170888, 0x80000808, \
+    0x0033070a, 0x00770888, 0x00370888, 0x00ce0989, 0x000f0708, 0x00670888, \
+    0x00270888, 0x00ae0989, 0x00070888, 0x00870888, 0x00470888, 0x00ee0989, \
+    0x00090707, 0x005f0888, 0x001f0888, 0x009e0989, 0x0063070b, 0x007f0888, \
+    0x003f0888, 0x00de0989, 0x001b0709, 0x006f0888, 0x002f0888, 0x00be0989, \
+    0x000f0888, 0x008f0888, 0x004f0888, 0x00fe0989, 0xc0000707, 0x00500888, \
+    0x00100888, 0x0073080c, 0x001f0709, 0x00700888, 0x00300888, 0x00c10989, \
+    0x000a0707, 0x00600888, 0x00200888, 0x00a10989, 0x00000888, 0x00800888, \
+    0x00400888, 0x00e10989, 0x00060707, 0x00580888, 0x00180888, 0x00910989, \
+    0x003b070a, 0x00780888, 0x00380888, 0x00d10989, 0x00110708, 0x00680888, \
+    0x00280888, 0x00b10989, 0x00080888, 0x00880888, 0x00480888, 0x00f10989, \
+    0x00040707, 0x00540888, 0x00140888, 0x00e3080d, 0x002b070a, 0x00740888, \
+    0x00340888, 0x00c90989, 0x000d0708, 0x00640888, 0x00240888, 0x00a90989, \
+    0x00040888, 0x00840888, 0x00440888, 0x00e90989, 0x00080707, 0x005c0888, \
+    0x001c0888, 0x00990989, 0x0053070b, 0x007c0888, 0x003c0888, 0x00d90989, \
+    0x00170709, 0x006c0888, 0x002c0888, 0x00b90989, 0x000c0888, 0x008c0888, \
+    0x004c0888, 0x00f90989, 0x00030707, 0x00520888, 0x00120888, 0x00a3080d, \
+    0x0023070a, 0x00720888, 0x00320888, 0x00c50989, 0x000b0708, 0x00620888, \
+    0x00220888, 0x00a50989, 0x00020888, 0x00820888, 0x00420888, 0x00e50989, \
+    0x00070707, 0x005a0888, 0x001a0888, 0x00950989, 0x0043070b, 0x007a0888, \
+    0x003a0888, 0x00d50989, 0x00130709, 0x006a0888, 0x002a0888, 0x00b50989, \
+    0x000a0888, 0x008a0888, 0x004a0888, 0x00f50989, 0x00050707, 0x00560888, \
+    0x00160888, 0x80000808, 0x0033070a, 0x00760888, 0x00360888, 0x00cd0989, \
+    0x000f0708, 0x00660888, 0x00260888, 0x00ad0989, 0x00060888, 0x00860888, \
+    0x00460888, 0x00ed0989, 0x00090707, 0x005e0888, 0x001e0888, 0x009d0989, \
+    0x0063070b, 0x007e0888, 0x003e0888, 0x00dd0989, 0x001b0709, 0x006e0888, \
+    0x002e0888, 0x00bd0989, 0x000e0888, 0x008e0888, 0x004e0888, 0x00fd0989, \
+    0xc0000707, 0x00510888, 0x00110888, 0x0083080d, 0x001f0709, 0x00710888, \
+    0x00310888, 0x00c30989, 0x000a0707, 0x00610888, 0x00210888, 0x00a30989, \
+    0x00010888, 0x00810888, 0x00410888, 0x00e30989, 0x00060707, 0x00590888, \
+    0x00190888, 0x00930989, 0x003b070a, 0x00790888, 0x00390888, 0x00d30989, \
+    0x00110708, 0x00690888, 0x00290888, 0x00b30989, 0x00090888, 0x00890888, \
+    0x00490888, 0x00f30989, 0x00040707, 0x00550888, 0x00150888, 0x01020808, \
+    0x002b070a, 0x00750888, 0x00350888, 0x00cb0989, 0x000d0708, 0x00650888, \
+    0x00250888, 0x00ab0989, 0x00050888, 0x00850888, 0x00450888, 0x00eb0989, \
+    0x00080707, 0x005d0888, 0x001d0888, 0x009b0989, 0x0053070b, 0x007d0888, \
+    0x003d0888, 0x00db0989, 0x00170709, 0x006d0888, 0x002d0888, 0x00bb0989, \
+    0x000d0888, 0x008d0888, 0x004d0888, 0x00fb0989, 0x00030707, 0x00530888, \
+    0x00130888, 0x00c3080d, 0x0023070a, 0x00730888, 0x00330888, 0x00c70989, \
+    0x000b0708, 0x00630888, 0x00230888, 0x00a70989, 0x00030888, 0x00830888, \
+    0x00430888, 0x00e70989, 0x00070707, 0x005b0888, 0x001b0888, 0x00970989, \
+    0x0043070b, 0x007b0888, 0x003b0888, 0x00d70989, 0x00130709, 0x006b0888, \
+    0x002b0888, 0x00b70989, 0x000b0888, 0x008b0888, 0x004b0888, 0x00f70989, \
+    0x00050707, 0x00570888, 0x00170888, 0x80000808, 0x0033070a, 0x00770888, \
+    0x00370888, 0x00cf0989, 0x000f0708, 0x00670888, 0x00270888, 0x00af0989, \
+    0x00070888, 0x00870888, 0x00470888, 0x00ef0989, 0x00090707, 0x005f0888, \
+    0x001f0888, 0x009f0989, 0x0063070b, 0x007f0888, 0x003f0888, 0x00df0989, \
+    0x001b0709, 0x006f0888, 0x002f0888, 0x00bf0989, 0x000f0888, 0x008f0888, \
+    0x004f0888, 0x00ff0989
+static u32 const inf_fixlit[2048] = {
+    INF_FIXLIT9, INF_FIXLIT9, INF_FIXLIT9, INF_FIXLIT9,
 };
-static u32 const inf_fixdist[32] = {
-    0x00010505, 0x0101050c, 0x00110508, 0x10010510, 0x00050506, 0x0401050e,
-    0x0041050a, 0x40010512, 0x00030505, 0x0201050d, 0x00210509, 0x20010511,
-    0x00090507, 0x0801050f, 0x0081050b, 0x80000505, 0x00020505, 0x0181050c,
-    0x00190508, 0x18010510, 0x00070506, 0x0601050e, 0x0061050a, 0x60010512,
-    0x00040505, 0x0301050d, 0x00310509, 0x30010511, 0x000d0507, 0x0c01050f,
-    0x00c1050b, 0x80000505,
+#undef INF_FIXLIT9
+#define INF_FIXDIST5 \
+    0x00010505, 0x0101050c, 0x00110508, 0x10010510, 0x00050506, 0x0401050e, \
+    0x0041050a, 0x40010512, 0x00030505, 0x0201050d, 0x00210509, 0x20010511, \
+    0x00090507, 0x0801050f, 0x0081050b, 0x80000505, 0x00020505, 0x0181050c, \
+    0x00190508, 0x18010510, 0x00070506, 0x0601050e, 0x0061050a, 0x60010512, \
+    0x00040505, 0x0301050d, 0x00310509, 0x30010511, 0x000d0507, 0x0c01050f, \
+    0x00c1050b, 0x80000505
+static u32 const inf_fixdist[256] = {
+    INF_FIXDIST5, INF_FIXDIST5, INF_FIXDIST5, INF_FIXDIST5,
+    INF_FIXDIST5, INF_FIXDIST5, INF_FIXDIST5, INF_FIXDIST5,
 };
+#undef INF_FIXDIST5
 
 static u32 sym_entry(i32 sym, i32 len, i32 kind)
 {
@@ -313,10 +323,25 @@ static u32 sym_entry(i32 sym, i32 len, i32 kind)
     return ENT(len, ENT_BAD, 0, 0);
 }
 
+// The bit-reversed code after a bit-reversed code of len bits.
+static u32 huff_next(u32 huff, i32 len)
+{
+    u32 incr = 1u << (len - 1);
+    for (; huff & incr; incr >>= 1) {}
+    return incr ? (huff & (incr - 1)) + incr : 0;
+}
+
 // Build a decoding table from code lengths, returning false if the
-// lengths do not describe a code that zlib would accept. Adapted from
-// zlib's inflate_table: a root table indexed by the low bits, with
-// subtables for longer codes.
+// lengths do not describe a code that zlib would accept: a root table
+// indexed by the low bits, with subtables for longer codes, adapted
+// from zlib's inflate_table. The root is rootbits wide, or narrower
+// when every code is shorter (see htable_widen).
+//
+// Codes no longer than the root are laid out as libdeflate lays them
+// out: each code's entry is stored once, in a table as wide as the code
+// is long, and the table doubles, copying itself, before each longer
+// length, so that the copies fill every entry that begins with a code,
+// rather than each code's entries being stored one at a time.
 static b32 htable_build(htable *t, u32 *entries, iz cap, u16 const *lens,
                         i32 n, i32 kind, i32 rootbits)
 {
@@ -361,66 +386,90 @@ static b32 htable_build(htable *t, u32 *entries, iz cap, u16 const *lens,
         }
     }
 
-    i32 len = 1;
-    for (; !count[len]; len++) {}
+    i32 ncodes = n - count[0];
     i32 root = MIN(rootbits, max);
     t->mask = (1u << root) - 1;
 
+    // Codes up to the root, in entries [0, width) so far. An entry that a
+    // longer code will take may meanwhile hold another's copy, or garbage,
+    // which that code's own store, and the copies after it, replace.
+    i32 len = 1;
+    for (; !count[len]; len++) {}
+    i32 sym   = 0;
+    iz  width = (iz)1 << len;
+    u32 huff  = 0;  // bit-reversed code of the current symbol
+    for (; sym<ncodes && (len = lens[work[sym]])<=root; sym++) {
+        for (; width < (iz)1<<len; width *= 2) {
+            bytecopy(entries+width, entries, width*(iz)sizeof(u32));
+        }
+        entries[huff] = sym_entry(work[sym], len, kind);
+        count[len]--;
+        huff = huff_next(huff, len);
+    }
+    if (huff && sym==ncodes) {
+        // An incomplete code is a lone 1-bit code with an unused codeword
+        entries[huff] = ENT(len, ENT_BAD, 0, 0);
+    }
+    for (; width < (iz)1<<root; width *= 2) {
+        bytecopy(entries+width, entries, width*(iz)sizeof(u32));
+    }
+
+    // Longer codes, in subtables as zlib builds them: codes that share
+    // their low root bits share a subtable, as wide as they need, which
+    // their root entry links, and each fills its entries there.
     u32 *next = entries;
+    u32  size = 1u << root;  // the current (sub)table's
     i32  curr = root;
-    i32  drop = 0;
     u32  low  = (u32)-1;
     iz   used = (iz)1 << root;
-    u32  huff = 0;  // bit-reversed code of the current symbol
-    for (i32 sym = 0;; sym++) {
-        // Replicate the entry across the current (sub)table
-        u32 here = sym_entry(work[sym], len, kind);
-        u32 incr = 1u << (len - drop);
-        u32 fill = 1u << curr;
-        u32 size = fill;
-        do {
-            fill -= incr;
-            next[(huff >> drop) + fill] = here;
-        } while (fill);
-
-        // Increment the bit-reversed code
-        incr = 1u << (len - 1);
-        for (; huff & incr; incr >>= 1) {}
-        huff = incr ? (huff & (incr - 1)) + incr : 0;
-
-        if (!--count[len]) {
-            if (len == max) {
-                break;
-            }
-            len = lens[work[sym+1]];
-        }
-
-        // Start a new subtable when the low root bits change
-        if (len>root && (huff & t->mask)!=low) {
-            if (!drop) {
-                drop = root;
-            }
+    for (; sym < ncodes; sym++) {
+        len = lens[work[sym]];
+        if ((huff & t->mask) != low) {
+            // A new subtable, as long as the codes that share its root
+            // entry need
             next += size;
-            curr = len - drop;
+            curr = len - root;
             i32 avail = 1 << curr;
-            for (; curr+drop < max; curr++, avail <<= 1) {
-                avail -= count[curr + drop];
+            for (; curr+root < max; curr++, avail <<= 1) {
+                avail -= count[curr + root];
                 if (avail <= 0) {
                     break;
                 }
             }
-            used += (iz)1 << curr;
+            size = 1u << curr;
+            used += size;
             assert(used <= cap);
             low = huff & t->mask;
             entries[low] = ENT_LINK(root, curr, next - entries);
         }
-    }
-
-    // An incomplete code is a lone 1-bit code with one unused entry
-    if (huff) {
-        next[huff] = ENT(len, ENT_BAD, 0, 0);
+        u32 here = sym_entry(work[sym], len, kind);
+        u32 incr = 1u << (len - root);
+        u32 fill = size;
+        do {
+            fill -= incr;
+            next[(huff >> root) + fill] = here;
+        } while (fill);
+        count[len]--;
+        huff = huff_next(huff, len);
     }
     return 1;
+}
+
+// Widen a table's root to rootbits, doubling it by copies, so that the
+// fast loop's masks may be constants. A root narrower than that has no
+// subtables, all its codes being shorter, so the copies are all there
+// is. A small block's codes are short, and its tables would cost more
+// to widen than its symbols save, so only blocks whose literal/length
+// codes reach the root are widened (and Deflate64's always); the rest
+// take a loop with their masks (decode_narrow).
+static void htable_widen(htable *t, u32 *entries, i32 rootbits)
+{
+    assert(t->entries == entries);
+    iz width = (iz)t->mask + 1;
+    for (; width < (iz)1<<rootbits; width *= 2) {
+        bytecopy(entries+width, entries, width*(iz)sizeof(u32));
+    }
+    t->mask = (1u << rootbits) - 1;
 }
 
 // Memory needed by inf_new, including alignment padding.
@@ -460,8 +509,8 @@ static void inflate_reset(inflator *s)
 }
 
 // Only the fields inflate_reset sets need a value: each block header
-// sets lt and dt (a dynamic one through its code lengths, which it
-// starts) before any symbol is decoded, every code length is written
+// sets lt, dt and wide (a dynamic one through its code lengths, which
+// it starts) before any symbol is decoded, every code length is written
 // before it is read, and the stash is filled before it is read. So the
 // state starts uncleared, and costs no more to set up than to reset.
 static inflator *inf_new(arena *a, b32 d64)
@@ -660,9 +709,12 @@ static void store64(u8 *p, u64 v)
 
 // Fast loop: runs while at least 16 input bytes and room for a full
 // match remain. Returns true at end of block, false to fall back to the
-// careful path (or on error). Always inlined into decode_fast and
-// decode_fast64, so d64 is a constant and each format has its own loop.
-[[gnu::always_inline]] static inline b32 decode_fast_as(inflator *s, b32 d64)
+// careful path (or on error). Always inlined into decode_fast,
+// decode_narrow and decode_fast64, so d64 and wide are constants and
+// each has its own loop: with wide, the tables' roots are full and
+// their masks constants (see htable_widen).
+[[gnu::always_inline]] static inline b32 decode_fast_as(inflator *s, b32 d64,
+                                                        b32 wide)
 {
     htable const *lt = &s->lt;
     htable const *dt = &s->dt;
@@ -675,9 +727,10 @@ static void store64(u8 *p, u64 v)
     i32 bc = s->bitcnt;
     u32 const *lte = lt->entries;
     u32 const *dte = dt->entries;
-    u32 lmask = lt->mask;
-    u32 dmask = dt->mask;
+    u32 lmask = wide ? (1u << LIT_ROOT) - 1 : lt->mask;
+    u32 dmask = wide ? (1u << DIST_ROOT) - 1 : dt->mask;
     b32 eob = 0;
+    assert(lt->mask==lmask && dt->mask==dmask);
 
     // Each iteration begins with a refill, after which all 64 buffered
     // bits are real input (bitcnt counts only whole bytes, at least 56).
@@ -771,12 +824,17 @@ static void store64(u8 *p, u64 v)
 
 static b32 decode_fast(inflator *s)
 {
-    return decode_fast_as(s, 0);
+    return decode_fast_as(s, 0, 1);
+}
+
+static b32 decode_narrow(inflator *s)
+{
+    return decode_fast_as(s, 0, 0);
 }
 
 static b32 decode_fast64(inflator *s)
 {
-    return decode_fast_as(s, 1);
+    return decode_fast_as(s, 1, 1);
 }
 
 // Careful path: decode one literal, length/distance pair, or end of
@@ -910,6 +968,11 @@ static void inf_lens(inflator *s)
         s->err = GZ_EDATA;
         return;
     }
+    s->wide = d64 || s->lt.mask==(1u<<LIT_ROOT)-1;
+    if (s->wide) {
+        htable_widen(&s->lt, s->lit_entries, LIT_ROOT);
+        htable_widen(&s->dt, s->dist_entries, DIST_ROOT);
+    }
     s->state = INF_SYMBOLS;
 }
 
@@ -924,11 +987,13 @@ static void inf_fixed64(inflator *s)
     }
     htable_build(&s->lt, s->lit_entries, countof(s->lit_entries), lens, 288,
                  HUFF_LITLEN64, LIT_ROOT);
+    htable_widen(&s->lt, s->lit_entries, LIT_ROOT);
     for (i32 i = 0; i < 32; i++) {
         lens[i] = 5;
     }
     htable_build(&s->dt, s->dist_entries, DIST64_ENOUGH, lens, 32,
                  HUFF_DIST64, DIST_ROOT);
+    htable_widen(&s->dt, s->dist_entries, DIST_ROOT);
 }
 
 // Read a block header, including a stored block's lengths or the start
@@ -962,6 +1027,7 @@ static void inf_header(inflator *s)
             s->lt = (htable){inf_fixlit, countof(inf_fixlit) - 1};
             s->dt = (htable){inf_fixdist, countof(inf_fixdist) - 1};
         }
+        s->wide = 1;
         s->state = INF_SYMBOLS;
         break;
     case 2:
@@ -1030,7 +1096,9 @@ static i32 inf_run(inflator *s)
         } continue;
         case INF_SYMBOLS:
             if (s->inend-s->in >= 16) {
-                if (s->d64 ? decode_fast64(s) : decode_fast(s)) {
+                b32 eob = s->d64 ? decode_fast64(s) :
+                          s->wide ? decode_fast(s) : decode_narrow(s);
+                if (eob) {
                     s->state = s->final ? INF_END : INF_HEAD;
                 }
                 continue;

@@ -737,23 +737,113 @@ static void test_tables(void)
         TEST(dist < def_dist_base[c] + (1<<def_dist_extra[c]));
     }
 
-    // The fixed codes' constant decoding tables are htable_build's
+    // The fixed codes' constant decoding tables are htable_build's, as
+    // wide as htable_widen makes them
     u16 lens[288];
     for (i32 i = 0; i < 288; i++) {
         lens[i] = (u16)(i<144 ? 8 : i<256 ? 9 : i<280 ? 7 : 8);
     }
-    u32 fixed[512];
+    u32 fixed[2048];
     htable h;
     TEST(htable_build(&h, fixed, countof(fixed), lens, 288, HUFF_LITLEN,
                       LIT_ROOT));
+    TEST(h.mask == 511);
+    htable_widen(&h, fixed, LIT_ROOT);
     TEST(h.mask == countof(inf_fixlit)-1);
     TEST(!memcmp(fixed, inf_fixlit, sizeof(inf_fixlit)));
     for (i32 i = 0; i < 32; i++) {
         lens[i] = 5;
     }
-    TEST(htable_build(&h, fixed, 32, lens, 32, HUFF_DIST, DIST_ROOT));
+    TEST(htable_build(&h, fixed, 256, lens, 32, HUFF_DIST, DIST_ROOT));
+    TEST(h.mask == 31);
+    htable_widen(&h, fixed, DIST_ROOT);
     TEST(h.mask == countof(inf_fixdist)-1);
     TEST(!memcmp(fixed, inf_fixdist, sizeof(inf_fixdist)));
+
+    // A lone 1-bit code (end of block, or distance 1) and an empty
+    // distance code have 1-bit roots, the lone code's unused codeword
+    // invalid, as the empty code's both; widened for the fast loop's
+    // constant masks, every even entry is the lone code's, and every
+    // odd one invalid, or every one for the empty code
+    for (i32 lit = 0; lit < 2; lit++) {
+        for (i32 lone = 0; lone < 2; lone++) {
+            static u32 entries[LIT_ENOUGH];
+            u16 one[286] = {0};
+            one[lit ? 256 : 0] = (u16)lone;
+            i32 root = lit ? LIT_ROOT : DIST_ROOT;
+            memset(entries, 0xa5, sizeof(entries));
+            i32 kind = lit ? HUFF_LITLEN : HUFF_DIST;
+            b32 ok = htable_build(&h, entries, countof(entries), one,
+                                  lit ? 286 : 30, kind, root);
+            TEST(ok == (lone || !lit));
+            TEST(h.mask == 1);
+            htable_widen(&h, entries, root);
+            TEST(h.mask == (1u<<root) - 1);
+            for (i32 i = 0; i < 1<<root; i++) {
+                u32 e = entries[i];
+                i32 want = i&1 || !lone ? ENT_BAD : lit ? ENT_EOB : ENT_LEN;
+                TEST(ENT_KIND(e)==want && ENT_CODELEN(e)==1);
+                TEST(want!=ENT_LEN || ENT_VAL(e)==1);
+            }
+        }
+    }
+
+    // Random complete codes, as narrow as their longest codes or with
+    // subtables, before and after widening, against a decoding by a
+    // walk of the canonical code, for every root entry and subtable
+    for (i32 trial = 0; trial < 2000; trial++) {
+        b32 lit  = trial & 1;
+        i32 n    = lit ? 286 : 30;
+        i32 root = lit ? LIT_ROOT : DIST_ROOT;
+        u16 tl[286] = {0};
+        i32 maxlen = 1 + (i32)(rand32() % 15);
+        u32 stop   = 2 + (u32)(trial % 64);  // from a few codes to many
+        // A complete code: from two 1-bit codes, split random leaves into
+        // two a bit longer, up to the longest length allowed
+        i32 used = 2;
+        tl[0] = tl[1] = 1;
+        while (used<n && rand32()%stop) {
+            i32 k = (i32)(rand32() % (u32)used);
+            if (tl[k] < maxlen) {
+                tl[k]++;
+                tl[used++] = tl[k];
+            }
+        }
+        static u32 entries[LIT_ENOUGH];
+        memset(entries, 0xa5, sizeof(entries));
+        TEST(htable_build(&h, entries, countof(entries), tl, n,
+                          lit ? HUFF_LITLEN : HUFF_DIST, root));
+        u32 codes[286];
+        u8  clens[286];
+        for (i32 i = 0; i < n; i++) {
+            clens[i] = (u8)tl[i];
+        }
+        canonical(clens, n, codes);
+        for (i32 widen = 0; widen < 2; widen++) {
+            if (widen) {
+                htable_widen(&h, entries, root);
+                TEST(h.mask == (1u<<root) - 1);
+            }
+            for (i32 i = 0; i < n; i++) {
+                if (!tl[i]) {
+                    continue;
+                }
+                // Every bit string that begins with the code (bit
+                // reversed, as the stream gives it) finds its entry
+                u32 rev = 0;
+                for (i32 b = 0; b < tl[i]; b++) {
+                    rev |= (codes[i] >> (tl[i]-1-b) & 1) << b;
+                }
+                for (u32 tail = 0; tail < 8; tail++) {
+                    u64 bits = rev | (u64)(rand32() & 0x7fff) << tl[i];
+                    u32 e = lookup(entries, h.mask, bits);
+                    TEST(ENT_CODELEN(e) == tl[i]);
+                    TEST(sym_entry(i, tl[i], lit ? HUFF_LITLEN : HUFF_DIST)
+                         == e);
+                }
+            }
+        }
+    }
 }
 
 // Reference unlimited Huffman cost via repeated minimum extraction.
@@ -1622,6 +1712,25 @@ static void test_inflate_splits(arena a)
                 check_splits(a, b.buf, b.len);
             }
         }
+
+        // ... and with plenty of input after it, so that the fast loop
+        // decodes it, and ones after it, so that its lookup is in any odd
+        // entry of the distance table's root but the first
+        for (i32 ones = 1; ones < 8; ones++) {
+            b = (bits){0};
+            dyn_begin(&b, &c);
+            for (i32 j = 0; j < countof(lits)-1; j++) {
+                dyn_lit(&b, &c, lits[j]);
+            }
+            dyn_lit(&b, &c, lensyms[0]);
+            bput(&b, 0, inf_len_extra[lensyms[0]-257]);
+            bput(&b, 1, 1);
+            bput(&b, (1u<<ones) - 1, ones);
+            for (i32 j = 0; j < 8; j++) {
+                bput(&b, 0, 32);
+            }
+            check_splits(a, b.buf, b.len);
+        }
     }
 
     // Empty distance code: valid while no length is decoded
@@ -1649,6 +1758,22 @@ static void test_inflate_splits(arena a)
             bput(&b, v, 16);
             check_splits(a, b.buf, b.len);
         }
+    }
+
+    // ... also in the fast loop, at any entry of the root
+    for (u32 v = 0; v < 256; v += 37) {
+        b = (bits){0};
+        dyn_begin(&b, &c);
+        for (i32 j = 0; j < countof(lits)-1; j++) {
+            dyn_lit(&b, &c, lits[j]);
+        }
+        dyn_lit(&b, &c, lensyms[0]);
+        bput(&b, 0, inf_len_extra[lensyms[0]-257]);
+        bput(&b, v, 8);
+        for (i32 j = 0; j < 8; j++) {
+            bput(&b, v, 32);
+        }
+        check_splits(a, b.buf, b.len);
     }
 
     // For contrast, fixed codes, whose invalid distance codes are 5 bits:

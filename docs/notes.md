@@ -298,17 +298,35 @@ with no data, so a null pointer needs no special case in a chain.
   only the format. Per 100-byte gzip stream (M4 Max / Pi 4): deflate
   11.4 / 78 us after init, 2.5 / 21 us after reset.
 - An inflator starts uncleared: the fixed codes' decoding tables are
-  constants (2 KiB, which `test_tables` checks against `htable_build`),
-  and every other field is written before it is read, so init sets only
+  constants (`test_tables` checks them against `htable_build`), and
+  every other field is written before it is read, so init sets only
   what `tugz_inflate_reset` does. On the M4 Max / Pi 4, init took 2.0 /
   12.6 us, clearing 14 KiB and building the fixed tables, and now takes
   3 / 39 ns. A 100-byte gzip stream decodes in 1.2 / 7.3 us after init
   or reset, where it took 3.2 / 19.9 us after init. The library object
-  grew by 2 KiB (+5%) of constant tables. gzip -d and -t reset one
-  decoder per file, as compression does its encoder, though with init
-  this cheap that saves nothing measurable: over 20,000 gzipped 200-360
-  B slices of dickens, `-dc` took 0.38 / 0.80 s of CPU with the old init
-  and 0.31 / 0.54 s with the new, with or without the reuse.
+  grew by 2 KiB (+5%) of constant tables, and later by 7 KiB more, when
+  they took the full 11- and 8-bit roots of the fast loop's constant
+  masks (below). gzip -d and -t reset one decoder per file, as
+  compression does its encoder, though with init this cheap that saves
+  nothing measurable: over 20,000 gzipped 200-360 B slices of dickens,
+  `-dc` took 0.38 / 0.80 s of CPU with the old init and 0.31 / 0.54 s
+  with the new, with or without the reuse.
+- The fast loop masks its lookups with constants, an 11-bit root for
+  literals and lengths and an 8-bit one for distances, sparing the
+  register and the stack slot that GCC gave the masks under the Win64
+  ABI. That needs roots so wide: the fixed codes' tables have them, and
+  `htable_widen` doubles a dynamic block's tables, by copies, when its
+  literal/length codes reach 11 bits, as in nearly every block of a
+  large file. A block whose codes are all shorter, as a small stream's,
+  keeps its narrow roots and takes the same loop compiled with masks
+  (`decode_narrow`): widening every table cost 100-byte gzip streams a
+  third of their decoding speed on the M4 Max, by 9 KiB of stores each.
+  `htable_build` lays codes up to the root out as libdeflate does, each
+  code's entry stored once and the table doubled by copies as lengths
+  grow, where zlib's way stores each code's entries one at a time; a
+  table so costs no more than before for small blocks, and less for
+  large ones. bench's `-s` mode (streams of 100 B to 64 KiB, encoder and
+  decoder reset between them) measures this.
 - Programs reach the buffers without copying (`*_pending`/`*_consume`),
   so the program's throughput is unchanged by the restructure.
 - Deflate64 (ZIP method 9, for unzip, and in the library as an option,
@@ -323,7 +341,8 @@ with no data, so a null pointer needs no special case in a chain.
   entries: a subtable of 2^k entries holds at least k+1 codes);
   `inflate_new`'s inflator is as it was. The fast loop is one function,
   always inlined, with the format a constant parameter, compiled as
-  `decode_fast` and `decode_fast64`; Deflate's has no added instruction.
+  `decode_fast` (and `decode_narrow`, above) and `decode_fast64`, whose
+  tables are always widened; Deflate's has no added instruction.
   Deflate64's refills once more after a length of more than 20 bits
   (only code 285's), as a pair may then take 60 bits, and adds `F_HI`
   to distances. Its fixed blocks build their tables, which differ from
