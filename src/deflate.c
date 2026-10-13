@@ -896,16 +896,29 @@ typedef struct {
 // best length: two 32-bit compares rule out most candidates before
 // match_len, which then starts at the fifth byte. Until a first match,
 // a candidate (whose 4-byte hash may merely collide) needs 3 bytes.
+//
+// Only a match longer than best counts, else the result is empty, so
+// lazy evaluation searches from the length it has, with the stricter
+// filters throughout. It walks the same candidates as from MIN_MATCH-1
+// and finds the same match: a match no longer than best would end the
+// walk early only at nice, or cap its depth only at good, and good <=
+// nice, while lazy evaluation starts only below good; and the 3-byte
+// fallback cannot find a longer match than best >= MIN_MATCH.
+//
 // Always inlined, with match_len: GCC (and clang) would otherwise call
 // it for every position searched.
-[[gnu::always_inline]]
-static inline match find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth)
+[[gnu::always_inline]] static inline match
+find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth, i32 best)
 {
     u8 *win = d->win;
     i32 maxlen = (i32)MIN(d->win_len - p, MAX_MATCH);
-    i32 best = MIN_MATCH - 1;
+    assert(maxlen >= MIN_MATCH);  // p+MIN_MATCH <= win_len
+    i32 least = best;
     iz  best_pos = 0;
     u32 here = (u32)p + 1 + d->stamp;
+    if (best >= maxlen) {
+        cand = 0;  // nothing longer fits
+    }
     u32 p4 = cand ? load32(win+p) : 0;  // p+HASH_LEN <= win_len
 
     // Until a first match (see the next loop's comments)
@@ -981,23 +994,24 @@ static inline match find_match(deflator *d, iz p, u32 cand, u32 cand3, i32 depth
     }
 
     match r = {0, 0};
-    if (best >= MIN_MATCH) {
+    if (best > least) {
         r.len  = best;
         r.dist = (i32)(p - best_pos);
     }
     return r;
 }
 
-// Find the best match at p, inserting p into the hash chains.
+// Find the best match at p longer than best, inserting p into the hash
+// chains.
 [[gnu::always_inline]]
-static inline match match_at(deflator *d, iz p, i32 depth)
+static inline match match_at(deflator *d, iz p, i32 depth, i32 best)
 {
     u32 c3 = ensure_insert(d, p);
     if (p+HASH_LEN <= d->win_len) {
-        return find_match(d, p, d->prev[chain_slot(d, p)], c3, depth);
+        return find_match(d, p, d->prev[chain_slot(d, p)], c3, depth, best);
     } else if (d->use3 && p+MIN_MATCH <= d->win_len) {
         u32 v = (u32)d->win[p] | (u32)d->win[p+1]<<8 | (u32)d->win[p+2]<<16;
-        return find_match(d, p, 0, d->head3[hash3(v)], depth);
+        return find_match(d, p, 0, d->head3[hash3(v)], depth, best);
     }
     return (match){0, 0};
 }
@@ -1031,14 +1045,14 @@ static void parse(deflator *d, iz end)
 
     iz p = d->pos;
     while (p<end && !d->blkready) {
-        match m = match_at(d, p, d->lvl.depth);
+        match m = match_at(d, p, d->lvl.depth, MIN_MATCH-1);
 
         // Lazy matching: prefer a longer match starting one byte later
         for (i32 step = 0; step < d->lvl.lazy; step++) {
             if (m.len<MIN_MATCH || m.len>=d->lvl.good || p+1>=d->win_len) {
                 break;
             }
-            match m2 = match_at(d, p+1, d->lvl.depth>>1);
+            match m2 = match_at(d, p+1, d->lvl.depth>>1, m.len);
             if (m2.len <= m.len) {
                 break;
             }
