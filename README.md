@@ -28,8 +28,9 @@ runtime:
 
     $ clang -O2 -fno-builtin -nostartfiles -Wl,/subsystem:console -o gzip.exe platform/gzip_windows.c -llibvcruntime -llibcmt -lshell32 -lkernel32
 
-Hardware CRC-32 is used automatically: PCLMULQDQ on x86 (detected at run
-time), and the CRC instructions on ARMv8 targets that have them.
+Hardware CRC-32 is used automatically: PCLMULQDQ, or VPCLMULQDQ with
+AVX2, on x86 (detected at run time), and the CRC instructions on ARMv8
+targets that have them.
 
 The zip and unzip programs build the same way from
 `platform/zip_posix.c` and `platform/zip_windows.c`, and from

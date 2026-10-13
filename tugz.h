@@ -293,8 +293,9 @@ TUGZ_API void           tugz_deflate_free(tugz_deflator *,
 // Neither keeps any state. CRC-32 uses the CPU's CRC instructions where
 // the target has them (ARMv8), or carry-less multiplication (x86 with
 // -mpclmul). Otherwise, on x86, it asks the CPU for the latter on each
-// call of 4 KiB or more, as asking can take a microsecond under a
-// hypervisor: larger pieces are faster.
+// call of 4 KiB or more (from 32 KiB also for its 256-bit form), as
+// asking can take a microsecond under a hypervisor: larger pieces are
+// faster.
 TUGZ_API uint32_t       tugz_crc32(uint32_t crc, void const *p,
                                    ptrdiff_t len);
 TUGZ_API uint32_t       tugz_adler32(uint32_t adler, void const *p,

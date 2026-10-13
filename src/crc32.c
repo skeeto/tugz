@@ -399,6 +399,7 @@ enum {
     CPU_ASKED  = 1 << 0,  // alone: asked, nothing found (or not x86)
     CPU_PCLMUL = 1 << 1,  // PCLMULQDQ and SSE2: crc32_pclmul
     CPU_BMI2   = 1 << 2,  // BMI2 (shlx, shrx, bzhi): inflate's fast loop
+    CPU_VPCLMUL = 1 << 3, // VPCLMULQDQ, AVX2, YMM state: crc32_vpclmul
 };
 
 #if __x86_64__ || __i386__
@@ -406,22 +407,34 @@ enum {
 
 // Ask the CPU: leaf 0 for the highest leaf, then leaf 1, and leaf 7
 // unless only PCLMULQDQ is wanted (crc32_stateless), so three CPUIDs, or
-// two. On i686, __get_cpuid_max also checks that CPUID exists.
+// two. On i686, __get_cpuid_max also checks that CPUID exists. The ymm
+// registers may be used only if the OS saves them: XGETBV, which exists
+// when CPUID says OSXSAVE, reads XCR0, whose SSE and AVX bits must both
+// be set. (Windows XP never sets them, so it never takes those paths.)
 static i32 cpu_ask(i32 want)
 {
     i32 r = CPU_ASKED;
     u32 max = __get_cpuid_max(0, 0);
     u32 a, b, c, d;
+    b32 ymm = 0;
     if (max >= 1) {
         __cpuid(1, a, b, c, d);
         if ((c & bit_PCLMUL) && (d & bit_SSE2)) {
             r |= CPU_PCLMUL;
+            if ((want & CPU_VPCLMUL) && (c & 1<<27) && (c & 1<<28)) {
+                u32 lo, hi;  // OSXSAVE and AVX: XCR0's YMM state
+                __asm__ volatile ("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+                ymm = (lo & 6) == 6;
+            }
         }
     }
-    if ((want & CPU_BMI2) && max>=7) {
+    if ((want & (CPU_BMI2|CPU_VPCLMUL)) && max>=7) {
         __cpuid_count(7, 0, a, b, c, d);
-        if (b & bit_BMI2) {
+        if (b & 1<<8) {
             r |= CPU_BMI2;
+        }
+        if (ymm && (b & 1<<5) && (c & 1<<10)) {
+            r |= CPU_VPCLMUL;  // AVX2 and VPCLMULQDQ
         }
     }
     return r;
@@ -463,83 +476,161 @@ static u32 crc32_update(u32 crc, u8 const *p, iz len, i32 *cpu)
 // for Generic Polynomials Using PCLMULQDQ"), with the constants for the
 // reflected gzip polynomial as used by zlib. Four 128-bit lanes are
 // folded 64 bytes at a time, merged, then Barrett-reduced to 32 bits.
+// A constant pair folds a lane forward by d bits: x^(d+32) and x^(d-32)
+// mod the polynomial, bit-reflected, times x.
 //
-// No x86 baseline includes PCLMULQDQ, so this one function is compiled
+// No x86 baseline includes PCLMULQDQ, so these functions are compiled
 // for it via the target attribute and selected at run time.
 #include <immintrin.h>
+#define CRC_LOAD(q)         _mm_loadu_si128((__m128i const *)(q))
+#define CRC_CLMUL(a, b, i)  _mm_clmulepi64_si128(a, b, i)
+#define CRC_FOLD(x, k, y)   _mm_xor_si128(_mm_xor_si128( \
+    CRC_CLMUL(x, k, 0x11), CRC_CLMUL(x, k, 0x00)), y)
+
+// Fold in the remaining 16-byte blocks, reduce, then finish the tail.
+[[gnu::always_inline]] __attribute((target("pclmul,sse2")))
+static inline u32 crc32_pclmul_end(__m128i x1, u8 const *p, iz len)
+{
+    __m128i k3k4 = _mm_set_epi64x(0x0ccaa009e, 0x1751997d0);  // 128
+    __m128i k5   = _mm_set_epi64x(0,           0x163cd6124);
+    __m128i poly = _mm_set_epi64x(0x1f7011641, 0x1db710641);
+    __m128i mask = _mm_setr_epi32(-1, 0, -1, 0);
+    for (; len >= 16; p += 16, len -= 16) {
+        x1 = CRC_FOLD(x1, k3k4, CRC_LOAD(p));
+    }
+
+    // Reduce 128 bits to 64, then Barrett reduction to 32
+    __m128i t = CRC_CLMUL(x1, k3k4, 0x10);
+    x1 = _mm_xor_si128(_mm_srli_si128(x1, 8), t);
+    t  = _mm_srli_si128(x1, 4);
+    x1 = _mm_xor_si128(CRC_CLMUL(_mm_and_si128(x1, mask), k5, 0x00), t);
+    t  = CRC_CLMUL(_mm_and_si128(x1, mask), poly, 0x10);
+    t  = CRC_CLMUL(_mm_and_si128(t, mask), poly, 0x00);
+    x1 = _mm_xor_si128(x1, t);
+    u32 crc = (u32)_mm_cvtsi128_si32(_mm_srli_si128(x1, 4));
+    return crc32_slice8(~crc, p, len);
+}
+
 __attribute((target("pclmul,sse2")))
 static u32 crc32_pclmul(u32 crc, u8 const *p, iz len)
 {
     assert(len >= 64);
+    __m128i k1k2 = _mm_set_epi64x(0x1c6e41596, 0x154442bd4);  // 512
+    __m128i k3k4 = _mm_set_epi64x(0x0ccaa009e, 0x1751997d0);  // 128
 
-    #define LOAD(q)       _mm_loadu_si128((__m128i const *)(q))
-    #define CLMUL(a, b, i) _mm_clmulepi64_si128(a, b, i)
-    __m128i k1k2 = _mm_set_epi64x(0x1c6e41596, 0x154442bd4);
-    __m128i k3k4 = _mm_set_epi64x(0x0ccaa009e, 0x1751997d0);
-    __m128i k5   = _mm_set_epi64x(0,           0x163cd6124);
-    __m128i poly = _mm_set_epi64x(0x1f7011641, 0x1db710641);
-    __m128i mask = _mm_setr_epi32(-1, 0, -1, 0);
-
-    __m128i x1 = _mm_xor_si128(LOAD(p), _mm_cvtsi32_si128((i32)~crc));
-    __m128i x2 = LOAD(p+16);
-    __m128i x3 = LOAD(p+32);
-    __m128i x4 = LOAD(p+48);
+    __m128i x1 = _mm_xor_si128(CRC_LOAD(p), _mm_cvtsi32_si128((i32)~crc));
+    __m128i x2 = CRC_LOAD(p+16);
+    __m128i x3 = CRC_LOAD(p+32);
+    __m128i x4 = CRC_LOAD(p+48);
     p += 64;
     len -= 64;
 
     // Fold 512 bits forward by 512 bits per step
     for (; len >= 64; p += 64, len -= 64) {
-        __m128i t1 = CLMUL(x1, k1k2, 0x00);
-        __m128i t2 = CLMUL(x2, k1k2, 0x00);
-        __m128i t3 = CLMUL(x3, k1k2, 0x00);
-        __m128i t4 = CLMUL(x4, k1k2, 0x00);
-        x1 = _mm_xor_si128(_mm_xor_si128(CLMUL(x1, k1k2, 0x11), t1), LOAD(p+ 0));
-        x2 = _mm_xor_si128(_mm_xor_si128(CLMUL(x2, k1k2, 0x11), t2), LOAD(p+16));
-        x3 = _mm_xor_si128(_mm_xor_si128(CLMUL(x3, k1k2, 0x11), t3), LOAD(p+32));
-        x4 = _mm_xor_si128(_mm_xor_si128(CLMUL(x4, k1k2, 0x11), t4), LOAD(p+48));
+        __m128i t1 = CRC_CLMUL(x1, k1k2, 0x00);
+        __m128i t2 = CRC_CLMUL(x2, k1k2, 0x00);
+        __m128i t3 = CRC_CLMUL(x3, k1k2, 0x00);
+        __m128i t4 = CRC_CLMUL(x4, k1k2, 0x00);
+        x1 = _mm_xor_si128(_mm_xor_si128(CRC_CLMUL(x1, k1k2, 0x11), t1), CRC_LOAD(p+ 0));
+        x2 = _mm_xor_si128(_mm_xor_si128(CRC_CLMUL(x2, k1k2, 0x11), t2), CRC_LOAD(p+16));
+        x3 = _mm_xor_si128(_mm_xor_si128(CRC_CLMUL(x3, k1k2, 0x11), t3), CRC_LOAD(p+32));
+        x4 = _mm_xor_si128(_mm_xor_si128(CRC_CLMUL(x4, k1k2, 0x11), t4), CRC_LOAD(p+48));
     }
 
-    // Merge the four lanes, then fold in remaining 16-byte blocks
-    #define FOLD(x, y) \
-        _mm_xor_si128(_mm_xor_si128(CLMUL(x, k3k4, 0x11), CLMUL(x, k3k4, 0x00)), y)
-    x1 = FOLD(x1, x2);
-    x1 = FOLD(x1, x3);
-    x1 = FOLD(x1, x4);
-    for (; len >= 16; p += 16, len -= 16) {
-        x1 = FOLD(x1, LOAD(p));
-    }
-
-    // Reduce 128 bits to 64, then Barrett reduction to 32
-    __m128i t = CLMUL(x1, k3k4, 0x10);
-    x1 = _mm_xor_si128(_mm_srli_si128(x1, 8), t);
-    t  = _mm_srli_si128(x1, 4);
-    x1 = _mm_xor_si128(CLMUL(_mm_and_si128(x1, mask), k5, 0x00), t);
-    t  = CLMUL(_mm_and_si128(x1, mask), poly, 0x10);
-    t  = CLMUL(_mm_and_si128(t, mask), poly, 0x00);
-    x1 = _mm_xor_si128(x1, t);
-    crc = (u32)_mm_cvtsi128_si32(_mm_srli_si128(x1, 4));
-    #undef FOLD
-    #undef CLMUL
-    #undef LOAD
-
-    return crc32_slice8(~crc, p, len);
+    // Merge the four lanes
+    x1 = CRC_FOLD(x1, k3k4, x2);
+    x1 = CRC_FOLD(x1, k3k4, x3);
+    x1 = CRC_FOLD(x1, k3k4, x4);
+    return crc32_pclmul_end(x1, p, len);
 }
 
-// Asks the CPU through *cpu, unless the target always has PCLMULQDQ
-// (-mpclmul, or a -march with it), when there is nothing to ask.
+// The same with VPCLMULQDQ on 256-bit lanes: four of them, 128 bytes a
+// step, merged pairwise down to one 128-bit lane. Used only for long
+// enough updates (CRC32_YMM_MIN), where the ymm setup and the merge pay.
+#define CRC_YLOAD(q)        _mm256_loadu_si256((__m256i const *)(q))
+#define CRC_YCLMUL(a, b, i) _mm256_clmulepi64_epi128(a, b, i)
+#define CRC_YFOLD(x, k, y)  _mm256_xor_si256(_mm256_xor_si256( \
+    CRC_YCLMUL(x, k, 0x11), CRC_YCLMUL(x, k, 0x00)), y)
+#define CRC_YK(lo, hi)      _mm256_set_epi64x(hi, lo, hi, lo)
+#define CRC32_YMM_MIN 128
+
+__attribute((target("vpclmulqdq,avx2,pclmul")))
+static u32 crc32_vpclmul(u32 crc, u8 const *p, iz len)
+{
+    assert(len >= 128);
+    __m256i k1024 = CRC_YK(0x1e88ef372, 0x14a7fe880);
+    __m256i k512  = CRC_YK(0x154442bd4, 0x1c6e41596);
+    __m256i k256  = CRC_YK(0x0f1da05aa, 0x15a546366);
+    __m128i k3k4  = _mm_set_epi64x(0x0ccaa009e, 0x1751997d0);
+
+    __m256i y0 = _mm256_setr_epi32((i32)~crc, 0, 0, 0, 0, 0, 0, 0);
+    __m256i y1 = _mm256_xor_si256(CRC_YLOAD(p), y0);
+    __m256i y2 = CRC_YLOAD(p+32);
+    __m256i y3 = CRC_YLOAD(p+64);
+    __m256i y4 = CRC_YLOAD(p+96);
+    p += 128;
+    len -= 128;
+
+    // Fold 1024 bits forward by 1024 bits per step
+    for (; len >= 128; p += 128, len -= 128) {
+        y1 = CRC_YFOLD(y1, k1024, CRC_YLOAD(p+ 0));
+        y2 = CRC_YFOLD(y2, k1024, CRC_YLOAD(p+32));
+        y3 = CRC_YFOLD(y3, k1024, CRC_YLOAD(p+64));
+        y4 = CRC_YFOLD(y4, k1024, CRC_YLOAD(p+96));
+    }
+
+    // Merge to two lanes, then one, taking in what fits along the way
+    y1 = CRC_YFOLD(y1, k512, y3);
+    y2 = CRC_YFOLD(y2, k512, y4);
+    if (len >= 64) {
+        y1 = CRC_YFOLD(y1, k512, CRC_YLOAD(p+ 0));
+        y2 = CRC_YFOLD(y2, k512, CRC_YLOAD(p+32));
+        p += 64;
+        len -= 64;
+    }
+    y1 = CRC_YFOLD(y1, k256, y2);
+    if (len >= 32) {
+        y1 = CRC_YFOLD(y1, k256, CRC_YLOAD(p));
+        p += 32;
+        len -= 32;
+    }
+    __m128i lo = _mm256_castsi256_si128(y1);
+    __m128i hi = _mm256_extracti128_si256(y1, 1);
+    return crc32_pclmul_end(CRC_FOLD(lo, k3k4, hi), p, len);
+}
+
+// Asks the CPU through *cpu, unless the target always has the
+// instructions (-mpclmul, -mvpclmulqdq -mavx2, or a -march with them),
+// when there is nothing to ask.
 static u32 crc32_update(u32 crc, u8 const *p, iz len, i32 *cpu)
 {
-    if (len >= 64) {
-#if __PCLMUL__ && __SSE2__
-        (void)cpu;
-        return crc32_pclmul(crc, p, len);
-#else
-        if (cpu_features(cpu) & CPU_PCLMUL) {
-            return crc32_pclmul(crc, p, len);
-        }
-#endif
+    if (len < 64) {
+        return crc32_slice8(crc, p, len);
     }
+#if __VPCLMULQDQ__ && __AVX2__
+    (void)cpu;
+    if (len >= CRC32_YMM_MIN) {
+        return crc32_vpclmul(crc, p, len);
+    }
+    return crc32_pclmul(crc, p, len);
+#else
+#  if __PCLMUL__ && __SSE2__
+    if (len < CRC32_YMM_MIN) {
+        return crc32_pclmul(crc, p, len);
+    }
+#  endif
+    i32 f = cpu_features(cpu);
+    if (len>=CRC32_YMM_MIN && (f & CPU_VPCLMUL)) {
+        return crc32_vpclmul(crc, p, len);
+    } else if (f & CPU_PCLMUL) {
+        return crc32_pclmul(crc, p, len);
+    }
+#  if __PCLMUL__ && __SSE2__
+    return crc32_pclmul(crc, p, len);
+#  else
     return crc32_slice8(crc, p, len);
+#  endif
+#endif
 }
 #else
 static u32 crc32_update(u32 crc, u8 const *p, iz len, i32 *cpu)
@@ -558,15 +649,23 @@ static u32 crc32_update(u32 crc, u8 const *p, iz len, i32 *cpu)
 // the table 1.9 us; at 2 KiB, 1.2 and 1.0). Shorter updates take the
 // table, CPU_ASKED alone meaning "none" to crc32_update, unless the
 // target always has the instructions (ARMv8 CRC, or PCLMUL as above).
-// Longer ones ask only for PCLMULQDQ, which takes one CPUID fewer.
-#define CRC32_ASK_MIN 4096
+// Longer ones ask only for PCLMULQDQ, which takes one CPUID fewer, up
+// to CRC32_ASK_YMM_MIN, from which the third CPUID (and XGETBV) for
+// VPCLMULQDQ pays: at 32 KiB, asking for both and folding with ymm took
+// 1.37 us, asking for PCLMULQDQ alone and folding 1.49 us.
+#define CRC32_ASK_MIN     4096
+#define CRC32_ASK_YMM_MIN 32768
 
 [[maybe_unused]] static u32 crc32_stateless(u32 crc, u8 const *p, iz len)
 {
     i32 cpu = CPU_ASKED;
-#if (__x86_64__ || __i386__) && !(__PCLMUL__ && __SSE2__)
-    if (len >= CRC32_ASK_MIN) {
+#if (__x86_64__ || __i386__) && !(__VPCLMULQDQ__ && __AVX2__)
+    if (len >= CRC32_ASK_YMM_MIN) {
+        cpu = cpu_ask(CPU_PCLMUL | CPU_VPCLMUL);
+#  if !(__PCLMUL__ && __SSE2__)
+    } else if (len >= CRC32_ASK_MIN) {
         cpu = cpu_ask(CPU_PCLMUL);
+#  endif
     }
 #endif
     return crc32_update(crc, p, len, &cpu);

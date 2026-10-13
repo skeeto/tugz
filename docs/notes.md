@@ -99,8 +99,30 @@ on the i9-12900) and in WSL2 (650 ns). Library inflate into 256-byte
 output buffers there ran at 258 MB/s, and now at 772, and into 4 KiB at
 698, now 790.
 
-The answer is a feature mask (`CPU_ASKED`, `CPU_PCLMUL`, `CPU_BMI2`;
-`cpu_features` in `src/crc32.c`), zero until asked, and every feature
+Where the CPU also has VPCLMULQDQ and AVX2, and the OS saves the ymm
+registers, a second folding function, `crc32_vpclmul` under
+`target("vpclmulqdq,avx2,pclmul")`, folds four 256-bit lanes, 128 bytes
+a step, and merges them into the same 128-bit reduction
+(`crc32_pclmul_end`); it takes updates of 128 bytes or more
+(`CRC32_YMM_MIN`). CPUID's AVX2 and VPCLMULQDQ bits are not enough: the
+OS must have enabled the ymm state, which XGETBV (present when CPUID
+says OSXSAVE) reads from XCR0, whose SSE and AVX bits must both be set.
+Windows XP never sets them, so it never takes this path. On the
+i9-12900 (w64devkit GCC 16) it runs at 77-80 GB/s from 4 KiB, against
+38-40 for the 128-bit fold. `gzip -d` of Silesia (bench, decompression
+of our level 1, 6 and 9 output) gained 1.47%, 1.57% and 1.56%, 10/10
+rounds each, compression unchanged (+0.06..+0.26%) and output
+identical; streams of 100 B to 64 KiB +0.04..+1.0% (64 KiB 10/10);
+library gzip-format decode +1.16% (10/10). Both paths are checked
+against slicing-by-8 at every length to 1024 and alignment to 63 by
+`test_crc_paths`, which forces each feature mask the CPU has. No QEMU
+CPU model has VPCLMULQDQ, so there it only showed that the ymm path is
+skipped where XCR0 or CPUID lack it. An 8-lane 128-bit PCLMUL fold, for
+CPUs without VPCLMULQDQ, was not pursued: after the 4-lane fold, the CRC
+is so small a share of decoding that it could gain at most about 0.1%.
+
+The answer is a feature mask (`CPU_ASKED`, `CPU_PCLMUL`, `CPU_BMI2`,
+`CPU_VPCLMUL`; `cpu_features` in `src/crc32.c`), zero until asked, and every feature
 is asked for at once, CPUID leaves 0, 1 and 7, the first time any is
 needed. On x86-64, inflate's DEFLATE fast loop (`decode_fast_as`, wide
 and narrow) is also compiled under `target("bmi2")`, which GCC and Clang
@@ -134,13 +156,17 @@ i9-12900 under VBS: CPUID 1.05 us, slicing-by-8 0.46 ns/byte, PCLMUL
 0.04-0.05. At 2 KiB, asking and folding took 1.2 us against the table's
 1.0; at 4 KiB 1.6 against 1.9; at 64 KiB 3.5 against 30. Natively CPUID
 costs about 100 cycles, so there shorter calls forgo up to 10x (452 ns
-against 41 at 1 KiB), but are never slower than the table. Two other designs
-were rejected: a cache in a global, even a relaxed atomic one, would be
+against 41 at 1 KiB), but are never slower than the table. From 32 KiB
+(`CRC32_ASK_YMM_MIN`) it asks for VPCLMULQDQ too, the third CPUID and
+XGETBV paying there: at 32 KiB, asking for both and folding with ymm
+took 1.37 us, asking for PCLMULQDQ alone and folding 1.49. Two other
+designs were rejected: a cache in a global, even a relaxed atomic one, would be
 the core's first mutable global state, against the header's promise of
 independent states and none global; and a caller-held cache argument
 would expose an implementation detail that ARM and `-mpclmul` builds
 ignore. Where the target has PCLMUL (`-mpclmul`, or a `-march` with it),
-`crc32_update` now uses it without asking, for every caller. Unlike
+`crc32_update` now uses it without asking, for every caller, and where
+it also has VPCLMULQDQ and AVX2, the ymm fold as well. Unlike
 zlib's, which return their start values (0 and 1) for a null pointer,
 `tugz_crc32` and `tugz_adler32` return the check passed for any call
 with no data, so a null pointer needs no special case in a chain.
