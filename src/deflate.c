@@ -292,39 +292,60 @@ static void min_redundancy(u32 *w, i32 n)
 static void huff_build(htree *t, u32 const *freq, i32 n, i32 maxlen)
 {
     assert(n <= 288);
-    i32 syms[288];
+    u16 sa[288];
+    u16 sb[288];
     u32 w[288];
     i32 m = 0;
 
     for (i32 i = 0; i < n; i++) {
         t->len[i] = 0;
         if (freq[i]) {
-            syms[m++] = i;
+            sa[m++] = (u16)i;
         }
     }
     for (i32 i = 0; m < 2; i++) {
         if (!freq[i]) {
-            syms[m++] = i;
+            sa[m++] = (u16)i;
         }
+    }
+    if (sa[0] > sa[1]) {
+        u16 s = sa[0];  // a filler below the one used symbol
+        sa[0] = sa[1];
+        sa[1] = s;
     }
 
-    // Insertion sort by weight, ties by symbol
+    // Sort by weight (unused fillers weigh 1), ties by symbol: symbols
+    // start in order, and an LSD radix sort on the weight's bytes, being
+    // stable, keeps ties so. O(n) rather than an insertion sort's O(n^2).
+    #define HUFF_W(s) (freq[s] ? freq[s] : 1)
+    u32 maxw = 0;
     for (i32 i = 0; i < m; i++) {
-        i32 s  = syms[i];
-        u32 ws = freq[s] ? freq[s] : 1;
-        i32 j  = i;
-        for (; j > 0; j--) {
-            i32 p  = syms[j-1];
-            u32 wp = freq[p] ? freq[p] : 1;
-            if (wp<ws || (wp==ws && p<s)) {
-                break;
-            }
-            syms[j] = p;
-            w[j] = wp;
-        }
-        syms[j] = s;
-        w[j] = ws;
+        maxw = MAX(maxw, HUFF_W(sa[i]));
     }
+    u16 *syms = sa;
+    u16 *tmp  = sb;
+    for (i32 shift = 0; shift<32 && maxw>>shift; shift += 8) {
+        u16 cnt[256] = {0};
+        for (i32 i = 0; i < m; i++) {
+            cnt[HUFF_W(syms[i])>>shift & 255]++;
+        }
+        u16 sum = 0;
+        for (i32 i = 0; i < 256; i++) {
+            u16 c = cnt[i];
+            cnt[i] = sum;
+            sum = (u16)(sum + c);
+        }
+        for (i32 i = 0; i < m; i++) {
+            tmp[cnt[HUFF_W(syms[i])>>shift & 255]++] = syms[i];
+        }
+        u16 *x = syms;
+        syms = tmp;
+        tmp = x;
+    }
+    for (i32 i = 0; i < m; i++) {
+        w[i] = HUFF_W(syms[i]);
+    }
+    #undef HUFF_W
 
     min_redundancy(w, m);
 
