@@ -99,17 +99,24 @@ static void *bytefill(void *dst, i32 c, iz len)
 // Explicit little-endian accesses; each compiles to a single unaligned
 // load or store on little-endian targets. Always inlined: GCC would
 // otherwise leave load64le a call inside inflate's and deflate's loops.
+// store64le names each byte: GCC -O2 merges such stores into one, but
+// left a loop over them as eight byte stores in deflate's bit writer.
 [[gnu::always_inline]] static inline u64 load64le(u8 const *p)
 {
     return (u64)p[0]     | (u64)p[1]<< 8 | (u64)p[2]<<16 | (u64)p[3]<<24 |
            (u64)p[4]<<32 | (u64)p[5]<<40 | (u64)p[6]<<48 | (u64)p[7]<<56;
 }
 
-static void store64le(u8 *p, u64 v)
+[[gnu::always_inline]] static inline void store64le(u8 *p, u64 v)
 {
-    for (i32 i = 0; i < 8; i++) {
-        p[i] = (u8)(v >> (8*i));
-    }
+    p[0] = (u8)(v      );
+    p[1] = (u8)(v >>  8);
+    p[2] = (u8)(v >> 16);
+    p[3] = (u8)(v >> 24);
+    p[4] = (u8)(v >> 32);
+    p[5] = (u8)(v >> 40);
+    p[6] = (u8)(v >> 48);
+    p[7] = (u8)(v >> 56);
 }
 
 // Called when memory runs out.
