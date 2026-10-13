@@ -731,7 +731,7 @@ static void store64(u8 *p, u64 v)
     u8 *out    = win + s->wpos;
     u8 *outlim = win + (d64 ? INF64_WINCAP-INF64_SLACK : INF_WINCAP-INF_SLACK);
     u64 bb = s->bitbuf;
-    i32 bc = s->bitcnt;
+    u32 bc = (u32)s->bitcnt;  // only its low 6 bits count: see CONSUME
     u32 const *lte = lt->entries;
     u32 const *dte = dt->entries;
     u32 lmask = wide ? (1u << LIT_ROOT) - 1 : lt->mask;
@@ -758,13 +758,24 @@ static void store64(u8 *p, u64 v)
     // lengths alike, and its entry is then looked up at the top of an
     // iteration, which takes it as any other, with no bits yet consumed
     // since the refill.
+    //
+    // Consuming an entry subtracts the whole entry from bc, as libdeflate
+    // does, so only bc's low 6 bits count. An entry's low 6 bits are its
+    // total, bit 5 being clear but in Deflate64's distances (F_HI), and a
+    // 64-bit shift ignores the rest of its count on x86-64 and ARM64. So
+    // no mask lies between loading an entry and the shift that consumes
+    // it, on the path from one code's lookup to the next. Deflate64's
+    // distances take the mask (CONSUME31).
     #define REFILL() \
-        bb |= load64le(in) << bc; \
-        in += (63 - bc) >> 3; \
+        bb |= load64le(in) << (bc & 63); \
+        in += 7 - (bc>>3 & 7); \
         bc |= 56
     #define CONSUME(e) \
+        bb >>= (e) & 63; \
+        bc -= (e)
+    #define CONSUME31(e) \
         bb >>= ENT_TOTAL(e); \
-        bc -= ENT_TOTAL(e)
+        bc -= (u32)ENT_TOTAL(e)
     #define EXTRA(e) \
         (iz)(((u32)bb & ((1u << ENT_TOTAL(e)) - 1)) >> ENT_CODELEN(e))
 
@@ -805,7 +816,11 @@ static void store64(u8 *p, u64 v)
                     }
                 }
                 iz dist = (d64 ? ENT_VAL64(e) : ENT_VAL(e)) + EXTRA(e);
-                CONSUME(e);
+                if (d64) {
+                    CONSUME31(e);
+                } else {
+                    CONSUME(e);
+                }
                 if (dist > out-win) {
                     s->err = GZ_EDATA;
                     break;
@@ -833,13 +848,14 @@ static void store64(u8 *p, u64 v)
         }
     }
     #undef EXTRA
+    #undef CONSUME31
     #undef CONSUME
     #undef REFILL
 
     s->in = in;
     s->wpos = out - win;
     s->bitbuf = bb;
-    s->bitcnt = bc;
+    s->bitcnt = (i32)(bc & 63);
     inf_giveback(s);
     return eob;
 }
