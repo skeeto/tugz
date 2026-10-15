@@ -83,8 +83,9 @@ with unzip in `platform/zipfs_*.c`.
 | `test/seeds.py`          | fuzzing seed corpus generator                   |
 
 The only conditional compilation in the core is CPU architecture and
-feature tests in `src/crc32.c`, and inflate's BMI2 loops (below) in
-`src/inflate.c`. ARMv8 uses its CRC instructions when
+feature tests in `src/crc32.c`, inflate's BMI2 loops (below) in
+`src/inflate.c`, and Adler-32's SSE2 loop (below) in `src/adler32.c`.
+ARMv8 uses its CRC instructions when
 `__ARM_FEATURE_CRC32` is set (by default for Apple and most ARMv8.1+
 targets). On x86 with GCC or Clang, a PCLMULQDQ folding function is
 compiled with `__attribute((target("pclmul,sse2")))` and selected at run
@@ -170,6 +171,21 @@ it also has VPCLMULQDQ and AVX2, the ymm fold as well. Unlike
 zlib's, which return their start values (0 and 1) for a null pointer,
 `tugz_crc32` and `tugz_adler32` return the check passed for any call
 with no data, so a null pointer needs no special case in a chain.
+
+Adler-32, the zlib format's check, uses SSE2 wherever the target has it
+(`__SSE2__`: every x86-64 build; i686 only with `-msse2`, so the XP
+build keeps the scalar loop), with no CPUID: 32 bytes a step, psadbw
+summing the bytes into a and pmaddwd weighting them, 32 down to 1, into
+b, in blocks of at most 128 steps so the 16-bit lanes cannot overflow.
+On the i9-12900 it runs at 33.5 GB/s against about 4 for the scalar
+loop, and library decoding of zlib-format Silesia (level 6) gained
+19.0% (10/10 rounds, 905 to 1077 MB/s), raw and gzip formats within
+0.11%. The gzip and zip programs never compute it, but the first build
+cost their decoding 0.6-0.7% (10/10): with the vector loop out of line,
+GCC inlined `check_update`, which had held the scalar loop, into the
+stream loops. Kept out of line (`noinline`), the decoding functions'
+code is as before, and `gzip -d` of Silesia changed by -0.03..-0.08%,
+placement only.
 
 ## Library
 

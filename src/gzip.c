@@ -39,7 +39,9 @@ static u32 get32be(u8 const *p)
 }
 
 // The check of more data, with crc32_update's cache of the CPU's answer.
-static u32 check_update(i32 format, u32 check, u8 const *p, iz len,
+// Kept out of line: with the SSE2 Adler-32 out of line too, GCC inlined
+// this into the stream loops, which cost gzip decoding 0.6-0.7%.
+[[gnu::noinline]] static u32 check_update(i32 format, u32 check, u8 const *p, iz len,
                         i32 *cpu)
 {
     switch (format) {
