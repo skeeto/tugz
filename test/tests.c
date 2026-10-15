@@ -674,6 +674,66 @@ static i32 inflate_bits(os *ctx, arena a, bits *b, s8 *out)
 
 // Tests
 
+// Every CRC-32 path this CPU has, forced through the feature mask, at
+// every length to 1024 and some longer, at every alignment to 63,
+// against the table. A path the CPU lacks is skipped (it would trap).
+static void test_crc_paths(void)
+{
+    enum { MAX = (1<<20) + 77 };
+    u8 *p = randbytes(MAX + 64, 1);
+#if (__x86_64__ || __i386__) && !__ARM_FEATURE_CRC32
+    i32 all = cpu_ask(-1);
+#else
+    i32 all = CPU_ASKED;
+#endif
+    static i32 const masks[] = {
+        CPU_ASKED,
+        CPU_ASKED | CPU_PCLMUL,
+        CPU_ASKED | CPU_PCLMUL | CPU_VPCLMUL,
+    };
+    static iz const longer[] = {
+        1025, 1100, 2047, 4096, 4097, 65536+13, 100003, MAX,
+    };
+    for (i32 m = 0; m < countof(masks); m++) {
+        if ((masks[m] & all) != masks[m]) {
+            continue;
+        }
+        for (iz len = 0; len <= 1024; len++) {
+            for (i32 align = 0; align < 64; align++) {
+                i32 cpu = masks[m];
+                u32 want = crc32_slice8(0x9e3779b9, p+align, len);
+                u32 got  = crc32_update(0x9e3779b9, p+align, len, &cpu);
+                TEST(got==want && cpu==masks[m]);
+            }
+        }
+        for (i32 k = 0; k < countof(longer); k++) {
+            for (i32 align = 0; align < 64; align += 9) {
+                i32 cpu = masks[m];
+                iz len = longer[k];
+                u32 want = crc32_slice8(0, p+align, len);
+                TEST(crc32_update(0, p+align, len, &cpu) == want);
+            }
+        }
+    }
+
+    // Adler-32 (SSE2 on x86-64) against the scalar loop, and with sums
+    // near their limits: all 0xff, from the largest start value
+    for (iz len = 0; len <= 1024; len++) {
+        for (i32 align = 0; align < 64; align++) {
+            u32 want = adler32_scalar(0x12345678, p+align, len);
+            TEST(adler32_update(0x12345678, p+align, len) == want);
+        }
+    }
+    memset(p, 0xff, MAX);
+    for (i32 k = 0; k < countof(longer); k++) {
+        iz len = longer[k];
+        u32 want = adler32_scalar(0xfff0fff0, p+3, len);
+        TEST(adler32_update(0xfff0fff0, p+3, len) == want);
+        TEST(adler32_update(1, p, len) == (u32)adler32(1, p, (uInt)len));
+    }
+    free(p);
+}
+
 static void test_tables(void)
 {
     u32 table[256];
@@ -3853,6 +3913,7 @@ int main(void)
     }
 
     test_tables();
+    test_crc_paths();
     test_huffman();
     test_complete_codes(&ctx, a);
     test_inflate_vectors(&ctx, a);
