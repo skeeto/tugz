@@ -375,6 +375,30 @@ placement only.
   selects parameters and the zlib header, so `tugz_deflate_size` takes
   only the format. Per 100-byte gzip stream (M4 Max / Pi 4): deflate
   11.4 / 78 us after init, 2.5 / 21 us after reset.
+- Levels 1 and 2 find matches without chains, in buckets after
+  libdeflate's `ht_matchfinder`: each 4-byte hash keeps its most recent
+  position (level 1) or two (level 2, newest first), so a search is one
+  or two compares and an insertion a store or two. The buckets take the
+  hash heads' memory, and with two entries the 3-byte heads', which
+  follow them: the state does not grow, and the chain tables lie idle.
+  Entries are stamped as the heads' are, so slides and forgetting treat
+  them alike, but a reset may switch between layouts, so rehashing a
+  short history clears a position's slots in all of them (heads, 3-byte
+  heads, one- and two-entry buckets), whatever the level that wrote
+  them; `test_reset_switch` checks that no current entry survives a
+  reset from any layout to any other. A candidate counts only 1 to
+  MIN(p, 32768) back, which rules out empty and forgotten entries.
+  Matches are 4 bytes or longer, greedy, with positions inside them
+  inserted up to 16 bytes long; the next position's bucket, the one
+  after a match, and each inserted one are prefetched a step ahead. The
+  parse state (token pointer, block statistics) lives in locals, and the
+  loop's only bound is a position: the end, the block cap, or the last
+  position whose successor can be hashed, after which a careful tail
+  follows. These levels do not split blocks by statistics: a block ends
+  at 65,532 bytes of input (`BLOCK_CAP`), so it holds at most that many
+  tokens, and every block but the last holds more than `MIN_BLOCK`, as
+  `deflate_bound` requires. Splitting cost level 1 about 7% of its speed
+  for 0.15 points of ratio (numbers in the Performance log).
 - An inflator starts uncleared: the fixed codes' decoding tables are
   constants (`test_tables` checks them against `htable_build`), and
   every other field is written before it is read, so init sets only
@@ -2553,6 +2577,38 @@ and `match_at`, and +4-7% from `find_match` (ranges over levels 1-9). Clang gain
 compression +6-10%, decompression unchanged). Dropping any of these
 attributes brings its calls back.
 
+Bucket finder at levels 1 and 2 (2026-10, Q94; design under Library):
+the output changes at those levels only, trading ratio for speed within
+zlib's ratios. Silesia ratio: level 1 33.985% to 35.971% (zlib 1.3.1
+36.448%), level 2 33.640% to 34.950% (zlib 35.385%); levels 3-9 are
+byte-identical. Against the chains as Q93 left them, on biron (i9-12900,
+w64devkit GCC 16 -O2, one P-core, 10 ABBA rounds): level 1 215 to 354
+MB/s (+64.7%), level 2 202 to 309 MB/s (+53.0%), both 10/10; WSL clang
+19 +60.2% and +53.4%, the Mac (M4 Max, clang) +57.0% and +47.9%; levels
+3-9 within 0.2% natively. Small streams (bench `-s`, dickens, ooffice,
+xml, x-ray), compression natively: 100 B +11.7% and +10.2%, 1000 B +30%
+and +23%, 4 KiB +86% and +64%, 64 KiB +74% and +56%. Decompressing the
+new output differs only as the streams do: level 1's whole files decode
+5.1% slower per byte (more literals, at the higher ratio; with two
+entries, as at level 2, 0.9%), 100-byte streams 8.7% slower (more of them choose dynamic codes,
+whose tables cost more to build than the fixed codes', 179,000 against
+148,000 of 302,000 first blocks at level 1), and 1000 B to 64 KiB
+streams 7-12% faster. Decompression of unchanged streams (levels 6 and
+9) lost 0.33-0.35% natively and 1.0-1.1% in WSL with the inflate code
+identical (GCC 16 and clang 19 assembly compared), moved by the new
+code: master padded by unreachable bytes so that its inflate functions
+lie at the same addresses lost the same (natively -0.38% and -0.34%,
+WSL -1.01% and -0.90%). Knob screens (biron, 3 rounds, against one
+entry, insertion up to 16, 16 hash bits, no splitting): two entries at
+level 1 -12.6% for 0.96 points; insertion up to 8 +1.9% (36.180%), 32
+-1.3%, all -3.6%; 15 hash bits -3.5% and worse ratio, 14 bits worse
+than zlib on the Mac (36.467%); block splitting kept -6.5% for 0.145
+points; no prefetch after a match -0.4% (level 2 -2.9%), none in the
+insertion loop -0.7% (level 2 +0.5%); at level 2 nice 64 no change. The
+first version, with the parse state in the deflator's fields, was 6%
+slower natively (18% on the Mac) than the final one, with it in locals
+and a position as the loop's only bound.
+
 Things tried that did not help: inflate chunk size (64 KiB..1 MiB, no
 difference), hash table 14..17 bits (16 is best; 17 is ~3% faster within
 noise for twice the memory), shallower 3-byte chains at level 1.
@@ -2562,9 +2618,9 @@ Remaining opportunities:
 - Decompression is ~83% of zlib and ~77% of libdeflate. The decode loop
   is bound by the lookup->shift->lookup dependency; multi-symbol tables
   (two literals per entry) would be the next step.
-- Level 1 is half libdeflate's speed: per-position overhead (two hash
-  chain insertions, chain walk) dominates, not search depth. A
-  chainless, bucketed hash table for the fast levels is the likely fix.
+- Level 1 was half libdeflate's speed, dominated by per-position
+  overhead (two hash chain insertions, chain walk) rather than search
+  depth; levels 1 and 2 now use a chainless bucket finder (above).
 - High levels: libdeflate's lazy2 and near-optimal parsing reach
   ~0.2-0.4 points better ratio.
 

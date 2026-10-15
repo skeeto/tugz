@@ -1570,8 +1570,10 @@ static void test_reset(void)
 // as new ones: after a dense history (which, were sampling to see its
 // 3-byte heads, would flip the next stream's choice of 3-byte matching),
 // across the clearing, and long enough to slide the window past older
-// entries.
-static void test_reset_stamps(void)
+// entries. At a chain level (3, which samples for 3-byte matching), and
+// at the bucket finder's levels (1 and 2, whose entries fill the 3-byte
+// heads too, as the buckets span head and head3).
+static void test_reset_stamps_at(int level)
 {
     iz n = (iz)1100000;  // past the window
     u8 *rnd = randbytes(n, 15);
@@ -1582,30 +1584,31 @@ static void test_reset_stamps(void)
     }
     u8 *zeros = calloc(2000, 1);
     tugz_deflator *d;
-    void *mem = mem_deflator(TUGZ_RAW, 1, &d);
+    void *mem = mem_deflator(TUGZ_RAW, level, &d);
     deflator *def = d->e->def;
+    b32 chains = !def->lvl.bucket;
 
     // Stamps whose many bits stand out in the 3-byte heads
     free(tcompress_with(d, rnd, 30000, 0, 0, 0, 0).s);  // stamp zero
-    TEST(!def->stamp && def->use3);
+    TEST(!def->stamp && def->use3==chains);
     while (def->stamp < 1023*STAMP_STEP) {
-        tugz_deflate_reset(d, 1);
+        tugz_deflate_reset(d, level);
         free(tcompress_with(d, zeros, 2000, 0, 0, 0, 0).s);
     }
-    tugz_deflate_reset(d, 1);
+    tugz_deflate_reset(d, level);
     free(tcompress_with(d, rnd, 1000000, 0, 0, 0, 0).s);
-    TEST(def->use3);
-    tugz_deflate_reset(d, 1);
-    buf ref = tcompress(TUGZ_RAW, 1, abc, 40000, 0, 0, 0, 0);
+    TEST(def->use3 == chains);
+    tugz_deflate_reset(d, level);
+    buf ref = tcompress(TUGZ_RAW, level, abc, 40000, 0, 0, 0, 0);
     buf c = tcompress_with(d, abc, 40000, 0, 0, 0, 0);
-    TEST(def->use3);
+    TEST(def->use3 == chains);
     TEST(same(c, ref.s, ref.len));
     free(c.s);
     free(ref.s);
 
     // Run the stamps out
     while (def->stamp != STAMP_LAST) {
-        tugz_deflate_reset(d, 1);
+        tugz_deflate_reset(d, level);
         free(tcompress_with(d, zeros, 2000, 0, 0, 0, 0).s);
     }
     tugz_deflate_reset(d, 9);
@@ -1622,8 +1625,8 @@ static void test_reset_stamps(void)
     // Long streams, with and without 3-byte matching
     for (i32 k = 0; k < 2; k++) {
         u8 *p = k ? abc : text;
-        ref = tcompress(TUGZ_RAW, 1, p, n, 0, 0, 0, 0);
-        tugz_deflate_reset(d, 1);
+        ref = tcompress(TUGZ_RAW, level, p, n, 0, 0, 0, 0);
+        tugz_deflate_reset(d, level);
         TEST(def->stamp);
         c = tcompress_with(d, p, n, 0, 0, 0, 0);
         TEST(same(c, ref.s, ref.len));
@@ -1636,6 +1639,67 @@ static void test_reset_stamps(void)
     free(abc);
     free(text);
     free(rnd);
+}
+
+static void test_reset_stamps(void)
+{
+    test_reset_stamps_at(3);
+    test_reset_stamps_at(1);
+    test_reset_stamps_at(2);
+}
+
+// The bucket finder (levels 1 and 2) and the chains (entries linked at
+// 3 and 4, distances from 5) share the hash tables, each laying entries
+// out its own way. A reset to any level after a stream at any other
+// still compresses as a new deflator: after a short history, which a
+// reset forgets by clearing the slots it wrote, in every layout, and a
+// long one (the stamp advances), sliding or not, with and without
+// 3-byte matching. No entry in either layout survives a reset as current.
+static void test_reset_switch(void)
+{
+    static int const levels[] = {1, 2, 3, 4, 6};
+    static iz const lens[] = {200, 1000, 5000, 1100000};
+    iz n = 1100000;
+    u8 *text = textbytes(n, 30);
+    u8 *abc = randbytes(n, 31);
+    for (iz i = 0; i < n; i++) {
+        abc[i] = (u8)('a' + abc[i]%11);
+    }
+    iz m = 20000;
+    for (i32 k = 0; k < 2; k++) {
+        u8 *next = k ? text+n-m : abc+n-m;
+        for (i32 b = 0; b < countof(levels); b++) {
+            buf ref = tcompress(TUGZ_RAW, levels[b], next, m, 0, 0, 0, 0);
+            for (i32 a = 0; a < countof(levels); a++) {
+                tugz_deflator *d;
+                void *mem = mem_deflator(TUGZ_RAW, levels[a], &d);
+                for (i32 l = 0; l < countof(lens); l++) {
+                    if (lens[l]==n && a!=(b+k)%countof(levels)) {
+                        continue;  // slow: one long history per target
+                    }
+                    tugz_deflate_reset(d, levels[a]);
+                    free(tcompress_with(d, l&1 ? abc : text, lens[l],
+                                        0, 0, 0, 0).s);
+                    tugz_deflate_reset(d, levels[b]);
+                    // Every entry, in either layout, is empty or older
+                    // than the stamp (head3 follows head)
+                    deflator *def = d->e->def;
+                    b32 old = 1;
+                    for (i32 i = 0; i < 2*HASH_SIZE; i++) {
+                        old &= def->head[i] <= def->stamp;
+                    }
+                    TEST(old);
+                    buf c = tcompress_with(d, next, m, 0, 0, 0, 0);
+                    TEST(same(c, ref.s, ref.len));
+                    free(c.s);
+                }
+                free(mem);
+            }
+            free(ref.s);
+        }
+    }
+    free(abc);
+    free(text);
 }
 
 // A reset inflator decodes as a new one, after its previous stream ended,
@@ -1755,12 +1819,13 @@ static void test_inflate_init(void)
 // Init leaves a deflator's chain links and tokens uncleared, so it must
 // compress alike from memory holding anything, though slides rebase
 // links never written (at the levels linking by entries; level 6 links
-// by distances, which slides leave alone). In runs of zeros, level 1
-// inserts only the start of each 258-byte match, so only even chain
+// by distances, which slides leave alone). In runs of zeros, level 3
+// inserts only the start of each 258-byte match, so only some chain
 // slots are written, both with 3-byte matching (chosen by sampling noise
-// and zeros) and without (all zeros). The last pass uses memory as
-// malloc returns it, so that MemorySanitizer can check that unwritten
-// links decide nothing.
+// and zeros) and without (all zeros). Level 1's bucket finder has no
+// links and never matches 3 bytes, but leaves the tokens and the chain
+// tables as they were. The last pass uses memory as malloc returns it,
+// so that MemorySanitizer can check that unwritten links decide nothing.
 static void test_deflate_init(void)
 {
     iz n = 1300000;  // past the window
@@ -1769,7 +1834,7 @@ static void test_deflate_init(void)
     memset(p[1]+n/2, 'z', 1000);
     ptrdiff_t len = tugz_deflate_size(TUGZ_RAW);
     static u8 const fills[] = {0, 0xff, 0xa5};
-    static int const levels[] = {1, 6};
+    static int const levels[] = {1, 3, 6};
     for (i32 k = 0; k < 2; k++) {
         for (i32 l = 0; l < countof(levels); l++) {
             buf ref = {0};
@@ -1787,7 +1852,7 @@ static void test_deflate_init(void)
                     tugz_deflate_init(mem, len, TUGZ_RAW, levels[l]);
                 TEST(d);
                 buf c = tcompress_with(d, p[k], n, 0, 0, 0, 0);
-                TEST(d->e->def->use3 == !k);
+                TEST(d->e->def->use3 == (!k && levels[l]>2));
                 free(mem);
                 if (!fill) {
                     ref = c;
@@ -2646,6 +2711,7 @@ int main(void)
     test_large();
     test_reset();
     test_reset_stamps();
+    test_reset_switch();
     test_inflate_reset();
     test_inflate_init();
     test_held_output();

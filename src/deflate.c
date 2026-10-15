@@ -6,7 +6,9 @@
 // across calls. Hash chains store window-relative positions plus one
 // (zero is "none") plus a stamp (see forget), rebased whenever the
 // window slides, except that the levels that search deepest link their
-// chains by distances (see chain_link).
+// chains by distances (see chain_link), and the fastest levels keep a
+// bucket of recent positions per hash instead of chains (see
+// parse_bucket_with).
 //
 // Output is staged in a buffer from which the caller drains it. Each
 // emission step (one block, a window slide, or a flush) requires
@@ -37,6 +39,7 @@
 #define OBS_BATCH     512   // observations between block split checks
 #define MIN_BLOCK     10000 // minimum block size in bytes for splitting
 #define FORGET_REHASH 1024  // longest history to clear by rehashing
+#define BLOCK_CAP     65532 // bucket levels' block size in bytes
 #define NARROW_LEVEL  5     // levels from here on link by distances
 #define STAMP_STEP    (1u << 21)  // stamps' unit; see forget
 #define STAMP_LAST    (0u - STAMP_STEP)
@@ -65,22 +68,27 @@ typedef struct {
     i32 good;    // skip lazy evaluation, and shorten search, past this
     i32 depth3;  // 3-byte chain search depth
     i32 insert;  // insert positions inside matches up to this long
+    i32 bucket;  // entries per bucket of the bucket finder, or 0 (chains)
 } deflate_level;
 
 // Chosen from a sweep over Silesia: each level beats zlib's compression
-// ratio at the same level while running faster.
+// ratio at the same level while running faster. Levels 1 and 2 find
+// matches in buckets of one and two recent positions per hash (see
+// parse_bucket_with), the rest in hash chains; the bucket levels use
+// only nice and insert besides (nice, which stops a search, only with
+// two entries).
 static deflate_level const deflate_levels[10] = {
-    // depth nice lazy good depth3 insert
-    {   0,    0,  0,   0,    0,   0},
-    {   4,   16,  0,   4,    4,  16},
-    {   6,   32,  0,   8,    6,  16},
-    {   8,   32,  0,   8,    8,  32},
-    {   8,   32,  1,   8,    8, 258},
-    {  16,   64,  1,  16,   16, 258},
-    {  32,   64,  1,  16,   32, 258},
-    {  64,  128,  2,  32,   32, 258},
-    { 256,  258,  2,  64,   64, 258},
-    {1024,  258,  2, 258,  256, 258},
+    // depth nice lazy good depth3 insert bucket
+    {   0,    0,  0,   0,    0,   0, 0},
+    {   0,    0,  0,   0,    0,  16, 1},
+    {   0,   32,  0,   0,    0,  16, 2},
+    {   8,   32,  0,   8,    8,  32, 0},
+    {   8,   32,  1,   8,    8, 258, 0},
+    {  16,   64,  1,  16,   16, 258, 0},
+    {  32,   64,  1,  16,   32, 258, 0},
+    {  64,  128,  2,  32,   32, 258, 0},
+    { 256,  258,  2,  64,   64, 258, 0},
+    {1024,  258,  2, 258,  256, 258, 0},
 };
 
 typedef struct {
@@ -119,9 +127,9 @@ typedef struct {
     b32 sampled;
     b32 use3;
 
-    u32 *head;
+    u32 *head;    // or the buckets (see parse_bucket_with)
     u32 *prev;
-    u32 *head3;
+    u32 *head3;   // follows head
     u32 *prev3;
     u32 *seen;    // sample's bitmap of hashes, zero between samples
     u32  stamp;   // added to hash table entries; see forget
@@ -1284,8 +1292,207 @@ parse_with(deflator *d, iz end, b32 use3, b32 lazy, b32 narrow)
     parse_with(d, end, 1, 1, 1);
 }
 
+// The bucket finder of levels 1 and 2, after libdeflate's
+// ht_matchfinder: each 4-byte hash keeps its nb (1 or 2) most recent
+// positions, newest first, in a bucket of nb entries, so a search is at
+// most nb compares and an insertion a store or two, with no chain links.
+// The table, HASH_SIZE buckets, takes head, and with two entries head3
+// too, which follows it in memory; the chain levels' other tables lie
+// idle. Entries are positions plus one plus the stamp, as the heads'
+// (see forget), so an empty or forgotten entry lies farther back than
+// any match. Matches are 4 bytes or longer, found greedily, and the
+// positions inside a match are inserted up to the level's insert
+// length. Blocks are not split by statistics, which cost these levels
+// more time than their ratio was worth: a block ends once it holds
+// BLOCK_CAP bytes of input (or before a slide, or at a flush), so it
+// holds at most BLOCK_CAP tokens and, but for the last, more than
+// MIN_BLOCK bytes, as deflate_bound requires.
+_Static_assert(BLOCK_CAP<=TOK_LIMIT && BLOCK_CAP>=MIN_BLOCK, "block cap");
+
+// The bucket finder's state, in a local as the chains' finder is, with
+// the block's token pointer and statistics.
+typedef struct {
+    u8    *win;
+    u32   *t;
+    token *tok;    // next token
+    u32   *lit_freq;
+    u32   *dist_freq;
+    deflator *d;
+    iz     lim;    // positions below have HASH_LEN bytes to hash
+    u32    stamp1; // stamp plus one
+    u32    h;      // hash of the position in hand, when below lim
+    i32    nice;
+    i32    ins;
+} bfinder;
+
+#define BKT(f, h) ((f)->t + (iz)(h)*nb)
+
+// Search and insert position p, below lim, and emit its token. With
+// last, p+1 may be lim (else below), and has no hash. Returns the next
+// position, whose hash is then in f->h when below lim. Its bucket, and
+// those of positions inserted inside a match, are prefetched a step
+// ahead. A candidate is used only if 1 to MIN(p, WSIZE) back, which
+// rules out empty and forgotten entries (and a stale one at p itself).
+// Always inlined, with match_len, into an instance per entry count.
+[[gnu::always_inline]]
+static inline iz bkt_step(bfinder *f, iz p, i32 nb, b32 last)
+{
+    u8  *win  = f->win;
+    u32 *b    = BKT(f, f->h);
+    u32  c0   = b[0];
+    u32  c1   = nb==2 ? b[1] : 0;
+    u32  here = (u32)p + f->stamp1;
+    if (nb == 2) {
+        b[1] = c0;
+    }
+    b[0] = here;
+
+    u32 hn = 0;
+    if (!last || p+1<f->lim) {
+        hn = hash4(load32(win+p+1));
+        __builtin_prefetch(BKT(f, hn));
+    }
+
+    u32 maxd  = (u32)MIN(p, DEF_WSIZE);
+    u32 p4    = load32(win+p);
+    i32 best  = 0;
+    u32 bestd = 0;
+    u32 dist  = here - c0;
+    i32 maxlen = 0;
+    if (dist-1 < maxd && load32(win+p-dist)==p4) {
+        maxlen = (i32)MIN(f->d->win_len - p, MAX_MATCH);
+        best   = 4 + match_len(win+p-dist+4, win+p+4, maxlen-4);
+        bestd  = dist;
+    }
+    if (nb==2 && best<f->nice) {
+        dist = here - c1;
+        if (dist-1 < maxd) {
+            u8 const *c = win + p - dist;
+            if (!best) {
+                if (load32(c) == p4) {
+                    maxlen = (i32)MIN(f->d->win_len - p, MAX_MATCH);
+                    best   = 4 + match_len(c+4, win+p+4, maxlen-4);
+                    bestd  = dist;
+                }
+            } else if (best<maxlen &&
+                       load32(c+best-3)==load32(win+p+best-3) &&
+                       load32(c)==p4) {
+                i32 len = 4 + match_len(c+4, win+p+4, maxlen-4);
+                if (len > best) {
+                    best  = len;
+                    bestd = dist;
+                }
+            }
+        }
+    }
+
+    deflator *d = f->d;
+    if (!best) {
+        *f->tok++ = (token){(u8)p4, 0};
+        f->lit_freq[(u8)p4]++;
+        f->h = hn;
+        return p + 1;
+    }
+
+    *f->tok++ = (token){(u16)best, (u16)bestd};
+    f->lit_freq[257+lcode_of(d, best)]++;
+    f->dist_freq[dcode_of(d, (i32)bestd)]++;
+    iz q = p + best;
+    u32 hq = 0;
+    if (q < f->lim) {
+        hq = hash4(load32(win+q));
+        __builtin_prefetch(BKT(f, hq));
+    }
+    if (best <= f->ins) {
+        // Insert the match's later positions, hashing ahead
+        iz xe = MIN(q, f->lim);
+        u32 hx = hn;
+        for (iz x = p+1; x < xe; x++) {
+            u32 hy = hq;
+            if (x+1 < xe) {
+                hy = hash4(load32(win+x+1));
+                __builtin_prefetch(BKT(f, hy));
+            }
+            u32 *bx = BKT(f, hx);
+            if (nb == 2) {
+                bx[1] = bx[0];
+            }
+            bx[0] = (u32)x + f->stamp1;
+            hx = hy;
+        }
+    }
+    f->h = hq;
+    return q;
+}
+
+[[gnu::always_inline]]
+static inline void parse_bucket_with(deflator *d, iz end, i32 nb)
+{
+    iz p = d->pos;
+    assert(d->ins == p);
+    assert(d->blk_len < BLOCK_CAP);
+    bfinder f = {
+        .win       = d->win,
+        .t         = d->head,
+        .tok       = d->toks + d->ntok,
+        .lit_freq  = d->lit_freq,
+        .dist_freq = d->dist_freq,
+        .d         = d,
+        .lim       = d->win_len - (HASH_LEN - 1),
+        .stamp1    = d->stamp + 1,
+        .nice      = d->lvl.nice,
+        .ins       = d->lvl.insert,
+    };
+    if (!d->ntok) {
+        d->blk_start = d->base + (u64)p;
+    }
+    // Blocks grow by the input parsed, so the cap is a position. The
+    // main loop needs no bounds but its own; positions too near the end
+    // to hash the next (or themselves) follow.
+    iz p0  = p;
+    iz cap = p + (iz)(BLOCK_CAP - d->blk_len);
+    end = MIN(end, cap);
+    iz stop = MIN(end, f.lim-1);  // p+1 has a hash too
+    if (p < f.lim) {
+        f.h = hash4(load32(f.win+p));
+    }
+    while (p < stop) {
+        p = bkt_step(&f, p, nb, 0);
+    }
+    while (p < end) {
+        if (p < f.lim) {
+            p = bkt_step(&f, p, nb, 1);
+        } else {
+            *f.tok++ = (token){f.win[p], 0};
+            f.lit_freq[f.win[p]]++;
+            p++;
+        }
+    }
+    d->ntok     = f.tok - d->toks;
+    d->blk_len += (u64)(p - p0);
+    d->blkready = d->blk_len >= BLOCK_CAP;
+    d->pos = p;
+    d->ins = p;
+}
+#undef BKT
+
+[[gnu::noinline]] static void parse_bucket1(deflator *d, iz end)
+{
+    parse_bucket_with(d, end, 1);
+}
+
+[[gnu::noinline]] static void parse_bucket2(deflator *d, iz end)
+{
+    parse_bucket_with(d, end, 2);
+}
+
 static void parse(deflator *d, iz end)
 {
+    if (d->lvl.bucket) {
+        d->sampled = 1;
+        d->lvl.bucket==2 ? parse_bucket2(d, end) : parse_bucket1(d, end);
+        return;
+    }
     if (!d->sampled) {
         sample(d);
     }
@@ -1355,6 +1562,10 @@ static void slide(deflator *d)
 
     u32 s = (u32)shift;
     u32 lim = d->stamp + s;
+    if (d->lvl.bucket) {  // one or two entries a bucket, from head on
+        slide_table(d->head, HASH_SIZE*d->lvl.bucket, lim, s);
+        return;
+    }
     slide_table(d->head, HASH_SIZE, lim, s);
     if (!d->narrow) {
         slide_links(d->prev, lim, s);
@@ -1379,23 +1590,26 @@ static void slide(deflator *d)
 // reaches, as good as empty, even once a reset restarts positions at
 // zero. (A slide also empties older entries, all being at or below its
 // limit.) When the stamps run out, after 2,047 advances, the heads are
-// cleared after all.
+// cleared after all. Rehashing clears a position's slots in every layout
+// (the heads, the 3-byte heads, and buckets of one and two entries,
+// which span both), whatever the level that wrote them and whether it
+// sampled for 3-byte matching: a reset may change the level, before or
+// after forgetting, and so the layout.
 static void forget(deflator *d)
 {
     iz n = MIN(d->ins, d->win_len - (HASH_LEN - 1));
     if (n <= FORGET_REHASH) {
         for (iz p = 0; p < n; p++) {
             u32 v = load32(d->win + p);
-            d->head[hash4(v)] = 0;
-            if (d->use3) {
-                d->head3[hash3(v)] = 0;
-            }
+            u32 h = hash4(v);
+            d->head[h] = 0;
+            d->head3[hash3(v)] = 0;
+            d->head[2*h] = d->head[2*h+1] = 0;  // two-entry buckets
         }
     } else if (d->stamp < STAMP_LAST) {
         d->stamp += STAMP_STEP;
     } else {
-        bytefill(d->head, 0, HASH_SIZE*(iz)sizeof(u32));
-        bytefill(d->head3, 0, HASH_SIZE*(iz)sizeof(u32));
+        bytefill(d->head, 0, 2*HASH_SIZE*(iz)sizeof(u32));  // and head3
         d->stamp = 0;
     }
 }
@@ -1477,16 +1691,17 @@ static iz deflate_memsize(void)
 
 // Tokens are written before they are read, and chains lead only to links
 // that insertions wrote (see forget and slide_table), so of the large
-// tables only the hash heads (and the sampling bitmap) start zeroed.
+// tables only the hash heads (and the sampling bitmap) start zeroed. The
+// 3-byte heads follow the heads, and two-entry buckets span both.
 static deflator *deflate_new(arena *a, i32 level)
 {
     deflator *d = new(a, 1, deflator);
     deflate_setlevel(d, level);
     d->obuf  = newbytes(a, DEF_STAGE);
     d->win   = newbytes(a, WIN_CAP);
-    d->head  = new(a, HASH_SIZE, u32);
+    d->head  = alloc(a, 2*HASH_SIZE, sizeof(u32), 64, 1);  // and head3
+    d->head3 = d->head + HASH_SIZE;
     d->prev  = alloc(a, DEF_WSIZE, sizeof(u32), _Alignof(u32), 0);
-    d->head3 = new(a, HASH_SIZE, u32);
     d->seen  = new(a, HASH_SIZE/32, u32);
     d->prev3 = alloc(a, DEF_WSIZE, sizeof(u32), _Alignof(u32), 0);
     d->toks  = alloc(a, TOK_CAP, sizeof(token), _Alignof(token), 0);
