@@ -2535,7 +2535,9 @@ Fuzzers:
 Silesia corpus (211 MB), Apple M-series, in-memory, gzip format, best of
 repeated runs. Compression: ratio and MB/s. Decompression: MB/s, every
 decoder on the same zlib -6 stream. Baseline is the original algorithms
-(commit 824d6d5, after the restructure).
+(commit 824d6d5, after the restructure). This first table and the list
+after it are historical, from before the x86-64 work of 2026-10 (see
+"x86-64" below, which has the current figures for the Mac too).
 
 |                 | level 1      | level 6      | level 9      | decompress |
 |-----------------|--------------|--------------|--------------|-----------:|
@@ -2611,20 +2613,57 @@ and a position as the loop's only bound.
 
 Things tried that did not help: inflate chunk size (64 KiB..1 MiB, no
 difference), hash table 14..17 bits (16 is best; 17 is ~3% faster within
-noise for twice the memory), shallower 3-byte chains at level 1.
+noise for twice the memory), shallower 3-byte chains at level 1. On
+x86-64 (native A/B, as in "x86-64" below, unless noted):
+
+- Inlining: every candidate gained and was kept.
+- inflate copies at distances 2-7 by libdeflate-style overlapping word
+  stores advancing by the distance, without the pattern buffer and
+  division: do6 -0.37%, do9 -0.42% (0/10); the pattern kept in a
+  register instead: do6 -0.49%, do9 -0.66% (0/8); the Mac gained
+  0.6-1.0%. Such distances are 0.75% of Silesia's matches (a best case
+  near 0.25%), and the losses came from GCC's layout of the shared
+  loop.
+- deflate output: a per-block table of distance codes as well, levels
+  1-6 -0.25% to -0.35% (0-1/10).
+- Chain finder: lazy search from the match in hand while the filters
+  were still single bytes, -0.2% to -1.1% at every level (3 rounds;
+  the byte at the longer length more often lies in another cache
+  line); prefetching the next search's heads before inserting a
+  match's positions, no gain; hashing two positions ahead with the next
+  search's first candidate prefetched, 1-2% slower on the Mac;
+  distance links at every level, levels 1 and 4 -0.8% and -1.3% (3
+  rounds), hence entry links below level 5.
+- Bucket finder knobs (3-round screens, listed with the bucket finder
+  above): two entries at level 1, 15 or 14 hash bits, block splitting,
+  longer insertion limits, and dropping either prefetch.
+- Checksums: 8-lane PCLMULQDQ folding was not built, CRC-32 being too
+  small a share of decoding after the ymm fold for it to show (at most
+  0.1%).
+- Level 6: two lazy steps on a still shallower walk compressed faster
+  but made output that decodes about 1% slower: depth 19, nice 128,
+  good 64, two steps, 32.177%, compression +5.12% but do6 -0.87%
+  (0/10) in a full A/B; depth 20 with two steps 32.152%, +3.3%; depth
+  18 with three steps 32.183%, +5.5% (screens, 8 pinned runs each).
+  Raising good alone (depth 32, good 20) reached 32.184% but ran 0.9%
+  slower, and depth 20 with good 128 fell short of zlib (32.208%).
 
 Remaining opportunities:
 
-- Decompression is ~83% of zlib and ~77% of libdeflate. The decode loop
-  is bound by the lookup->shift->lookup dependency; multi-symbol tables
-  (two literals per entry) would be the next step.
+- Decompression of zlib's level 6 stream is 86% of libdeflate's speed
+  in WSL (1148 against 1339 MB/s, 2.4 times zlib 1.3.1's) and 84% on
+  the Mac (it was ~77% before 2026-10). The decode loop is bound by the
+  lookup->shift->lookup dependency; multi-symbol tables (two literals
+  per entry) would be the next step.
 - Level 1 was half libdeflate's speed, dominated by per-position
   overhead (two hash chain insertions, chain walk) rather than search
-  depth; levels 1 and 2 now use a chainless bucket finder (above).
+  depth; levels 1 and 2 now use a chainless bucket finder (above), and
+  level 1 runs at about libdeflate's speed (WSL gcc 14: 354 against 318
+  MB/s; clang 19: 343) at a worse ratio (35.97% against 34.68%).
 - High levels: libdeflate's lazy2 and near-optimal parsing reach
   ~0.2-0.4 points better ratio.
 
-Per-file results (final):
+Per-file results (historical, M-series, before 2026-10):
 
 ```
 file               size  O1:ours        Z1:zlib        L1:libdeflate  O6:ours        Z6:zlib        L6:libdeflate  O9:ours        Z9:zlib        L9:libdeflate   decompress MB/s (O/Z/L)
@@ -2683,3 +2722,151 @@ shared with other work, moves runs of 16 KiB and up by about 6%.) gzip
 4) interleaved runs: 10,000 files of 64 B to 8 KiB took 4-10% less (Pi
 4: 6-9%), 3,000 of 8-64 KiB 2-4% less (Pi 4: within 2.3% either way),
 and 20,000 of 200-360 B and the Silesia files one at a time no more.
+
+### x86-64 (i9-12900), 2026-10
+
+Single-threaded speed on x86-64 first, keeping only changes measured
+faster, under one rule for ratio: a level may give up ratio for speed
+only while its Silesia ratio stays better than zlib 1.3.1's at the same
+level. The machine is an i9-12900 (8 P-cores with SMT, 8 E-cores) under
+Windows 11: natively with w64devkit's GCC 16 (`-O2 -fno-builtin`), the
+compiler that builds the shipped Windows programs, and in WSL Debian
+with gcc 14 and clang 19 against zlib 1.3.1 and libdeflate 1.23.
+
+Method. `test/bench.c` times each codec in memory, the best of at least
+three runs per file and level, and prints machine-readable totals and
+each output's size and CRC (so two builds can be shown to produce
+identical output). An A/B driver (kept out of the repository) builds
+both sides from their own trees with the same flags and runs them in
+ABBA order, A B B A then B A A B, two processes per side per round,
+keeping each side's faster count per metric: 10 rounds natively, each
+process pinned to the first thread of one P-core (`start /affinity 4`),
+5 rounds in WSL (taskset) and on the Mac. A change was kept when its
+target metric won at least 9 of 10 native rounds with a median gain of
+at least 1%, no other metric lost more than 0.5% in median or lost 9
+rounds, and WSL clang and the Mac lost no more than 1% in median. A
+metric whose code was unchanged (GCC's assembly compared) could lose
+up to 0.25% to code placement alone. An A/A run (both sides master) set
+the noise floor: native medians within 0.1% (single rounds -0.8% to
++0.15%), WSL and Mac within 0.4% (single rounds up to about 1.8%, 2.6%
+once on the Mac). Natively about one process in ten runs 3-4.5% slow at
+compression for its whole life, hence two processes per side. Changes
+to table building, resets or state size were also timed on small
+streams (`bench -s`: files cut into pieces, each its own gzip stream,
+with one encoder and one decoder reset between streams).
+
+Before (37d43b6, the 1.0.0 codec) and after (640072f), Silesia TOTAL,
+natively (GCC 16, pinned, medians of 5 ABBA rounds, one bench.c for
+both):
+
+| level | ratio %         | MB/s          | change  |
+|-------|-----------------|---------------|--------:|
+| 1     | 33.985 -> 35.971 | 143.8 -> 355.6 | +147%   |
+| 2     | 33.640 -> 34.950 | 137.0 -> 308.5 | +125%   |
+| 3     | 33.268          | 129.8 -> 189.1 | +46%    |
+| 4     | 32.779          | 114.5 -> 168.6 | +47%    |
+| 5     | 32.382          |  98.9 -> 148.5 | +50%    |
+| 6     | 32.227 -> 32.178 |  86.9 -> 136.1 | +57%    |
+| 7     | 31.959          |  68.2 -> 104.4 | +53%    |
+| 8     | 31.782          |  48.8 ->  71.2 | +46%    |
+| 9     | 31.733          |  34.8 ->  49.6 | +42%    |
+| do1   |                 | 864 -> 1019    | +18%    |
+| do6   |                 | 888 -> 1102    | +24%    |
+| do9   |                 | 899 -> 1116    | +24%    |
+
+(`doL`: decompression of our own level L output, MB/s of output. Level
+1's output changed, so do1 decodes a different stream.)
+
+The same machine in WSL, one full bench run each (`-t 1`, pinned with
+taskset), tugz before and after, and the references (the after run's;
+dz6 is every decoder on zlib's level 6 stream):
+
+| level | tugz ratio %    | gcc 14 MB/s   | clang 19 MB/s | zlib 1.3.1     | libdeflate 1.23 |
+|-------|-----------------|---------------|---------------|----------------|-----------------|
+| 1     | 33.985 -> 35.971 | 150.3 -> 353.7 | 159.8 -> 342.8 | 36.448 @ 148.2 | 34.681 @ 317.6  |
+| 2     | 33.640 -> 34.950 | 143.9 -> 313.5 | 151.8 -> 302.5 | 35.385 @ 134.5 | 33.532 @ 240.1  |
+| 3     | 33.268          | 136.2 -> 193.8 | 143.3 -> 183.4 | 34.428 @ 104.8 | 33.108 @ 219.0  |
+| 4     | 32.779          | 120.9 -> 166.1 | 125.2 -> 159.4 | 33.496 @  99.8 | 32.780 @ 204.8  |
+| 5     | 32.382          | 104.3 -> 147.1 | 105.4 -> 131.7 | 32.628 @  73.0 | 32.165 @ 171.6  |
+| 6     | 32.227 -> 32.178 |  91.4 -> 135.1 |  91.5 -> 121.5 | 32.189 @  47.8 | 31.854 @ 141.0  |
+| 7     | 31.959          |  71.9 -> 104.1 |  71.6 ->  95.8 | 32.055 @  39.0 | 31.679 @ 102.7  |
+| 8     | 31.782          |  51.2 ->  71.2 |  50.4 ->  67.3 | 31.937 @  24.6 | 31.502 @  62.6  |
+| 9     | 31.733          |  36.1 ->  49.3 |  34.8 ->  47.8 | 31.917 @  19.1 | 31.479 @  50.0  |
+| do1   |                 | 883 -> 1044    | 944 -> 1035    |                |                 |
+| do6   |                 | 912 -> 1128    | 976 -> 1125    |                |                 |
+| do9   |                 | 922 -> 1142    | 987 -> 1138    |                |                 |
+| dz6   |                 | 927 -> 1147    | 992 -> 1148    | 473            | 1339            |
+
+The Mac (M4 Max, Apple clang, arm64), the same way, with Homebrew's zlib
+1.3.2 and libdeflate 1.26 (references from the after run; two runs of
+the same build differ by up to 2%):
+
+| level | tugz ratio %    | MB/s          | zlib 1.3.2     | libdeflate 1.26 |
+|-------|-----------------|---------------|----------------|-----------------|
+| 1     | 33.985 -> 35.971 | 188.6 -> 395.3 | 36.448 @ 173.1 | 34.681 @ 368.3  |
+| 2     | 33.640 -> 34.950 | 178.6 -> 352.1 | 35.385 @ 154.9 | 33.532 @ 272.6  |
+| 3     | 33.268          | 168.1 -> 221.3 | 34.428 @ 120.3 | 33.108 @ 244.5  |
+| 4     | 32.779          | 148.3 -> 191.4 | 33.496 @ 109.6 | 32.780 @ 228.1  |
+| 5     | 32.382          | 126.4 -> 168.7 | 32.628 @  76.9 | 32.165 @ 195.9  |
+| 6     | 32.227 -> 32.178 | 110.4 -> 155.1 | 32.189 @  55.1 | 31.854 @ 158.4  |
+| 7     | 31.959          |  85.1 -> 122.4 | 32.055 @  46.4 | 31.679 @ 115.9  |
+| 8     | 31.782          |  59.0 ->  85.1 | 31.937 @  30.5 | 31.502 @  69.5  |
+| 9     | 31.733          |  43.4 ->  61.2 | 31.917 @  22.7 | 31.479 @  56.3  |
+| do1   |                 | 1088 -> 1113   |                |                 |
+| do6   |                 | 1134 -> 1217   |                |                 |
+| do9   |                 | 1146 -> 1229   |                |                 |
+| dz6   |                 | 1152 -> 1238   | 630            | 1474            |
+
+Small streams natively (bench `-s`; dickens, ooffice, xml and x-ray cut
+into pieces; MB/s of input, medians of 5 ABBA rounds):
+
+| stream  | c1           | c6           | do1          | do6          |
+|---------|--------------|--------------|--------------|--------------|
+| 100 B   | 24.9 -> 30.6  | 24.8 -> 25.6  | 102.9 -> 97.9 | 103.0 -> 107.6 |
+| 1000 B  | 54.1 -> 104.7 | 51.5 -> 68.0  | 225.8 -> 281.1 | 228.0 -> 254.6 |
+| 4 KiB   | 81.5 -> 239.8 | 71.3 -> 108.1 | 369.3 -> 497.0 | 370.1 -> 444.3 |
+| 64 KiB  | 104.1 -> 269.7 | 70.5 -> 108.4 | 566.8 -> 756.5 | 575.5 -> 715.7 |
+
+(100-byte streams at level 1 decode 4.8% slower: more of them now
+choose dynamic codes, whose tables cost more to build; see the bucket
+finder above.)
+
+What each item contributed, natively (median of 10 ABBA rounds against
+the master of its time, 10/10 unless noted; details in each commit
+message):
+
+- Inlining under GCC (c12297e..e7e78e1; above): compression +8% (level
+  9) to +15% (level 4), decompression +9.5-10.6%. Mac compression
+  +6-10%.
+- inflate decode loop (02e991f..fafbd79): constant 11- and 8-bit root
+  masks, with tables widened by copies only when codes reach 11 bits;
+  root-only preloads with subtable links off the literal path; codes
+  consumed by subtracting their entries. Decompression +4.3-4.6%, small
+  streams +1.7% (100 B) to +8% (4 KiB); WSL +7.5%, Mac +8.3-8.9%.
+- BMI2 inflate (0f42b98): a `target("bmi2")` instance of the fast
+  loops, chosen by a CPU feature mask asked for once, lazily.
+  Decompression +5.9-6.3%; WSL +4.9-5.5%.
+- deflate output (88f2370..aaa4b16): `store64le` written out so GCC
+  merges its stores, `emit_tokens` with the bit writer in locals, a
+  radix sort in `huff_build`, a per-block table of length codes.
+  Compression +11% (level 1), +6% (level 6), +2% (level 9).
+- Chain finder, output identical (cd2e8a6..5ba3132, de1ce19): 32-bit
+  candidate filters at both ends of the match (+3.1-6.7% at every
+  level); lazy search from the match in hand (+1.3-4.0% at levels
+  5-9); insertion and search in one pass with the next hash carried and
+  prefetched, the finder's state in locals and four parse instances
+  (+11-13% at levels 1-6, +4.5% at 9); 16-bit distance links at levels
+  5-9 (+1.9% at 5 to +13.1% at 9).
+- Bucket finder at levels 1 and 2 (2d389f3; above): +64.7% and +53.0%
+  for ratio still better than zlib's.
+- Checksums (c0d250c..ce6c351): CRC-32 by VPCLMULQDQ on ymm lanes
+  where the OS saves them (decompression +1.5-1.6%); SSE2 Adler-32
+  (library decoding of the zlib format +19%).
+- Level 6 retune (640072f): from depth 32, nice 64, good 16 to depth
+  22, nice 128, good 128 (one lazy step as before): ratio 32.227% to
+  32.178%, now better than zlib's 32.189%, and compression +3.75%; its
+  output decodes 0.41% slower (0/10; the decoder is unchanged). Mac
+  +2.9%. Every level now beats zlib's ratio.
+
+The inflate copy item (no gain; see "Things tried" above) left only its
+test (818326a).

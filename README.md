@@ -6,8 +6,8 @@ A from-specification implementation of gzip ([RFC 1952][]), zlib ([RFC
 1950][]), and DEFLATE ([RFC 1951][]) in C11 with C23 attributes, for GCC
 or Clang, as a drop-in `gzip` command, a streaming library, and Info-ZIP
 compatible `zip` and `unzip`. It compresses faster than zlib at every
-level with equal or better ratios, and validates input exactly as
-strictly as zlib.
+level with better ratios, and validates input exactly as strictly as
+zlib.
 
 The core has no dependencies, no global state, no platform conditionals,
 and does no I/O. Each program is a unity build: a platform layer
@@ -516,13 +516,28 @@ and `-/`, among them text conversion, passwords, ZipInfo mode, and
 
 ## Performance
 
-Silesia corpus on Apple M-series, compression ratio @ MB/s:
+Silesia corpus, single-threaded, in memory, compression ratio @ MB/s,
+and decompression of zlib's level 6 output in MB/s. Intel i9-12900
+(WSL, gcc 14, zlib 1.3.1, libdeflate 1.23):
 
 | | level 1 | level 6 | level 9 | decompress |
 |---|---|---|---|---|
-| tugz | 34.0% @ 176 | 32.2% @ 102 | 31.7% @ 39 | 1049 |
-| zlib | 36.4% @ 166 | 32.2% @ 50 | 31.9% @ 20 | 1256 |
-| libdeflate | 34.7% @ 347 | 31.9% @ 147 | 31.5% @ 51 | 1359 |
+| tugz | 35.97% @ 354 | 32.18% @ 135 | 31.73% @ 49 | 1147 |
+| zlib | 36.45% @ 148 | 32.19% @ 48 | 31.92% @ 19 | 473 |
+| libdeflate | 34.68% @ 318 | 31.85% @ 141 | 31.48% @ 50 | 1339 |
+
+Apple M4 Max (clang, zlib 1.3.2, libdeflate 1.26):
+
+| | level 1 | level 6 | level 9 | decompress |
+|---|---|---|---|---|
+| tugz | 35.97% @ 395 | 32.18% @ 155 | 31.73% @ 61 | 1238 |
+| zlib | 36.45% @ 173 | 32.19% @ 55 | 31.92% @ 23 | 630 |
+| libdeflate | 34.68% @ 368 | 31.85% @ 158 | 31.48% @ 56 | 1474 |
+
+Natively on Windows (w64devkit GCC 16), the i9-12900 compresses at 356,
+136, and 50 MB/s at levels 1, 6, and 9, and decompresses tugz's own
+level 6 output at 1100 MB/s. docs/notes.md, "Performance log", has
+every level and the history.
 
 ## Development
 
