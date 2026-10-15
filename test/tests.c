@@ -2650,13 +2650,14 @@ static u8 *golden_input(iz len, b32 letters)
 // again when the header's XFL came to mark them (4 and 2), the text
 // when a block came to end before a slide would discard its data, and
 // levels 1 and 2 when they came to find matches in buckets rather than
-// hash chains, with blocks capped rather than split.
+// hash chains, with blocks capped rather than split, and level 6 when
+// it was retuned to beat zlib's ratio.
 static void test_golden(arena a)
 {
     static iz const lens[] = {1100000, 200000};
     static u32 const crcs[2][9] = {
         {0x52d3204c, 0xdff8b83e, 0xad259eff, 0x8c7b3bf3,
-         0x303e0578, 0xbb618142, 0xd8db5c61, 0x334e6e23, 0xaf1a2001},
+         0x303e0578, 0xc786977f, 0xd8db5c61, 0x334e6e23, 0xaf1a2001},
         {0xc72ea1ac, 0x5e60a458, 0x36266ef9, 0xe63b2e04,
          0x9456a39d, 0x9456a39d, 0x112f0260, 0x112f0260, 0xd394721e},
     };

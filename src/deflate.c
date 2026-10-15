@@ -76,7 +76,12 @@ typedef struct {
 // matches in buckets of one and two recent positions per hash (see
 // parse_bucket_with), the rest in hash chains; the bucket levels use
 // only nice and insert besides (nice, which stops a search, only with
-// two entries).
+// two entries). Level 6, the default, came from a later sweep: its
+// former setting (depth 32, nice 64, one lazy step, good 16) fell just
+// short of zlib's ratio. A shallower walk that keeps its full depth,
+// and evaluates lazily, for matches up to 128 bytes rather than 16
+// beats zlib's ratio and runs faster too. (Two lazy steps on a still
+// shallower walk ran faster yet, but their output decoded 1% slower.)
 static deflate_level const deflate_levels[10] = {
     // depth nice lazy good depth3 insert bucket
     {   0,    0,  0,   0,    0,   0, 0},
@@ -85,7 +90,7 @@ static deflate_level const deflate_levels[10] = {
     {   8,   32,  0,   8,    8,  32, 0},
     {   8,   32,  1,   8,    8, 258, 0},
     {  16,   64,  1,  16,   16, 258, 0},
-    {  32,   64,  1,  16,   32, 258, 0},
+    {  22,  128,  1, 128,   32, 258, 0},
     {  64,  128,  2,  32,   32, 258, 0},
     { 256,  258,  2,  64,   64, 258, 0},
     {1024,  258,  2, 258,  256, 258, 0},
