@@ -148,6 +148,7 @@ function(tugz_unzip)
         "// tugz unzip ${v}: an Info-ZIP compatible unzip for Windows\n"
         "// Single-file amalgamation of the tugz sources. Build:\n"
         "//   $ cc -O2 -nostartfiles -o unzip.exe unzip.c -lmemory\n"
+        "// A copy named zipinfo.exe lists archives as Info-ZIP's zipinfo.\n"
         "\n")
     string(CONCAT text ${text})
     tugz_concat(text "${version_text}" ${files})

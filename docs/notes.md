@@ -24,8 +24,9 @@ interface and a buffered reader and writer); gzip adds `src/gzipio.c`
 (descriptor drivers) and `src/cli.c`, and zip `src/zip.c`, `src/wild.c`
 (wildcards), `src/dir.c` (directories), `src/zipin.c` (archive reading),
 and `src/zipcli.c`, and unzip, which takes only `base`, `crc32`, and
-`inflate` of the core, the same, with `src/unzip.c` (its rules) and
-`src/unzipcli.c` in place of `src/zipcli.c`. The library layer adds none
+`inflate` of the core, the same, with `src/unzip.c` and `src/zipinfo.c`
+(its rules, and ZipInfo mode's) and `src/unzipcli.c` in place of
+`src/zipcli.c`. The library layer adds none
 of them. The shared `os_*` implementations live in `platform/posix.c`
 and `platform/windows.c`, and the file system functions that zip shares
 with unzip in `platform/zipfs_*.c`.
@@ -47,6 +48,7 @@ with unzip in `platform/zipfs_*.c`.
 | `src/zipin.c`            | archive reading, shared by zip and unzip        |
 | `src/zipcli.c`           | zip command line and archive driver, `zip_main` |
 | `src/unzip.c`            | unzip's rules: names to paths, times, modes     |
+| `src/zipinfo.c`          | ZipInfo mode's rules: options, listing fields   |
 | `src/unzipcli.c`         | unzip command line and driver, `unzip_main`     |
 | `platform/posix.c`       | shared POSIX `os_*` implementation              |
 | `platform/windows.c`     | shared CRT-free Win32 `os_*`, paths, arguments  |
@@ -1362,6 +1364,11 @@ Debian's UnZip (6.0-29), for names to paths (`uz_mapname`), DOS dates
 (`uz_dosdate`, `uz_timegm`), extra fields' times and owners
 (`uz_extra_izux`), modes (`uz_mode`, `uz_symlink_host`), Windows
 attributes (`uz_dosattr`), and names made safe to show (`uz_filter`).
+ZipInfo mode's rules, from `zipinfo.c`, are `src/zipinfo.c`'s, checked
+the same way against both builds' `zipinfo`: its options (`zi_option`,
+`zi_resolve`), the program's name (`zi_named`), and its listings'
+fields (`zi_host`, `zi_attribs`, `zi_method`, `zi_flags`, `zi_date`,
+and the compression factors, from list.c's ratio, now `uz_ratio`).
 The driver, `src/unzipcli.c` (`unzip_main`), follows UnZip's `unzip.c`,
 `envargs.c`, `process.c`, `list.c`, `extract.c`, and `fileio.c`, cited
 at each function, with Debian's additions: ISO dates in listings and the
@@ -1383,9 +1390,10 @@ for entries.
   output (`-p`, `-c`), the comment (`-z`), selection (`-x`, `-C`),
   overwriting (`-n`, `-o`, `-f`, `-u`, the prompt), `-j`, `-D`, `-V`,
   `-K`, `-X`, `-q`, the environment (`UNZIP`, else `UNZIPOPT`, split as
-  zip splits `ZIPOPT`), and wildcard archive names. UnZip's other
-  options are refused with its "error:  -a option not supported" (10),
-  as are `-K` and `-X` on Windows. Entries that are encrypted,
+  zip splits `ZIPOPT`), wildcard archive names, and ZipInfo mode (below)
+  but for its `-v`. UnZip's other options are refused with its "error:
+  -a option not supported" (10), as are `-K` and `-X` on Windows.
+  Entries that are encrypted,
   compressed by a method other than stored, deflated, or Deflate64, or
   need a version past 4.5 are skipped with UnZip's messages for a build
   without them, and count as skipped (81).
@@ -1750,6 +1758,46 @@ for entries.
   archives of tugz's zip as unzip does, and Explorer and `tar` extract
   Explorer's own as unzip does too, while `Expand-Archive` decodes their
   OEM names from the ANSI code page (`unzip_windows.sh`, last).
+- ZipInfo mode (`zipinfo_args` and `zipinfo_files` in `src/unzipcli.c`):
+  chosen as UnZip chooses it (`unzip.c`), before either environment is
+  read, by the program's name, whose base (after the last `/`, or with
+  Windows conventions `\` too, not `:`) starts with `zipinfo` or `ii` in
+  any case, or by a first argument starting `-Z`. Then `ZIPINFO`, else
+  `ZIPINFOOPT`, apply first, and `UNZIP` does not; in unzip mode `-Z`
+  is UnZip's "error:  -Z must be first option for ZipInfo mode (check
+  UNZIP variable?)" and the usage (10), unless after the archive, where
+  it is a member. The grammar is `zi_opts`'s, without busybox's: every
+  argument up to the archive starting with `-` is options (`-` alone,
+  none), a `-` negates the next letter even in the next argument, `Z`
+  does nothing, and after the archive come members, `-x` and its
+  patterns (a second `-x` among them), and `-d`, ignored with UnZip's
+  caution; then `zi_resolve` decides the header, totals, and comment
+  (members turn the header and totals off unless asked for). Routing:
+  UnZip's `uO.tflag` is ZipInfo's totals flag, so `info` (and the copy
+  to a terminal, `u->dup`) goes by `tflagged`: while the totals show,
+  messages for standard error go to standard output, even "zipinfo:
+  cannot find or open". The archive's flow is unzip's (`do_archive`)
+  with `process.c`'s ZipInfo branches: the `Archive:` line only with
+  the header, before the end record is looked for; `[NAME]` before any
+  failure to find it; the comment only under `-z`, then "Zip file size:
+  N bytes, number of entries: M" (the file's size, with any data before
+  the archive), as `zi_end_central` prints it last; end record disk
+  numbers that disagree warned of, or refused when the central directory
+  starts on an earlier disk (11), but equal ones taken silently, rather
+  than unzip's "last disk" warning; "Empty zipfile." on standard output
+  (1); and "zipinfo:" for an archive not found, the second line of
+  "cannot find zipfile directory" indented two more. The listing
+  (`zipinfo_files`) reads each central header again raw (`next_raw`,
+  `zar_header` alone), so that its extra fields keep Zip64's, which
+  counts for the `x` flag, and nothing is shifted; prints names (`-1`,
+  `-2`), `zi_short`'s line (`-s`, `-m`, `-l`), or with `-h` or `-t`
+  alone nothing; totals, without each encrypted entry's 12-byte header;
+  then the unmatched members' and patterns' cautions, even with nothing
+  matched; and gives 11 if no entry was listed, else 0, unmatched
+  members notwithstanding. A damaged central directory ends it as it
+  ends `unzip -l`. Memory is `unzip -l`'s: an entry at a time, in
+  scratch, none of it growing with the number of entries
+  (`test_zipinfo`, 20,000 entries).
 
 ### Departures from Info-ZIP UnZip
 
@@ -1971,6 +2019,29 @@ ones as invariants. Those that no test asserts are marked untested.
   2006). Paths may exceed `MAX_PATH` (`unzip_windows.sh`, "Long paths"),
   and the console is read and written in UTF-16 (`unzip_windows.sh`, the
   prompt in a pseudo console).
+- ZipInfo mode: the end record is looked for where unzip looks, among
+  the last 65,557 bytes, and the Zip64 records before it, where ZipInfo,
+  as a debugging tool, searches the whole file, so that an archive
+  followed by more than 64 KiB is no archive (9) where ZipInfo lists it
+  (`unzip.sh`, `trailing.zip`). ZipInfo's `-M` (its pager) and Debian's
+  `-U` are refused (10), and Debian's `-W`, `-I`, and `-O` are unknown
+  letters (the usage, 10), as in Apple's build; `-v`, the verbose
+  report, is refused (10) for now (`tests-unzip`; `test_zipinfo`).
+  Names are shown as unzip shows them, in UTF-8 with `^X` for control
+  characters, where Apple's build shows bytes and Debian's escapes
+  (`unzip.sh`, `names.zip`), as are comments (`unzip.sh`,
+  `comments.zip`); wildcard archive names are processed in name order
+  (`test_zipinfo`, `*.zip`); and the usage is tugz's own, first "tugz
+  zipinfo 1.0.0, a subset of Info-ZIP ZipInfo 3.00" (`unzip.sh`,
+  "Usage"). Compression factors (`-m`, totals) do not overflow, as for
+  `-v` (`tests-unzip`; `unzip.sh`, `ratio.zip`). A version made by from
+  10.0 begins a column early with every host's attributes, as both
+  builds show it with Unix's, where they abort with the others', their
+  buffer overrun, and methods from 1000 show whole ("u1000"), where
+  Apple's build overruns its buffer (`tests-unzip`). An entry with an
+  empty name ends the listing (":  bad filename length (central)", 3),
+  as in `unzip -l`, where UnZip shows the name before it again
+  (`test_zipinfo`).
 
 ## Workflow
 

@@ -58,6 +58,7 @@
 #include "../src/dir.c"
 #include "../src/zipin.c"
 #include "../src/unzip.c"
+#include "../src/zipinfo.c"
 #include "../src/unzipcli.c"
 
 #include "fakeclock.c"
@@ -1168,11 +1169,24 @@ static os *unzipos_new(iz cap)
     return ctx;
 }
 
-// Run unzip with arguments, its environment's UNZIP (or null), in fresh
-// memory, returning its exit status. As at a real exit, files it
-// created and did not keep are then gone; *open, if given, tells how
-// many descriptors it left open had it returned (not exited).
-static i32 unzipos_run(os *ctx, char **argv, i32 argc, char *env, i32 *open)
+// What a run of unzip is given beyond its arguments: the name it is run
+// as (null for "unzip"), and its environment's variables (null for
+// unset)
+typedef struct {
+    char *argv0;
+    char *unzip;
+    char *unzipopt;
+    char *zipinfo;
+    char *zipinfoopt;
+} unzipenv;
+
+// Run unzip with arguments, its name and environment (or null, for
+// "unzip" and none), in fresh memory, returning its exit status. As at
+// a real exit, files it created and did not keep are then gone; *open,
+// if given, tells how many descriptors it left open had it returned
+// (not exited).
+static i32 unzipos_run(os *ctx, char **argv, i32 argc, unzipenv *env,
+                       i32 *open)
 {
     POISON(ctx->mem, ctx->lo-ctx->mem);
     POISON(ctx->hi, ctx->mem+ctx->cap-ctx->hi);
@@ -1202,7 +1216,13 @@ static i32 unzipos_run(os *ctx, char **argv, i32 argc, char *env, i32 *open)
     conf.args     = args;
     conf.nargs    = argc;
     conf.windows  = ctx->windows;
-    conf.unzipenv = env ? cstrs8(env) : (s8){0};
+    unzipenv none = {0};
+    env = env ? env : &none;
+    conf.argv0      = cstrs8(env->argv0 ? env->argv0 : "unzip");
+    conf.unzipenv   = env->unzip ? cstrs8(env->unzip) : (s8){0};
+    conf.unzipopt   = env->unzipopt ? cstrs8(env->unzipopt) : (s8){0};
+    conf.zipinfoenv = env->zipinfo ? cstrs8(env->zipinfo) : (s8){0};
+    conf.zipinfoopt = env->zipinfoopt ? cstrs8(env->zipinfoopt) : (s8){0};
 
     i32 status = 0;
     if (setjmp(ctx->jmp)) {

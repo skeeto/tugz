@@ -17,9 +17,11 @@ static b32 equals(s8 a, char const *z)
     return s8equals(a, cstrs8(z));
 }
 
-// Run unzip with arguments, which must exit with a status, else its
-// messages are shown. A run that returns must leave nothing open.
-static void expect(os *ctx, i32 status, char *env, char **argv, i32 argc)
+// Run unzip with arguments, its name and environment (or null), which
+// must exit with a status, else its messages are shown. A run that
+// returns must leave nothing open.
+static void expect(os *ctx, i32 status, unzipenv *env, char **argv,
+                   i32 argc)
 {
     i32 open = 0;
     i32 got  = unzipos_run(ctx, argv, argc, env, &open);
@@ -34,6 +36,16 @@ static void expect(os *ctx, i32 status, char *env, char **argv, i32 argc)
 #define UNZIP(ctx, status, ...) \
     expect(ctx, status, 0, (char *[]){__VA_ARGS__}, \
            countof(((char *[]){__VA_ARGS__})))
+// As UNZIP, run as zipinfo
+#define ZIPINFO(ctx, status, ...) \
+    expect(ctx, status, &(unzipenv){.argv0="zipinfo"}, \
+           (char *[]){__VA_ARGS__}, countof(((char *[]){__VA_ARGS__})))
+// As UNZIP, with a name and environment, an unzipenv's fields in
+// parentheses: RUNENV(ctx, 0, (.argv0="ii", .zipinfo="-1"), "a.zip")
+#define RUNENV(ctx, status, env, ...) \
+    expect(ctx, status, &(unzipenv){RUNENV_ env}, (char *[]){__VA_ARGS__}, \
+           countof(((char *[]){__VA_ARGS__})))
+#define RUNENV_(...) __VA_ARGS__
 
 // Compare output with what is expected, showing both if they differ.
 static b32 output_is(os *ctx, i32 fd, char const *want)
@@ -80,6 +92,7 @@ typedef struct {
     i32  method;        // 0 stored, 8 deflated, or another
     u32  made;          // "version made by", or 0 for UNIX
     u32  extattr;       // or 0 for a 0644 Unix file
+    u32  intattr;       // internal attributes (bit 0: text)
     u32  flags;
     u32  dostime;       // or 0 for DOSTIME
     s8   lextra;
@@ -194,7 +207,7 @@ static s8 build(xspec const *spec, i32 n, char const *comment)
         zput16(&z, (u32)e->cextra.len);
         zput16(&z, (u32)e->comment.len);
         zput16(&z, 0);
-        zput16(&z, 0);
+        zput16(&z, e->intattr);
         zput32(&z, e->extattr ? e->extattr : 0100644u<<16);
         zput32(&z, (u32)offs[i]);
         zput(&z, name.s, name.len);
@@ -1896,6 +1909,647 @@ static void test_pace(os *ctx)
     free(want.s);
 }
 
+// A central extended timestamp ("UT") with a modification time
+static s8 utc(u32 mtime)
+{
+    static u8 buf[4][9];
+    static i32 next;
+    u8 *p = buf[next++ % countof(buf)];
+    put16(p, 0x5455);
+    put16(p+2, 5);
+    p[4] = 1;
+    put32(p+5, mtime);
+    return (s8){p, 9};
+}
+
+#define ZFIRST "error:  -Z must be first option for ZipInfo mode " \
+               "(check UNZIP variable?)\n"
+
+// ZipInfo mode: chosen by the program's name or a first argument of -Z,
+// its environment, its options' header, totals, and comment, its
+// listings, statuses, and messages, those for standard error going to
+// standard output while totals show; memory independent of the number
+// of entries
+static void test_zipinfo(os *ctx)
+{
+    xspec spec[] = {
+        {.name="d/", .extattr=DIRM(0755)},
+        {.name="d/a.txt", .data=TEXT, .method=8, .intattr=1},
+        {.name="B.EXE", .data="bb", .made=FAT, .extattr=0x21},
+        {.name="u.txt", .data="ut\n", .cextra=utc(1600000000)},
+        {.name="enc", .data="0123456789abcdef", .flags=1,
+         .extattr=FILEM(04755)},
+    };
+    s8 z = build(spec, countof(spec), "A comment\n");
+    s8 empty = build(spec, 0, 0);
+    s8 bad   = build(spec+1, 3, 0);
+    for (iz i = bad.len-4, n = 0; i >= 0; i--) {  // the second header
+        if (!memcmp(bad.s+i, "PK\1\2", 4) && ++n==2) {
+            bad.s[i+3] = 9;
+            break;
+        }
+    }
+    mfs_reset(ctx);
+    put_archive(ctx, "a.zip", z);
+    put_archive(ctx, "empty.zip", empty);
+    put_archive(ctx, "bad.zip", bad);
+    mfs_put(ctx, "notzip", FT_FILE, "not a zip file\n", 15, 1600000000);
+
+
+    // Formats: the header, entries, totals, and comment by option
+    ZIPINFO(ctx, 0, "a.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"
+        "drwxr-xr-x  3.0 unx        0 b- stor 20-Jan-02 03:04 d/\n"
+        "-rw-r--r--  3.0 unx       96 t- defN 20-Jan-02 03:04 d/a.txt\n"
+        "-r-xa--     2.0 fat        2 b- stor 20-Jan-02 03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx stor 20-Sep-13 12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B- stor 20-Jan-02 03:04 enc\n"
+        "5 files, 117 bytes uncompressed, 22 bytes compressed:  81.2%\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-1", "a.zip");
+    TEST(output_is(ctx, 1,
+        "d/\n"
+        "d/a.txt\n"
+        "B.EXE\n"
+        "u.txt\n"
+        "enc\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-2", "a.zip");
+    TEST(output_is(ctx, 1,
+        "d/\n"
+        "d/a.txt\n"
+        "B.EXE\n"
+        "u.txt\n"
+        "enc\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-2htz", "a.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "A comment\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"
+        "d/\n"
+        "d/a.txt\n"
+        "B.EXE\n"
+        "u.txt\n"
+        "enc\n"
+        "5 files, 117 bytes uncompressed, 22 bytes compressed:  81.2%\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-1z", "a.zip");
+    TEST(output_is(ctx, 1,
+        "d/\n"
+        "d/a.txt\n"
+        "B.EXE\n"
+        "u.txt\n"
+        "enc\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-m", "a.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"
+        "drwxr-xr-x  3.0 unx        0 b-  0% stor 20-Jan-02 03:04 d/\n"
+        "-rw-r--r--  3.0 unx       96 t- 87% defN 20-Jan-02 03:04 d/a.txt\n"
+        "-r-xa--     2.0 fat        2 b-  0% stor 20-Jan-02 03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx  0% stor 20-Sep-13 12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B- 75% stor 20-Jan-02 03:04 enc\n"
+        "5 files, 117 bytes uncompressed, 22 bytes compressed:  81.2%\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-l", "a.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"
+        "drwxr-xr-x  3.0 unx        0 b-        0 stor 20-Jan-02 03:04 d/\n"
+        "-rw-r--r--  3.0 unx       96 t-       13 defN 20-Jan-02 "
+        "03:04 d/a.txt\n"
+        "-r-xa--     2.0 fat        2 b-        2 stor 20-Jan-02 "
+        "03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx        3 stor 20-Sep-13 "
+        "12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B-       16 stor 20-Jan-02 "
+        "03:04 enc\n"
+        "5 files, 117 bytes uncompressed, 22 bytes compressed:  81.2%\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-T", "a.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"
+        "drwxr-xr-x  3.0 unx        0 b- stor 20200102.030406 d/\n"
+        "-rw-r--r--  3.0 unx       96 t- defN 20200102.030406 d/a.txt\n"
+        "-r-xa--     2.0 fat        2 b- stor 20200102.030406 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx stor 20200913.122640 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B- stor 20200102.030406 enc\n"
+        "5 files, 117 bytes uncompressed, 22 bytes compressed:  81.2%\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-z", "a.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "A comment\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"
+        "drwxr-xr-x  3.0 unx        0 b- stor 20-Jan-02 03:04 d/\n"
+        "-rw-r--r--  3.0 unx       96 t- defN 20-Jan-02 03:04 d/a.txt\n"
+        "-r-xa--     2.0 fat        2 b- stor 20-Jan-02 03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx stor 20-Sep-13 12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B- stor 20-Jan-02 03:04 enc\n"
+        "5 files, 117 bytes uncompressed, 22 bytes compressed:  81.2%\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-h", "a.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-t", "a.zip");
+    TEST(output_is(ctx, 1, "5 files, 117 bytes uncompressed, 22 bytes "
+                           "compressed:  81.2%\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-hz", "a.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "A comment\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "--h", "a.zip");
+    TEST(output_is(ctx, 1,
+        "drwxr-xr-x  3.0 unx        0 b- stor 20-Jan-02 03:04 d/\n"
+        "-rw-r--r--  3.0 unx       96 t- defN 20-Jan-02 03:04 d/a.txt\n"
+        "-r-xa--     2.0 fat        2 b- stor 20-Jan-02 03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx stor 20-Sep-13 12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B- stor 20-Jan-02 03:04 enc\n"
+        "5 files, 117 bytes uncompressed, 22 bytes compressed:  81.2%\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "--t", "-l", "a.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"
+        "drwxr-xr-x  3.0 unx        0 b-        0 stor 20-Jan-02 03:04 d/\n"
+        "-rw-r--r--  3.0 unx       96 t-       13 defN 20-Jan-02 "
+        "03:04 d/a.txt\n"
+        "-r-xa--     2.0 fat        2 b-        2 stor 20-Jan-02 "
+        "03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx        3 stor 20-Sep-13 "
+        "12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B-       16 stor 20-Jan-02 "
+        "03:04 enc\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-l-t", "a.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"
+        "drwxr-xr-x  3.0 unx        0 b-        0 stor 20-Jan-02 03:04 d/\n"
+        "-rw-r--r--  3.0 unx       96 t-       13 defN 20-Jan-02 "
+        "03:04 d/a.txt\n"
+        "-r-xa--     2.0 fat        2 b-        2 stor 20-Jan-02 "
+        "03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx        3 stor 20-Sep-13 "
+        "12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B-       16 stor 20-Jan-02 "
+        "03:04 enc\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "--", "-h", "a.zip");
+    TEST(output_is(ctx, 1,
+        "drwxr-xr-x  3.0 unx        0 b- stor 20-Jan-02 03:04 d/\n"
+        "-rw-r--r--  3.0 unx       96 t- defN 20-Jan-02 03:04 d/a.txt\n"
+        "-r-xa--     2.0 fat        2 b- stor 20-Jan-02 03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx stor 20-Sep-13 12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B- stor 20-Jan-02 03:04 enc\n"
+        "5 files, 117 bytes uncompressed, 22 bytes compressed:  81.2%\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-", "a.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"
+        "drwxr-xr-x  3.0 unx        0 b- stor 20-Jan-02 03:04 d/\n"
+        "-rw-r--r--  3.0 unx       96 t- defN 20-Jan-02 03:04 d/a.txt\n"
+        "-r-xa--     2.0 fat        2 b- stor 20-Jan-02 03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx stor 20-Sep-13 12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B- stor 20-Jan-02 03:04 enc\n"
+        "5 files, 117 bytes uncompressed, 22 bytes compressed:  81.2%\n"));
+    TEST(output_is(ctx, 2, ""));
+    // Members turn off the header and totals unless asked for
+    ZIPINFO(ctx, 0, "a.zip", "*.txt");
+    TEST(output_is(ctx, 1,
+        "-rw-r--r--  3.0 unx       96 t- defN 20-Jan-02 03:04 d/a.txt\n"
+        "-rw-r--r--  3.0 unx        3 bx stor 20-Sep-13 12:26 u.txt\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-lz", "a.zip", "*.txt");
+    TEST(output_is(ctx, 1,
+        "A comment\n"
+        "-rw-r--r--  3.0 unx       96 t-       13 defN 20-Jan-02 "
+        "03:04 d/a.txt\n"
+        "-rw-r--r--  3.0 unx        3 bx        3 stor 20-Sep-13 "
+        "12:26 u.txt\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-t", "a.zip", "*.txt");
+    TEST(output_is(ctx, 1,
+        "-rw-r--r--  3.0 unx       96 t- defN 20-Jan-02 03:04 d/a.txt\n"
+        "-rw-r--r--  3.0 unx        3 bx stor 20-Sep-13 12:26 u.txt\n"
+        "2 files, 99 bytes uncompressed, 16 bytes compressed:  83.8%\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-C", "a.zip", "D/*");
+    TEST(output_is(ctx, 1,
+        "drwxr-xr-x  3.0 unx        0 b- stor 20-Jan-02 03:04 d/\n"
+        "-rw-r--r--  3.0 unx       96 t- defN 20-Jan-02 03:04 d/a.txt\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 11, "a.zip", "D/*");
+    TEST(output_is(ctx, 2, "caution: filename not matched:  D/*\n"));
+    TEST(output_is(ctx, 1, ""));
+    ZIPINFO(ctx, 0, "a.zip", "-x", "d/*");
+    TEST(output_is(ctx, 1,
+        "-r-xa--     2.0 fat        2 b- stor 20-Jan-02 03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx stor 20-Sep-13 12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B- stor 20-Jan-02 03:04 enc\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-h", "a.zip", "-x", "d/*", "-x");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"
+        "-r-xa--     2.0 fat        2 b- stor 20-Jan-02 03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx stor 20-Sep-13 12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B- stor 20-Jan-02 03:04 enc\n"));
+    TEST(output_is(ctx, 2, "caution: excluded filename not matched:  -x\n"));
+    ZIPINFO(ctx, 0, "a.zip", "-d", "out");
+    TEST(output_is(ctx, 1,
+        "drwxr-xr-x  3.0 unx        0 b- stor 20-Jan-02 03:04 d/\n"
+        "-rw-r--r--  3.0 unx       96 t- defN 20-Jan-02 03:04 d/a.txt\n"
+        "-r-xa--     2.0 fat        2 b- stor 20-Jan-02 03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx stor 20-Sep-13 12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B- stor 20-Jan-02 03:04 enc\n"));
+    TEST(output_is(ctx, 2, "caution:  not extracting; -d ignored\n"));
+    ZIPINFO(ctx, 0, "-t", "a.zip", "-dout");
+    TEST(output_is(ctx, 1,
+        "caution:  not extracting; -d ignored\n"
+        "drwxr-xr-x  3.0 unx        0 b- stor 20-Jan-02 03:04 d/\n"
+        "-rw-r--r--  3.0 unx       96 t- defN 20-Jan-02 03:04 d/a.txt\n"
+        "-r-xa--     2.0 fat        2 b- stor 20-Jan-02 03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx stor 20-Sep-13 12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B- stor 20-Jan-02 03:04 enc\n"
+        "5 files, 117 bytes uncompressed, 22 bytes compressed:  81.2%\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 10, "-t", "a.zip", "-d");
+    TEST(output_is(ctx, 1,
+        "error:  must specify directory to which to extract with -d "
+        "option\n"));
+    TEST(output_is(ctx, 2, ""));
+    // Statuses: unmatched members (11 if none matched), messages routed by
+    // the totals flag
+    ZIPINFO(ctx, 11, "a.zip", "nomatch");
+    TEST(output_is(ctx, 2, "caution: filename not matched:  nomatch\n"));
+    TEST(output_is(ctx, 1, ""));
+    ZIPINFO(ctx, 11, "-t", "a.zip", "nomatch");
+    TEST(output_is(ctx, 1,
+        "0 files, 0 bytes uncompressed, 0 bytes compressed:  0.0%\n"
+        "caution: filename not matched:  nomatch\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-h", "a.zip", "enc", "nomatch");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"
+        "-rwsr-xr-x  3.0 unx       16 B- stor 20-Jan-02 03:04 enc\n"));
+    TEST(output_is(ctx, 2, "caution: filename not matched:  nomatch\n"));
+    ZIPINFO(ctx, 0, "-st", "a.zip", "-x", "nomatch");
+    TEST(output_is(ctx, 1,
+        "drwxr-xr-x  3.0 unx        0 b- stor 20-Jan-02 03:04 d/\n"
+        "-rw-r--r--  3.0 unx       96 t- defN 20-Jan-02 03:04 d/a.txt\n"
+        "-r-xa--     2.0 fat        2 b- stor 20-Jan-02 03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx stor 20-Sep-13 12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B- stor 20-Jan-02 03:04 enc\n"
+        "5 files, 117 bytes uncompressed, 22 bytes compressed:  81.2%\n"
+        "caution: excluded filename not matched:  nomatch\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 11, "a.zip", "-x", "*");
+    TEST(output_is(ctx, 1, ""));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 9, "nothere");
+    TEST(output_is(ctx, 1,
+        "zipinfo:  cannot find or open nothere, nothere.zip or "
+        "nothere.ZIP.\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 9, "-1", "nothere");
+    TEST(output_is(ctx, 2,
+        "zipinfo:  cannot find or open nothere, nothere.zip or "
+        "nothere.ZIP.\n"));
+    TEST(output_is(ctx, 1, ""));
+    ZIPINFO(ctx, 9, "-h", "notzip");
+    TEST(output_is(ctx, 1, "Archive:  notzip\n"));
+    TEST(output_is(ctx, 2,
+        "[notzip]\n"
+        "  End-of-central-directory signature not found.  Either "
+        "this file is not\n"
+        "  a zipfile, or it constitutes one disk of a multi-part "
+        "archive.  In the\n"
+        "  latter case the central directory and zipfile comment "
+        "will be found on\n"
+        "  the last disk(s) of this archive.\n"
+        "zipinfo:  cannot find zipfile directory in one of notzip or\n"
+        "          notzip.zip, and cannot find notzip.ZIP, period.\n"));
+    ZIPINFO(ctx, 9, "-2", "notzip");
+    TEST(output_is(ctx, 2,
+        "[notzip]\n"
+        "  End-of-central-directory signature not found.  Either "
+        "this file is not\n"
+        "  a zipfile, or it constitutes one disk of a multi-part "
+        "archive.  In the\n"
+        "  latter case the central directory and zipfile comment "
+        "will be found on\n"
+        "  the last disk(s) of this archive.\n"
+        "zipinfo:  cannot find zipfile directory in one of notzip or\n"
+        "          notzip.zip, and cannot find notzip.ZIP, period.\n"));
+    TEST(output_is(ctx, 1, ""));
+    ZIPINFO(ctx, 1, "empty.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  empty.zip\n"
+        "Zip file size: 22 bytes, number of entries: 0\n"
+        "Empty zipfile.\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 1, "-1", "empty.zip");
+    TEST(output_is(ctx, 1, "Empty zipfile.\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 3, "-t", "bad.zip");
+    TEST(output_is(ctx, 1,
+        "error:  expected central file header signature not found "
+        "(file #2).\n"
+        "  (please check that you have transferred or created the "
+        "zipfile in the\n"
+        "  appropriate BINARY mode and that you have compiled UnZip "
+        "properly)\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 3, "-1", "bad.zip");
+    TEST(output_is(ctx, 1, "d/a.txt\n"));
+    TEST(output_is(ctx, 2,
+        "error:  expected central file header signature not found "
+        "(file #2).\n"
+        "  (please check that you have transferred or created the "
+        "zipfile in the\n"
+        "  appropriate BINARY mode and that you have compiled UnZip "
+        "properly)\n"));
+    ZIPINFO(ctx, 11, "-h", "a.zip", "bad.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"));
+    TEST(output_is(ctx, 2, "caution: filename not matched:  bad.zip\n"));
+    ZIPINFO(ctx, 3, "*.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"
+        "drwxr-xr-x  3.0 unx        0 b- stor 20-Jan-02 03:04 d/\n"
+        "-rw-r--r--  3.0 unx       96 t- defN 20-Jan-02 03:04 d/a.txt\n"
+        "-r-xa--     2.0 fat        2 b- stor 20-Jan-02 03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx stor 20-Sep-13 12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B- stor 20-Jan-02 03:04 enc\n"
+        "5 files, 117 bytes uncompressed, 22 bytes compressed:  81.2%\n"
+        "\n"
+        "Archive:  bad.zip\n"
+        "Zip file size: 311 bytes, number of entries: 3\n"
+        "-rw-r--r--  3.0 unx       96 t- defN 20-Jan-02 03:04 d/a.txt\n"
+        "error:  expected central file header signature not found "
+        "(file #2).\n"
+        "  (please check that you have transferred or created the "
+        "zipfile in the\n"
+        "  appropriate BINARY mode and that you have compiled UnZip "
+        "properly)\n"
+        "\n"
+        "Archive:  empty.zip\n"
+        "Zip file size: 22 bytes, number of entries: 0\n"
+        "Empty zipfile.\n"
+        "\n"
+        "1 archive was successfully processed.\n"
+        "1 archive had warnings but no fatal errors.\n"
+        "1 archive had fatal errors.\n"));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 3, "-1", "*.zip");
+    TEST(output_is(ctx, 1,
+        "d/\n"
+        "d/a.txt\n"
+        "B.EXE\n"
+        "u.txt\n"
+        "enc\n"
+        "\n"
+        "d/a.txt\n"
+        "\n"
+        "Empty zipfile.\n"));
+    TEST(output_is(ctx, 2,
+        "error:  expected central file header signature not found "
+        "(file #2).\n"
+        "  (please check that you have transferred or created the "
+        "zipfile in the\n"
+        "  appropriate BINARY mode and that you have compiled UnZip "
+        "properly)\n"
+        "\n"
+        "1 archive was successfully processed.\n"
+        "1 archive had warnings but no fatal errors.\n"
+        "1 archive had fatal errors.\n"));
+    ZIPINFO(ctx, 10, "-q", "a.zip");
+    TEST(output_is(ctx, 1, ""));
+    TEST(output_has(ctx, 2, "tugz zipinfo "));
+    ZIPINFO(ctx, 10, "-x", "a.zip");
+    TEST(output_is(ctx, 1, ""));
+    TEST(output_has(ctx, 2, "tugz zipinfo "));
+    expect(ctx, 0, &(unzipenv){.argv0="zipinfo"}, 0, 0);  // no arguments
+    TEST(output_has(ctx, 1, "tugz zipinfo "));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-h");
+    TEST(output_has(ctx, 1, "tugz zipinfo "));
+    TEST(output_is(ctx, 2, ""));
+    ZIPINFO(ctx, 0, "-1");
+    TEST(output_has(ctx, 1, "tugz zipinfo "));
+    TEST(output_is(ctx, 2, ""));
+    // By name, and by a first argument of -Z
+    RUNENV(ctx, 0, (.argv0="ii"), "-1", "a.zip");
+    TEST(output_is(ctx, 1,
+        "d/\n"
+        "d/a.txt\n"
+        "B.EXE\n"
+        "u.txt\n"
+        "enc\n"));
+    TEST(output_is(ctx, 2, ""));
+    UNZIP(ctx, 0, "-Z1", "a.zip");
+    TEST(output_is(ctx, 1,
+        "d/\n"
+        "d/a.txt\n"
+        "B.EXE\n"
+        "u.txt\n"
+        "enc\n"));
+    TEST(output_is(ctx, 2, ""));
+    UNZIP(ctx, 0, "-Z", "-2t", "a.zip");
+    TEST(output_is(ctx, 1,
+        "d/\n"
+        "d/a.txt\n"
+        "B.EXE\n"
+        "u.txt\n"
+        "enc\n"
+        "5 files, 117 bytes uncompressed, 22 bytes compressed:  81.2%\n"));
+    TEST(output_is(ctx, 2, ""));
+    UNZIP(ctx, 0, "-Z");
+    TEST(output_has(ctx, 1, "tugz zipinfo "));
+    TEST(output_is(ctx, 2, ""));
+    UNZIP(ctx, 10, "-lZ", "a.zip");
+    TEST(output_is(ctx, 1, ""));
+    TEST(output_has(ctx, 2, "tugz unzip "));
+    TEST(output_has(ctx, 2, ZFIRST));
+    UNZIP(ctx, 10, "-tZ", "a.zip");
+    TEST(output_has(ctx, 1, "tugz unzip "));
+    TEST(output_has(ctx, 1, ZFIRST));
+    TEST(output_is(ctx, 2, ""));
+    UNZIP(ctx, 0, "-hZ", "a.zip");
+    TEST(output_has(ctx, 1, "tugz unzip "));
+    TEST(output_is(ctx, 2, ZFIRST));
+    UNZIP(ctx, 11, "-l", "a.zip", "-Z");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "A comment\n"
+        "  Length      Date    Time    Name\n"
+        "---------  ---------- -----   ----\n"
+        "---------                     -------\n"
+        "        0                     0 files\n"));
+    TEST(output_is(ctx, 2, ""));
+    // The environment: ZIPINFO, else ZIPINFOOPT, first; UNZIP ignored
+    RUNENV(ctx, 0, (.argv0="zipinfo", .zipinfo="-1"), "a.zip");
+    TEST(output_is(ctx, 1,
+        "d/\n"
+        "d/a.txt\n"
+        "B.EXE\n"
+        "u.txt\n"
+        "enc\n"));
+    TEST(output_is(ctx, 2, ""));
+    RUNENV(ctx, 0, (.argv0="zipinfo", .zipinfo=" ", .zipinfoopt="-2t"),
+           "a.zip");
+    TEST(output_is(ctx, 1,
+        "d/\n"
+        "d/a.txt\n"
+        "B.EXE\n"
+        "u.txt\n"
+        "enc\n"
+        "5 files, 117 bytes uncompressed, 22 bytes compressed:  81.2%\n"));
+    TEST(output_is(ctx, 2, ""));
+    RUNENV(ctx, 0, (.argv0="zipinfo", .zipinfo="-1", .zipinfoopt="-2t"),
+           "--1", "-h", "a.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"
+        "drwxr-xr-x  3.0 unx        0 b- stor 20-Jan-02 03:04 d/\n"
+        "-rw-r--r--  3.0 unx       96 t- defN 20-Jan-02 03:04 d/a.txt\n"
+        "-r-xa--     2.0 fat        2 b- stor 20-Jan-02 03:04 B.EXE\n"
+        "-rw-r--r--  3.0 unx        3 bx stor 20-Sep-13 12:26 u.txt\n"
+        "-rwsr-xr-x  3.0 unx       16 B- stor 20-Jan-02 03:04 enc\n"
+        "5 files, 117 bytes uncompressed, 22 bytes compressed:  81.2%\n"));
+    TEST(output_is(ctx, 2, ""));
+    RUNENV(ctx, 0, (.argv0="zipinfo", .unzip="-l"), "-1", "a.zip");
+    TEST(output_is(ctx, 1,
+        "d/\n"
+        "d/a.txt\n"
+        "B.EXE\n"
+        "u.txt\n"
+        "enc\n"));
+    TEST(output_is(ctx, 2, ""));
+    RUNENV(ctx, 0, (.zipinfo="-1"), "-Z", "a.zip");
+    TEST(output_is(ctx, 1,
+        "d/\n"
+        "d/a.txt\n"
+        "B.EXE\n"
+        "u.txt\n"
+        "enc\n"));
+    TEST(output_is(ctx, 2, ""));
+    RUNENV(ctx, 0, (.zipinfo="-1"), "-l", "a.zip", "enc");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "A comment\n"
+        "  Length      Date    Time    Name\n"
+        "---------  ---------- -----   ----\n"
+        "       16  2020-01-02 03:04   enc\n"
+        "---------                     -------\n"
+        "       16                     1 file\n"));
+    TEST(output_is(ctx, 2, ""));
+    RUNENV(ctx, 10, (.unzip="-Z"), "-l", "a.zip");
+    TEST(output_is(ctx, 1, ""));
+    TEST(output_has(ctx, 2, "tugz unzip "));
+    TEST(output_has(ctx, 2, ZFIRST));
+    RUNENV(ctx, 0, (.unzip="-Z1"), "-Z", "-h", "a.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  a.zip\n"
+        "Zip file size: 499 bytes, number of entries: 5\n"));
+    TEST(output_is(ctx, 2, ""));
+
+    // ZipInfo's letters that tugz refuses: M, its pager, U, Debian's
+    // Unicode escapes, and for now v, its verbose report
+    ZIPINFO(ctx, 10, "-M", "a.zip");
+    TEST(output_is(ctx, 3, "error:  -M option not supported\n"));
+    TEST(output_is(ctx, 2, "error:  -M option not supported\n"));
+    ZIPINFO(ctx, 10, "-hU", "a.zip");
+    TEST(output_is(ctx, 2, "error:  -U option not supported\n"));
+    ZIPINFO(ctx, 10, "-v", "a.zip");
+    TEST(output_is(ctx, 2, "error:  -v option not supported\n"));
+    ZIPINFO(ctx, 0, "--v", "-1", "a.zip");
+
+    // An entry without a name ends the listing, as for unzip -l, where
+    // UnZip shows the name before it again
+    xspec noname[] = {{.name="a", .data="a"}, {.name="", .data="b"},
+                      {.name="c", .data="c"}};
+    s8 nz = build(noname, countof(noname), 0);
+    put_archive(ctx, "noname.zip", nz);
+    ZIPINFO(ctx, 3, "-1", "noname.zip");
+    TEST(output_is(ctx, 1, "a\n"));
+    TEST(output_is(ctx, 2, ":  bad filename length (central)\n"));
+    free(nz.s);
+
+    // While totals show, messages for standard error go to standard
+    // output, and with that alone redirected, to standard error too, as
+    // under unzip -t
+    ctx->tty[2] = 1;
+    ZIPINFO(ctx, 11, "-t", "a.zip", "nomatch");
+    TEST(output_is(ctx, 1, "0 files, 0 bytes uncompressed, 0 bytes "
+                           "compressed:  0.0%\n"
+                           "caution: filename not matched:  nomatch\n"));
+    TEST(output_is(ctx, 2, "caution: filename not matched:  nomatch\n"));
+    ZIPINFO(ctx, 11, "-1", "a.zip", "nomatch");
+    TEST(output_is(ctx, 1, ""));
+    TEST(output_is(ctx, 2, "caution: filename not matched:  nomatch\n"));
+    ctx->tty[2] = 0;
+
+    // Memory is the same for 20,000 entries as for one
+    enum { N = 20000 };
+    xspec *many  = calloc(N, sizeof(*many));
+    char (*names)[8] = calloc(N, sizeof(*names));
+    TEST(many && names);
+    for (i32 i = 0; i < N; i++) {
+        snprintf(names[i], sizeof(names[i]), "%05d", i);
+        many[i] = (xspec){.name=names[i], .data="x"};
+    }
+    s8 one = build(many, 1, 0);
+    s8 all = build(many, N, 0);
+    put_archive(ctx, "one.zip", one);
+    put_archive(ctx, "all.zip", all);
+    ZIPINFO(ctx, 0, "-l", "one.zip");
+    iz base = committed(ctx);
+    ZIPINFO(ctx, 0, "-l", "all.zip");
+    TEST(output_has(ctx, 1, "\n20000 files, 20000 bytes uncompressed"));
+    TEST(committed(ctx) < base+64);  // (the totals' longer numbers)
+    ZIPINFO(ctx, 0, "-1", "one.zip", "0*", "-x", "*7");
+    base = committed(ctx);
+    ZIPINFO(ctx, 0, "-1", "all.zip", "0*", "-x", "*7");
+    TEST(output_has(ctx, 1, "\n09996\n09998\n09999\n"));
+    TEST(committed(ctx) <= base);
+    free(all.s);
+    free(one.s);
+    free(names);
+    free(many);
+
+    // Windows conventions: the program's name after a '\', and members
+    // separated by '\' too
+    ctx->windows = 1;
+    RUNENV(ctx, 0, (.argv0="C:\\bin\\ZipInfo.exe"), "-1", "a.zip",
+           "d\\a.txt");
+    TEST(output_is(ctx, 3, "d/a.txt\n"));
+    RUNENV(ctx, 0, (.argv0="C:\\zipinfo\\unzip.exe"), "-Z1", "a.zip", "B*");
+    TEST(output_is(ctx, 3, "B.EXE\n"));
+    RUNENV(ctx, 0, (.argv0="C:\\zipinfo\\unzip.exe"), "-qq", "-l", "a.zip",
+           "B*");
+    TEST(output_is(ctx, 3, "        2  2020-01-02 03:04   B.EXE\n"));
+    ctx->windows = 0;
+    free(bad.s);
+    free(empty.s);
+    free(z.s);
+}
+
 int main(void)
 {
     (void)bytemove;
@@ -1920,6 +2574,7 @@ int main(void)
     test_unwrap(ctx);
     test_local_name(ctx);
     test_pace(ctx);
+    test_zipinfo(ctx);
     unzipos_free(ctx);
     puts("all unzip program tests pass");
     return 0;

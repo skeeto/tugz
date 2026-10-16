@@ -417,7 +417,7 @@ logging.
 A subset of Info-ZIP UnZip 6.0 with busybox unzip's features, such as
 `unzip -q release-1.2.3.zip -d dist`:
 
-    unzip [-opts[modifiers]] file[.zip] [list] [-x xlist] [-d exdir]
+    unzip [-Z] [-opts[modifiers]] file[.zip] [list] [-x xlist] [-d exdir]
 
 | Option | Meaning |
 |---|---|
@@ -436,6 +436,7 @@ A subset of Info-ZIP UnZip 6.0 with busybox unzip's features, such as
 | `-K`, `-X` | keep set-ID and sticky bits; restore owners (POSIX only) |
 | `-q`, `-qq` | quiet, quieter |
 | `-h`, `-hh` | usage, more help |
+| `-Z` | ZipInfo mode, first (below; `unzip -Z` for its usage) |
 
 Options follow Info-ZIP's grammar: letters combine (`-qo`), a `-` before
 one negates it (`--q` cancels a `-q` from the environment), `-d` may
@@ -489,9 +490,9 @@ each year's own daylight saving rules. `-K` and `-X` are refused (10).
 The console is read and written in UTF-16, so a new name typed at the
 prompt may be any Unicode.
 
-Listings show dates as `YYYY-MM-DD`, as Debian's UnZip does; otherwise
-messages, the streams they go to, and listing formats are Info-ZIP's, as
-are exit statuses: 0 success, 1 warnings, 2 errors in some entries, 3 a
+Listings by `-l` and `-v` show dates as `YYYY-MM-DD`, as Debian's UnZip
+does; otherwise messages, the streams they go to, and listing formats
+are Info-ZIP's, as are exit statuses: 0 success, 1 warnings, 2 errors in some entries, 3 a
 damaged archive, 4 out of memory, 9 no archive found, 10 bad or
 unsupported options, 11 no matching entries, 50 a failed write, 51 an
 archive cut short, and 81 entries skipped, plus Debian's 12 for
@@ -510,9 +511,44 @@ that stops at an entry's size, control characters in comments shown as
 `-d` directory, and on Windows, links made last and junctions never
 followed. UnZip's other options are refused (10) rather than ignored:
 `-a`, `-B`, `-E`, `-F`, `-i`, `-I`, `-J`, `-L`, `-M`, `-N`, `-O`, `-P`,
-`-Q`, `-s`, `-S`, `-T`, `-U`, `-W`, `-Y`, `-Z`, `-$`, `-:`, `-^`, `-2`,
-and `-/`, among them text conversion, passwords, ZipInfo mode, and
-`-:`'s paths outside the destination.
+`-Q`, `-s`, `-S`, `-T`, `-U`, `-W`, `-Y`, `-$`, `-:`, `-^`, `-2`, and
+`-/`, among them text conversion, passwords, and `-:`'s paths outside the
+destination.
+
+### zipinfo
+
+`unzip -Z`, or the program run by a name starting with `zipinfo` or `ii`
+in any case (link or copy it as `zipinfo`, or `zipinfo.exe`, as nothing
+is installed by that name), lists archives as Info-ZIP's ZipInfo 3.00
+does, in its formats, such as `zipinfo -1 release-1.2.3.zip`:
+
+    zipinfo [-12smlhtTzC] file[.zip] [list] [-x xlist]
+    unzip -Z [-12smlhtTzC] file[.zip] [list] [-x xlist]
+
+| Option | Meaning |
+|---|---|
+| `-1` | names only, one per line |
+| `-2` | names, with the header, totals, or comment if asked for |
+| `-s`, `-m`, `-l` | as `ls -l`: short (the default), with the compression, with the compressed size |
+| `-h`, `-t` | the header lines, the totals line |
+| `-z` | the archive comment |
+| `-T` | times as `yyyymmdd.hhmmss`, rather than `yy-Mon-dd hh:mm` |
+| `-C` | match member names ignoring case |
+| `-x` | exclude the members that follow |
+
+Options come before the archive, and a `-` negates the letter after it,
+even in the next argument (`--h`, `-l-t`). The header and totals show
+by default, unless members are named; `-1` shows neither, nor the
+comment. Options in `ZIPINFO`, or if it has none `ZIPINFOOPT`, apply
+first, and `UNZIP` does not. Messages for standard error go to standard
+output while the totals show, as in Info-ZIP, and statuses are unzip's:
+0 even with some members unmatched, 11 with none. Dates are those of
+extended timestamps, in local time, else DOS times as stored. The
+verbose report, `-v`, is refused (10) for now, as are ZipInfo's `-M`
+(its pager) and Debian's `-U`. Departures, all in
+[docs/notes.md](docs/notes.md#departures-from-info-zip-unzip), include
+the end record looked for where unzip looks for it, among the last 64
+KiB, rather than in the whole file, and names shown as unzip shows them.
 
 ## Performance
 

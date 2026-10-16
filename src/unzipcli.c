@@ -118,20 +118,24 @@ static void os_oom(os *ctx)
 typedef struct {
     arena perm;
     arena scratch;   // allocates downward
+    s8    argv0;     // the program's name, as run: zipinfo* is ZipInfo
     s8   *args;      // excluding the program name
     i32   nargs;
     s8    unzipenv;  // UNZIP, if set: options before the arguments
     s8    unzipopt;  // UNZIPOPT, if set: when UNZIP has none
+    s8    zipinfoenv;  // ZIPINFO and ZIPINFOOPT likewise, in ZipInfo mode
+    s8    zipinfoopt;
     b32   windows;   // Windows conventions: names, wildcards
 } unzipconfig;
 
 static s8 const unzip_usage = S8(
     "tugz unzip " TUGZ_VERSION ", a subset of Info-ZIP UnZip 6.0\n"
-    "usage: unzip [-opts[modifiers]] file[.zip] [list] [-x xlist] "
+    "usage: unzip [-Z] [-opts[modifiers]] file[.zip] [list] [-x xlist] "
     "[-d exdir]\n"
     "  Default action is to extract files in list, except those in xlist,"
     " to exdir;\n"
     "  file[.zip] may be a wildcard, or - for standard input.\n"
+    "  -Z => ZipInfo mode (\"unzip -Z\" for usage).\n"
     "\n"
     "  -p  extract files to pipe, no messages     -l  list files"
     " (short format)\n"
@@ -191,9 +195,9 @@ static s8 const unzip_help_windows = S8(
 );
 static s8 const unzip_help_tail = S8(
     "\n"
-    "Listings show dates as YYYY-MM-DD. Encrypted entries, and entries\n"
-    "compressed by methods other than stored, deflated, and Deflate64, are\n"
-    "skipped.\n"
+    "Listings by -l and -v show dates as YYYY-MM-DD (ZipInfo's as\n"
+    "Info-ZIP's). Encrypted entries, and entries compressed by methods other\n"
+    "than stored, deflated, and Deflate64, are skipped.\n"
     "Options UNZIP, or if it has none, UNZIPOPT, apply first.\n"
     "\n"
     "Exit status: 0 success, 1 warnings, 2 errors in some entries, 3 a\n"
@@ -201,6 +205,25 @@ static s8 const unzip_help_tail = S8(
     "11 no matching entries, 12 overlapped entries (a zip bomb), 50 a\n"
     "write error, 51 an archive cut short, 81 entries skipped (unsupported\n"
     "method or encryption).\n"
+);
+
+// ZipInfo mode's (unzip -Z, or the program named zipinfo)
+static s8 const zipinfo_usage = S8(
+    "tugz zipinfo " TUGZ_VERSION ", a subset of Info-ZIP ZipInfo 3.00\n"
+    "usage: zipinfo [-12smlhtTzC] file[.zip] [list...] [-x xlist...]\n"
+    "   or: unzip -Z [-12smlhtTzC] file[.zip] [list...] [-x xlist...]\n"
+    "  Lists the entries in list, all by default, except those in xlist,\n"
+    "  as \"ls -l\" lists files; file[.zip] may be a wildcard.\n"
+    "\n"
+    "listing formats:                  -s  short \"ls -l\" (the default)\n"
+    "  -1  names only, nothing else    -m  -s with the compression\n"
+    "  -2  names, with -h, -t, -z      -l  -s with the compressed size\n"
+    "other options:\n"
+    "  -h  header lines                -t  totals for the entries listed\n"
+    "  -z  the archive comment         -T  times as yyyymmdd.hhmmss\n"
+    "  -C  match names ignoring case   -x  exclude the members that follow\n"
+    "A leading - negates the option after it (\"--h\"). Options in ZIPINFO,\n"
+    "or if it has none, ZIPINFOOPT, apply first.\n"
 );
 
 // How a message is written (UnZip's MSG_* flags, unzpriv.h)
@@ -291,6 +314,8 @@ typedef struct {
     b32     hasexdir;
     s8      exdir;
     b32     extract;  // UnZip's extract_flag: none of -c -l -p -t -v -z
+    b32     zinfo;    // ZipInfo mode, its options in zi, the above unset
+    ziopts  zi;
 
     s8      zipspec;  // the archive argument
     s8s     fspecs;   // members to process, if any
@@ -346,16 +371,24 @@ enum {
     CD_END,   // a warning: no end signature follows the count's headers
 };
 
+// UnZip's uO.tflag: -t, or in ZipInfo mode, the totals line (-t).
+static b32 tflagged(unzip *u)
+{
+    return u->zinfo ? u->zi.tflag : u->tflag;
+}
+
 // Write a message as UnZip's UzpMessagePrnt does (fileio.c): with flags
 // MSG_*, to standard output, or to standard error, unless testing (-t),
 // when everything goes to standard output, so that redirecting it keeps
 // the whole report, but errors are repeated on standard error when that
 // alone is a terminal. Whether the last message ended a line is tracked
-// across both streams.
+// across both streams. In ZipInfo mode, its totals flag is -t's, so that
+// with totals shown, messages for standard error go to standard output.
 static void info(unzip *u, i32 flags, s8 msg)
 {
-    b32 err = (flags & MSG_STDERR) && !u->tflag;
-    b32 dup = (flags & MSG_STDERR) && u->tflag && u->dup;
+    b32 t   = tflagged(u);
+    b32 err = (flags & MSG_STDERR) && !t;
+    b32 dup = (flags & MSG_STDERR) && t && u->dup;
     u8  nl  = '\n';
     if (err || dup) {
         writer_flush(u->out);
@@ -536,7 +569,7 @@ static s8 const must_exdir =
 // Option letters that UnZip takes but tugz does not, refused
 static b32 unsupported(unzip *u, u8 c)
 {
-    s8 refused = S("aBEFiIJLMNOPQsSTUWYZ$:^2/");
+    s8 refused = S("aBEFiIJLMNOPQsSTUWY$:^2/");
     return zip_has(refused, c) || (u->windows && (c=='K' || c=='X'));
 }
 
@@ -680,10 +713,57 @@ static i32 apply_options(unzip *u, s8 *args, i32 nargs, i32 *i, b32 *error,
             u->zflag = neg ? minus(u->zflag, neg) : u->zflag+1;
             neg = 0;
             break;
+        case 'Z':
+            info(u, MSG_STDERR, S("error:  -Z must be first option for "
+                                  "ZipInfo mode (check UNZIP variable?)\n"));
+            *error = 1;
+            break;
         default:
             *error = 1;
         }
     }
+    return 0;
+}
+
+// Read what follows the archive, a[i] on: Info-ZIP's -d exdir anywhere,
+// -x then a list running to the end, and members, and given late,
+// busybox's options. (Without late, as in Info-ZIP, a -x after -x is a
+// pattern; with it, ignored.) Returns 0 or an exit status.
+static i32 rest_args(unzip *u, s8 *a, i32 n, i32 i, b32 late, b32 *error,
+                     arena scratch)
+{
+    for (; i < n; i++) {
+        s8 arg = a[i];
+        if (!u->hasexdir && arg.len>=2 && arg.s[0]=='-' && arg.s[1]=='d') {
+            u->exdir = (s8){arg.s+2, arg.len-2};
+            if (!u->exdir.len) {
+                if (i+1 >= n) {
+                    info(u, MSG_STDERR, must_exdir);
+                    return PK_PARAM;
+                }
+                u->exdir = a[++i];
+            }
+            u->hasexdir = 1;
+        } else if (zequals(arg, S("-x")) && (late || !u->xlist)) {
+            u->xlist = 1;
+        } else if (late && late_option(u, arg)) {
+            i32 r = apply_options(u, a, n, &i, error, scratch);
+            if (r) {
+                return r;
+            }
+        } else {
+            // With Windows conventions, '\' separates, as UnZip's port
+            // takes it in member names (unzip.c), so escapes nothing
+            if (u->windows && zip_has(arg, '\\')) {
+                arg = JOIN(&u->perm, arg);
+                for (iz k = 0; k < arg.len; k++) {
+                    arg.s[k] = arg.s[k]=='\\' ? '/' : arg.s[k];
+                }
+            }
+            *push(&u->perm, u->xlist ? &u->xspecs : &u->fspecs) = arg;
+        }
+    }
+    u->allfiles = !u->fspecs.len && !u->xlist;
     return 0;
 }
 
@@ -716,41 +796,10 @@ static i32 unzip_args(unzip *u, unzipconfig *conf, arena scratch)
     if (zipfile) {
         u->zipspec = a[i++];
     }
-
-    // What follows the archive: Info-ZIP's -d exdir anywhere, -x then a
-    // list running to the end, and members, and busybox's options
-    for (; i < n; i++) {
-        s8 arg = a[i];
-        if (!u->hasexdir && arg.len>=2 && arg.s[0]=='-' && arg.s[1]=='d') {
-            u->exdir = (s8){arg.s+2, arg.len-2};
-            if (!u->exdir.len) {
-                if (i+1 >= n) {
-                    info(u, MSG_STDERR, must_exdir);
-                    return PK_PARAM;
-                }
-                u->exdir = a[++i];
-            }
-            u->hasexdir = 1;
-        } else if (zequals(arg, S("-x"))) {
-            u->xlist = 1;
-        } else if (late_option(u, arg)) {
-            i32 r = apply_options(u, a, n, &i, &error, scratch);
-            if (r) {
-                return r;
-            }
-        } else {
-            // With Windows conventions, '\' separates, as UnZip's port
-            // takes it in member names (unzip.c), so escapes nothing
-            if (u->windows && zip_has(arg, '\\')) {
-                arg = JOIN(&u->perm, arg);
-                for (iz k = 0; k < arg.len; k++) {
-                    arg.s[k] = arg.s[k]=='\\' ? '/' : arg.s[k];
-                }
-            }
-            *push(&u->perm, u->xlist ? &u->xspecs : &u->fspecs) = arg;
-        }
+    i32 r = rest_args(u, a, n, i, 1, &error, scratch);
+    if (r) {
+        return r;
     }
-    u->allfiles = !u->fspecs.len && !u->xlist;
 
     if (u->showhelp) {
         if (u->showhelp == 2) {
@@ -785,6 +834,59 @@ static i32 unzip_args(unzip *u, unzipconfig *conf, arena scratch)
     }
     if (zequals(u->zipspec, S("-")) && !u->ovall) {
         u->ovnone = 1;  // busybox's: no prompting, stdin being the archive
+    }
+    return -1;
+}
+
+// Parse the arguments in ZipInfo mode, as UnZip's zi_opts and unzip do
+// (zipinfo.c, unzip.c), with ZIPINFO's options, or if it has none,
+// ZIPINFOOPT's, first: every argument starting with '-' until the
+// archive is options, then members, -x and its list, and -d (ignored),
+// as in unzip mode, but for busybox's options. Returns -1 to go on, or
+// an exit status.
+static i32 zipinfo_args(unzip *u, unzipconfig *conf, arena scratch)
+{
+    s8s args = env_args(&u->perm, conf->zipinfoenv, u->windows);
+    if (!args.len) {
+        args = env_args(&u->perm, conf->zipinfoopt, u->windows);
+    }
+    for (i32 i = 0; i < conf->nargs; i++) {
+        *push(&u->perm, &args) = conf->args[i];
+    }
+    s8 *a = args.data;
+    i32 n = (i32)args.len;
+
+    u->zinfo = 1;
+    u->zi    = zi_new();
+    b32 error = 0;
+    i32 i     = 0;
+    for (; i<n && a[i].len && a[i].s[0]=='-'; i++) {
+        for (iz k = 1; k < a[i].len; k++) {
+            u8  c = a[i].s[k];
+            i32 r = zi_option(&u->zi, c);
+            if (r==ZI_REFUSED || (c=='v' && u->zi.lflag==10)) {
+                // (-v, the verbose report, is still to come)
+                info(u, MSG_STDERR, JOIN(&scratch, S("error:  -"),
+                     (s8){&a[i].s[k], 1}, S(" option not supported\n")));
+                return PK_PARAM;
+            }
+            error |= r == ZI_BAD;
+        }
+    }
+    if (i==n || error) {
+        // (to standard error after an error: the totals flag is unset)
+        info(u, error ? MSG_STDERR : 0, zipinfo_usage);
+        return error ? PK_PARAM : PK_OK;
+    }
+    u->zipspec = a[i++];
+    zi_resolve(&u->zi, i < n);
+    u->Cflag = u->zi.Cflag;
+    i32 r = rest_args(u, a, n, i, 0, &error, scratch);
+    if (r) {
+        return r;
+    }
+    if (u->hasexdir) {
+        info(u, MSG_STDERR, S("caution:  not extracting; -d ignored\n"));
     }
     return -1;
 }
@@ -825,6 +927,32 @@ static b32 wanted(unzip *u, s8 name, u8 *fm, u8 *xm)
     return hit;
 }
 
+// Report the members, then the -x patterns, that matched no entry (none
+// noted in fm and xm), as UnZip does once it has been through an
+// archive. Returns whether a member matched none.
+static b32 unmatched(unzip *u, u8 *fm, u8 *xm, arena scratch)
+{
+    b32 r = 0;
+    for (iz i = 0; i < u->fspecs.len; i++) {
+        if (!fm[i]) {
+            arena tmp = scratch;
+            info(u, MSG_STDERR, JOIN(&tmp, S("caution: filename not matched:"
+                                             "  "), u->fspecs.data[i],
+                                     S("\n")));
+            r = 1;
+        }
+    }
+    for (iz i = 0; i < u->xspecs.len; i++) {
+        if (!xm[i]) {
+            arena tmp = scratch;
+            info(u, MSG_STDERR, JOIN(&tmp, S("caution: excluded filename not "
+                                             "matched:  "), u->xspecs.data[i],
+                                     S("\n")));
+        }
+    }
+    return r;
+}
+
 // Reading the central directory again failed, or found it changed since
 // it was checked: the end of the run, as UnZip's readbyte ends it.
 static void reread_failed(unzip *u)
@@ -842,6 +970,22 @@ static void next_entry(unzip *u, zarchive *ar, i64 *off, zentry *e, arena *a)
     if (zar_next(ar, off, e, a) != ZAR_OK) {
         reread_failed(u);
     }
+}
+
+// The entry whose central header is at *off, read again as next_entry
+// reads it, but raw, as ZipInfo shows it: its extra fields as they are,
+// Zip64's among them, and its offset neither shifted nor unwrapped,
+// pointing into the central directory's window, valid until its next
+// use.
+static void next_raw(unzip *u, zarchive *ar, i64 *off, zentry *e)
+{
+    i64 cdend = ar->end.cdoff + ar->end.cdsize;
+    iz  len   = 0;
+    if (zar_header(&ar->cd, *off, cdend, ar->cdlim, !ar->unzip, ar->maxhdr,
+                   e, &len) != ZAR_OK) {
+        reread_failed(u);
+    }
+    *off += len;
 }
 
 // An entry's name for matching and display: in Unicode, if it has that
@@ -1000,6 +1144,81 @@ static i32 list_files(unzip *u, zarchive *ar, arena scratch)
         err = PK_WARN;
     }
     return err<=PK_WARN && !members ? PK_FIND : err;
+}
+
+// ZipInfo's listing (zipinfo.c)
+
+// List the entries as zipinfo does, each by its central header (raw,
+// as next_raw reads it): names alone (-1, -2), or as zi_short shows them
+// (-s, -m, -l), then the totals, and the members and -x patterns that
+// matched nothing. An encrypted entry's compressed size counts without
+// its 12-byte header in the totals and -m, as in UnZip.
+static i32 zipinfo_files(unzip *u, zarchive *ar, arena scratch)
+{
+    i32 lflag   = u->zi.lflag;
+    u8 *fm      = new(&scratch, u->fspecs.len, u8);
+    u8 *xm      = new(&scratch, u->xspecs.len, u8);
+    u64 members = 0;
+    u64 tusize  = 0;
+    u64 tcsize  = 0;  // wrapping, as UnZip's unsigned total
+    i64 off     = ar->end.cdoff;
+    for (i64 i = 0; i < u->nentries; i++) {
+        arena   tmp  = scratch;
+        zentry  ent  = {0};
+        zentry *e    = &ent;
+        writer_poll(u->out);
+        next_raw(u, ar, &off, e);
+        s8      name = entry_name(u, e, &tmp);
+        if (!wanted(u, name, fm, xm)) {
+            continue;
+        }
+        u64 usize = (u64)e->usize;
+        u64 csize = (u64)e->csize;
+        u64 enc   = e->flags & ZIP_FLAG_ENCRYPTED ? 12 : 0;
+        s8  line  = {0};
+        if (lflag >= 3) {
+            i32 tm[6];
+            entry_time(u, e, tm);
+            zistr attr = zi_attribs(e->made, e->extattr, name);
+            zistr flag = zi_flags(e->flags, e->intattr, e->extattr, e->made,
+                                  e->cextra.len);
+            zistr meth = zi_method(e->method, e->flags);
+            zistr date = zi_date(tm, u->zi.Tflag);
+            zistr pct  = zi_percent(uz_ratio(usize, csize-enc));
+            line = JOIN(&tmp, zi_s8(&attr), S(" "), zi_host(e->made), S(" "),
+                        unum(&tmp, usize, 8, 0), S(" "), zi_s8(&flag),
+                        lflag==4 ? zi_s8(&pct) : S(""),
+                        lflag==5 ? S(" ") : S(""),
+                        lflag==5 ? unum(&tmp, csize, 8, 0) : S(""), S(" "),
+                        zi_s8(&meth), S(" "), zi_s8(&date), S(" "));
+        }
+        if (lflag) {  // (-h or -t alone: only those lines)
+            info(u, 0, JOIN(&tmp, line, shown(u, name, &tmp), S("\n")));
+        }
+        tusize += usize;
+        tcsize += csize - enc;
+        members++;
+    }
+    if (u->cderr==CD_SIG || u->cderr==CD_NONAME) {
+        cd_error(u, u->nentries+1, scratch);
+        return PK_BADERR;
+    }
+
+    if (u->zi.tflag) {
+        arena tmp = scratch;
+        zistr f   = zi_factor(uz_ratio(tusize, tcsize));
+        info(u, 0, JOIN(&tmp, unum(&tmp, members, 0, 0), S(" file"),
+                        plural(members), S(", "), unum(&tmp, tusize, 0, 0),
+                        S(" bytes uncompressed, "), unum(&tmp, tcsize, 0, 0),
+                        S(" bytes compressed:  "), zi_s8(&f), S("\n")));
+    }
+    unmatched(u, fm, xm, scratch);  // with some matched, still success
+    i32 err = PK_OK;
+    if (u->cderr == CD_END) {
+        info(u, MSG_STDERR, end_sig_msg);
+        err = PK_WARN;
+    }
+    return !members ? PK_FIND : err;
 }
 
 // Testing and extracting (extract.c)
@@ -2447,22 +2666,8 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
         err = MAX(err, PK_WARN);
     }
 
-    for (iz i = 0; i < u->fspecs.len; i++) {
-        if (!fm[i]) {
-            arena tmp = scratch;
-            info(u, MSG_STDERR, JOIN(&tmp, S("caution: filename not matched:"
-                                             "  "), u->fspecs.data[i],
-                                     S("\n")));
-            err = err<=PK_WARN ? PK_FIND : err;
-        }
-    }
-    for (iz i = 0; i < u->xspecs.len; i++) {
-        if (!xm[i]) {
-            arena tmp = scratch;
-            info(u, MSG_STDERR, JOIN(&tmp, S("caution: excluded filename not "
-                                             "matched:  "), u->xspecs.data[i],
-                                     S("\n")));
-        }
+    if (unmatched(u, fm, xm, scratch)) {
+        err = err<=PK_WARN ? PK_FIND : err;
     }
 
     if (u->tflag && u->qflag<2) {
@@ -2560,11 +2765,13 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
             if (lastchance && u->qflag<3) {
                 arena tmp = scratch;
                 s8    w   = u->zipspec;
+                s8    who = u->zinfo ? S("zipinfo") : S("unzip");
                 s8    msg = u->noecrec
-                    ? JOIN(&tmp, S("unzip:  cannot find zipfile directory in "
-                           "one of "), w, S(" or\n        "), w,
+                    ? JOIN(&tmp, who, S(":  cannot find zipfile directory in "
+                           "one of "), w, S(" or\n        "),
+                           u->zinfo ? S("  ") : S(""), w,
                            S(".zip, and cannot find "), path, S(", period.\n"))
-                    : JOIN(&tmp, S("unzip:  cannot find or open "), w, S(", "),
+                    : JOIN(&tmp, who, S(":  cannot find or open "), w, S(", "),
                            w, S(".zip or "), path, S(".\n"));
                 info(u, MSG_STDERR, msg);
             }
@@ -2586,7 +2793,7 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
     u->zipfn = path;
 
     i32 err = PK_OK;
-    if (!u->qflag) {
+    if (u->zinfo ? u->zi.hflag : !u->qflag) {
         info(u, 0, JOIN(&scratch, S("Archive:  "), path, S("\n")));
     }
 
@@ -2599,10 +2806,11 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
     }
 
     // The comment, as find_ecrec shows it, before checking the records,
-    // as far as the file holds it, warning if it ends first
-    b32 cut = r!=ZAR_ENOEND && ar.end.cut;
-    if (r!=ZAR_ENOEND && (ar.end.comment.len || cut) &&
-        (u->zflag || !u->qflag)) {
+    // as far as the file holds it, warning if it ends first (in ZipInfo
+    // mode, only under -z)
+    b32 cut  = r!=ZAR_ENOEND && ar.end.cut;
+    b32 show = u->zinfo ? u->zi.zflag : u->zflag || !u->qflag;
+    if (r!=ZAR_ENOEND && (ar.end.comment.len || cut) && show) {
         show_text(u, ar.end.comment, cut, scratch);
         if (cut) {
             info(u, MSG_STDERR, S("\ncaution:  zipfile comment truncated\n"));
@@ -2614,7 +2822,7 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
     // its locator says, nor just before the locator: perhaps the wrong
     // file, as UnZip takes it
     if (r==ZAR_ENOEND || ar.nosig64) {
-        if (u->qflag) {
+        if (u->qflag || u->zinfo) {
             info(u, MSG_STDERR, JOIN(&scratch, S("["), path, S("]\n")));
         }
         info(u, MSG_STDERR, r==ZAR_ENOEND ? no_endsig : no_end64sig);
@@ -2635,7 +2843,7 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
     // A Zip64 end record found just before its locator, rather than
     // where that says: its offsets shift by the data before the archive
     if (ar.moved64) {
-        if (u->qflag) {
+        if (u->qflag || u->zinfo) {
             info(u, MSG_STDERR, JOIN(&scratch, S("["), path, S("]\n")));
         }
         info(u, MSG_STDERR, S("error: End-of-centdir-64 signature not where "
@@ -2645,12 +2853,30 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
     if (u->zflag) {
         goto done;
     }
+    // ZipInfo's header line, as zi_end_central gives it, of the file's
+    // size, with any data before the archive, and the count of entries
+    if (u->zinfo && u->zi.hflag) {
+        info(u, 0, JOIN(&scratch, S("Zip file size: "), znum(&scratch, size),
+                        S(" bytes, number of entries: "),
+                        unum(&scratch, (u64)ar.end.count, 0, 0), S("\n")));
+    }
 
     // Data before the archive, unaccounted for by its offsets, shifts
     // them, as UnZip's extra_bytes; offsets past it are an error
     if (r==ZAR_EMULTI && ar.end.end64<0 && (ar.end.disk || ar.end.cddisk)) {
         // Disk numbers in the end record alone, which UnZip takes for
-        // the parts of an archive concatenated, warning of the last one
+        // the parts of an archive concatenated, warning of the last one;
+        // ZipInfo of disk numbers that disagree, refusing an archive
+        // whose central directory begins on an earlier disk
+        if (u->zinfo && ar.end.disk>ar.end.cddisk) {
+            info(u, MSG_STDERR, JOIN(&scratch, S("\n   ["), path,
+                 S("]:\n     Zipfile is disk "), unum(&scratch, ar.end.disk,
+                 0, 0), S(" of a multi-disk archive, and this is not the "
+                 "disk on\n     which the central zipfile directory begins "
+                 "(disk "), unum(&scratch, ar.end.cddisk, 0, 0), S(").\n")));
+            err = PK_FIND;
+            goto done;
+        }
         zend end = ar.end;
         end.disk = end.cddisk = 0;
         switch (zip_check_end32(&end)) {
@@ -2664,7 +2890,15 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
         default:
             r = ZAR_EFORMAT;
         }
-        if (ar.end.disk) {
+        if (u->zinfo && ar.end.disk<ar.end.cddisk) {
+            info(u, MSG_STDERR, JOIN(&scratch, S("\nwarning ["), path,
+                 S("]:  end-of-central-directory record claims this\n  is "
+                   "disk "), unum(&scratch, ar.end.disk, 0, 0), S(" but that "
+                 "the central directory starts on disk "),
+                 unum(&scratch, ar.end.cddisk, 0, 0), S("; this is a\n  "
+                 "contradiction.  Attempting to process anyway.\n")));
+            err = PK_WARN;
+        } else if (!u->zinfo && ar.end.disk) {
             info(u, MSG_STDERR, JOIN(&scratch, S("warning ["), path,
                  S("]:  zipfile claims to be last disk of a multi-part "
                    "archive;\n  attempting to process anyway, assuming all "
@@ -2714,8 +2948,12 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
         }
     }
     if (!cdoff && !ar.end.cdsize) {
-        info(u, MSG_STDERR, JOIN(&scratch, S("warning ["), path,
-                                 S("]:  zipfile is empty\n")));
+        if (u->zinfo) {
+            info(u, 0, S("Empty zipfile.\n"));  // ZipInfo's, on stdout
+        } else {
+            info(u, MSG_STDERR, JOIN(&scratch, S("warning ["), path,
+                                     S("]:  zipfile is empty\n")));
+        }
         err = MAX(err, PK_WARN);
         goto done;
     }
@@ -2754,7 +2992,9 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
     }
     zar_reread(&ar, UZ_CDWIN, &u->perm);
 
-    if (u->vflag && !u->tflag && !u->cflag) {
+    if (u->zinfo) {
+        r = zipinfo_files(u, &ar, scratch);
+    } else if (u->vflag && !u->tflag && !u->cflag) {
         r = list_files(u, &ar, scratch);
     } else {
         r = extract_or_test(u, &ar, scratch);
@@ -2904,9 +3144,15 @@ static i32 unzip_main(unzipconfig *conf)
     u->out     = newwriter(&u->perm, 1, 1<<16);
     arena scratch = conf->scratch;
 
-    i32 r = unzip_args(u, conf, scratch);
+    // ZipInfo mode by the program's name, or a first argument of -Z, as
+    // UnZip decides it before reading either's environment (unzip.c)
+    b32 zinfo = zi_named(conf->argv0, u->windows) ||
+                (conf->nargs && conf->args[0].len>=2 &&
+                 conf->args[0].s[0]=='-' && conf->args[0].s[1]=='Z');
+    i32 r = zinfo ? zipinfo_args(u, conf, scratch)
+                  : unzip_args(u, conf, scratch);
     if (r < 0) {
-        u->dup = u->tflag && !os_isatty(u->ctx, 1) && os_isatty(u->ctx, 2);
+        u->dup = tflagged(u) && !os_isatty(u->ctx, 1) && os_isatty(u->ctx, 2);
         // On a terminal, output is flushed once it has waited a moment,
         // at check points between entries and between chunks of their
         // data, lest a slow run show nothing for long, then pages at

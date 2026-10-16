@@ -13,6 +13,7 @@
 #include "../src/dir.c"
 #include "../src/zipin.c"
 #include "../src/unzip.c"
+#include "../src/zipinfo.c"
 #include "../src/unzipcli.c"
 #include "posix.c"
 #include "zipfs_posix.c"
@@ -143,14 +144,19 @@ int main(int argc, char **argv)
     conf.perm    = (arena){ctx.lo, ctx.lo, &ctx, 0};
     conf.scratch = (arena){ctx.hi, ctx.hi, &ctx, 1};
 
+    conf.argv0 = argc>0 ? cstr(argv[0]) : (s8){0};
     conf.nargs = argc>0 ? argc-1 : 0;
     conf.args  = new(&conf.perm, conf.nargs, s8);
     for (i32 i = 0; i < conf.nargs; i++) {
         conf.args[i] = cstr(argv[i+1]);
     }
-    char *unzipenv = getenv("UNZIP");
-    char *unzipopt = getenv("UNZIPOPT");
-    conf.unzipenv = unzipenv ? cstr(unzipenv) : (s8){0};
-    conf.unzipopt = unzipopt ? cstr(unzipopt) : (s8){0};
+    char *unzipenv   = getenv("UNZIP");
+    char *unzipopt   = getenv("UNZIPOPT");
+    char *zipinfoenv = getenv("ZIPINFO");
+    char *zipinfoopt = getenv("ZIPINFOOPT");
+    conf.unzipenv   = unzipenv ? cstr(unzipenv) : (s8){0};
+    conf.unzipopt   = unzipopt ? cstr(unzipopt) : (s8){0};
+    conf.zipinfoenv = zipinfoenv ? cstr(zipinfoenv) : (s8){0};
+    conf.zipinfoopt = zipinfoopt ? cstr(zipinfoopt) : (s8){0};
     return unzip_main(&conf);
 }

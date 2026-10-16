@@ -14,7 +14,7 @@
 # sparse, and skipped where TMPDIR's file system has no holes.
 set -e
 
-unset UNZIP UNZIPOPT ZIPOPT ZIP  # options from the environment
+unset UNZIP UNZIPOPT ZIPINFO ZIPINFOOPT ZIPOPT ZIP  # environment options
 export TZ=UTC LC_ALL=C           # listings' times, and REF's names
 U=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 if [ -n "$UNZIPOOM" ]; then  # another build for the out-of-memory tests
@@ -234,7 +234,7 @@ same_head -l            # options, but no archive
 same_head -q
 
 # Options UnZip has that tugz refuses, each with status 10
-for opt in a aa B E F i I J L M N O P Q s S T U UU W Y Z '$' : '^' 2 /; do
+for opt in a aa B E F i I J L M N O P Q s S T U UU W Y '$' : '^' 2 /; do
     printf 'error:  -%c option not supported\n' "$opt" >want
     ours 10 none want -$opt x.zip
 done
