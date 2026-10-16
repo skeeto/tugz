@@ -2,7 +2,8 @@
 # Windows end-to-end tests of unzip.exe, run under w64devkit: names in
 # the OEM and ANSI code pages and in Unicode, names mapped for Windows,
 # attributes and times, links in the destination, long paths, the
-# console prompt, wildcard archive names, and exit statuses. Archives
+# console prompt, wildcard archive names, exit statuses, and ZipInfo
+# mode, by the program's name, in copies named zipinfo.exe. Archives
 # made by Explorer's zip folder and by tugz's zip are extracted, and
 # compared with what Windows' own readers extract: Explorer, .NET's
 # Expand-Archive, and tar (libarchive).
@@ -11,7 +12,7 @@
 # include them (see the end).
 set -e
 
-unset UNZIP UNZIPOPT ZIPOPT ZIP  # options for unzip and zip
+unset UNZIP UNZIPOPT ZIPOPT ZIP ZIPINFO ZIPINFOOPT  # the programs' options
 [ -n "$TUGZ_ZIP" ] || { echo "TUGZ_ZIP must name tugz's zip" >&2; exit 1; }
 UNZIP=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 ZIP=$(cd "$(dirname "$TUGZ_ZIP")" && pwd)/$(basename "$TUGZ_ZIP")
@@ -623,6 +624,78 @@ head -c 30 p.zip >trunc.zip
 expect_status 9 "$UNZIP" -t trunc.zip
 printf 'MZ stub\n' | cat - p.zip >sfx.zip
 expect_status 1 "$UNZIP" -t sfx.zip
+
+# ZipInfo mode, by the program's name: copies named zipinfo.exe, ii.exe,
+# and ZIPINFO.EXE (in a directory of its own) list as unzip -Z does, by
+# any path, either separator splitting it, or run by cmd with no
+# extension; ZIPINFO's options apply first, not UNZIP's; and code-page
+# names are shown as unzip shows them
+mkdir -p zi/up zi/ii
+cp "$UNZIP" zi/zipinfo.exe
+cp "$UNZIP" zi/ii.exe
+cp "$UNZIP" zi/up/ZIPINFO.EXE
+cp "$UNZIP" zi/ii/unzip.exe
+ZI=$tmp/zi/zipinfo.exe
+for z in names times attr link; do
+    "$UNZIP" -Z1 $z.zip >want || fail "unzip -Z1 $z.zip: status $?"
+    for p in "$ZI" "$tmp/zi/ii.exe" "$tmp/zi/up/ZIPINFO.EXE"; do
+        "$p" -1 $z.zip >got || fail "$p -1 $z.zip: status $?"
+        cmp -s want got || fail "$p -1 $z.zip: $(cat got)"
+    done
+    for o in '' -v; do
+        "$UNZIP" -Z $o $z.zip >want || fail "unzip -Z $o $z.zip: status $?"
+        "$ZI" $o $z.zip >got || fail "zipinfo $o $z.zip: status $?"
+        cmp -s want got || fail "zipinfo $o $z.zip: $(cat got)"
+    done
+done
+grep -q '^Archive:  link\.zip$' got &&
+    grep -q '^Central directory entry #3:' got ||
+    fail "zipinfo -v link.zip: $(cat got)"
+"$ZI" names.zip >got
+grep -q '^5 files, 0 bytes uncompressed, 0 bytes compressed:' got ||
+    fail "zipinfo names.zip: $(cat got)"
+"$ZI" -1 names.zip >got
+grep -qx "utf8$(printf '\303\251').txt" got &&
+    grep -qx "$(printf '\320\266').txt" got ||
+    fail "zipinfo -1 names: $(cat got)"
+[ "$oemcp" != 437 ] && [ "$oemcp" != 850 ] ||
+    grep -qx "oem$(printf '\303\251').txt" got ||
+    fail "zipinfo -1, OEM name: $(cat got)"
+"$UNZIP" -Z1 names.zip >want
+(cd zi && cmd /c 'zipinfo -1 ..\names.zip') >got || fail "cmd zipinfo: $?"
+cmp -s want got || fail "cmd zipinfo -1: $(cat got)"
+(cd zi && cmd /c 'ii -1 ..\names.zip') >got || fail "cmd ii: $?"
+cmp -s want got || fail "cmd ii -1: $(cat got)"
+cmd /c 'zi\up\ZIPINFO.EXE -1 names.zip' >got || fail "zi\\up\\ZIPINFO.EXE: $?"
+cmp -s want got || fail "zi\\up\\ZIPINFO.EXE -1: $(cat got)"
+# ...and by the name after the last separator alone, so not zi\ii\unzip
+cmd /c 'zi\ii\unzip.exe -v names.zip' >got || fail "zi\\ii\\unzip.exe: $?"
+grep -q '^ Length   Method    Size  Cmpr ' got ||
+    fail "zi\\ii\\unzip: $(cat got)"
+ZIPINFO=-1 ZIPINFOOPT=-v UNZIP=-v "$ZI" names.zip >got || fail "ZIPINFO: $?"
+cmp -s want got || fail "ZIPINFO=-1: $(cat got)"
+ZIPINFOOPT=-1 "$ZI" names.zip >got || fail "ZIPINFOOPT: $?"
+cmp -s want got || fail "ZIPINFOOPT=-1: $(cat got)"
+expect_status 9 "$ZI" missing.zip
+"$ZI" missing.zip >out || true  # (with the totals, to standard output)
+grep -q '^zipinfo:  cannot find or open missing.zip, ' out ||
+    fail "zipinfo missing.zip: $(cat out)"
+expect_status 10 "$ZI" -M names.zip
+expect_status 10 "$ZI" -U names.zip
+expect_status 11 "$ZI" names.zip none.txt
+# -v's extended timestamp, in local time, by this zone's rules as .NET
+# gives it (before 1970 west of UTC, as the C runtime's localtime gives
+# it too), and in UTC
+entry 'epoch.txt' 0 $UNIX $FILE $d2020 "$(ut 1 3600)"
+finish epoch.zip
+want=$(ps "\$t = [DateTimeOffset]::FromUnixTimeSeconds(3600).ToLocalTime()
+           \$t.ToString('yyyy MMM d HH:mm:ss',
+                        [Globalization.CultureInfo]::InvariantCulture)" |
+       tr -d '\r')
+"$ZI" -v epoch.zip >got || fail "zipinfo -v epoch.zip: $?"
+grep -q "(UT extra field modtime): *$want local\$" got &&
+    grep -q "(UT extra field modtime): *1970 Jan 1 01:00:00 UTC\$" got ||
+    fail "zipinfo -v, UT time near 1970 ($want): $(cat got)"
 
 # Ordinary archives, made by tugz's zip, are extracted as Windows' own
 # readers extract them: tar, which takes names in the ANSI code page,

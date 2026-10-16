@@ -6,8 +6,9 @@
 # what the platform layer does, through its XP fallbacks there: times
 # and attributes kept, outputs replaced or discarded, recursion and
 # hidden files, Unicode names and paths longer than MAX_PATH, unzip's
-# prompt read from a pipe, and Ctrl+C and Ctrl+Break. They pass on later
-# Windows too, where the other scripts test more.
+# prompt read from a pipe, ZipInfo mode in copies named zipinfo.exe, and
+# Ctrl+C and Ctrl+Break. They pass on later Windows too, where the other
+# scripts test more.
 # Usage: sh test/xp.sh ./gzip.exe ./zip.exe ./unzip.exe
 # CC names the compiler (default cc).
 set -e
@@ -16,7 +17,7 @@ if [ $# != 3 ]; then
     echo "usage: sh test/xp.sh GZIP.EXE ZIP.EXE UNZIP.EXE" >&2
     exit 1
 fi
-unset GZIP ZIP ZIPOPT UNZIP UNZIPOPT  # options for the programs
+unset GZIP ZIP ZIPOPT UNZIP UNZIPOPT ZIPINFO ZIPINFOOPT  # their options
 abs() {
     echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 }
@@ -216,6 +217,70 @@ done
 [ "$("$WH" cat "out/src/$long")" = long ] || fail "no long path"
 [ "$("$GZIP" -c "src/$long" | "$GZIP" -dc)" = long ] ||
     fail "gzip -c of a long path"
+cd ..
+
+# ZipInfo mode, by the program's name: copies named zipinfo.exe, ii.exe,
+# and ZIPINFO.EXE (in a directory of its own) list as unzip -Z does, by
+# any path, or run by cmd with no extension; ZIPINFO's options apply
+# first; and a name in the OEM code page, made on MS-DOS without flag
+# bit 11 as Explorer writes it, is shown as unzip shows it
+mkdir -p i/up
+cd i
+cp "$UNZIP" zipinfo.exe
+cp "$UNZIP" ii.exe
+cp "$UNZIP" up/ZIPINFO.EXE
+le16() {
+    printf "$(printf '\\%03o\\%03o' $(($1 & 255)) $(($1>>8 & 255)))"
+}
+le32() {
+    le16 $(($1 & 65535))
+    le16 $(($1>>16 & 65535))
+}
+d=$(( (2020-1980)<<25 | 1<<21 | 2<<16 | 3<<11 | 4<<5 ))
+name='oem\202.txt'
+n=$(printf "$name" | wc -c)
+{ printf 'PK\003\004'; le16 20; le16 0; le16 0; le32 $d; le32 0; le32 0
+  le32 0; le16 $n; le16 0; printf "$name"
+  printf 'PK\001\002'; le16 20; le16 20; le16 0; le16 0; le32 $d; le32 0
+  le32 0; le32 0; le16 $n; le16 0; le16 0; le16 0; le16 0; le32 32; le32 0
+  printf "$name"
+  printf 'PK\005\006'; le16 0; le16 0; le16 1; le16 1; le32 $((46 + n))
+  le32 $((30 + n)); le16 0; } >oem.zip
+cp ../z/a.zip ../n/u.zip .
+for z in a u oem; do
+    "$UNZIP" -Z1 $z.zip >want || fail "unzip -Z1 $z.zip: status $?"
+    for p in ./zipinfo.exe ./ii.exe up/ZIPINFO.EXE; do
+        "$p" -1 $z.zip >got || fail "$p -1 $z.zip: status $?"
+        cmp -s want got || fail "$p -1 $z.zip: $(cat got)"
+    done
+    for o in '' -v; do
+        "$UNZIP" -Z $o $z.zip >want || fail "unzip -Z $o $z.zip: status $?"
+        ./zipinfo.exe $o $z.zip >got || fail "zipinfo $o $z.zip: status $?"
+        cmp -s want got || fail "zipinfo $o $z.zip: $(cat got)"
+    done
+done
+grep -q '^Central directory entry #1:' got || fail "zipinfo -v: $(cat got)"
+./zipinfo.exe u.zip >got
+grep -q " src/$(printf '\346\227\245\346\234\254').txt\$" got ||
+    fail "zipinfo u.zip: $(cat got)"
+oemcp=$(reg query 'HKLM\SYSTEM\CurrentControlSet\Control\Nls\CodePage' \
+            /v OEMCP | awk '/OEMCP/ { print $NF }' | tr -d '\r')
+"$UNZIP" -Z1 oem.zip >want
+[ "$oemcp" != 437 ] && [ "$oemcp" != 850 ] ||
+    [ "$(cat want)" = "oem$(printf '\303\251').txt" ] ||
+    fail "zipinfo -1, OEM name ($oemcp): $(cat want)"
+cmd /c 'zipinfo -1 oem.zip' >got || fail "cmd zipinfo: $?"
+cmp -s want got || fail "cmd zipinfo -1: $(cat got)"
+cmd /c 'ii -1 oem.zip' >got || fail "cmd ii: $?"
+cmp -s want got || fail "cmd ii -1: $(cat got)"
+cmd /c 'up\ZIPINFO.EXE -1 oem.zip' >got || fail "up\\ZIPINFO.EXE: $?"
+cmp -s want got || fail "up\\ZIPINFO.EXE -1: $(cat got)"
+ZIPINFO=-1 ZIPINFOOPT=-v UNZIP=-v ./zipinfo.exe oem.zip >got ||
+    fail "ZIPINFO: $?"
+cmp -s want got || fail "ZIPINFO=-1: $(cat got)"
+expect_status 9 ./zipinfo.exe missing.zip
+expect_status 10 ./zipinfo.exe -M oem.zip
+expect_status 10 ./zipinfo.exe -U oem.zip
 cd ..
 
 # Ctrl+C and Ctrl+Break, sent by the helper once a program has written a
