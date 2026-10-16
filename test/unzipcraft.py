@@ -110,6 +110,7 @@ class Entry:
         self.made = kw.get("made", 3 << 8 | 30)
         self.needed = kw.get("needed", 20)
         self.extattr = kw.get("extattr", 0o100644 << 16)
+        self.intattr = kw.get("intattr", 0)  # bit 0: text
         self.dostime = kw.get("dostime", DOSTIME)
         self.cextra = kw.get("cextra", b"")
         self.lextra = kw.get("lextra", b"")
@@ -139,10 +140,12 @@ class Entry:
 
 
 def build(entries, comment=b"", prefix=b"", shifted=True, zip64=False,
-          disk=0, count=None, clen=None):
+          disk=0, count=None, clen=None, cddisk=None):
     """An archive of entries after prefix, whose offsets account for the
     prefix if shifted, with Zip64 end records if zip64, its count of
-    entries (modulo 65536 without Zip64) and comment length as given."""
+    entries (modulo 65536 without Zip64) and comment length as given,
+    and its disk numbers, this one's and the central directory's (by
+    default, the same)."""
     out = bytearray(prefix)
     base = len(prefix) if shifted else 0
     offsets = []
@@ -164,7 +167,7 @@ def build(entries, comment=b"", prefix=b"", shifted=True, zip64=False,
         cd += struct.pack(
             "<IHHHHIIIIHHHHHII", 0x02014B50, e.made, e.needed, flags,
             e.method, e.dostime, e.crc, csize, usize, len(e.name),
-            len(cextra), len(e.comment), 0, 0, e.extattr, off)
+            len(cextra), len(e.comment), 0, e.intattr, e.extattr, off)
         cd += e.name + cextra + e.comment
     cdoff = len(out) - len(prefix) + base
     end = len(out) - len(prefix) + base + len(cd)
@@ -179,8 +182,9 @@ def build(entries, comment=b"", prefix=b"", shifted=True, zip64=False,
                            0xFFFFFFFF, 0xFFFFFFFF, clen) + comment
     else:
         count &= 0xFFFF
-        out += struct.pack("<IHHHHIIH", 0x06054B50, disk, disk, count, count,
-                           len(cd), cdoff, clen) + comment
+        cddisk = disk if cddisk is None else cddisk
+        out += struct.pack("<IHHHHIIH", 0x06054B50, disk, cddisk, count,
+                           count, len(cd), cdoff, clen) + comment
     return bytes(out)
 
 
@@ -529,6 +533,103 @@ write("names.zip", build([
 write("comments.zip", build(
     [Entry("c.txt", b"c\n", comment=b"tab\there\x1b[1m bold\r\n")],
     comment=b"line one\r\nline\x1b[31m two\x07\x00hidden"))
+
+# ZipInfo's fields: each listed, never read, so entries without data
+# but for their sizes. Versions made by from 10.0, which UnZip's builds
+# abort on but for Unix's attributes, and methods from 1000, which
+# Apple's build overruns, are left to tests-unzip.
+
+
+def bare(name, **kw):
+    """An entry listed by its central header alone: sizes as given."""
+    kw.setdefault("method", 0)
+    usize = kw.pop("usize", 0)
+    csize = kw.pop("csize", usize)
+    return Entry(name, comp=b"", usize=usize, csize=csize, **kw)
+
+
+# Hosts, by the upper byte of "version made by", their attributes as
+# Unix's or MS-DOS's (host 0 as Unix's where those agree)
+write("hosts.zip", build([
+    bare("h%03d-v%d" % (h, v), made=h << 8 | v,
+         extattr=0o100644 << 16 | 0x20, usize=h)
+    for h in list(range(32)) + [40, 99, 255] for v in (0, 20, 63)]))
+# Types and permissions, by host
+types = []
+for mode in (0o100644, 0o040755, 0o120777, 0o060660, 0o020620, 0o010600,
+             0o140755, 0o004755, 0o170000, 0o104755, 0o102755, 0o101777,
+             0o104644, 0o102644, 0o101666, 0o107000, 0o100000):
+    for h in (3, 5, 16, 19, 30):
+        types.append(bare("u%o-%d" % (mode, h), made=h << 8 | 30,
+                          extattr=mode << 16))
+for attr in (0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x11, 0x20, 0x27, 0x3F):
+    for h in (0, 6, 11, 14):
+        types.append(bare("d%02x-%d" % (attr, h), made=h << 8 | 20,
+                          extattr=attr))
+for name in ("a.exe", "B.COM", "c.Bat", "d.cmd", "e.btm", "f.exe.txt",
+             "g.batch", "dir.exe/h", "noext"):
+    types.append(bare(name, made=0 << 8 | 20, extattr=0x20))
+    types.append(bare(name + "-ntfs", made=11 << 8 | 20, extattr=0x20))
+for mode, attr in ((0o100644, 0x20), (0o100444, 0x01), (0o040755, 0x10),
+                   (0o100600, 0x20), (0o100444, 0x20), (0o040755, 0x00)):
+    types.append(bare("agree%o-%x" % (mode, attr), made=0 << 8 | 20,
+                      extattr=mode << 16 | attr))
+for mode in (0o100777, 0o100640, 0o100751, 0o100000, 0o100222):
+    types.append(bare("vms%o" % mode, made=2 << 8 | 20, extattr=mode << 16))
+for mode in (0o2017, 0o4377, 0o2200, 0o6000, 0):
+    types.append(bare("ami%o" % mode, made=1 << 8 | 20, extattr=mode << 16))
+for mode in (0x8000, 0x4FFF, 0x5400, 0x2800, 0xF0C7, 0x1000):
+    types.append(bare("ths%x" % mode, made=18 << 8 | 20, extattr=mode << 16))
+write("types.zip", build(types))
+# Methods, with the sub-types of flag bits 1 and 2
+write("methods2.zip", build([
+    bare("m%d-%d" % (m, f), method=m, flags=f << 1, usize=100, csize=40)
+    for m in list(range(21)) + [96, 97, 98, 99, 255, 999]
+    for f in range(4)]))
+# The text bit, encryption, data descriptors, and extra fields, also
+# external attribute bit 15 from Unix, OS/2 HPFS, and NTFS
+flags = []
+for h in (3, 0, 6, 11):
+    for f in (0, 1, 8, 9):
+        for text in (0, 1):
+            for xf, ext in ((b"", 0), (ut(1600000000), 0), (b"", 0x8000)):
+                flags.append(bare("f%d-%d-%d-%d%x" % (h, f, text, len(xf), ext),
+                                  made=h << 8 | 20, flags=f, intattr=text,
+                                  cextra=xf, usize=50, csize=30,
+                                  extattr=0o100644 << 16 | ext))
+write("flags.zip", build(flags))
+# Dates: DOS fields as stored (months 0 and 13 to 15 too), else central
+# timestamps' in local time (UTC here), and "UX"'s
+def dos(y, mo, d, h, mi, s2):
+    return (y - 1980) << 25 | mo << 21 | d << 16 | h << 11 | mi << 5 | s2
+write("dates.zip", build([
+    bare("d%d" % i, dostime=t) for i, t in enumerate((
+        dos(1980, 1, 1, 0, 0, 0), dos(1980, 0, 0, 0, 0, 0),
+        dos(2107, 15, 31, 31, 63, 31), dos(2026, 13, 5, 6, 7, 8),
+        dos(2026, 14, 5, 6, 7, 8), dos(2000, 2, 29, 23, 59, 29),
+        dos(2079, 12, 31, 12, 0, 0), dos(2099, 6, 0, 24, 60, 30)))] + [
+    bare("ut%d" % t, cextra=ut(t)) for t in (0, 86399, 951782400,
+                                              1600000000, 2147483647)] + [
+    bare("ut2038", cextra=ut(0x80000000), dostime=dos(2038, 1, 19, 3, 14, 8)),
+    bare("ut-early", cextra=ut(0x80000000)),
+    bare("ux", cextra=struct.pack("<HHII", 0x5855, 8, 1, 1500000000)),
+]))
+# Compression factors, -m's rounded as C divides
+write("ratios.zip", build([
+    bare("r%d-%d-%d" % (u, c, f), usize=u, csize=c, flags=f)
+    for u, c, f in ((0, 0, 0), (0, 5, 0), (100, 17, 0), (100, 0, 0),
+                    (100, 200, 0), (100, 201, 0), (1000, 995, 0),
+                    (1000, 1005, 0), (3, 2, 0), (7, 9, 0), (1, 1000, 0),
+                    (2000001, 1000001, 0), (4294967295, 1, 0),
+                    (100, 112, 1), (100, 12, 1), (2, 13, 1), (12345, 6789, 1))
+]))
+# Disk numbers that disagree: the central directory on an earlier disk
+# (refused, 11), or a later one (a warning)
+write("disks10.zip", build(basic(), disk=1, cddisk=0))
+write("disks01.zip", build(basic(), disk=0, cddisk=1))
+# An archive followed by more than unzip's tail window, which ZipInfo
+# finds by searching the whole file
+write("trailing.zip", build(basic()) + bytes(70000))
 
 # Extraction: trees with directories, modes, times, owners, and links
 

@@ -78,12 +78,13 @@ exits() {
 
 # Run ours and REF on the same arguments, leaving their status, output,
 # and errors in ours.* and ref.*, REF's dates made ISO (YYYY-MM-DD), as
-# tugz lists them, rather than macOS's MM-DD-YYYY.
+# tugz lists them, rather than macOS's MM-DD-YYYY. UB and RB, if set,
+# name other programs for ours and REF, the same run by other names.
 both() {
     set +e
-    "$U" "$@" >ours.out 2>ours.err </dev/null
+    "${UB:-$U}" "$@" >ours.out 2>ours.err </dev/null
     echo $? >ours.st
-    "$REF" "$@" >ref.raw 2>ref.err </dev/null
+    "${RB:-$REF}" "$@" >ref.raw 2>ref.err </dev/null
     echo $? >ref.st
     set -e
     [ "$(cat ours.st)" != 99 ] || fail "sanitizer: $*: $(cat ours.err)"
@@ -102,32 +103,33 @@ same() {
         fail "errors differ from REF's: $*: $(diff ref.err ours.err)"
 }
 
-# As same, but for the usage that follows an error, which is tugz's own:
-# the errors before it, and whether it follows.
+# As same, but for the usage that follows an error, which is tugz's own,
+# UnZip's or ZipInfo's: the errors before it, and whether it follows.
 same_head() {
     both "$@"
     cmp -s ours.st ref.st ||
         fail "status $(cat ours.st), REF's $(cat ref.st): $*"
     for f in out err; do  # (under -t, errors go to standard output)
-        sed '/^UnZip [0-9]/,$d' ref.$f >ref.pre
-        sed '/^tugz unzip /,$d' ours.$f >ours.pre
+        sed -e '/^UnZip [0-9]/,$d' -e '/^ZipInfo [0-9]/,$d' ref.$f >ref.pre
+        sed -e '/^tugz unzip /,$d' -e '/^tugz zipinfo /,$d' ours.$f >ours.pre
         cmp -s ref.pre ours.pre ||
             fail "$f differs from REF's: $*: $(diff ref.pre ours.pre)"
-        [ "$(grep -c '^UnZip [0-9]' ref.$f)" = \
-          "$(grep -c '^tugz unzip ' ours.$f)" ] ||
+        [ "$(grep -cE '^(UnZip|ZipInfo) [0-9]' ref.$f)" = \
+          "$(grep -cE '^tugz (unzip|zipinfo) ' ours.$f)" ] ||
             fail "usage, or not, unlike REF: $*: $(cat ours.$f)"
     done
 }
 
 # Our status, output, and errors exactly: status, a file of the expected
-# output, a file of the expected errors, then the arguments.
+# output, a file of the expected errors, then the arguments (UB as for
+# both).
 ours() {
     want=$1
     wout=$2
     werr=$3
     shift 3
     set +e
-    "$U" "$@" >ours.out 2>ours.err </dev/null
+    "${UB:-$U}" "$@" >ours.out 2>ours.err </dev/null
     got=$?
     set -e
     [ "$got" = "$want" ] ||
@@ -212,6 +214,20 @@ xsame() {
         fail "tree differs from REF's: $*: $(diff ref.tree ours.tree)"
 }
 
+# ZipInfo mode, the program run by the name zipinfo, or ii: links to
+# ours and REF, in directories of their own (as case may not matter in
+# names), or else copies; and same, same_head, and ours run so
+mkdir zi.ours zi.ref
+for n in zipinfo ii; do
+    ln -s "$U" zi.ours/$n 2>/dev/null || cp "$U" zi.ours/$n
+    ln -s "$REF" zi.ref/$n 2>/dev/null || cp "$REF" zi.ref/$n
+done
+ZU=$tmp/zi.ours/zipinfo
+ZREF=$tmp/zi.ref/zipinfo
+zsame() { UB=$ZU RB=$ZREF; same "$@"; UB= RB=; }
+zsame_head() { UB=$ZU RB=$ZREF; same_head "$@"; UB= RB=; }
+zours() { UB=$ZU; ours "$@"; UB=; }
+
 # ---- Options --------------------------------------------------------
 
 # Usage: alone to standard output, as after an error to standard error;
@@ -237,6 +253,31 @@ same_head -q
 for opt in a aa B E F i I J L M N O P Q s S T U UU W Y '$' : '^' 2 /; do
     printf 'error:  -%c option not supported\n' "$opt" >want
     ours 10 none want -$opt x.zip
+done
+
+# ZipInfo mode's usage, tugz's own: alone (or unzip -Z, or with options
+# but no archive) to standard output, as after an error to standard
+# error; its -M (pager) and Debian's -U refused, and -v for now
+zours 0 ours.out none
+head -n 1 ours.out |
+    grep -q "^tugz zipinfo $version, a subset of Info-ZIP ZipInfo 3.00\$" ||
+    fail "zipinfo usage: $(cat ours.out)"
+if head -n 1 ours.out | grep -qE '^(UnZip|ZipInfo) .*Info-ZIP'; then
+    fail "zipinfo usage looks like Info-ZIP's: $(head -n 1 ours.out)"
+fi
+cp ours.out zusage
+zours 0 zusage none -h
+zours 0 zusage none -1l
+ours 0 zusage none -Z
+zsame_head
+zsame_head -h
+zsame_head -2t
+zsame_head -q x.zip
+zsame_head -x x.zip
+zsame_head -1 -k x.zip
+for opt in M U UU v; do
+    printf 'error:  -%c option not supported\n' "$opt" >want
+    zours 10 none want -$opt x.zip
 done
 
 # An empty archive, from printf
@@ -321,6 +362,56 @@ for zip in "$TUGZ_ZIP" "$(command -v zip || true)"; do
     export UNZIP=-v
     same_head -q                              # options, no archive
     unset UNZIP
+
+    # ZipInfo mode: each format with the header, totals, comment, times,
+    # and their negations, over each selection, members turning off the
+    # header and totals unless asked for
+    for fmt in "" -1 -2 -s -m -l; do
+        for opt in "" -h -t -z -T -C --h --t -ht -hz; do
+            zsame $fmt $opt z.zip
+            zsame $fmt $opt z.zip 'tree/*.txt'
+            zsame $fmt $opt z.zip -x 'tree/sub/*'
+            zsame $fmt $opt z.zip nomatch          # caution, 11
+            zsame $fmt $opt z.zip tree/a.txt nomatch
+        done
+    done
+    zsame -h-t z.zip                          # a negation carried over
+    zsame -l- -t z.zip
+    zsame -- -h z.zip                         # "--" is no end of options
+    zsame - z.zip
+    zsame -2 z.zip -x tree/a.txt -x           # a second -x, a pattern
+    zsame z.zip -d somewhere                  # -d ignored, with caution
+    zsame -t z.zip -dsomewhere
+    zsame_head -t z.zip -d
+    zsame -1 nothere                          # 9, each name tried
+    zsame nothere
+    zsame -h z                                # with .zip
+    UB=$tmp/zi.ours/ii RB=$tmp/zi.ref/ii
+    same -1 z.zip                             # by the name ii too
+    UB=$U RB=$REF
+    same -Z1 z.zip                            # by -Z first, as unzip
+    same -Z -s z.zip tree/a.txt
+    same_head -lZ z.zip                       # -Z not first: an error
+    same_head -tZ z.zip
+    same_head -hZ z.zip
+    same_head -qZ1 z.zip
+    same -l z.zip -Z                          # a member
+    UB= RB=
+    # its environment, ZIPINFO, else ZIPINFOOPT, and never UNZIP
+    export ZIPINFO=-1
+    zsame z.zip
+    zsame --1 -h z.zip
+    same -l z.zip
+    UB=$U RB=$REF
+    same -Z -t z.zip
+    UB= RB=
+    export ZIPINFO=" " ZIPINFOOPT=-2t
+    zsame z.zip
+    unset ZIPINFO ZIPINFOOPT
+    export UNZIP=-Z
+    zsame -m z.zip
+    same_head -l z.zip
+    unset UNZIP
 done
 
 # tugz's own: options after the archive, as busybox takes them
@@ -389,6 +480,23 @@ for z in basic nocomment sfx sfxok zip64 desc empty emptycomment emptysfx \
 done
 same -l wrap.zip                              # 65,539 entries, a count of 3
 same -t wrap.zip
+
+# ZipInfo mode over the same archives, and its fields over hosts,
+# attributes, methods, flags, dates, compression factors, and end
+# records' disk numbers
+for z in basic nocomment sfx sfxok zip64 desc empty emptycomment emptysfx \
+         multi many badcrc baddata truncdata storedsize localname badextra \
+         truncated badcdoff badheader badlocal deflate64 \
+         count2 count4 count5 count0 count64 sfx64 sfx64ok nosig64 loc64 \
+         cmtcut cmtnone cmtcut64 cdjunk cmtlines methods encrypted \
+         hosts types methods2 flags dates ratios disks01 disks10; do
+    for mode in "" -1 -2htz -m -l -T -h -t -z -t-h; do
+        zsame $mode $z.zip
+    done
+done
+zsame -1 wrap.zip
+zsame -t wrap.zip
+zsame -l basic
 same -l basic                                 # with .zip
 same -t basic dir/text.txt
 same -l methods.zip
@@ -476,6 +584,24 @@ for mode in -l -t -tq -tqq -tqqq; do
     sort ours.out ours.err | grep -v '^$' >ours.all
     sort ref.out ref.err | grep -v '^$' >ref.all
     cmp -s ours.all ref.all || fail "lines: $mode w/*.zip"
+done
+# and in ZipInfo mode, its summary routed by its totals flag
+zsame -1 'w/[a].zip'
+zsame 'nomatch*'
+for mode in "" -1 -h -2t; do
+    UB=$ZU RB=$ZREF
+    both $mode 'w/*.zip'
+    UB= RB=
+    cmp -s ours.st ref.st || fail "status: zipinfo $mode w/*.zip"
+    f=err
+    case $mode in "" | -2t) f=out ;; esac
+    tail -n 5 ours.$f >ours.sum
+    tail -n 5 ref.$f >ref.sum
+    cmp -s ours.sum ref.sum ||
+        fail "summary: zipinfo $mode w/*.zip: $(diff ref.sum ours.sum)"
+    sort ours.out ours.err | grep -v '^$' >ours.all
+    sort ref.out ref.err | grep -v '^$' >ref.all
+    cmp -s ours.all ref.all || fail "lines: zipinfo $mode w/*.zip"
 done
 cat >want <<EOF
 Archive:  w/a.zip
@@ -702,6 +828,38 @@ tab	here^[[1m bold
         2                     1 file
 EOF
 ours 0 want none -l comments.zip
+
+# Departures in ZipInfo mode: names shown as unzip shows them, in UTF-8
+# with control characters as ^X, as are comments; an end record looked
+# for only where unzip looks, here before 70,000 bytes that follow it,
+# which ZipInfo finds; and the compression factor where UnZip's
+# arithmetic overflows, as for -v
+cat >want <<EOF
+café.txt
+café.txt
+ctl^A^[[1mx.txt
+dos\\path.txt
+EOF
+zours 0 want none -1 names.zip
+printf 'line one\nline^[[31m two^G\nc.txt\n' >want
+zours 0 want none -2z comments.zip
+{ printf '[trailing.zip]\n'
+  printf '  End-of-central-directory signature not found.  Either this '
+  printf 'file is not\n  a zipfile, or it constitutes one disk of a '
+  printf 'multi-part archive.  In the\n  latter case the central '
+  printf 'directory and zipfile comment will be found on\n  the last '
+  printf 'disk(s) of this archive.\n'
+  printf 'zipinfo:  cannot find zipfile directory in one of trailing.zip '
+  printf 'or\n          trailing.zip.zip, and cannot find trailing.zip.ZIP, '
+  printf 'period.\n'; } >want.err
+zours 9 none want.err -1 trailing.zip
+UB=$ZU RB=$ZREF
+both -1 trailing.zip
+UB= RB=
+[ "$(cat ref.st)" = 0 ] || fail "trailing.zip: REF's status $(cat ref.st)"
+exits 0 "$ZU" -m ratio.zip >got 2>&1
+grep -q ' Bx-214748363% ' got && grep -q ':  -214748364.2%$' got ||
+    fail "zipinfo -m ratio.zip: $(cat got)"
 
 # ---- Extraction -----------------------------------------------------
 
