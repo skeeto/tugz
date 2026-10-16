@@ -198,7 +198,7 @@ static s8 const unzip_help_tail = S8(
     "Listings by -l and -v show dates as YYYY-MM-DD (ZipInfo's as\n"
     "Info-ZIP's). Encrypted entries, and entries compressed by methods other\n"
     "than stored, deflated, and Deflate64, are skipped.\n"
-    "Options UNZIP, or if it has none, UNZIPOPT, apply first.\n"
+    "Options in UNZIP, or if it has none, UNZIPOPT, apply first.\n"
     "\n"
     "Exit status: 0 success, 1 warnings, 2 errors in some entries, 3 a\n"
     "damaged archive, 4 out of memory, 9 no archive found, 10 bad options,\n"
@@ -224,7 +224,9 @@ static s8 const zipinfo_usage = S8(
     "  -z  the archive comment         -T  times as yyyymmdd.hhmmss\n"
     "  -C  match names ignoring case   -x  exclude the members that follow\n"
     "A leading - negates the option after it (\"--h\"). Options in ZIPINFO,\n"
-    "or if it has none, ZIPINFOOPT, apply first.\n"
+    "or if it has none, ZIPINFOOPT, apply first. unzip run by a name\n"
+    "starting with zipinfo or ii (a link or copy named zipinfo, or\n"
+    "zipinfo.exe) runs in this mode.\n"
 );
 
 // How a message is written (UnZip's MSG_* flags, unzpriv.h)
