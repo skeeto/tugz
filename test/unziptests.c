@@ -34,6 +34,17 @@
 // with Unix's attributes, and methods from 1000, which Apple's build
 // overruns its buffer with), and compression factors whose arithmetic
 // overflows; tugz's own rows for those follow each table's test.
+//
+// ZipInfo's verbose tables (recorded_subfields through recorded_vdates)
+// come from both builds' zipinfo -v, under TZ=UTC, over the archives of
+// test/unzipcraft.py (verbose.zip, with an entry for each subfield its
+// decoders know, long enough for them and not, vunicode.zip's two then
+// among them, extrabytes.zip, types.zip, hosts.zip, methods2.zip,
+// flags.zip, dates.zip, and basic.zip): each subfield's description, as
+// data of 64 bytes at most,
+// and each entry's attribute lines, hosts and versions, method, and
+// times. Its other sections are checked whole in test/unzipclitests.c
+// and test/unzip.sh.
 #include "../src/base.c"
 #pragma GCC diagnostic push  // unzip.c needs only a little of zip.c
 #pragma GCC diagnostic ignored "-Wunused-function"
@@ -2414,6 +2425,1054 @@ static struct {
     {12345, 6789, 1, " 45%", "45.1%"},
 };
 
+// Subfields: (ID, data, host made by) -> as -v describes them
+static struct {
+    u32         id;
+    char const *data;  // in hexadecimal
+    u32         made;
+    char const *text;
+} recorded_subfields[] = {
+    {0x0001, "6400000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x0001 (PKWARE 64-bit sizes) and 8 data bytes:\n"
+     "    64 00 00 00 00 00 00 00."},
+    {0x0001, "010000000000000002000000000000000300000000000000"
+     "00000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x0001 (PKWARE 64-bit sizes) and 28 data bytes.  The first\n"
+     "    20 are:   01 00 00 00 00 00 00 00 02 00 00 00 00 00 00 00 03 00 00 00."},
+    {0x0007, "010203", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x0007 (PKWARE AV) and 3 data bytes:\n"
+     "    01 02 03."},
+    {0x0009, "d2040000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x0009 (OS/2) and 10 data bytes.\n"
+     "    The local extra field has 1234 bytes of OS/2 extended attributes.\n"
+     "    (May not match OS/2 \"dir\" amount due to storage method)."},
+    {0x0009, "0102", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x0009 (OS/2) and 2 data bytes:\n"
+     "    01 02."},
+    {0x4c41, "4d00000001", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4c41 (OS/2 ACL) and 5 data bytes.\n"
+     "    The local extra field has 77 bytes of access control list information."},
+    {0x4c41, "010203", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4c41 (OS/2 ACL) and 3 data bytes:\n"
+     "    01 02 03."},
+    {0x4453, "2c010000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4453 (Security Descriptor) and 4 data bytes.\n"
+     "    The local extra field has 300 bytes of NT security descriptor data."},
+    {0x4453, "", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4453 (Security Descriptor) and 0 data bytes."},
+    {0x000c, "000102030405060708090a0b0c0d0e0f1011121314151617"
+     "18191a1b1c1d", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x000c (PKWARE VMS) and 30 data bytes.  The first\n"
+     "    20 are:   00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13."},
+    {0x000a, "000000000000000000000000000000000000000000000000"
+     "0000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x000a (PKWARE Win32) and 32 data bytes.  The first\n"
+     "    20 are:   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00."},
+    {0x000d, "010000000200000003000400", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x000d (PKWARE Unix) and 12 data bytes:\n"
+     "    01 00 00 00 02 00 00 00 03 00 04 00."},
+    {0x4d49, "5646414202006300", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is deflated and has 99 bytes of VMS FAB information."},
+    {0x4d49, "56414c4c02006300", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is deflated and has 99 bytes of VMS XABALL information."},
+    {0x4d49, "5646484302006300", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is deflated and has 99 bytes of VMS XABFHC information."},
+    {0x4d49, "5644415402006300", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is deflated and has 99 bytes of VMS XABDAT information."},
+    {0x4d49, "5652445402006300", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is deflated and has 99 bytes of VMS XABRDT information."},
+    {0x4d49, "5650524f02006300", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is deflated and has 99 bytes of VMS XABPRO information."},
+    {0x4d49, "564b455902006300", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is deflated and has 99 bytes of VMS XABKEY information."},
+    {0x4d49, "5858585802006300", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is deflated and has 99 bytes of VMS unknown information."},
+    {0x4d49, "5646414210000500", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is stored and has 5 bytes of VMS FAB information."},
+    {0x4d49, "5646414211000500", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is run-length encoded and has 5 bytes of VMS FAB information."},
+    {0x4d49, "5646414212000500", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is deflated and has 5 bytes of VMS FAB information."},
+    {0x4d49, "5646414213000500", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is compressed(?) and has 5 bytes of VMS FAB information."},
+    {0x4d49, "5646414214000500", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is compressed(?) and has 5 bytes of VMS FAB information."},
+    {0x4d49, "5646414215000500", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is compressed(?) and has 5 bytes of VMS FAB information."},
+    {0x4d49, "5646414216000500", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is compressed(?) and has 5 bytes of VMS FAB information."},
+    {0x4d49, "5646414217000500", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 8 data bytes.  The extra\n"
+     "    field is compressed(?) and has 5 bytes of VMS FAB information."},
+    {0x4d49, "564d5356000004000000000056352e35", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 16 data bytes.  The extra\n"
+     "    field is stored and has 4 bytes of VMS version information (V5.5)."},
+    {0x4d49, "564d5356000004000000000056350078", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 16 data bytes.  The extra\n"
+     "    field is stored and has 4 bytes of VMS version information (V5."},
+    {0x4d49, "564d5356000004000000000056352e", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 15 data bytes.  The extra\n"
+     "    field is stored and has 4 bytes of VMS version information."},
+    {0x4d49, "56464142000005", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 7 data bytes:\n"
+     "    56 46 41 42 00 00 05."},
+    {0x5855, "002f6859012f6859", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5855 (old Info-ZIP Unix/OS2/NT) and 8 data bytes:\n"
+     "    00 2f 68 59 01 2f 68 59."},
+    {0x5855, "002f6859012f6859", 0x0014,
+     "\n"
+     "  - A subfield with ID 0x5855 (old Info-ZIP Unix/OS2/NT) and 8 data bytes:\n"
+     "    00 2f 68 59 01 2f 68 59."},
+    {0x7855, "01000200", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x7855 (Unix UID/GID (16-bit)) and 4 data bytes:\n"
+     "    01 00 02 00."},
+    {0x7875, "0104e803000004e8030000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x7875 (Unix UID/GID (any size)) and 11 data bytes:\n"
+     "    01 04 e8 03 00 00 04 e8 03 00 00."},
+    {0x5455, "0000105e5f", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes."},
+    {0x5455, "0100105e5f", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+     "    The local extra field has UTC/GMT modification time."},
+    {0x5455, "0200105e5f", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+     "    The local extra field has UTC/GMT access time."},
+    {0x5455, "0300105e5f", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+     "    The local extra field has UTC/GMT modification/access times."},
+    {0x5455, "0400105e5f", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+     "    The local extra field has UTC/GMT creation time."},
+    {0x5455, "0600105e5f", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+     "    The local extra field has UTC/GMT access/creation times."},
+    {0x5455, "0700105e5f", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+     "    The local extra field has UTC/GMT modification/access/creation times."},
+    {0x5455, "f800105e5f", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes."},
+    {0x5455, "", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 0 data bytes."},
+    {0x7075, "01f8c68b54752e747874", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x7075 (UTF8 path name) and 10 data bytes.\n"
+     "    The UTF8 data of the extra field (V1, ASCII name CRC `548bc6f8') are:\n"
+     "    75 2e 74 78 74."},
+    {0x7075, "0139d14945612d6c6f6e672d756e69636f64652d70617468"
+     "2d6e616d652d706173742d32342e747874", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x7075 (UTF8 path name) and 41 data bytes. The first\n"
+     "    24 UTF8 bytes in the extra field (V1, ASCII name CRC `4549d139') are:\n"
+     "    61 2d 6c 6f 6e 67 2d 75 6e 69 63 6f 64 65 2d 70 61 74 68 2d 6e 61 6d 65."},
+    {0x7075, "01020304", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x7075 (UTF8 path name) and 4 data bytes:\n"
+     "    01 02 03 04."},
+    {0x7075, "02f1d582fc752d7632", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x7075 (UTF8 path name) and 9 data bytes.\n"
+     "    The UTF8 data of the extra field (V2, ASCII name CRC `fc82d5f1') are:\n"
+     "    75 2d 76 32."},
+    {0x6375, "010d6e7f5d6120636f6d6d656e74", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x6375 (UTF8 entry comment) and 14 data bytes.\n"
+     "    The UTF8 data of the extra field (V1, ASCII name CRC `5d7f6e0d') are:\n"
+     "    61 20 63 6f 6d 6d 65 6e 74."},
+    {0x6375, "01f0711ac478787878787878787878787878787878787878"
+     "787878787878787878787878787878787878787878", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x6375 (UTF8 entry comment) and 45 data bytes. The first\n"
+     "    24 UTF8 bytes in the extra field (V1, ASCII name CRC `c41a71f0') are:\n"
+     "    78 78 78 78 78 78 78 78 78 78 78 78 78 78 78 78 78 78 78 78 78 78 78 78."},
+    {0x334d, "640000000000544558547474787400000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x334d (new Info-ZIP Macintosh) and 18 data bytes.\n"
+     "    The local extra field has 100 bytes of compressed Macintosh\n"
+     "    finder attributes.\n"
+     "    File is marked as Resource-fork, File Dates are in 32 Bit.\n"
+     "    The associated file has type code `TEXT' and creator code `ttxt'."},
+    {0x334d, "640000000d00544558547474787400000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x334d (new Info-ZIP Macintosh) and 18 data bytes.\n"
+     "    The local extra field has 100 bytes of uncompressed Macintosh\n"
+     "    finder attributes.\n"
+     "    File is marked as Data-fork, File Dates are in 64 Bit.\n"
+     "    The associated file has type code `TEXT' and creator code `ttxt'."},
+    {0x334d, "05000000040000010203fffefdfc00000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x334d (new Info-ZIP Macintosh) and 18 data bytes.\n"
+     "    The local extra field has 5 bytes of uncompressed Macintosh\n"
+     "    finder attributes.\n"
+     "    File is marked as Resource-fork, File Dates are in 32 Bit.\n"
+     "    The associated file has type code `0x10203' and creator code `0xfffefdfc'."},
+    {0x334d, "00000000000000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x334d (new Info-ZIP Macintosh) and 13 data bytes:\n"
+     "    00 00 00 00 00 00 00 00 00 00 00 00 00."},
+    {0x2705, "5a504954544558547474787400000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x2705 (ZipIt Macintosh (short)) and 16 data bytes.\n"
+     "    The associated file has type code `TEXT' and creator code `ttxt'."},
+    {0x2705, "5a50495401", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x2705 (ZipIt Macintosh (short)) and 5 data bytes."},
+    {0x2705, "4142434445464748494a4b4c", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x2705 (ZipIt Macintosh (short)) and 12 data bytes:\n"
+     "    41 42 43 44 45 46 47 48 49 4a 4b 4c."},
+    {0x2705, "5a504954", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x2705 (ZipIt Macintosh (short)) and 4 data bytes:\n"
+     "    5a 50 49 54."},
+    {0x2605, "5a504954094c6f6e67204e616d654150504c74747874", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x2605 (ZipIt Macintosh) and 22 data bytes.\n"
+     "    The Mac long filename is Long Name.\n"
+     "    The associated file has type code `APPL' and creator code `ttxt'."},
+    {0x2605, "5a504954094c6f6e67004e616d654150504c74747874", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x2605 (ZipIt Macintosh) and 22 data bytes.\n"
+     "    The Mac long filename is Long.\n"
+     "    The associated file has type code `APPL' and creator code `ttxt'."},
+    {0x2605, "5a504954094c6f6e67204e616d654150504c", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x2605 (ZipIt Macintosh) and 18 data bytes."},
+    {0x2605, "504b49540261624150504c74747874", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x2605 (ZipIt Macintosh) and 15 data bytes:\n"
+     "    50 4b 49 54 02 61 62 41 50 50 4c 74 74 78 74."},
+    {0x07c8, "4a4c45455445585474747874000000000000000000000000"
+     "00000000000000010000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x07c8 (old Info-ZIP Macintosh) and 40 data bytes.\n"
+     "    The associated file has type code `TEXT' and creator code `ttxt'.\n"
+     "    File is marked as Data-fork."},
+    {0x07c8, "4a4c45455445585474747874000000000000000000000000"
+     "00000000000000000000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x07c8 (old Info-ZIP Macintosh) and 40 data bytes.\n"
+     "    The associated file has type code `TEXT' and creator code `ttxt'.\n"
+     "    File is marked as Resource-fork."},
+    {0x07c8, "4a4c45450000000000000000000000000000000000000000"
+     "00000000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x07c8 (old Info-ZIP Macintosh) and 34 data bytes.  The first\n"
+     "    20 are:   4a 4c 45 45 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00."},
+    {0x4d63, "645a69705445585474747874000000000000000000000000"
+     "00000000000000000a536d617274204e616d650000000000"
+     "00000000000000000000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d63 (SmartZip Macintosh) and 64 data bytes.\n"
+     "    The associated file has type code `TEXT' and creator code `ttxt'.\n"
+     "    The Mac long filename is Smart Name."},
+    {0x4d63, "785a69700000000000000000000000000000000000000000"
+     "000000000000000000000000000000000000000000000000"
+     "00000000000000000000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d63 (SmartZip Macintosh) and 64 data bytes.  The first\n"
+     "    20 are:   78 5a 69 70 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00."},
+    {0x4d63, "645a69700000000000000000000000000000000000000000"
+     "000000000000000000000000000000000000000000000000"
+     "000000000000000000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4d63 (SmartZip Macintosh) and 63 data bytes.  The first\n"
+     "    20 are:   64 5a 69 70 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00."},
+    {0x4704, "0001", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4704 (VM/CMS) and 2 data bytes:\n"
+     "    00 01."},
+    {0x470f, "616263", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x470f (MVS) and 3 data bytes:\n"
+     "    61 62 63."},
+    {0x7441, "f401000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x7441 (AtheOS) and 8 data bytes.\n"
+     "    The local extra field has 500 bytes of compressed AtheOS file attributes."},
+    {0x7441, "f401000001", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x7441 (AtheOS) and 5 data bytes.\n"
+     "    The local extra field has 500 bytes of uncompressed AtheOS file attributes."},
+    {0x6542, "2a00000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x6542 (BeOS) and 5 data bytes.\n"
+     "    The local extra field has 42 bytes of compressed BeOS file attributes."},
+    {0x6542, "2a0000000178797a", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x6542 (BeOS) and 8 data bytes.\n"
+     "    The local extra field has 42 bytes of uncompressed BeOS file attributes."},
+    {0x6542, "01020304", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x6542 (BeOS) and 4 data bytes:\n"
+     "    01 02 03 04."},
+    {0xfb4a, "515a48440000000000000000000000000000000000000000"
+     "000000000000000000000000000000000000000000000000"
+     "00000000000000000000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0xfb4a (SMS/QDOS) and 64 data bytes.\n"
+     "    The QDOS extra field subtype is `QZHD'."},
+    {0xfb4a, "515a48", 0x031e,
+     "\n"
+     "  - A subfield with ID 0xfb4a (SMS/QDOS) and 3 data bytes:\n"
+     "    51 5a 48."},
+    {0x5356, "4643490015", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5356 (AOS/VS) and 5 data bytes.\n"
+     "    The AOS/VS extra field revision is 2.1."},
+    {0x5356, "46434900", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5356 (AOS/VS) and 4 data bytes:\n"
+     "    46 43 49 00."},
+    {0x4341, "4152433000000000000000000000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4341 (Acorn SparkFS) and 20 data bytes:\n"
+     "    41 52 43 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00."},
+    {0x756e, "000102030405060708090a0b0c0d", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x756e (ASi Unix) and 14 data bytes:\n"
+     "    00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d."},
+    {0x6854, "000102030405", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x6854 (Theos) and 6 data bytes:\n"
+     "    00 01 02 03 04 05."},
+    {0x4154, "0065000000000000000000000000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4154 (Tandem NSK) and 20 data bytes.\n"
+     "    The file was originally a Tandem Edit file, with file code 101."},
+    {0x4154, "0064000000000000000000000000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4154 (Tandem NSK) and 20 data bytes.\n"
+     "    The file was originally a Tandem Object file, with file code 100."},
+    {0x4154, "0007000000000000000000000000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4154 (Tandem NSK) and 20 data bytes.\n"
+     "    The file was originally a Tandem Unstructured file, with file code 7."},
+    {0x4154, "0065000000000000000000000000000000002000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4154 (Tandem NSK) and 20 data bytes.\n"
+     "    The file was originally a Tandem Relative file, with file code 101."},
+    {0x4154, "0005000000000000000000000000000000004000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4154 (Tandem NSK) and 20 data bytes.\n"
+     "    The file was originally a Tandem Entry Sequenced file, with file code 5."},
+    {0x4154, "1234000000000000000000000000000000006000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4154 (Tandem NSK) and 20 data bytes.\n"
+     "    The file was originally a Tandem Key Sequenced file, with file code 4660."},
+    {0x4154, "000000000000000000000000000000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4154 (Tandem NSK) and 21 data bytes:\n"
+     "    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00."},
+    {0x4b46, "000102030405060708090a0b0c0d0e0f6d6435", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4b46 (Fred Kantor MD5) and 19 data bytes.\n"
+     "    The 128-bit MD5 signature is 0f0e0d0c0b0a09080706050403020100."},
+    {0x4b46, "000000000000000000000000000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x4b46 (Fred Kantor MD5) and 18 data bytes:\n"
+     "    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00."},
+    {0x1234, "01", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x1234 (unknown) and 1 data bytes:\n"
+     "    01."},
+    {0xffff, "000102030405060708090a0b0c0d0e0f1011121314151617", 0x031e,
+     "\n"
+     "  - A subfield with ID 0xffff (unknown) and 24 data bytes:\n"
+     "    00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17."},
+    {0xabcd, "000102030405060708090a0b0c0d0e0f1011121314151617"
+     "18", 0x031e,
+     "\n"
+     "  - A subfield with ID 0xabcd (unknown) and 25 data bytes.  The first\n"
+     "    20 are:   00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13."},
+    {0x9999, "", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x9999 (unknown) and 0 data bytes."},
+    {0x7875, "0102e80302e803", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x7875 (Unix UID/GID (any size)) and 7 data bytes:\n"
+     "    01 02 e8 03 02 e8 03."},
+    {0x1234, "78", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x1234 (unknown) and 1 data bytes:\n"
+     "    78."},
+    {0x5455, "010010", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 3 data bytes.\n"
+     "    The local extra field has UTC/GMT modification time."},
+    {0x1234, "6162", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x1234 (unknown) and 2 data bytes:\n"
+     "    61 62."},
+    {0x5455, "01616263", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 4 data bytes.\n"
+     "    The local extra field has UTC/GMT modification time."},
+    {0x0009, "0a000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x0009 (OS/2) and 4 data bytes.\n"
+     "    The local extra field has 10 bytes of OS/2 extended attributes.\n"
+     "    (May not match OS/2 \"dir\" amount due to storage method)."},
+    {0x0001, "c0030000000000001500000000000000f901000000000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x0001 (PKWARE 64-bit sizes) and 24 data bytes:\n"
+     "    c0 03 00 00 00 00 00 00 15 00 00 00 00 00 00 00 f9 01 00 00 00 00 00 00."},
+    {0x334d, "000000000000544558547474787400000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x334d (new Info-ZIP Macintosh) and 18 data bytes.\n"
+     "    The local extra field has 0 bytes of compressed Macintosh\n"
+     "    finder attributes.\n"
+     "    File is marked as Resource-fork, File Dates are in 32 Bit.\n"
+     "    The associated file has type code `TEXT' and creator code `ttxt'."},
+    {0x5855, "0100000002000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5855 (old Info-ZIP Unix/OS2/NT) and 8 data bytes:\n"
+     "    01 00 00 00 02 00 00 00."},
+    {0x5455, "0100105e5f", 0x0314,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+     "    The local extra field has UTC/GMT modification time."},
+    {0x5455, "0100105e5f", 0x0014,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+     "    The local extra field has UTC/GMT modification time."},
+    {0x5455, "0100105e5f", 0x0614,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+     "    The local extra field has UTC/GMT modification time."},
+    {0x5455, "0100105e5f", 0x0b14,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+     "    The local extra field has UTC/GMT modification time."},
+    {0x5455, "0100000000", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+     "    The local extra field has UTC/GMT modification time."},
+    {0x5455, "017f510100", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+     "    The local extra field has UTC/GMT modification time."},
+    {0x5455, "01000cbb38", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+     "    The local extra field has UTC/GMT modification time."},
+    {0x5455, "01ffffff7f", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+     "    The local extra field has UTC/GMT modification time."},
+    {0x5455, "0100000080", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+     "    The local extra field has UTC/GMT modification time."},
+    {0x5855, "01000000002f6859", 0x031e,
+     "\n"
+     "  - A subfield with ID 0x5855 (old Info-ZIP Unix/OS2/NT) and 8 data bytes:\n"
+     "    01 00 00 00 00 2f 68 59."},
+};
+
+// Attributes: (made, external attributes) -> their lines under -v
+static struct {
+    u32         made;
+    u32         extattr;
+    char const *lines[2];
+} recorded_vattribs[] = {
+    {0x031e, 0x81a40000, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0x81a40000, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0x81a40000, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0x81a40000, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0x81a40000, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0x41ed0000, {"Unix file attributes (040755 octal):            drwxr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0x41ed0000, {"Unix file attributes (040755 octal):            drwxr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0x41ed0000, {"Unix file attributes (040755 octal):            drwxr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0x41ed0000, {"Unix file attributes (040755 octal):            drwxr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0x41ed0000, {"Unix file attributes (040755 octal):            drwxr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0xa1ff0000, {"Unix file attributes (120777 octal):            lrwxrwxrwx", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0xa1ff0000, {"Unix file attributes (120777 octal):            lrwxrwxrwx", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0xa1ff0000, {"Unix file attributes (120777 octal):            lrwxrwxrwx", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0xa1ff0000, {"Unix file attributes (120777 octal):            lrwxrwxrwx", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0xa1ff0000, {"Unix file attributes (120777 octal):            lrwxrwxrwx", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0x61b00000, {"Unix file attributes (060660 octal):            brw-rw----", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0x61b00000, {"Unix file attributes (060660 octal):            brw-rw----", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0x61b00000, {"Unix file attributes (060660 octal):            brw-rw----", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0x61b00000, {"Unix file attributes (060660 octal):            brw-rw----", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0x61b00000, {"Unix file attributes (060660 octal):            brw-rw----", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0x21900000, {"Unix file attributes (020620 octal):            crw--w----", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0x21900000, {"Unix file attributes (020620 octal):            crw--w----", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0x21900000, {"Unix file attributes (020620 octal):            crw--w----", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0x21900000, {"Unix file attributes (020620 octal):            crw--w----", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0x21900000, {"Unix file attributes (020620 octal):            crw--w----", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0x11800000, {"Unix file attributes (010600 octal):            prw-------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0x11800000, {"Unix file attributes (010600 octal):            prw-------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0x11800000, {"Unix file attributes (010600 octal):            prw-------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0x11800000, {"Unix file attributes (010600 octal):            prw-------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0x11800000, {"Unix file attributes (010600 octal):            prw-------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0xc1ed0000, {"Unix file attributes (140755 octal):            srwxr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0xc1ed0000, {"Unix file attributes (140755 octal):            srwxr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0xc1ed0000, {"Unix file attributes (140755 octal):            srwxr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0xc1ed0000, {"Unix file attributes (140755 octal):            srwxr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0xc1ed0000, {"Unix file attributes (140755 octal):            srwxr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0x09ed0000, {"Unix file attributes (004755 octal):            ?rwsr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0x09ed0000, {"Unix file attributes (004755 octal):            ?rwsr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0x09ed0000, {"Unix file attributes (004755 octal):            ?rwsr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0x09ed0000, {"Unix file attributes (004755 octal):            ?rwsr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0x09ed0000, {"Unix file attributes (004755 octal):            ?rwsr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0xf0000000, {"Unix file attributes (170000 octal):            ?---------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0xf0000000, {"Unix file attributes (170000 octal):            ?---------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0xf0000000, {"Unix file attributes (170000 octal):            ?---------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0xf0000000, {"Unix file attributes (170000 octal):            ?---------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0xf0000000, {"Unix file attributes (170000 octal):            ?---------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0x89ed0000, {"Unix file attributes (104755 octal):            -rwsr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0x89ed0000, {"Unix file attributes (104755 octal):            -rwsr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0x89ed0000, {"Unix file attributes (104755 octal):            -rwsr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0x89ed0000, {"Unix file attributes (104755 octal):            -rwsr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0x89ed0000, {"Unix file attributes (104755 octal):            -rwsr-xr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0x85ed0000, {"Unix file attributes (102755 octal):            -rwxr-sr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0x85ed0000, {"Unix file attributes (102755 octal):            -rwxr-sr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0x85ed0000, {"Unix file attributes (102755 octal):            -rwxr-sr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0x85ed0000, {"Unix file attributes (102755 octal):            -rwxr-sr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0x85ed0000, {"Unix file attributes (102755 octal):            -rwxr-sr-x", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0x83ff0000, {"Unix file attributes (101777 octal):            -rwxrwxrwt", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0x83ff0000, {"Unix file attributes (101777 octal):            -rwxrwxrwt", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0x83ff0000, {"Unix file attributes (101777 octal):            -rwxrwxrwt", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0x83ff0000, {"Unix file attributes (101777 octal):            -rwxrwxrwt", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0x83ff0000, {"Unix file attributes (101777 octal):            -rwxrwxrwt", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0x89a40000, {"Unix file attributes (104644 octal):            -rwSr--r--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0x89a40000, {"Unix file attributes (104644 octal):            -rwSr--r--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0x89a40000, {"Unix file attributes (104644 octal):            -rwSr--r--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0x89a40000, {"Unix file attributes (104644 octal):            -rwSr--r--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0x89a40000, {"Unix file attributes (104644 octal):            -rwSr--r--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0x85a40000, {"Unix file attributes (102644 octal):            -rw-r-lr--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0x85a40000, {"Unix file attributes (102644 octal):            -rw-r-lr--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0x85a40000, {"Unix file attributes (102644 octal):            -rw-r-lr--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0x85a40000, {"Unix file attributes (102644 octal):            -rw-r-lr--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0x85a40000, {"Unix file attributes (102644 octal):            -rw-r-lr--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0x83b60000, {"Unix file attributes (101666 octal):            -rw-rw-rwT", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0x83b60000, {"Unix file attributes (101666 octal):            -rw-rw-rwT", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0x83b60000, {"Unix file attributes (101666 octal):            -rw-rw-rwT", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0x83b60000, {"Unix file attributes (101666 octal):            -rw-rw-rwT", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0x83b60000, {"Unix file attributes (101666 octal):            -rw-rw-rwT", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0x8e000000, {"Unix file attributes (107000 octal):            ---S--l--T", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0x8e000000, {"Unix file attributes (107000 octal):            ---S--l--T", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0x8e000000, {"Unix file attributes (107000 octal):            ---S--l--T", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0x8e000000, {"Unix file attributes (107000 octal):            ---S--l--T", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0x8e000000, {"Unix file attributes (107000 octal):            ---S--l--T", "MS-DOS file attributes (00 hex):                none"}},
+    {0x031e, 0x80000000, {"Unix file attributes (100000 octal):            ----------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x051e, 0x80000000, {"Unix file attributes (100000 octal):            ----------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x101e, 0x80000000, {"Unix file attributes (100000 octal):            ----------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x131e, 0x80000000, {"Unix file attributes (100000 octal):            ----------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1e1e, 0x80000000, {"Unix file attributes (100000 octal):            ----------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0014, 0x00000000, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0614, 0x00000000, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0b14, 0x00000000, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0e14, 0x00000000, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0014, 0x00000001, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (01 hex):                read-only"}},
+    {0x0614, 0x00000001, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (01 hex):                read-only"}},
+    {0x0b14, 0x00000001, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (01 hex):                read-only"}},
+    {0x0e14, 0x00000001, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (01 hex):                read-only"}},
+    {0x0014, 0x00000002, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (02 hex):                hid "}},
+    {0x0614, 0x00000002, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (02 hex):                hid "}},
+    {0x0b14, 0x00000002, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (02 hex):                hid "}},
+    {0x0e14, 0x00000002, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (02 hex):                hid "}},
+    {0x0014, 0x00000004, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (04 hex):                sys "}},
+    {0x0614, 0x00000004, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (04 hex):                sys "}},
+    {0x0b14, 0x00000004, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (04 hex):                sys "}},
+    {0x0e14, 0x00000004, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (04 hex):                sys "}},
+    {0x0014, 0x00000008, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (08 hex):                lab "}},
+    {0x0614, 0x00000008, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (08 hex):                lab "}},
+    {0x0b14, 0x00000008, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (08 hex):                lab "}},
+    {0x0e14, 0x00000008, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (08 hex):                lab "}},
+    {0x0014, 0x00000010, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (10 hex):                dir "}},
+    {0x0614, 0x00000010, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (10 hex):                dir "}},
+    {0x0b14, 0x00000010, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (10 hex):                dir "}},
+    {0x0e14, 0x00000010, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (10 hex):                dir "}},
+    {0x0014, 0x00000011, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (11 hex):                rdo dir "}},
+    {0x0614, 0x00000011, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (11 hex):                rdo dir "}},
+    {0x0b14, 0x00000011, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (11 hex):                rdo dir "}},
+    {0x0e14, 0x00000011, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (11 hex):                rdo dir "}},
+    {0x0014, 0x00000020, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0614, 0x00000020, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0b14, 0x00000020, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0e14, 0x00000020, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0014, 0x00000027, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (27 hex):                rdo hid sys arc "}},
+    {0x0614, 0x00000027, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (27 hex):                rdo hid sys arc "}},
+    {0x0b14, 0x00000027, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (27 hex):                rdo hid sys arc "}},
+    {0x0e14, 0x00000027, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (27 hex):                rdo hid sys arc "}},
+    {0x0014, 0x0000003f, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (3F hex):                rdo hid sys lab dir arc "}},
+    {0x0614, 0x0000003f, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (3F hex):                rdo hid sys lab dir arc "}},
+    {0x0b14, 0x0000003f, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (3F hex):                rdo hid sys lab dir arc "}},
+    {0x0e14, 0x0000003f, {"non-MSDOS external file attributes:             000000 hex", "MS-DOS file attributes (3F hex):                rdo hid sys lab dir arc "}},
+    {0x0014, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0014, 0x81240001, {"non-MSDOS external file attributes:             812400 hex", "MS-DOS file attributes (01 hex):                read-only"}},
+    {0x0014, 0x41ed0010, {"non-MSDOS external file attributes:             41ED00 hex", "MS-DOS file attributes (10 hex):                dir "}},
+    {0x0014, 0x81800020, {"non-MSDOS external file attributes:             818000 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0014, 0x81240020, {"non-MSDOS external file attributes:             812400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0014, 0x41ed0000, {"non-MSDOS external file attributes:             41ED00 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0214, 0x81ff0000, {"VMS file attributes (100777 octal):             (RWED,RWED,RWED,RWED)", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0214, 0x81a00000, {"VMS file attributes (100640 octal):             (RWD,RWD,R,)", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0214, 0x81e90000, {"VMS file attributes (100751 octal):             (RWED,RWED,RE,E)", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0214, 0x80000000, {"VMS file attributes (100000 octal):             (,,,)", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0214, 0x80920000, {"VMS file attributes (100222 octal):             (WD,WD,WD,WD)", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0114, 0x040f0000, {"Amiga file attributes (002017 octal):           -----rwed", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0114, 0x08ff0000, {"Amiga file attributes (004377 octal):           dhsparwed", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0114, 0x04800000, {"Amiga file attributes (002200 octal):           -h-------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0114, 0x0c000000, {"Amiga file attributes (006000 octal):           ?--------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0114, 0x00000000, {"Amiga file attributes (000000 octal):           ?--------", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1214, 0x80000000, {"Theos file attributes (8000 hex):               Sequential  HMWREXWR", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1214, 0x4fff0000, {"Theos file attributes (4FFF hex):               Directory   ........", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1214, 0x54000000, {"Theos file attributes (5400 hex):               Library     .MWREXWR", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1214, 0x28000000, {"Theos file attributes (2800 hex):               ???         H.WREXWR", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1214, 0xf0c70000, {"Theos file attributes (F0C7 hex):               386 program HM..E..R", "MS-DOS file attributes (00 hex):                none"}},
+    {0x1214, 0x10000000, {"Theos file attributes (1000 hex):               ???         HMWREXWR", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0000, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x003f, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0100, 0x81a40020, {"Amiga file attributes (100644 octal):           ?h-p--w--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0114, 0x81a40020, {"Amiga file attributes (100644 octal):           ?h-p--w--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x013f, 0x81a40020, {"Amiga file attributes (100644 octal):           ?h-p--w--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0200, 0x81a40020, {"VMS file attributes (100644 octal):             (RWD,RWD,R,R)", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0214, 0x81a40020, {"VMS file attributes (100644 octal):             (RWD,RWD,R,R)", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x023f, 0x81a40020, {"VMS file attributes (100644 octal):             (RWD,RWD,R,R)", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0300, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0314, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x033f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0400, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0414, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x043f, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0500, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0514, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x053f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0600, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0614, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x063f, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0700, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0714, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x073f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0800, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0814, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x083f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0900, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0914, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x093f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0a00, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0a14, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0a3f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0b00, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0b14, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0b3f, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0c00, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0c14, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0c3f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0d00, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0d14, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0d3f, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0e00, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0e14, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0e3f, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0f00, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0f14, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0f3f, 0x81a40020, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1000, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1014, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x103f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1100, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1114, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x113f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1200, 0x81a40020, {"Theos file attributes (81A4 hex):               Sequential  HMW.EX..", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1214, 0x81a40020, {"Theos file attributes (81A4 hex):               Sequential  HMW.EX..", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x123f, 0x81a40020, {"Theos file attributes (81A4 hex):               Sequential  HMW.EX..", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1300, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1314, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x133f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1400, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1414, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x143f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1500, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1514, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x153f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1600, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1614, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x163f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1700, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1714, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x173f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1800, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1814, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x183f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1900, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1914, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x193f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1a00, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1a14, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1a3f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1b00, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1b14, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1b3f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1c00, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1c14, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1c3f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1d00, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1d14, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1d3f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1e00, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1e14, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1e3f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1f00, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1f14, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x1f3f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x2800, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x2814, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x283f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x6300, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x6314, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x633f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0xff00, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0xff14, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0xff3f, 0x81a40020, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (20 hex):                arc "}},
+    {0x0014, 0x81a40000, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0314, 0x81a48000, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0314, 0x81a4c000, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0314, 0x81a44000, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0614, 0x81a48000, {"non-MSDOS external file attributes:             81A480 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0614, 0x81a4c000, {"non-MSDOS external file attributes:             81A4C0 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0614, 0x81a44000, {"non-MSDOS external file attributes:             81A440 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0b14, 0x81a48000, {"non-MSDOS external file attributes:             81A480 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0b14, 0x81a4c000, {"non-MSDOS external file attributes:             81A4C0 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0b14, 0x81a44000, {"non-MSDOS external file attributes:             81A440 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0014, 0x81a48000, {"non-MSDOS external file attributes:             81A480 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0014, 0x81a4c000, {"non-MSDOS external file attributes:             81A4C0 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0014, 0x81a44000, {"non-MSDOS external file attributes:             81A440 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0e14, 0x81a48000, {"non-MSDOS external file attributes:             81A480 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0e14, 0x81a4c000, {"non-MSDOS external file attributes:             81A4C0 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0e14, 0x81a44000, {"non-MSDOS external file attributes:             81A440 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0314, 0x81a40000, {"Unix file attributes (100644 octal):            -rw-r--r--", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0614, 0x81a40000, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (00 hex):                none"}},
+    {0x0b14, 0x81a40000, {"non-MSDOS external file attributes:             81A400 hex", "MS-DOS file attributes (00 hex):                none"}},
+};
+
+// Versions: (made, needed) -> host, version, host, version under -v
+static struct {
+    u32         made;
+    u32         needed;
+    char const *values[4];
+} recorded_versions[] = {
+    {0x0000, 0x0014, {"MS-DOS, OS/2 or NT FAT", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0014, 0x0014, {"MS-DOS, OS/2 or NT FAT", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x003f, 0x0014, {"MS-DOS, OS/2 or NT FAT", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0100, 0x0014, {"Amiga", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0114, 0x0014, {"Amiga", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x013f, 0x0014, {"Amiga", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0200, 0x0014, {"VMS", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0214, 0x0014, {"VMS", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x023f, 0x0014, {"VMS", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0300, 0x0014, {"Unix", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0314, 0x0014, {"Unix", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x033f, 0x0014, {"Unix", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0400, 0x0014, {"VM/CMS", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0414, 0x0014, {"VM/CMS", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x043f, 0x0014, {"VM/CMS", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0500, 0x0014, {"Atari ST", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0514, 0x0014, {"Atari ST", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x053f, 0x0014, {"Atari ST", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0600, 0x0014, {"OS/2 or NT HPFS", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0614, 0x0014, {"OS/2 or NT HPFS", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x063f, 0x0014, {"OS/2 or NT HPFS", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0700, 0x0014, {"Macintosh HFS", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0714, 0x0014, {"Macintosh HFS", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x073f, 0x0014, {"Macintosh HFS", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0800, 0x0014, {"Z-System", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0814, 0x0014, {"Z-System", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x083f, 0x0014, {"Z-System", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0900, 0x0014, {"CP/M", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0914, 0x0014, {"CP/M", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x093f, 0x0014, {"CP/M", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0a00, 0x0014, {"TOPS-20", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0a14, 0x0014, {"TOPS-20", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0a3f, 0x0014, {"TOPS-20", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0b00, 0x0014, {"NTFS", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0b14, 0x0014, {"NTFS", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0b3f, 0x0014, {"NTFS", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0c00, 0x0014, {"SMS/QDOS", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0c14, 0x0014, {"SMS/QDOS", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0c3f, 0x0014, {"SMS/QDOS", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0d00, 0x0014, {"Acorn RISC OS", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0d14, 0x0014, {"Acorn RISC OS", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0d3f, 0x0014, {"Acorn RISC OS", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0e00, 0x0014, {"Win32 VFAT", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0e14, 0x0014, {"Win32 VFAT", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0e3f, 0x0014, {"Win32 VFAT", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0f00, 0x0014, {"MVS", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0f14, 0x0014, {"MVS", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x0f3f, 0x0014, {"MVS", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1000, 0x0014, {"BeOS", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1014, 0x0014, {"BeOS", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x103f, 0x0014, {"BeOS", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1100, 0x0014, {"Tandem NSK", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1114, 0x0014, {"Tandem NSK", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x113f, 0x0014, {"Tandem NSK", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1200, 0x0014, {"Theos", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1214, 0x0014, {"Theos", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x123f, 0x0014, {"Theos", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1300, 0x0014, {"Mac OS/X (Darwin)", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1314, 0x0014, {"Mac OS/X (Darwin)", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x133f, 0x0014, {"Mac OS/X (Darwin)", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1400, 0x0014, {"(null)", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1414, 0x0014, {"(null)", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x143f, 0x0014, {"(null)", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1500, 0x0014, {"(null)", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1514, 0x0014, {"(null)", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x153f, 0x0014, {"(null)", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1600, 0x0014, {"(null)", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1614, 0x0014, {"(null)", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x163f, 0x0014, {"(null)", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1700, 0x0014, {"(null)", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1714, 0x0014, {"(null)", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x173f, 0x0014, {"(null)", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1800, 0x0014, {"(null)", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1814, 0x0014, {"(null)", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x183f, 0x0014, {"(null)", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1900, 0x0014, {"(null)", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1914, 0x0014, {"(null)", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x193f, 0x0014, {"(null)", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1a00, 0x0014, {"(null)", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1a14, 0x0014, {"(null)", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1a3f, 0x0014, {"(null)", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1b00, 0x0014, {"(null)", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1b14, 0x0014, {"(null)", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1b3f, 0x0014, {"(null)", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1c00, 0x0014, {"(null)", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1c14, 0x0014, {"(null)", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1c3f, 0x0014, {"(null)", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1d00, 0x0014, {"(null)", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1d14, 0x0014, {"(null)", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1d3f, 0x0014, {"(null)", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1e00, 0x0014, {"AtheOS", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1e14, 0x0014, {"AtheOS", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1e3f, 0x0014, {"AtheOS", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1f00, 0x0014, {"unknown (31)", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1f14, 0x0014, {"unknown (31)", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x1f3f, 0x0014, {"unknown (31)", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x2800, 0x0014, {"unknown (40)", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x2814, 0x0014, {"unknown (40)", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x283f, 0x0014, {"unknown (40)", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x6300, 0x0014, {"unknown (99)", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x6314, 0x0014, {"unknown (99)", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x633f, 0x0014, {"unknown (99)", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0xff00, 0x0014, {"unknown (255)", "0.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0xff14, 0x0014, {"unknown (255)", "2.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0xff3f, 0x0014, {"unknown (255)", "6.3", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x031e, 0x0014, {"Unix", "3.0", "MS-DOS, OS/2 or NT FAT", "2.0"}},
+    {0x031e, 0x0314, {"Unix", "3.0", "Unix", "2.0"}},
+    {0x031e, 0x1314, {"Unix", "3.0", "Mac OS/X (Darwin)", "2.0"}},
+    {0x031e, 0x1414, {"Unix", "3.0", "unknown (20)", "2.0"}},
+    {0x031e, 0x1d14, {"Unix", "3.0", "unknown (29)", "2.0"}},
+    {0x031e, 0x1e14, {"Unix", "3.0", "AtheOS", "2.0"}},
+    {0x031e, 0x1f14, {"Unix", "3.0", "unknown (31)", "2.0"}},
+    {0x031e, 0xff14, {"Unix", "3.0", "unknown (255)", "2.0"}},
+};
+
+// Methods: (method, flags) -> its name, and its sub-type's lines
+static struct {
+    u32         method;
+    u32         flags;
+    char const *name;
+    char const *lines;
+} recorded_vmethods[] = {
+    {0, 0x0, "none (stored)", ""},
+    {0, 0x2, "none (stored)", ""},
+    {0, 0x4, "none (stored)", ""},
+    {0, 0x6, "none (stored)", ""},
+    {1, 0x0, "shrunk", ""},
+    {1, 0x2, "shrunk", ""},
+    {1, 0x4, "shrunk", ""},
+    {1, 0x6, "shrunk", ""},
+    {2, 0x0, "reduced (factor 1)", ""},
+    {2, 0x2, "reduced (factor 1)", ""},
+    {2, 0x4, "reduced (factor 1)", ""},
+    {2, 0x6, "reduced (factor 1)", ""},
+    {3, 0x0, "reduced (factor 2)", ""},
+    {3, 0x2, "reduced (factor 2)", ""},
+    {3, 0x4, "reduced (factor 2)", ""},
+    {3, 0x6, "reduced (factor 2)", ""},
+    {4, 0x0, "reduced (factor 3)", ""},
+    {4, 0x2, "reduced (factor 3)", ""},
+    {4, 0x4, "reduced (factor 3)", ""},
+    {4, 0x6, "reduced (factor 3)", ""},
+    {5, 0x0, "reduced (factor 4)", ""},
+    {5, 0x2, "reduced (factor 4)", ""},
+    {5, 0x4, "reduced (factor 4)", ""},
+    {5, 0x6, "reduced (factor 4)", ""},
+    {6, 0x0, "imploded", "  size of sliding dictionary (implosion):         4K\n  number of Shannon-Fano trees (implosion):       2\n"},
+    {6, 0x2, "imploded", "  size of sliding dictionary (implosion):         8K\n  number of Shannon-Fano trees (implosion):       2\n"},
+    {6, 0x4, "imploded", "  size of sliding dictionary (implosion):         4K\n  number of Shannon-Fano trees (implosion):       3\n"},
+    {6, 0x6, "imploded", "  size of sliding dictionary (implosion):         8K\n  number of Shannon-Fano trees (implosion):       3\n"},
+    {7, 0x0, "tokenized", ""},
+    {7, 0x2, "tokenized", ""},
+    {7, 0x4, "tokenized", ""},
+    {7, 0x6, "tokenized", ""},
+    {8, 0x0, "deflated", "  compression sub-type (deflation):               normal\n"},
+    {8, 0x2, "deflated", "  compression sub-type (deflation):               maximum\n"},
+    {8, 0x4, "deflated", "  compression sub-type (deflation):               fast\n"},
+    {8, 0x6, "deflated", "  compression sub-type (deflation):               superfast\n"},
+    {9, 0x0, "deflated (enhanced-64k)", "  compression sub-type (deflation):               normal\n"},
+    {9, 0x2, "deflated (enhanced-64k)", "  compression sub-type (deflation):               maximum\n"},
+    {9, 0x4, "deflated (enhanced-64k)", "  compression sub-type (deflation):               fast\n"},
+    {9, 0x6, "deflated (enhanced-64k)", "  compression sub-type (deflation):               superfast\n"},
+    {10, 0x0, "imploded (PK DCL)", ""},
+    {10, 0x2, "imploded (PK DCL)", ""},
+    {10, 0x4, "imploded (PK DCL)", ""},
+    {10, 0x6, "imploded (PK DCL)", ""},
+    {11, 0x0, "unknown (11)", ""},
+    {11, 0x2, "unknown (11)", ""},
+    {11, 0x4, "unknown (11)", ""},
+    {11, 0x6, "unknown (11)", ""},
+    {12, 0x0, "bzipped", ""},
+    {12, 0x2, "bzipped", ""},
+    {12, 0x4, "bzipped", ""},
+    {12, 0x6, "bzipped", ""},
+    {13, 0x0, "unknown (13)", ""},
+    {13, 0x2, "unknown (13)", ""},
+    {13, 0x4, "unknown (13)", ""},
+    {13, 0x6, "unknown (13)", ""},
+    {14, 0x0, "LZMA-ed", ""},
+    {14, 0x2, "LZMA-ed", ""},
+    {14, 0x4, "LZMA-ed", ""},
+    {14, 0x6, "LZMA-ed", ""},
+    {15, 0x0, "unknown (15)", ""},
+    {15, 0x2, "unknown (15)", ""},
+    {15, 0x4, "unknown (15)", ""},
+    {15, 0x6, "unknown (15)", ""},
+    {16, 0x0, "unknown (16)", ""},
+    {16, 0x2, "unknown (16)", ""},
+    {16, 0x4, "unknown (16)", ""},
+    {16, 0x6, "unknown (16)", ""},
+    {17, 0x0, "unknown (17)", ""},
+    {17, 0x2, "unknown (17)", ""},
+    {17, 0x4, "unknown (17)", ""},
+    {17, 0x6, "unknown (17)", ""},
+    {18, 0x0, "tersed (IBM)", ""},
+    {18, 0x2, "tersed (IBM)", ""},
+    {18, 0x4, "tersed (IBM)", ""},
+    {18, 0x6, "tersed (IBM)", ""},
+    {19, 0x0, "LZ77-compressed (IBM)", ""},
+    {19, 0x2, "LZ77-compressed (IBM)", ""},
+    {19, 0x4, "LZ77-compressed (IBM)", ""},
+    {19, 0x6, "LZ77-compressed (IBM)", ""},
+    {20, 0x0, "unknown (20)", ""},
+    {20, 0x2, "unknown (20)", ""},
+    {20, 0x4, "unknown (20)", ""},
+    {20, 0x6, "unknown (20)", ""},
+    {96, 0x0, "unknown (96)", ""},
+    {96, 0x2, "unknown (96)", ""},
+    {96, 0x4, "unknown (96)", ""},
+    {96, 0x6, "unknown (96)", ""},
+    {97, 0x0, "WavPacked", ""},
+    {97, 0x2, "WavPacked", ""},
+    {97, 0x4, "WavPacked", ""},
+    {97, 0x6, "WavPacked", ""},
+    {98, 0x0, "PPMd-ed", ""},
+    {98, 0x2, "PPMd-ed", ""},
+    {98, 0x4, "PPMd-ed", ""},
+    {98, 0x6, "PPMd-ed", ""},
+    {99, 0x0, "unknown (99)", ""},
+    {99, 0x2, "unknown (99)", ""},
+    {99, 0x4, "unknown (99)", ""},
+    {99, 0x6, "unknown (99)", ""},
+    {255, 0x0, "unknown (255)", ""},
+    {255, 0x2, "unknown (255)", ""},
+    {255, 0x4, "unknown (255)", ""},
+    {255, 0x6, "unknown (255)", ""},
+    {999, 0x0, "unknown (999)", ""},
+    {999, 0x2, "unknown (999)", ""},
+    {999, 0x4, "unknown (999)", ""},
+    {999, 0x6, "unknown (999)", ""},
+};
+
+// Times: (DOS time, central extra) -> DOS's, and UT's (TZ=UTC)
+static struct {
+    u32         dostime;
+    char const *cextra;  // in hexadecimal
+    char const *dos;
+    char const *ut;      // or null
+} recorded_vdates[] = {
+    {0x00210000, "", "1980 Jan 1 00:00:00", 0},
+    {0x00000000, "", "1980 000 0 00:00:00", 0},
+    {0xffffffff, "", "2107 015 31 31:63:62", 0},
+    {0x5da530e8, "", "2026 013 5 06:07:16", 0},
+    {0x5dc530e8, "", "2026 014 5 06:07:16", 0},
+    {0x285dbf7d, "", "2000 Feb 29 23:59:58", 0},
+    {0xc79f6000, "", "2079 Dec 31 12:00:00", 0},
+    {0xeec0c79e, "", "2099 Jun 0 24:60:60", 0},
+    {0x50221883, "555405000100000000", "2020 Jan 2 03:04:06", "1970 Jan 1 00:00:00"},
+    {0x50221883, "55540500017f510100", "2020 Jan 2 03:04:06", "1970 Jan 1 23:59:59"},
+    {0x50221883, "5554050001000cbb38", "2020 Jan 2 03:04:06", "2000 Feb 29 00:00:00"},
+    {0x50221883, "555405000100105e5f", "2020 Jan 2 03:04:06", "2020 Sep 13 12:26:40"},
+    {0x50221883, "5554050001ffffff7f", "2020 Jan 2 03:04:06", "2038 Jan 19 03:14:07"},
+    {0x743319c8, "555405000100000080", "2038 Jan 19 03:14:16", "2038 Jan 19 03:14:08"},
+    {0x50221883, "5558080001000000002f6859", "2020 Jan 2 03:04:06", "2017 Jul 14 02:40:00"},
+    {0x50221883, "", "2020 Jan 2 03:04:06", 0},
+    {0x50221883, "0d000c00010000000200000003000400", "2020 Jan 2 03:04:06", "1970 Jan 1 00:00:02"},
+    {0x50221883, "55580800002f6859012f6859", "2020 Jan 2 03:04:06", "2017 Jul 14 02:40:01"},
+    {0x50221883, "555405000300105e5f", "2020 Jan 2 03:04:06", "2020 Sep 13 12:26:40"},
+    {0x50221883, "555405000700105e5f", "2020 Jan 2 03:04:06", "2020 Sep 13 12:26:40"},
+};
+
 // ZipInfo mode's rules (src/zipinfo.c)
 
 static b32 zequal(zistr z, char const *want)
@@ -2595,6 +3654,441 @@ static void test_zipinfo_ratios(void)
     TEST(zequal(zi_factor(f), "-214748364.2%"));
 }
 
+// ZipInfo's verbose report (-v): subfields, attributes, versions,
+// methods, and times, as it described the entries of test/unzipcraft.py's
+// verbose.zip, extrabytes.zip, types.zip, hosts.zip, methods2.zip,
+// flags.zip, dates.zip, and basic.zip (TZ=UTC)
+
+static b32 has(s8 text, s8 want)
+{
+    for (iz i = 0; i+want.len <= text.len; i++) {
+        if (!memcmp(text.s+i, want.s, (uz)want.len)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Bytes from hexadecimal, in a.
+static s8 unhex(arena *a, char const *hex)
+{
+    s8 r = {0};
+    r.len = (iz)strlen(hex) / 2;
+    r.s   = newstr(a, r.len);
+    for (iz i = 0; i < r.len; i++) {
+        u32 v = 0;
+        for (i32 k = 0; k < 2; k++) {
+            u8 c = (u8)hex[2*i+k];
+            v = v<<4 | (c<='9' ? c-'0' : c-'a'+10);
+        }
+        r.s[i] = (u8)v;
+    }
+    return r;
+}
+
+static s8 vsubfield(arena *a, u32 id, s8 data, u32 made, u64 offset,
+                    u64 *endprev)
+{
+    zentry e = {.made=(u16)made, .offset=(i64)offset};
+    zitext t = zt_new(a, 1024);
+    zi_subfield(&t, id, data, &e, endprev, *a);
+    return zt_text(&t);
+}
+
+static void test_zipinfo_subfields(arena scratch)
+{
+    for (i32 i = 0; i < countof(recorded_subfields); i++) {
+        arena a       = scratch;
+        s8    d       = unhex(&a, recorded_subfields[i].data);
+        u64   endprev = 0;
+        s8    got     = vsubfield(&a, recorded_subfields[i].id, d,
+                                  recorded_subfields[i].made, 0, &endprev);
+        TESTROW(equals(got, recorded_subfields[i].text), i);
+    }
+
+    // Text from the data shown as names are, where UnZip writes it as it
+    // is, and a SmartZip name's length past 31 as 31, past which UnZip
+    // writes (the longest description, a ZipIt name of 255 control
+    // bytes, fits its room)
+    static struct {
+        u32         id;
+        char const *data;
+        char const *text;
+    } t[] = {
+        {0xfb4a, "51001b0a",
+         "\n  - A subfield with ID 0xfb4a (SMS/QDOS) and 4 data bytes.\n"
+         "    The QDOS extra field subtype is `Q^@^[^J'."},
+        {0xfb4a, "51ff5ac3a9",
+         "\n  - A subfield with ID 0xfb4a (SMS/QDOS) and 5 data bytes.\n"
+         "    The QDOS extra field subtype is `Q?Z?'."},
+        {0x2605, "5a50495404611b62074150504c74747874",
+         "\n  - A subfield with ID 0x2605 (ZipIt Macintosh) and 17 data "
+         "bytes.\n    The Mac long filename is a^[b^G.\n    The associated "
+         "file has type code `APPL' and creator code `ttxt'."},
+        {0x4d49, "564d5356000004000000000056011b35",
+         "\n  - A subfield with ID 0x4d49 (Info-ZIP VMS) and 16 data bytes."
+         "  The extra\n    field is stored and has 4 bytes of VMS version "
+         "information (V^A^[5)."},
+        {0x4d63, "645a69705445585474747874000000000000000000000000"
+                 "00000000000000003f536d617274204e616d6520616e6420"
+                 "736f206f6e20616e64206f6e20414243",
+         "\n  - A subfield with ID 0x4d63 (SmartZip Macintosh) and 64 data "
+         "bytes.\n    The associated file has type code `TEXT' and creator "
+         "code `ttxt'.\n    The Mac long filename is Smart Name and so on "
+         "and on ABC."},
+        {0x4d63, "645a69705445585474747874000000000000000000000000"
+                 "0000000000000000ff536d617274204e616d6520616e6420"
+                 "736f206f6e20616e64206f6e20414243",
+         "\n  - A subfield with ID 0x4d63 (SmartZip Macintosh) and 64 data "
+         "bytes.\n    The associated file has type code `TEXT' and creator "
+         "code `ttxt'.\n    The Mac long filename is Smart Name and so on "
+         "and on ABC."},
+    };
+    for (i32 i = 0; i < countof(t); i++) {
+        arena a       = scratch;
+        u64   endprev = 0;
+        s8    got     = vsubfield(&a, t[i].id, unhex(&a, t[i].data), 0x031e,
+                                  0, &endprev);
+        TESTROW(equals(got, t[i].text), i);
+    }
+    arena a    = scratch;
+    u8    zip[4+1+255+8];
+    bytecopy(zip, "ZPIT", 4);
+    zip[4] = 255;
+    bytefill(zip+5, 0x01, 255);
+    bytecopy(zip+260, "APPLttxt", 8);
+    u64   endprev = 0;
+    s8    got  = vsubfield(&a, 0x2605, (s8){zip, countof(zip)}, 0x031e, 0,
+                           &endprev);
+    TEST(got.len < 1024);
+    TEST(got.s[got.len-1] == '.');
+    TEST(has(got, S("^A^A^A^A.\n    The associated file has type code "
+                    "`APPL' and creator code `ttxt'.")));
+
+    // The subfields of an extra field, one cut short by its end, and its
+    // error, as zi_long reports it, and bytes too few for a header after
+    a = scratch;
+    s8  x      = unhex(&a, "5554050001000000003434120261620102");
+    u32 id     = 0;
+    s8  data   = {0};
+    iz  stated = 0;
+    TEST(zi_next(&x, &id, &data, &stated));
+    TEST(id==0x5455 && stated==5 && data.len==5);
+    TEST(zi_next(&x, &id, &data, &stated));
+    TEST(id==0x3434 && stated==0x0212 && data.len==4 && x.len==0);
+    TEST(!zi_next(&x, &id, &data, &stated));
+    zitext text = zt_new(&a, 1024);
+    zi_cut_text(&text, id, stated, data.len);
+    TEST(equals(zt_text(&text), "\n  error: EF data block (type 0x3434) "
+                "size 530 exceeds remaining extra field\n         space 4; "
+                "block length has been truncated.\n"));
+    x = unhex(&a, "123400000102");
+    TEST(zi_next(&x, &id, &data, &stated));
+    TEST(id==0x3412 && stated==0 && !data.len && x.len==2);
+    TEST(!zi_next(&x, &id, &data, &stated));
+}
+
+// Where an entry ends, as zi_long guesses at its local header for the
+// next one's "There are an extra N bytes preceding this file.": its
+// central header's lengths, adjusted by its subfields, unknown (0) after
+// OS/2's and NT's security data and compressed Mac and BeOS attributes,
+// and in unsigned arithmetic that wraps, as UnZip's does
+static void test_zipinfo_endprev(arena scratch)
+{
+    static struct {
+        u32         id;
+        char const *data;
+        u32         made;
+        u64         offset;
+        u64         in;
+        u64         out;
+    } t[] = {
+        {0x0001, "0100000000000000", 0x031e, 100, 1000, 1000},
+        {0x0001, "0100000000000000", 0x031e, 1ull<<32, 1000, 988},
+        {0x0001, "01000000000000000200000000000000", 0x031e, 1ull<<32,
+         1000, 992},
+        {0x0001, "0100000000000000", 0x031e, 1ull<<32, 0, (u64)-12},
+        {0x5855, "0100000002000000", 0x031e, 0, 1000, 1004},
+        {0x5855, "0100000002000000", 0x0014, 0, 1000, 1000},
+        {0x5855, "0100000002000000", 0x031e, 0, 0, 0},
+        {0x7855, "01000200", 0x0014, 0, 1000, 1004},
+        {0x7855, "", 0x0014, 0, 0, 0},
+        {0x7875, "0104e80300000104e8030000", 0x031e, 0, 1000, 1000},
+        {0x5455, "0100000000", 0x031e, 0, 1000, 1000},
+        {0x5455, "0700000000", 0x031e, 0, 1000, 1008},
+        {0x5455, "0600000000", 0x031e, 0, 0, 0},
+        {0x5455, "", 0x031e, 0, 1000, 1000},
+        {0x0009, "0a000000", 0x031e, 0, 1000, 0},
+        {0x0009, "0a0000", 0x031e, 0, 1000, 1000},
+        {0x4c41, "0a000000", 0x031e, 0, 1000, 0},
+        {0x4453, "0a000000", 0x031e, 0, 1000, 0},
+        {0x334d, "640000000000544558547474787400000000", 0x031e, 0, 1000, 0},
+        {0x334d, "640000000400544558547474787400000000", 0x031e, 0, 1000,
+         1100},
+        {0x334d, "640000000400544558547474787400000000", 0x031e, 0, 0, 0},
+        {0x6542, "2a00000000", 0x031e, 0, 1000, 0},
+        {0x6542, "2a00000001", 0x031e, 0, 1000, 1042},
+        {0x7441, "2a00000001", 0x031e, 0, 0, 0},
+        {0x6542, "2a000000", 0x031e, 0, 1000, 1000},
+    };
+    for (i32 i = 0; i < countof(t); i++) {
+        arena a       = scratch;
+        u64   endprev = t[i].in;
+        vsubfield(&a, t[i].id, unhex(&a, t[i].data), t[i].made, t[i].offset,
+                  &endprev);
+        TESTROW(endprev == t[i].out, i);
+    }
+
+    // The line, signed, then where the entry ends, past its local header
+    static struct {
+        i64         offset;
+        iz          lengths;  // of its name and central extra field
+        i64         csize;
+        u64         in;
+        char const *text;
+        u64         out;
+    } p[] = {
+        {0, 5, 10, 0, "", 45},
+        {100, 5, 10, 0, "", 145},
+        {100, 5, 10, 100, "", 145},
+        {100, 5, 10, 90,
+         "  There are an extra 10 bytes preceding this file.\n\n", 145},
+        {100, 5, 10, 116,
+         "  There are an extra -16 bytes preceding this file.\n\n", 145},
+        {10, 1, 0, (u64)-8,
+         "  There are an extra 18 bytes preceding this file.\n\n", 41},
+        {0, 1, 0, 4,
+         "  There are an extra -4 bytes preceding this file.\n\n", 31},
+        {1, 1, (i64)((u64)-1 >> 1), 1, "", 0x800000000000001f},
+    };
+    for (i32 i = 0; i < countof(p); i++) {
+        arena  a       = scratch;
+        zentry e       = {.offset=p[i].offset, .csize=p[i].csize,
+                          .name={(u8 *)"name", 1}, .cextra={(u8 *)"x",
+                          p[i].lengths-1}};
+        u64    endprev = p[i].in;
+        zitext t       = zt_new(&a, 1024);
+        zi_preceding(&t, &e, &endprev);
+        TESTROW(equals(zt_text(&t), p[i].text), i);
+        TESTROW(endprev == p[i].out, i);
+    }
+
+    // An old Unix field in the local header alone, by external attribute
+    // bit 15, and 14 for owners, adding its length where it is there
+    static struct {
+        u32         made;
+        u32         extattr;
+        u64         in;
+        char const *text;
+        u64         out;
+    } o[] = {
+        {0x0314, 0x8000, 1000,
+         "\n  There is a local extra field with ID 0x5855 (old Info-ZIP "
+         "Unix/OS2/NT) and\n  8 data bytes (GMT modification/access times "
+         "only).\n", 1008},
+        {0x0b14, 0xc000, 1000,
+         "\n  There is a local extra field with ID 0x5855 (old Info-ZIP "
+         "Unix/OS2/NT) and\n  12 data bytes (GMT modification/access times "
+         "and Unix UID/GID).\n", 1012},
+        {0x0614, 0xc000, 0,
+         "\n  There is a local extra field with ID 0x5855 (old Info-ZIP "
+         "Unix/OS2/NT) and\n  12 data bytes (GMT modification/access times "
+         "and Unix UID/GID).\n", 0},
+        {0x0014, 0x8000, 1000,
+         "\n  There may be a local extra field with ID 0x5855 (old Info-ZIP "
+         "Unix/OS2/NT) and\n  8 data bytes (GMT modification/access times "
+         "only).\n", 1000},
+        {0x0014, 0xc000, 1000, "", 1000},
+        {0x0e14, 0x8000, 1000, "", 1000},
+        {0x0314, 0x4000, 1000, "", 1000},
+    };
+    for (i32 i = 0; i < countof(o); i++) {
+        arena  a       = scratch;
+        zentry e       = {.made=(u16)o[i].made, .extattr=o[i].extattr};
+        u64    endprev = o[i].in;
+        zitext t       = zt_new(&a, 1024);
+        zi_oldux(&t, &e, &endprev);
+        TESTROW(equals(zt_text(&t), o[i].text), i);
+        TESTROW(endprev == o[i].out, i);
+    }
+}
+
+static void test_zipinfo_vfields(arena scratch)
+{
+    for (i32 i = 0; i < countof(recorded_vattribs); i++) {
+        arena  a = scratch;
+        zitext t = zt_new(&a, 1024);
+        zitext w = zt_new(&a, 1024);
+        zi_vattribs(&t, recorded_vattribs[i].made,
+                    recorded_vattribs[i].extattr);
+        zt_puts(&w, "  ");
+        zt_puts(&w, recorded_vattribs[i].lines[0]);
+        zt_puts(&w, "\n  ");
+        zt_puts(&w, recorded_vattribs[i].lines[1]);
+        zt_puts(&w, "\n");
+        TESTROW(t.len==w.len && !memcmp(t.s, w.s, (uz)t.len), i);
+    }
+
+    static char const *const labels[] = {
+        "  file system or operating system of origin:      ",
+        "  version of encoding software:                   ",
+        "  minimum file system compatibility required:     ",
+        "  minimum software version required to extract:   ",
+    };
+    for (i32 i = 0; i < countof(recorded_versions); i++) {
+        arena  a = scratch;
+        zentry e = {.made=(u16)recorded_versions[i].made,
+                    .needed=(u16)recorded_versions[i].needed};
+        zitext t = zt_new(&a, 4096);
+        zi_long_text(&t, &e, 0, 0);
+        for (i32 k = 0; k < 4; k++) {
+            zitext w = zt_new(&a, 1024);
+            zt_puts(&w, labels[k]);
+            zt_puts(&w, recorded_versions[i].values[k]);
+            zt_puts(&w, "\n");
+            TESTROW(has(zt_text(&t), zt_text(&w)), i);
+        }
+    }
+    // Hosts from 256, which "needed" may name by its own upper byte
+    arena  a = scratch;
+    zitext t = zt_new(&a, 1024);
+    zi_hostlong(&t, 300, 0);
+    zi_hostlong(&t, 20, 1);
+    zi_hostlong(&t, 20, 0);
+    TEST(equals(zt_text(&t), "unknown (300)unknown (20)(null)"));
+
+    for (i32 i = 0; i < countof(recorded_vmethods); i++) {
+        a = scratch;
+        zentry e = {.method=(u16)recorded_vmethods[i].method,
+                    .flags=(u16)recorded_vmethods[i].flags};
+        t = zt_new(&a, 4096);
+        zi_long_text(&t, &e, 0, 0);
+        zitext w = zt_new(&a, 1024);
+        zt_puts(&w, "  compression method:                             ");
+        zt_puts(&w, recorded_vmethods[i].name);
+        zt_puts(&w, "\n");
+        zt_puts(&w, recorded_vmethods[i].lines);
+        zt_puts(&w, "  file security status:");
+        TESTROW(has(zt_text(&t), zt_text(&w)), i);
+    }
+    a = scratch;
+    t = zt_new(&a, 1024);
+    zi_methodlong(&t, 65535);
+    TEST(equals(zt_text(&t), "unknown (65535)"));
+
+    for (i32 i = 0; i < countof(recorded_vdates); i++) {
+        a = scratch;
+        i32 tm[6];
+        uz_dosdate(recorded_vdates[i].dostime, tm);
+        t = zt_new(&a, 1024);
+        zi_vdate(&t, tm);
+        TESTROW(equals(zt_text(&t), recorded_vdates[i].dos), i);
+        s8     x  = unhex(&a, recorded_vdates[i].cextra);
+        uzizux ux = uz_extra_izux(x, 1, recorded_vdates[i].dostime);
+        TESTROW(!(ux.flags & UZ_MTIME) == !recorded_vdates[i].ut, i);
+        if (ux.flags & UZ_MTIME) {
+            zip_gmtime(ux.mtime, tm);
+            t.len = 0;
+            zi_vdate(&t, tm);
+            TESTROW(equals(zt_text(&t), recorded_vdates[i].ut), i);
+        }
+    }
+
+    // An entry's lines, each field in its place
+    a = scratch;
+    zentry e = {
+        .name={(u8 *)"a.txt", 5}, .cextra={(u8 *)"UT\5\0\1\0\0\0\0", 9},
+        .comment={(u8 *)"c", 1}, .usize=4294967296, .csize=12,
+        .offset=0x123456789a, .crc=0xbeef, .dostime=0x50210000, .extattr=0,
+        .made=0x0b3f, .needed=0x002d, .flags=0x0f, .method=6, .intattr=2,
+    };
+    i32 local[6] = {2026, 10, 15, 21, 30, 5};
+    i32 utc[6]   = {2026, 10, 16, 1, 30, 5};
+    t = zt_new(&a, 4096);
+    zi_long_text(&t, &e, local, utc);
+    TEST(equals(zt_text(&t),
+        "\n"
+        "  offset of local header from start of archive:   78187493530\n"
+        "                                                  (000000123456789Ah) bytes\n"
+        "  file system or operating system of origin:      NTFS\n"
+        "  version of encoding software:                   6.3\n"
+        "  minimum file system compatibility required:     MS-DOS, OS/2 or NT FAT\n"
+        "  minimum software version required to extract:   4.5\n"
+        "  compression method:                             imploded\n"
+        "  size of sliding dictionary (implosion):         8K\n"
+        "  number of Shannon-Fano trees (implosion):       3\n"
+        "  file security status:                           encrypted\n"
+        "  extended local header:                          yes\n"
+        "  file last modified on (DOS date/time):          2020 Jan 1 00:00:00\n"
+        "  file last modified on (UT extra field modtime): 2026 Oct 15 21:30:05 local\n"
+        "  file last modified on (UT extra field modtime): 2026 Oct 16 01:30:05 UTC\n"
+        "  32-bit CRC value (hex):                         0000beef\n"
+        "  compressed size:                                12 bytes\n"
+        "  uncompressed size:                              4294967296 bytes\n"
+        "  length of filename:                             5 characters\n"
+        "  length of extra field:                          9 bytes\n"
+        "  length of file comment:                         1 characters\n"
+        "  disk number on which file begins:               disk 1\n"
+        "  apparent file type:                             ebcdic\n"
+        "  non-MSDOS external file attributes:             000000 hex\n"
+        "  MS-DOS file attributes (00 hex):                none\n"));
+}
+
+// The end-record section, single-part and multi-part (from basic.zip
+// and disks10.zip), and with a size past 32 bits and wrapping sums
+static void test_zipinfo_vend(arena scratch)
+{
+    static struct {
+        ziend       z;
+        char const *text;
+    } t[] = {
+        {{566, 523, 227, 296, 5, 5, 0, 0},
+         "\nEnd-of-central-directory record:\n"
+         "-------------------------------\n\n"
+         "  Zip archive file size:                       566 (0000000000000236h)\n"
+         "  Actual end-cent-dir record offset:           523 (000000000000020Bh)\n"
+         "  Expected end-cent-dir record offset:         523 (000000000000020Bh)\n"
+         "  (based on the length of the central directory and its expected offset)\n\n"
+         "  This zipfile constitutes the sole disk of a single-part archive; its\n"
+         "  central directory contains 5 entries.\n"
+         "  The central directory is 296 (0000000000000128h) bytes long,\n"
+         "  and its (expected) offset in bytes from the beginning of the zipfile\n"
+         "  is 227 (00000000000000E3h).\n\n"},
+        {{545, 523, 227, 296, 5, 5, 1, 0},
+         "\nEnd-of-central-directory record:\n"
+         "-------------------------------\n\n"
+         "  Zip archive file size:                       545 (0000000000000221h)\n"
+         "  Actual end-cent-dir record offset:           523 (000000000000020Bh)\n"
+         "  Expected end-cent-dir record offset:         523 (000000000000020Bh)\n"
+         "  (based on the length of the central directory and its expected offset)\n\n"
+         "  This zipfile constitutes disk 2 of a multi-part archive.  The central\n"
+         "  directory starts on disk 1 at an offset within that archive part\n"
+         "  of 227 (00000000000000E3h) bytes.  The entire\n"
+         "  central directory is 296 (0000000000000128h) bytes long.\n"
+         "  5 of the archive entries are contained within this zipfile volume,\n"
+         "  out of a total of 5 entries.\n\n"},
+        {{123456789012345, 22, (u64)-2, 3, 1, 1, 0xffffffff, 0xfffffffe},
+         "\nEnd-of-central-directory record:\n"
+         "-------------------------------\n\n"
+         "  Zip archive file size:               123456789012345 (00007048860DDF79h)\n"
+         "  Actual end-cent-dir record offset:            22 (0000000000000016h)\n"
+         "  Expected end-cent-dir record offset:           1 (0000000000000001h)\n"
+         "  (based on the length of the central directory and its expected offset)\n\n"
+         "  This zipfile constitutes disk 4294967296 of a multi-part archive.  The central\n"
+         "  directory starts on disk 4294967295 at an offset within that archive part\n"
+         "  of 18446744073709551614 (FFFFFFFFFFFFFFFEh) bytes.  The entire\n"
+         "  central directory is 3 (0000000000000003h) bytes long.\n"
+         "  1 of the archive entries is contained within this zipfile volume,\n"
+         "  out of a total of 1 entry.\n\n"},
+    };
+    for (i32 i = 0; i < countof(t); i++) {
+        arena  a = scratch;
+        zitext s = zt_new(&a, 2048);
+        zi_end_text(&s, &t[i].z);
+        TESTROW(equals(zt_text(&s), t[i].text), i);
+    }
+}
+
 int main(void)
 {
     (void)bytemove;
@@ -2625,6 +4119,10 @@ int main(void)
     test_zipinfo_flags();
     test_zipinfo_dates();
     test_zipinfo_ratios();
+    test_zipinfo_subfields(a);
+    test_zipinfo_endprev(a);
+    test_zipinfo_vfields(a);
+    test_zipinfo_vend(a);
 
     free(a.beg);
     puts("all unzip tests pass");

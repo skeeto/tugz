@@ -522,14 +522,15 @@ in any case (link or copy it as `zipinfo`, or `zipinfo.exe`, as nothing
 is installed by that name), lists archives as Info-ZIP's ZipInfo 3.00
 does, in its formats, such as `zipinfo -1 release-1.2.3.zip`:
 
-    zipinfo [-12smlhtTzC] file[.zip] [list] [-x xlist]
-    unzip -Z [-12smlhtTzC] file[.zip] [list] [-x xlist]
+    zipinfo [-12smlvhtTzC] file[.zip] [list] [-x xlist]
+    unzip -Z [-12smlvhtTzC] file[.zip] [list] [-x xlist]
 
 | Option | Meaning |
 |---|---|
 | `-1` | names only, one per line |
 | `-2` | names, with the header, totals, or comment if asked for |
 | `-s`, `-m`, `-l` | as `ls -l`: short (the default), with the compression, with the compressed size |
+| `-v` | a report of every field of the end records and of each entry, with its extra fields decoded |
 | `-h`, `-t` | the header lines, the totals line |
 | `-z` | the archive comment |
 | `-T` | times as `yyyymmdd.hhmmss`, rather than `yy-Mon-dd hh:mm` |
@@ -544,8 +545,11 @@ first, and `UNZIP` does not. Messages for standard error go to standard
 output while the totals show, as in Info-ZIP, and statuses are unzip's:
 0 even with some members unmatched, 11 with none. Dates are those of
 extended timestamps, in local time, else DOS times as stored. The
-verbose report, `-v`, is refused (10) for now, as are ZipInfo's `-M`
-(its pager) and Debian's `-U`. Departures, all in
+verbose report, `-v`, gives offsets and sizes as recorded, ZipInfo's
+estimate of data between entries, and each extra field subfield as
+ZipInfo describes it, from extended timestamps to Mac and VMS
+attributes. ZipInfo's `-M` (its pager) and Debian's `-U` are refused
+(10). Departures, all in
 [docs/notes.md](docs/notes.md#departures-from-info-zip-unzip), include
 the end record looked for where unzip looks for it, among the last 64
 KiB, rather than in the whole file, and names shown as unzip shows them.

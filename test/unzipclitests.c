@@ -2469,16 +2469,15 @@ static void test_zipinfo(os *ctx)
         "Zip file size: 499 bytes, number of entries: 5\n"));
     TEST(output_is(ctx, 2, ""));
 
-    // ZipInfo's letters that tugz refuses: M, its pager, U, Debian's
-    // Unicode escapes, and for now v, its verbose report
+    // ZipInfo's letters that tugz refuses: M, its pager, and U, Debian's
+    // Unicode escapes
     ZIPINFO(ctx, 10, "-M", "a.zip");
     TEST(output_is(ctx, 3, "error:  -M option not supported\n"));
     TEST(output_is(ctx, 2, "error:  -M option not supported\n"));
     ZIPINFO(ctx, 10, "-hU", "a.zip");
     TEST(output_is(ctx, 2, "error:  -U option not supported\n"));
-    ZIPINFO(ctx, 10, "-v", "a.zip");
-    TEST(output_is(ctx, 2, "error:  -v option not supported\n"));
     ZIPINFO(ctx, 0, "--v", "-1", "a.zip");
+    TEST(output_is(ctx, 3, "d/\nd/a.txt\nB.EXE\nu.txt\nenc\n"));
 
     // An entry without a name ends the listing, as for unzip -l, where
     // UnZip shows the name before it again
@@ -2550,6 +2549,437 @@ static void test_zipinfo(os *ctx)
     free(z.s);
 }
 
+// An archive from build, after prefix, its offsets adjusted for it: as
+// the first part of a split archive begins with a signature.
+static s8 shifted(s8 z, char const *prefix)
+{
+    mbuf b = {0};
+    iz   n = (iz)strlen(prefix);
+    zput(&b, prefix, n);
+    zput(&b, z.s, z.len);
+    u8 *p   = b.s + n;
+    iz  end = z.len - 22;
+    for (; get32(p+end) != ZIP_END_SIG; end--) {}
+    u32 cdoff = get32(p+end+16);
+    put32(p+end+16, cdoff + (u32)n);
+    for (iz i = cdoff; get32(p+i) == ZIP_CENTRAL_SIG;) {
+        put32(p+i+42, get32(p+i+42) + (u32)n);
+        i += 46 + get16(p+i+28) + get16(p+i+30) + get16(p+i+32);
+    }
+    return (s8){b.s, b.len};
+}
+
+// ZipInfo's verbose report, -v: its sections on the archive comment and
+// the end records, each entry's fields, subfields, and comment, and data
+// between entries by their offsets as recorded, carried to the next
+// archive from offset 4; archives empty, with data before them and Zip64
+// records, or with a comment cut short; the error for a subfield cut
+// short to standard error, but under totals; and memory bounded with a
+// 64 KiB extra field, and independent of the number of entries. Outputs
+// as Info-ZIP's zipinfo gives them.
+static void test_zipinfo_verbose(os *ctx)
+{
+    xspec spec[] = {
+        {.name="a.txt", .data="a\n", .cextra=utc(1600000000),
+         .comment=S("an entry comment")},
+        {.name="b", .data="bb", .lextra=owner(1, 2)},
+        {.name="c", .data="c", .made=FAT, .extattr=0x21},
+        {.name="d", .data="d", .cextra={(u8 *)"UT\5\0\1\0\0\0\0"
+                                        "4\x12,\1abc", 16}},
+    };
+    s8 z     = build(spec, 3, "A comment\n");
+    s8 bare  = build(spec, 3, 0);
+    s8 p64   = zip64_after(bare, "#!/bin/sh\n");
+    s8 empty = build(spec, 0, 0);
+    s8 cut   = {malloc((uz)z.len), z.len};
+    TEST(cut.s);
+    bytecopy(cut.s, z.s, z.len);
+    put16(cut.s+z.len-12, 15);  // its comment's length, past the end
+    s8 sub   = build(spec+3, 1, 0);
+    s8 one   = build(spec+2, 1, 0);
+    s8 split = shifted(one, "PK\7\x08");
+    mfs_reset(ctx);
+    put_archive(ctx, "v.zip", z);
+    put_archive(ctx, "p64.zip", p64);
+    put_archive(ctx, "empty.zip", empty);
+    put_archive(ctx, "cut.zip", cut);
+    put_archive(ctx, "sub.zip", sub);
+    mfs_put(ctx, "w", FT_DIR, 0, 0, 1600000000);
+    put_archive(ctx, "w/a.zip", split);
+    put_archive(ctx, "w/b.zip", z);
+
+    // Every section: an entry with a timestamp and a comment, one whose
+    // local header is longer than its central header tells, its owner
+    // field (the next is 15 bytes later than expected), one from MS-DOS
+    ZIPINFO(ctx, 0, "-v", "v.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  v.zip\n"
+        "The zipfile comment is 10 bytes long and contains the following "
+        "text:\n"
+        "======================== zipfile comment begins "
+        "==========================\n"
+        "A comment\n"
+        "========================= zipfile comment ends "
+        "===========================\n"
+        "\n"
+        "End-of-central-directory record:\n"
+        "-------------------------------\n"
+        "\n"
+        "  Zip archive file size:                       319 "
+        "(000000000000013Fh)\n"
+        "  Actual end-cent-dir record offset:           287 "
+        "(000000000000011Fh)\n"
+        "  Expected end-cent-dir record offset:         287 "
+        "(000000000000011Fh)\n"
+        "  (based on the length of the central directory and its expected "
+        "offset)\n"
+        "\n"
+        "  This zipfile constitutes the sole disk of a single-part archive; "
+        "its\n"
+        "  central directory contains 3 entries.\n"
+        "  The central directory is 170 (00000000000000AAh) bytes long,\n"
+        "  and its (expected) offset in bytes from the beginning of the "
+        "zipfile\n"
+        "  is 117 (0000000000000075h).\n"
+        "\n"
+        "\n"
+        "Central directory entry #1:\n"
+        "---------------------------\n"
+        "\n"
+        "  a.txt\n"
+        "\n"
+        "  offset of local header from start of archive:   0\n"
+        "                                                  (0000000000000000h) "
+        "bytes\n"
+        "  file system or operating system of origin:      Unix\n"
+        "  version of encoding software:                   3.0\n"
+        "  minimum file system compatibility required:     MS-DOS, OS/2 or NT "
+        "FAT\n"
+        "  minimum software version required to extract:   2.0\n"
+        "  compression method:                             none (stored)\n"
+        "  file security status:                           not encrypted\n"
+        "  extended local header:                          no\n"
+        "  file last modified on (DOS date/time):          2020 Jan 2 "
+        "03:04:06\n"
+        "  file last modified on (UT extra field modtime): 2020 Sep 13 "
+        "12:26:40 local\n"
+        "  file last modified on (UT extra field modtime): 2020 Sep 13 "
+        "12:26:40 UTC\n"
+        "  32-bit CRC value (hex):                         ddeaa107\n"
+        "  compressed size:                                2 bytes\n"
+        "  uncompressed size:                              2 bytes\n"
+        "  length of filename:                             5 characters\n"
+        "  length of extra field:                          9 bytes\n"
+        "  length of file comment:                         16 characters\n"
+        "  disk number on which file begins:               disk 1\n"
+        "  apparent file type:                             binary\n"
+        "  Unix file attributes (100644 octal):            -rw-r--r--\n"
+        "  MS-DOS file attributes (00 hex):                none\n"
+        "\n"
+        "  The central-directory extra field contains:\n"
+        "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+        "    The local extra field has UTC/GMT modification time.\n"
+        "\n"
+        "------------------------- file comment begins "
+        "----------------------------\n"
+        "an entry comment\n"
+        "-------------------------- file comment ends "
+        "-----------------------------\n"
+        "\n"
+        "Central directory entry #2:\n"
+        "---------------------------\n"
+        "\n"
+        "  There are an extra -9 bytes preceding this file.\n"
+        "\n"
+        "  b\n"
+        "\n"
+        "  offset of local header from start of archive:   37\n"
+        "                                                  (0000000000000025h) "
+        "bytes\n"
+        "  file system or operating system of origin:      Unix\n"
+        "  version of encoding software:                   3.0\n"
+        "  minimum file system compatibility required:     MS-DOS, OS/2 or NT "
+        "FAT\n"
+        "  minimum software version required to extract:   2.0\n"
+        "  compression method:                             none (stored)\n"
+        "  file security status:                           not encrypted\n"
+        "  extended local header:                          no\n"
+        "  file last modified on (DOS date/time):          2020 Jan 2 "
+        "03:04:06\n"
+        "  32-bit CRC value (hex):                         b5ae1bae\n"
+        "  compressed size:                                2 bytes\n"
+        "  uncompressed size:                              2 bytes\n"
+        "  length of filename:                             1 characters\n"
+        "  length of extra field:                          0 bytes\n"
+        "  length of file comment:                         0 characters\n"
+        "  disk number on which file begins:               disk 1\n"
+        "  apparent file type:                             binary\n"
+        "  Unix file attributes (100644 octal):            -rw-r--r--\n"
+        "  MS-DOS file attributes (00 hex):                none\n"
+        "\n"
+        "  There is no file comment.\n"
+        "\n"
+        "Central directory entry #3:\n"
+        "---------------------------\n"
+        "\n"
+        "  There are an extra 15 bytes preceding this file.\n"
+        "\n"
+        "  c\n"
+        "\n"
+        "  offset of local header from start of archive:   85\n"
+        "                                                  (0000000000000055h) "
+        "bytes\n"
+        "  file system or operating system of origin:      MS-DOS, OS/2 or NT "
+        "FAT\n"
+        "  version of encoding software:                   2.0\n"
+        "  minimum file system compatibility required:     MS-DOS, OS/2 or NT "
+        "FAT\n"
+        "  minimum software version required to extract:   2.0\n"
+        "  compression method:                             none (stored)\n"
+        "  file security status:                           not encrypted\n"
+        "  extended local header:                          no\n"
+        "  file last modified on (DOS date/time):          2020 Jan 2 "
+        "03:04:06\n"
+        "  32-bit CRC value (hex):                         06b9df6f\n"
+        "  compressed size:                                1 bytes\n"
+        "  uncompressed size:                              1 bytes\n"
+        "  length of filename:                             1 characters\n"
+        "  length of extra field:                          0 bytes\n"
+        "  length of file comment:                         0 characters\n"
+        "  disk number on which file begins:               disk 1\n"
+        "  apparent file type:                             binary\n"
+        "  non-MSDOS external file attributes:             000000 hex\n"
+        "  MS-DOS file attributes (21 hex):                rdo arc \n"
+        "\n"
+        "  There is no file comment.\n"
+        "\n"
+    ));
+    TEST(output_is(ctx, 2, ""));
+
+    // With totals, before the last blank line, and without the header
+    ZIPINFO(ctx, 0, "-v", "-t", "--h", "v.zip");
+    TEST(!output_has(ctx, 1, "Archive:"));
+    TEST(output_has(ctx, 1, "  MS-DOS file attributes (21 hex):                "
+                            "rdo arc \n\n  There is no file comment.\n3 files, "
+                            "5 bytes uncompressed, 5 bytes compressed:  0.0%"
+                            "\n\n"));
+
+    // An entry not listed: the next's offset is not checked
+    ZIPINFO(ctx, 0, "-v", "v.zip", "a.txt", "c");
+    TEST(output_has(ctx, 1, "Central directory entry #3:\n"
+                            "---------------------------\n\n  c\n"));
+    TEST(!output_has(ctx, 1, "There are an extra"));
+
+    // Offsets as recorded, with data before the archive unaccounted for,
+    // which follows Zip64 end records just before their locator
+    ZIPINFO(ctx, 1, "-v", "p64.zip");
+    TEST(output_has(ctx, 1,
+        "Archive:  p64.zip\n"
+        "There is no zipfile comment.\n"
+        "\n"
+        "End-of-central-directory record:\n"
+        "-------------------------------\n"
+        "\n"
+        "  Zip archive file size:                       395 "
+        "(000000000000018Bh)\n"
+        "  Actual end-cent-dir record offset:           297 "
+        "(0000000000000129h)\n"
+        "  Expected end-cent-dir record offset:         287 "
+        "(000000000000011Fh)\n"
+        "  (based on the length of the central directory and its expected "
+        "offset)\n"
+        "\n"
+        "  This zipfile constitutes the sole disk of a single-part archive; "
+        "its\n"
+        "  central directory contains 3 entries.\n"
+        "  The central directory is 170 (00000000000000AAh) bytes long,\n"
+        "  and its (expected) offset in bytes from the beginning of the "
+        "zipfile\n"
+        "  is 117 (0000000000000075h).\n"
+        "\n"
+        "\n"
+        "Central directory entry #1:\n"
+        "---------------------------\n"
+        "\n"
+        "  a.txt\n"
+        "\n"
+        "  offset of local header from start of archive:   0\n"));
+    TEST(output_is(ctx, 2,
+        "[p64.zip]\n"
+        "error: End-of-centdir-64 signature not where expected (prepended "
+        "bytes?)\n"
+        "  (attempting to process anyway)\n"
+        "warning [p64.zip]:  10 extra bytes at beginning or within zipfile\n"
+        "  (attempting to process anyway)\n"));
+
+    // An empty archive
+    ZIPINFO(ctx, 1, "-v", "empty.zip");
+    TEST(output_is(ctx, 1,
+        "Archive:  empty.zip\n"
+        "There is no zipfile comment.\n"
+        "\n"
+        "End-of-central-directory record:\n"
+        "-------------------------------\n"
+        "\n"
+        "  Zip archive file size:                        22 "
+        "(0000000000000016h)\n"
+        "  Actual end-cent-dir record offset:             0 "
+        "(0000000000000000h)\n"
+        "  Expected end-cent-dir record offset:           0 "
+        "(0000000000000000h)\n"
+        "  (based on the length of the central directory and its expected "
+        "offset)\n"
+        "\n"
+        "  This zipfile constitutes the sole disk of a single-part archive; "
+        "its\n"
+        "  central directory contains 0 entries.\n"
+        "  The central directory is 0 (0000000000000000h) bytes long,\n"
+        "  and its (expected) offset in bytes from the beginning of the "
+        "zipfile\n"
+        "  is 0 (0000000000000000h).\n"
+        "\n"
+        "\n"
+        "  Empty zipfile.\n"
+    ));
+    TEST(output_is(ctx, 2, ""));
+
+    // A comment cut short by the end of the file
+    ZIPINFO(ctx, 1, "-v", "--h", "cut.zip");
+    TEST(output_has(ctx, 1,
+        "The zipfile comment is 15 bytes long and contains the following "
+        "text:\n"
+        "======================== zipfile comment begins "
+        "==========================\n"
+        "A comment\n"
+        "========================= zipfile comment ends "
+        "===========================\n"
+        "\n"
+        "  The zipfile comment is truncated.\n"
+        "\n"
+        "End-of-central-directory record:\n"));
+    TEST(output_is(ctx, 2, ""));
+
+    // A subfield whose length runs past the extra field's end: its error
+    // to standard error, or with totals, to standard output, and to
+    // standard error too where that alone is a terminal
+    ZIPINFO(ctx, 0, "-v", "sub.zip");
+    TEST(output_has(ctx, 1,
+        "  The central-directory extra field contains:\n"
+        "  - A subfield with ID 0x5455 (universal time) and 5 data bytes.\n"
+        "    The local extra field has UTC/GMT modification time.\n"
+        "  - A subfield with ID 0x1234 (unknown) and 3 data bytes:\n"
+        "    61 62 63.\n"
+        "\n"
+        "  There is no file comment.\n"));
+    TEST(output_is(ctx, 2,
+        "\n"
+        "\n"
+        "  error: EF data block (type 0x1234) size 300 exceeds remaining extra "
+        "field\n"
+        "         space 3; block length has been truncated.\n"));
+    ctx->tty[2] = 1;
+    ZIPINFO(ctx, 0, "-vt", "sub.zip");
+    TEST(output_has(ctx, 1,
+        "    The local extra field has UTC/GMT modification time.\n"
+        "\n"
+        "  error: EF data block (type 0x1234) size 300 exceeds remaining extra "
+        "field\n"
+        "         space 3; block length has been truncated.\n"
+        "\n"
+        "  - A subfield with ID 0x1234 (unknown) and 3 data bytes:\n"
+        "    61 62 63.\n"));
+    TEST(output_is(ctx, 2,
+        "\n"
+        "\n"
+        "  error: EF data block (type 0x1234) size 300 exceeds remaining extra "
+        "field\n"
+        "         space 3; block length has been truncated.\n"));
+    ctx->tty[2] = 0;
+
+    // Archives by a wildcard: the first ends with an entry at offset 4,
+    // which UnZip carries to the next, as from a split archive's parts
+    ZIPINFO(ctx, 0, "-v", "w/*.zip");
+    TEST(output_has(ctx, 1,
+        "Archive:  w/b.zip\n"));
+    TEST(output_has(ctx, 1,
+        "Central directory entry #1:\n"
+        "---------------------------\n"
+        "\n"
+        "  There are an extra -4 bytes preceding this file.\n"
+        "\n"
+        "  a.txt\n"));
+    TEST(output_is(ctx, 2, "\n2 archives were successfully processed.\n"));
+
+    // Memory: an extra field of 16,383 empty subfields, each described in
+    // room used again for the next, takes no more than for a short
+    // listing (the central header's whole), and a 64 KiB comment no
+    // more than in proportion; a single subfield of 64 KiB shows 20 bytes
+    static u8 ex[65532];
+    static char comment[65535+1];
+    for (iz i = 0; i < countof(ex); i += 4) {
+        put16(ex+i, 0x9999);
+        put16(ex+i+2, 0);
+    }
+    bytefill(comment, 'c', countof(comment)-1);
+    xspec x1[] = {{.name="x", .data="x", .cextra={ex, countof(ex)}}};
+    s8 many = build(x1, 1, comment);
+    put16(ex, 0x4444);
+    put16(ex+2, countof(ex)-4);
+    s8 large = build(x1, 1, 0);
+    put_archive(ctx, "many.zip", many);
+    put_archive(ctx, "large.zip", large);
+    ZIPINFO(ctx, 0, "-s", "many.zip");
+    iz base = committed(ctx);
+    ZIPINFO(ctx, 0, "-v", "many.zip");
+    TEST(output_has(ctx, 1, "  - A subfield with ID 0x9999 (unknown) and 0 "
+                            "data bytes.\n\n  There is no file comment.\n"));
+    TEST(committed(ctx) <= base + 3*65536);  // the comment, shown
+    ZIPINFO(ctx, 0, "-s", "large.zip");
+    base = committed(ctx);
+    ZIPINFO(ctx, 0, "-v", "large.zip");
+    TEST(output_has(ctx, 1, "  - A subfield with ID 0x4444 (unknown) and 65528 "
+                            "data bytes.  The first\n    20 are:   99 99 00 00 "
+                            "99 99 00 00 99 99 00 00 99 99 00 00 99 99 00 00."
+                            "\n\n"));
+    TEST(committed(ctx) <= base+8192);
+
+    // and 2,000 entries as one
+    enum { N = 2000 };
+    xspec *all   = calloc(N, sizeof(*all));
+    char (*names)[8] = calloc(N, sizeof(*names));
+    TEST(all && names);
+    for (i32 i = 0; i < N; i++) {
+        snprintf(names[i], sizeof(names[i]), "%05d", i);
+        all[i] = (xspec){.name=names[i], .data="x", .cextra=utc(1600000000),
+                         .comment=S("a comment")};
+    }
+    s8 first = build(all, 1, 0);
+    s8 every = build(all, N, 0);
+    put_archive(ctx, "first.zip", first);
+    put_archive(ctx, "every.zip", every);
+    ZIPINFO(ctx, 0, "-v", "first.zip");
+    base = committed(ctx);
+    ZIPINFO(ctx, 0, "-vt", "every.zip");
+    TEST(output_has(ctx, 1, "Central directory entry #2000:\n"));
+    TEST(output_has(ctx, 1, "\n2000 files, 2000 bytes uncompressed"));
+    TEST(committed(ctx) < base+64);  // (the totals' longer numbers)
+
+    free(every.s);
+    free(first.s);
+    free(names);
+    free(all);
+    free(large.s);
+    free(many.s);
+    free(split.s);
+    free(one.s);
+    free(sub.s);
+    free(cut.s);
+    free(empty.s);
+    free(p64.s);
+    free(bare.s);
+    free(z.s);
+}
+
 int main(void)
 {
     (void)bytemove;
@@ -2575,6 +3005,7 @@ int main(void)
     test_local_name(ctx);
     test_pace(ctx);
     test_zipinfo(ctx);
+    test_zipinfo_verbose(ctx);
     unzipos_free(ctx);
     puts("all unzip program tests pass");
     return 0;

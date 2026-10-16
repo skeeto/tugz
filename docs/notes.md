@@ -48,7 +48,7 @@ with unzip in `platform/zipfs_*.c`.
 | `src/zipin.c`            | archive reading, shared by zip and unzip        |
 | `src/zipcli.c`           | zip command line and archive driver, `zip_main` |
 | `src/unzip.c`            | unzip's rules: names to paths, times, modes     |
-| `src/zipinfo.c`          | ZipInfo mode's rules: options, listing fields   |
+| `src/zipinfo.c`          | ZipInfo mode's rules: options, fields, -v text  |
 | `src/unzipcli.c`         | unzip command line and driver, `unzip_main`     |
 | `platform/posix.c`       | shared POSIX `os_*` implementation              |
 | `platform/windows.c`     | shared CRT-free Win32 `os_*`, paths, arguments  |
@@ -1368,7 +1368,9 @@ ZipInfo mode's rules, from `zipinfo.c`, are `src/zipinfo.c`'s, checked
 the same way against both builds' `zipinfo`: its options (`zi_option`,
 `zi_resolve`), the program's name (`zi_named`), and its listings'
 fields (`zi_host`, `zi_attribs`, `zi_method`, `zi_flags`, `zi_date`,
-and the compression factors, from list.c's ratio, now `uz_ratio`).
+and the compression factors, from list.c's ratio, now `uz_ratio`), and
+the verbose report's (`zi_long_text`, `zi_vattribs`, `zi_subfield`,
+from its descriptions of crafted archives' every subfield).
 The driver, `src/unzipcli.c` (`unzip_main`), follows UnZip's `unzip.c`,
 `envargs.c`, `process.c`, `list.c`, `extract.c`, and `fileio.c`, cited
 at each function, with Debian's additions: ISO dates in listings and the
@@ -1390,8 +1392,8 @@ for entries.
   output (`-p`, `-c`), the comment (`-z`), selection (`-x`, `-C`),
   overwriting (`-n`, `-o`, `-f`, `-u`, the prompt), `-j`, `-D`, `-V`,
   `-K`, `-X`, `-q`, the environment (`UNZIP`, else `UNZIPOPT`, split as
-  zip splits `ZIPOPT`), wildcard archive names, and ZipInfo mode (below)
-  but for its `-v`. UnZip's other options are refused with its "error:
+  zip splits `ZIPOPT`), wildcard archive names, and ZipInfo mode
+  (below). UnZip's other options are refused with its "error:
   -a option not supported" (10), as are `-K` and `-X` on Windows.
   Entries that are encrypted,
   compressed by a method other than stored, deflated, or Deflate64, or
@@ -1798,6 +1800,52 @@ for entries.
   ends `unzip -l`. Memory is `unzip -l`'s: an entry at a time, in
   scratch, none of it growing with the number of entries
   (`test_zipinfo`, 20,000 entries).
+- ZipInfo's verbose report, `-v` (`zipinfo_comment`, `zipinfo_end`, and
+  `zipinfo_long` in `src/unzipcli.c`, their text from `src/zipinfo.c`):
+  the comment section (`process_zip_cmmnt`) whatever `-z` says: "There
+  is no zipfile comment.", or the recorded length and the comment
+  between banners, then "The zipfile comment is truncated." (1) where
+  the file ends first; then the end-record section (`zi_end_central`,
+  `zi_end_text`) in place of "Zip file size": the file's size, the end
+  record's offset (the Zip64 end record's, if used), the expected one
+  (the central directory's offset plus its size, as recorded, wrapping
+  as UnZip's sum does), and the central directory in the words for a
+  single-part archive, or for a disk number other than 0, a multi-part
+  one; "\n  Empty zipfile." for an empty archive. Each entry listed
+  follows "Central directory entry #N" (counting every entry) with
+  `zi_long`'s lines (`zi_long_text`): its offset as recorded (raw:
+  neither shifted nor unwrapped), hosts' long names (a host from 20 to
+  29 that made it shows "(null)", as both builds print the null string
+  `zipinfo.c` has for it), versions, method and its sub-type, the DOS
+  time and the central timestamp's in local time and UTC, CRC, sizes,
+  lengths, the disk (always 1, the only one tugz reads), file type, and
+  attributes by host with the MS-DOS words (`zi_vattribs`, whose Unix
+  form shows set-group-ID without execute as `l`, where `zi_short`'s
+  shows `S`). Then each subfield of the central extra field
+  (`zi_next`, `zi_subfield`), described by every decoder `zipinfo.c`
+  has: Zip64, OS/2's extended attributes and ACL, NT security
+  descriptors, Info-ZIP's VMS, extended timestamps, Unicode path and
+  comment, Mac attributes (Info-ZIP's new and Johnny Lee's old, ZipIt's
+  two, SmartZip's), BeOS and AtheOS, QDOS, AOS/VS, Tandem, and MD5;
+  others, and those too short for theirs, in hexadecimal, 24 bytes or
+  the first 20 (VM/CMS and MVS too, decoded only in those ports' own
+  builds); a stated length past the field's end is UnZip's error,
+  routed for standard error, and the data cut to what is there. Last,
+  the lines for an old Unix field in the local header alone, by
+  external attribute bits 15 and 14 (`zi_oldux`), and the comment
+  between banners. "There are an extra N bytes preceding this file."
+  is `zipinfo()`'s estimate (`zi_preceding`): where the entry before
+  ended, by its central header's lengths, as adjusted by its subfields
+  (Zip64's offset past 4 GiB, "UX" from Unix and "Ux" with owners,
+  a "UT" access and creation time, uncompressed Mac and BeOS
+  attributes), signed, and unknown (0) after compressed ones, OS/2's and
+  NT's security data, and an entry not listed; it is carried to the next
+  archive of a wildcard only from a last header read at offset 4, a
+  split archive's first part, as UnZip's stale `G.crec` is. `-t` adds
+  the totals before the last blank line. Each section's text is built
+  in a `zitext`, a subfield's in room used again for the next, so that a
+  64 KiB extra field of empty subfields takes no more than its central
+  header (`test_zipinfo_verbose`).
 
 ### Departures from Info-ZIP UnZip
 
@@ -2025,10 +2073,17 @@ ones as invariants. Those that no test asserts are marked untested.
   followed by more than 64 KiB is no archive (9) where ZipInfo lists it
   (`unzip.sh`, `trailing.zip`). ZipInfo's `-M` (its pager) and Debian's
   `-U` are refused (10), and Debian's `-W`, `-I`, and `-O` are unknown
-  letters (the usage, 10), as in Apple's build; `-v`, the verbose
-  report, is refused (10) for now (`tests-unzip`; `test_zipinfo`).
-  Names are shown as unzip shows them, in UTF-8 with `^X` for control
-  characters, where Apple's build shows bytes and Debian's escapes
+  letters (the usage, 10), as in Apple's build (`tests-unzip`;
+  `test_zipinfo`). Under `-v`, text from a subfield that UnZip writes as
+  it is (a ZipIt or SmartZip name, a QDOS subtype, a VMS version) is
+  shown as names are, and a SmartZip name's length past its 31 bytes
+  counts as 31, where UnZip writes past its buffer (`tests-unzip`,
+  `test_zipinfo_subfields`; `unzip.sh`, `vraw.zip`); and the end-record
+  section's fields are those tugz takes, from the Zip64 end record or
+  the 32-bit one, where they differ from UnZip's choice (`unzip.sh`,
+  `mixed64.zip`). Names are shown as unzip shows them, in UTF-8 with
+  `^X` for control characters, where Apple's build shows bytes and
+  Debian's escapes
   (`unzip.sh`, `names.zip`), as are comments (`unzip.sh`,
   `comments.zip`); wildcard archive names are processed in name order
   (`test_zipinfo`, `*.zip`); and the usage is tugz's own, first "tugz

@@ -257,7 +257,7 @@ done
 
 # ZipInfo mode's usage, tugz's own: alone (or unzip -Z, or with options
 # but no archive) to standard output, as after an error to standard
-# error; its -M (pager) and Debian's -U refused, and -v for now
+# error; its -M (pager) and Debian's -U refused
 zours 0 ours.out none
 head -n 1 ours.out |
     grep -q "^tugz zipinfo $version, a subset of Info-ZIP ZipInfo 3.00\$" ||
@@ -275,7 +275,7 @@ zsame_head -2t
 zsame_head -q x.zip
 zsame_head -x x.zip
 zsame_head -1 -k x.zip
-for opt in M U UU v; do
+for opt in M U UU; do
     printf 'error:  -%c option not supported\n' "$opt" >want
     zours 10 none want -$opt x.zip
 done

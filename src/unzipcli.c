@@ -210,14 +210,15 @@ static s8 const unzip_help_tail = S8(
 // ZipInfo mode's (unzip -Z, or the program named zipinfo)
 static s8 const zipinfo_usage = S8(
     "tugz zipinfo " TUGZ_VERSION ", a subset of Info-ZIP ZipInfo 3.00\n"
-    "usage: zipinfo [-12smlhtTzC] file[.zip] [list...] [-x xlist...]\n"
-    "   or: unzip -Z [-12smlhtTzC] file[.zip] [list...] [-x xlist...]\n"
+    "usage: zipinfo [-12smlvhtTzC] file[.zip] [list...] [-x xlist...]\n"
+    "   or: unzip -Z [-12smlvhtTzC] file[.zip] [list...] [-x xlist...]\n"
     "  Lists the entries in list, all by default, except those in xlist,\n"
     "  as \"ls -l\" lists files; file[.zip] may be a wildcard.\n"
     "\n"
     "listing formats:                  -s  short \"ls -l\" (the default)\n"
     "  -1  names only, nothing else    -m  -s with the compression\n"
     "  -2  names, with -h, -t, -z      -l  -s with the compressed size\n"
+    "  -v  every field of the records, extra fields decoded\n"
     "other options:\n"
     "  -h  header lines                -t  totals for the entries listed\n"
     "  -z  the archive comment         -T  times as yyyymmdd.hhmmss\n"
@@ -316,6 +317,8 @@ typedef struct {
     b32     extract;  // UnZip's extract_flag: none of -c -l -p -t -v -z
     b32     zinfo;    // ZipInfo mode, its options in zi, the above unset
     ziopts  zi;
+    i64     zilast;   // the offset of the last central header it read,
+                      // which UnZip (G.crec) carries to the next archive
 
     s8      zipspec;  // the archive argument
     s8s     fspecs;   // members to process, if any
@@ -864,8 +867,7 @@ static i32 zipinfo_args(unzip *u, unzipconfig *conf, arena scratch)
         for (iz k = 1; k < a[i].len; k++) {
             u8  c = a[i].s[k];
             i32 r = zi_option(&u->zi, c);
-            if (r==ZI_REFUSED || (c=='v' && u->zi.lflag==10)) {
-                // (-v, the verbose report, is still to come)
+            if (r == ZI_REFUSED) {
                 info(u, MSG_STDERR, JOIN(&scratch, S("error:  -"),
                      (s8){&a[i].s[k], 1}, S(" option not supported\n")));
                 return PK_PARAM;
@@ -1148,11 +1150,78 @@ static i32 list_files(unzip *u, zarchive *ar, arena scratch)
 
 // ZipInfo's listing (zipinfo.c)
 
+// One entry as zi_long reports it under -v, the nth in the central
+// directory, after a heading: any data before it, by where the entry
+// before it ended (*endprev), its name and fields, its extra field's
+// subfields, decoded, then its comment. The text of a subfield, or its
+// error, at most a few hundred bytes, takes room only until the next.
+static void zipinfo_long(unzip *u, zentry *e, s8 name, i64 n, u64 *endprev,
+                         arena scratch)
+{
+    zitext t = zt_new(&scratch, 4096);
+    zt_puts(&t, "\nCentral directory entry #");
+    zt_putu(&t, (u64)n);
+    zt_puts(&t, ":\n---------------------------\n\n");
+    zi_preceding(&t, e, endprev);
+    info(u, 0, zt_text(&t));
+    info(u, 0, JOIN(&scratch, S("  "), shown(u, name, &scratch), S("\n")));
+
+    // The central extended timestamp's time, in local time and in UTC
+    uzizux ux = uz_extra_izux(e->cextra, 1, e->dostime);
+    i32    local[6];
+    i32    utc[6];
+    b32    ut = ux.flags & UZ_MTIME;
+    if (ut) {
+        os_localtime(u->ctx, ux.mtime, local);
+        zip_gmtime(ux.mtime, utc);
+    }
+    t.len = 0;
+    zi_long_text(&t, e, ut ? local : 0, utc);
+    info(u, 0, zt_text(&t));
+
+    if (e->cextra.len) {
+        info(u, 0, S("\n  The central-directory extra field contains:"));
+        s8  x      = e->cextra;
+        u32 id     = 0;
+        s8  data   = {0};
+        iz  stated = 0;
+        while (zi_next(&x, &id, &data, &stated)) {
+            arena  tmp = scratch;
+            zitext s   = zt_new(&tmp, 1024);
+            if (stated > data.len) {
+                zi_cut_text(&s, id, stated, data.len);
+                info(u, MSG_STDERR|MSG_LNEWLN, zt_text(&s));
+                s.len = 0;
+            }
+            zi_subfield(&s, id, data, e, endprev, tmp);
+            info(u, 0, zt_text(&s));
+        }
+        info(u, 0, S("\n"));
+    }
+    t.len = 0;
+    zi_oldux(&t, e, endprev);
+    info(u, 0, zt_text(&t));
+
+    if (!e->comment.len) {
+        info(u, 0, S("\n  There is no file comment.\n"));
+    } else {
+        info(u, 0, S("\n------------------------- file comment begins ----"
+                     "------------------------\n"));
+        show_text(u, e->comment, 0, scratch);
+        info(u, 0, S("-------------------------- file comment ends -------"
+                     "----------------------\n"));
+    }
+}
+
 // List the entries as zipinfo does, each by its central header (raw,
-// as next_raw reads it): names alone (-1, -2), or as zi_short shows them
-// (-s, -m, -l), then the totals, and the members and -x patterns that
-// matched nothing. An encrypted entry's compressed size counts without
-// its 12-byte header in the totals and -m, as in UnZip.
+// as next_raw reads it): names alone (-1, -2), as zi_short shows them
+// (-s, -m, -l), or as zi_long reports them (-v); then the totals, and the
+// members and -x patterns that matched nothing. An encrypted entry's
+// compressed size counts without its 12-byte header in the totals and
+// -m, as in UnZip. For -v, where each entry ends is carried to the next,
+// to tell of data between them, but past an entry not listed; and to
+// the next archive, from UnZip's last header read, if at offset 4 (the
+// signature that begins a split archive's first part).
 static i32 zipinfo_files(unzip *u, zarchive *ar, arena scratch)
 {
     i32 lflag   = u->zi.lflag;
@@ -1161,6 +1230,7 @@ static i32 zipinfo_files(unzip *u, zarchive *ar, arena scratch)
     u64 members = 0;
     u64 tusize  = 0;
     u64 tcsize  = 0;  // wrapping, as UnZip's unsigned total
+    u64 endprev = u->zilast==4 ? 4 : 0;
     i64 off     = ar->end.cdoff;
     for (i64 i = 0; i < u->nentries; i++) {
         arena   tmp  = scratch;
@@ -1168,15 +1238,19 @@ static i32 zipinfo_files(unzip *u, zarchive *ar, arena scratch)
         zentry *e    = &ent;
         writer_poll(u->out);
         next_raw(u, ar, &off, e);
+        u->zilast = e->offset;
         s8      name = entry_name(u, e, &tmp);
         if (!wanted(u, name, fm, xm)) {
+            endprev = 0;
             continue;
         }
         u64 usize = (u64)e->usize;
         u64 csize = (u64)e->csize;
         u64 enc   = e->flags & ZIP_FLAG_ENCRYPTED ? 12 : 0;
         s8  line  = {0};
-        if (lflag >= 3) {
+        if (lflag == 10) {
+            zipinfo_long(u, e, name, i+1, &endprev, tmp);
+        } else if (lflag >= 3) {
             i32 tm[6];
             entry_time(u, e, tm);
             zistr attr = zi_attribs(e->made, e->extattr, name);
@@ -1192,7 +1266,7 @@ static i32 zipinfo_files(unzip *u, zarchive *ar, arena scratch)
                         lflag==5 ? unum(&tmp, csize, 8, 0) : S(""), S(" "),
                         zi_s8(&meth), S(" "), zi_s8(&date), S(" "));
         }
-        if (lflag) {  // (-h or -t alone: only those lines)
+        if (lflag && lflag!=10) {  // (-h or -t alone: only those lines)
             info(u, 0, JOIN(&tmp, line, shown(u, name, &tmp), S("\n")));
         }
         tusize += usize;
@@ -1217,6 +1291,9 @@ static i32 zipinfo_files(unzip *u, zarchive *ar, arena scratch)
     if (u->cderr == CD_END) {
         info(u, MSG_STDERR, end_sig_msg);
         err = PK_WARN;
+    }
+    if (lflag == 10) {
+        info(u, 0, S("\n"));
     }
     return !members ? PK_FIND : err;
 }
@@ -2734,6 +2811,54 @@ static i64 raw_cdoff(zarchive *ar)
     return e->cdoff;
 }
 
+// ZipInfo's -v comment section (process_zip_cmmnt): the archive comment
+// between banners, as far as the file holds it, by its recorded length,
+// or that it has none. Returns a status: a warning if it was cut short.
+static i32 zipinfo_comment(unzip *u, zarchive *ar, arena scratch)
+{
+    zend *e   = &ar->end;
+    u64   len = (u64)e->comment.len;
+    u8   *p   = 0;
+    if (e->cut && zin_get(&ar->in, e->endpos+20, 2, &p)>0) {
+        len = get16(p);  // as recorded, past the end of the file
+    }
+    if (!len) {
+        info(u, 0, S("There is no zipfile comment.\n"));
+        return PK_OK;
+    }
+    info(u, 0, JOIN(&scratch, S("The zipfile comment is "),
+                    unum(&scratch, len, 0, 0), S(" bytes long and contains "
+                    "the following text:\n======================== zipfile "
+                    "comment begins ==========================\n")));
+    show_text(u, e->comment, e->cut, scratch);
+    info(u, 0, S("========================= zipfile comment ends ============"
+                 "===============\n"));
+    if (e->cut) {
+        info(u, 0, S("\n  The zipfile comment is truncated.\n"));
+        return PK_WARN;
+    }
+    return PK_OK;
+}
+
+// ZipInfo's -v end-record section (zi_end_central), with the end record's
+// fields as zar_open found them, before any shift, raw_cdoff's offset.
+static void zipinfo_end(unzip *u, zarchive *ar, i64 size, arena scratch)
+{
+    zend  *e = &ar->end;
+    ziend  z = {0};
+    z.size   = size;
+    z.real   = e->end64>=0 ? e->end64 : e->endpos;
+    z.cdoff  = (u64)raw_cdoff(ar);
+    z.cdsize = (u64)e->cdsize;
+    z.count  = (u64)e->count;
+    z.ndisk  = e->ndisk;
+    z.disk   = e->disk;
+    z.cddisk = e->cddisk;
+    zitext t = zt_new(&scratch, 2048);
+    zi_end_text(&t, &z);
+    info(u, 0, zt_text(&t));
+}
+
 // Process one archive, at path, or with stdin, standard input, as
 // process.c's do_seekable. With lastchance, a missing one is reported.
 // Returns a status, or PK_NOZIP or IZ_DIR for none there.
@@ -2807,10 +2932,13 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
 
     // The comment, as find_ecrec shows it, before checking the records,
     // as far as the file holds it, warning if it ends first (in ZipInfo
-    // mode, only under -z)
-    b32 cut  = r!=ZAR_ENOEND && ar.end.cut;
-    b32 show = u->zinfo ? u->zi.zflag : u->zflag || !u->qflag;
-    if (r!=ZAR_ENOEND && (ar.end.comment.len || cut) && show) {
+    // mode, only under -z, or -v's section whatever -z says)
+    b32 cut     = r!=ZAR_ENOEND && ar.end.cut;
+    b32 show    = u->zinfo ? u->zi.zflag : u->zflag || !u->qflag;
+    b32 verbose = u->zinfo && u->zi.lflag==10;  // ZipInfo's -v sections
+    if (r!=ZAR_ENOEND && verbose) {
+        err = zipinfo_comment(u, &ar, scratch);
+    } else if (r!=ZAR_ENOEND && (ar.end.comment.len || cut) && show) {
         show_text(u, ar.end.comment, cut, scratch);
         if (cut) {
             info(u, MSG_STDERR, S("\ncaution:  zipfile comment truncated\n"));
@@ -2854,8 +2982,11 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
         goto done;
     }
     // ZipInfo's header line, as zi_end_central gives it, of the file's
-    // size, with any data before the archive, and the count of entries
-    if (u->zinfo && u->zi.hflag) {
+    // size, with any data before the archive, and the count of entries;
+    // or -v's section on the end records
+    if (verbose) {
+        zipinfo_end(u, &ar, size, scratch);
+    } else if (u->zinfo && u->zi.hflag) {
         info(u, 0, JOIN(&scratch, S("Zip file size: "), znum(&scratch, size),
                         S(" bytes, number of entries: "),
                         unum(&scratch, (u64)ar.end.count, 0, 0), S("\n")));
@@ -2948,8 +3079,9 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
         }
     }
     if (!cdoff && !ar.end.cdsize) {
-        if (u->zinfo) {
-            info(u, 0, S("Empty zipfile.\n"));  // ZipInfo's, on stdout
+        if (u->zinfo) {  // ZipInfo's, on stdout
+            info(u, 0, verbose ? S("\n  Empty zipfile.\n")
+                               : S("Empty zipfile.\n"));
         } else {
             info(u, MSG_STDERR, JOIN(&scratch, S("warning ["), path,
                                      S("]:  zipfile is empty\n")));
