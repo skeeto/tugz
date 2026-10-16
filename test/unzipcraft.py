@@ -120,6 +120,7 @@ class Entry:
         self.desc = kw.get("desc", False)  # data descriptor, bit 3
         self.offset = kw.get("offset")  # a central offset, else its own
         self.local = kw.get("local", True)  # write its local header
+        self.gap = kw.get("gap", b"")  # bytes before its local header
         self.z64 = kw.get("z64", False)  # sizes and offset in Zip64 fields
         if self.z64:
             self.needed = 45
@@ -150,6 +151,7 @@ def build(entries, comment=b"", prefix=b"", shifted=True, zip64=False,
     base = len(prefix) if shifted else 0
     offsets = []
     for e in entries:
+        out += e.gap
         offsets.append(len(out) - len(prefix) + base)
         if e.local:
             out += e.local_header() + e.comp
@@ -631,6 +633,145 @@ write("disks01.zip", build(basic(), disk=0, cddisk=1))
 # finds by searching the whole file
 write("trailing.zip", build(basic()) + bytes(70000))
 
+
+# ZipInfo's verbose report (-v): an entry for each subfield its decoders
+# know, long enough for them, and not; others, shown in hexadecimal;
+# subfields cut short by the end of the extra field; the bits telling of
+# an old Unix field in the local header alone; hosts needed, file types
+def sub(ident, data):
+    """A subfield of an extra field."""
+    return struct.pack("<HH", ident, len(data)) + data
+
+
+def upath(name, version=1):
+    """A Unicode path or comment field's data, for name."""
+    return struct.pack("<BI", version, zlib.crc32(name)) + name
+
+
+def mac3(ucsize, flags, codes=b"TEXTttxt"):
+    return struct.pack("<IH", ucsize, flags) + codes + bytes(4)
+
+
+verbose = []
+
+
+def v(name, *fields, **kw):
+    verbose.append(bare(name, cextra=b"".join(fields), **kw))
+
+
+VMSV = b"VMSV" + struct.pack("<HHI", 0, 4, 0)
+v("zip64-8", sub(1, struct.pack("<Q", 100)))
+v("zip64-28", sub(1, struct.pack("<QQQI", 1, 2, 3, 0)))
+v("av", sub(7, b"\x01\x02\x03"))
+v("os2", sub(9, struct.pack("<I", 1234) + bytes(6)))
+v("os2-short", sub(9, b"\x01\x02"))
+v("acl", sub(0x4C41, struct.pack("<I", 77) + b"\x01"))
+v("acl-short", sub(0x4C41, b"\x01\x02\x03"))
+v("ntsd", sub(0x4453, struct.pack("<I", 300)))
+v("ntsd-short", sub(0x4453, b""))
+v("pkvms", sub(0xC, bytes(range(30))))
+v("pkwin32", sub(0xA, bytes(32)))
+v("pkunix", sub(0xD, struct.pack("<IIHH", 1, 2, 3, 4)))
+for sig in (b"VFAB", b"VALL", b"VFHC", b"VDAT", b"VRDT", b"VPRO", b"VKEY",
+            b"XXXX"):
+    v("izvms-" + sig.decode(), sub(0x4D49, sig + struct.pack("<HH", 2, 99)))
+for comp in range(8):
+    v("izvms-c%d" % comp,
+      sub(0x4D49, b"VFAB" + struct.pack("<HH", comp | 0x10, 5)))
+v("izvms-version", sub(0x4D49, VMSV + b"V5.5"))
+v("izvms-version-nul", sub(0x4D49, VMSV + b"V5\0x"))
+v("izvms-version-short", sub(0x4D49, VMSV + b"V5."))
+v("izvms-short", sub(0x4D49, b"VFAB\x00\x00\x05"))
+v("ux", sub(0x5855, struct.pack("<II", 1500000000, 1500000001)))
+v("ux-fat", sub(0x5855, struct.pack("<II", 1500000000, 1500000001)),
+  made=0 << 8 | 20)
+v("ux2", sub(0x7855, struct.pack("<HH", 1, 2)))
+v("ux3", sub(0x7875, struct.pack("<BBIBI", 1, 4, 1000, 4, 1000)))
+for f in (0, 1, 2, 3, 4, 6, 7, 0xF8):
+    v("ut-%d" % f, sub(0x5455, struct.pack("<BI", f, 1600000000)))
+v("ut-empty", sub(0x5455, b""))
+v("u.txt", sub(0x7075, upath(b"u.txt")))
+LONGNAME = b"a-long-unicode-path-name-past-24.txt"
+v(LONGNAME, sub(0x7075, upath(LONGNAME)))
+v("uc", sub(0x6375, upath(b"a comment")))
+v("uc-long", sub(0x6375, upath(b"x" * 40)))
+v("mac3", sub(0x334D, mac3(100, 0)))
+v("mac3-uncomp", sub(0x334D, mac3(100, 4 | 1 | 8)))
+v("mac3-codes", sub(0x334D, mac3(5, 4, b"\x00\x01\x02\x03\xFF\xFE\xFD\xFC")))
+v("mac3-short", sub(0x334D, bytes(13)))
+v("zipit2", sub(0x2705, b"ZPIT" + b"TEXTttxt" + bytes(4)))
+v("zipit2-nocodes", sub(0x2705, b"ZPIT\x01"))
+v("zipit2-other", sub(0x2705, b"ABCDEFGHIJKL"))
+v("zipit2-short", sub(0x2705, b"ZPIT"))
+v("zipit", sub(0x2605, b"ZPIT\x09" + b"Long Name" + b"APPLttxt"))
+v("zipit-nul", sub(0x2605, b"ZPIT\x09" + b"Long\0Name" + b"APPLttxt"))
+v("zipit-cut", sub(0x2605, b"ZPIT\x09" + b"Long Name" + b"APPL"))
+v("zipit-other", sub(0x2605, b"PKIT\x02" + b"ab" + b"APPLttxt"))
+v("jlmac", sub(0x07C8, b"JLEE" + b"TEXTttxt" + bytes(19) + b"\x01" + bytes(8)))
+v("jlmac-rf", sub(0x07C8, b"JLEE" + b"TEXTttxt" + bytes(28)))
+v("jlmac-short", sub(0x07C8, b"JLEE" + bytes(30)))
+v("smartzip", sub(0x4D63, b"dZip" + b"TEXTttxt" + bytes(20) + b"\x0a" +
+                  b"Smart Name" + bytes(21)))
+v("smartzip-other", sub(0x4D63, b"xZip" + bytes(60)))
+v("smartzip-short", sub(0x4D63, b"dZip" + bytes(59)))
+v("vmcms", sub(0x4704, b"\x00\x01"))
+v("mvs", sub(0x470F, b"abc"))
+v("atheos", sub(0x7441, struct.pack("<IB", 500, 0) + bytes(3)))
+v("atheos-uncomp", sub(0x7441, struct.pack("<IB", 500, 1)))
+v("beos", sub(0x6542, struct.pack("<IB", 42, 0)))
+v("beos-uncomp", sub(0x6542, struct.pack("<IB", 42, 1) + b"xyz"))
+v("beos-short", sub(0x6542, b"\x01\x02\x03\x04"))
+v("qdos", sub(0xFB4A, b"QZHD" + bytes(60)))
+v("qdos-short", sub(0xFB4A, b"QZH"))
+v("aosvs", sub(0x5356, b"FCI\x00\x15"))
+v("aosvs-short", sub(0x5356, b"FCI\x00"))
+v("spark", sub(0x4341, b"ARC0" + bytes(16)))
+v("asi", sub(0x756E, bytes(range(14))))
+v("theos", sub(0x6854, bytes(range(6))))
+for i, (b18, code) in enumerate(((0x00, 101), (0x00, 100), (0x00, 7),
+                                 (0x20, 101), (0x40, 5), (0x60, 0x1234))):
+    v("tandem%d" % i,
+      sub(0x4154, struct.pack(">H", code) + bytes(16) + bytes([b18, 0])))
+v("tandem-long", sub(0x4154, bytes(21)))
+v("md5", sub(0x4B46, bytes(range(16)) + b"md5"))
+v("md5-short", sub(0x4B46, bytes(18)))
+v("unknown", sub(0x1234, b"\x01"))
+v("unknown-24", sub(0xFFFF, bytes(range(24))))
+v("unknown-25", sub(0xABCD, bytes(range(25))))
+v("unknown-empty", sub(0x9999, b""))
+v("several", sub(0x5455, struct.pack("<BI", 1, 1600000000)),
+  sub(0x7875, struct.pack("<BBHBH", 1, 2, 1000, 2, 1000)), sub(0x1234, b"x"))
+v("cut", sub(0x5455, struct.pack("<BI", 1, 1600000000))[:-2])
+v("cut-tail", sub(0x1234, b"ab") + b"\x01\x02")
+v("cut-second", sub(0x1234, b"ab") + struct.pack("<HH", 0x5455, 200) +
+  b"\x01abc")
+v("big", sub(0x4321, bytes(range(256)) * 250))
+for h in (3, 6, 11, 0, 14):
+    for ext in (0x8000, 0xC000, 0x4000):
+        v("oldux-%d-%x" % (h, ext), made=h << 8 | 20,
+          extattr=0o100644 << 16 | ext)
+for h in (0, 3, 19, 20, 29, 30, 31, 255):
+    v("needed-%d" % h, needed=h << 8 | 20)
+for a in (1, 2, 3):
+    v("intattr-%d" % a, intattr=a)
+write("verbose.zip", build(verbose))
+# Unicode path fields that Debian's UnZip, with Unicode support, warns of
+# in every mode (a wrong checksum, a version past 1), where Apple's and
+# tugz say nothing
+write("vunicode.zip", build([
+    bare("u-short", cextra=sub(0x7075, b"\x01\x02\x03\x04")),
+    bare("u-v2", cextra=sub(0x7075, upath(b"u-v2", 2))),
+]))
+# Text that UnZip writes as it is from a subfield, here control bytes,
+# and a SmartZip name's length past its 31 bytes, past which UnZip writes
+write("vraw.zip", build([
+    bare("qdos", cextra=sub(0xFB4A, b"Q\x00\x1b\n")),
+    bare("zipit", cextra=sub(0x2605, b"ZPIT\x04a\x1bb\x07APPLttxt")),
+    bare("vms", cextra=sub(0x4D49, VMSV + b"V\x01\x1b5")),
+    bare("smartzip", cextra=sub(0x4D63, b"dZip" + b"TEXTttxt" + bytes(20) +
+                                b"\xff" + b"Smart Name and so on and on ABC")),
+]))
+
 # Extraction: trees with directories, modes, times, owners, and links
 
 # 2020-07-04 12:34:56, in summer where it has daylight saving time
@@ -753,3 +894,38 @@ write("zip64entries.zip", build([Entry("big.txt", TEXT, z64=True),
                                 zip64=True))
 write("large.zip", build([unix("large.txt", TEXT * 100),
                           unix("after.txt", b"after\n")]))
+
+# ZipInfo's -v tells of bytes between entries that their central headers
+# do not account for, as it guesses at their local headers: a data
+# descriptor, local extra fields that differ from the central ones (a
+# "UT" access time, Zip64's sizes without the offset, an owner field),
+# junk between entries, and what it cannot guess past (OS/2's, and Mac
+# attributes, compressed)
+UT3 = struct.pack("<HHBI", 0x5455, 5, 3, 1600000000)  # central, flags 3
+write("extrabytes.zip", build([
+    unix("a.txt", TEXT),
+    unix("desc.txt", TEXT, desc=True),
+    unix("after-desc", b"x\n"),
+    unix("utime", b"u\n", lextra=utl(1600000000, 1600000100), cextra=UT3),
+    unix("after-utime", b"y\n"),
+    unix("utime-central", b"u\n", cextra=UT3),
+    unix("after-central", b"z\n"),
+    unix("gap", b"g\n", gap=b"JUNK" * 5),
+    unix("os2", b"o\n", cextra=sub(9, struct.pack("<I", 10))),
+    unix("after-os2", b"p\n", gap=b"xx"),
+    unix("z64", TEXT, z64=True),
+    unix("after-z64", b"q\n"),
+    unix("lextra", b"l\n", lextra=owner(1000, 1000)),
+    unix("after-lextra", b"r\n"),
+    unix("mac3", b"m\n", cextra=sub(0x334D, mac3(0, 0))),
+    unix("after-mac3", b"s\n", gap=b"?"),
+    unix("ux", b"x\n", lextra=struct.pack("<HHIIHH", 0x5855, 12, 1, 2, 3, 4),
+         cextra=struct.pack("<HHII", 0x5855, 8, 1, 2)),
+    unix("after-ux", b"t\n"),
+    Entry("oldux", b"o\n", extattr=(FILE | 0o644) << 16 | 0xC000),
+    unix("last", b"e\n"),
+]))
+# A split archive's first part: its signature, then an entry at offset 4,
+# which UnZip carries to the next archive it lists
+write("split4.zip", build([unix("s.txt", b"s\n")],
+                          prefix=struct.pack("<I", 0x08074B50)))

@@ -365,8 +365,8 @@ for zip in "$TUGZ_ZIP" "$(command -v zip || true)"; do
 
     # ZipInfo mode: each format with the header, totals, comment, times,
     # and their negations, over each selection, members turning off the
-    # header and totals unless asked for
-    for fmt in "" -1 -2 -s -m -l; do
+    # header and totals unless asked for (but -v's)
+    for fmt in "" -1 -2 -s -m -l -v; do
         for opt in "" -h -t -z -T -C --h --t -ht -hz; do
             zsame $fmt $opt z.zip
             zsame $fmt $opt z.zip 'tree/*.txt'
@@ -391,6 +391,8 @@ for zip in "$TUGZ_ZIP" "$(command -v zip || true)"; do
     UB=$U RB=$REF
     same -Z1 z.zip                            # by -Z first, as unzip
     same -Z -s z.zip tree/a.txt
+    same -Z -v z.zip
+    same -Z -v -t --h z.zip
     same_head -lZ z.zip                       # -Z not first: an error
     same_head -tZ z.zip
     same_head -hZ z.zip
@@ -483,19 +485,51 @@ same -t wrap.zip
 
 # ZipInfo mode over the same archives, and its fields over hosts,
 # attributes, methods, flags, dates, compression factors, and end
-# records' disk numbers
+# records' disk numbers; and its verbose report, with every subfield it
+# decodes, and data between entries that it estimates
 for z in basic nocomment sfx sfxok zip64 desc empty emptycomment emptysfx \
          multi many badcrc baddata truncdata storedsize localname badextra \
          truncated badcdoff badheader badlocal deflate64 \
          count2 count4 count5 count0 count64 sfx64 sfx64ok nosig64 loc64 \
          cmtcut cmtnone cmtcut64 cdjunk cmtlines methods encrypted \
-         hosts types methods2 flags dates ratios disks01 disks10; do
-    for mode in "" -1 -2htz -m -l -T -h -t -z -t-h; do
+         hosts types methods2 flags dates ratios disks01 disks10 \
+         verbose extrabytes split4 zip64entries tree; do
+    for mode in "" -1 -2htz -m -l -T -h -t -z -t-h -v "-v -t --h" -vzT; do
         zsame $mode $z.zip
     done
+    same -Z -v $z.zip                         # unzip -Z too
+    same -Z -v -t --h $z.zip
 done
 zsame -1 wrap.zip
 zsame -t wrap.zip
+zsame -v wrap.zip '1000*'                     # 4,097th, and the last 3
+if [ $debian = 0 ]; then  # Debian's warns of these Unicode path fields
+    zsame -v vunicode.zip
+    zsame vunicode.zip
+fi
+zsame -v extrabytes.zip 'after*' utime        # an entry not listed between
+zsame -v verbose.zip cut                      # its error to standard error
+zsame -vt verbose.zip cut                     # or with totals, output
+# -v carries an entry's end at offset 4, from a split archive's first
+# part, to the next archive: compared whole where REF takes the archives
+# in name order, as tugz does, else line by line
+mkdir w4
+cp split4.zip w4/a.zip
+cp extrabytes.zip w4/b.zip
+UB=$ZU RB=$ZREF
+both -v 'w4/*.zip'
+UB= RB=
+cmp -s ours.st ref.st || fail "status: zipinfo -v w4/*.zip"
+grep -q '^  There are an extra -4 bytes preceding this file\.$' ours.out ||
+    fail "zipinfo -v w4/*.zip: no carry from offset 4"
+if [ "$(grep '^Archive:' ref.out)" = "$(grep '^Archive:' ours.out)" ]; then
+    cmp -s ours.out ref.out ||
+        fail "zipinfo -v w4/*.zip: $(diff ref.out ours.out)"
+else
+    sort ours.out | grep -v -e 'There are an extra' -e '^$' >ours.all
+    sort ref.out | grep -v -e 'There are an extra' -e '^$' >ref.all
+    cmp -s ours.all ref.all || fail "lines: zipinfo -v w4/*.zip"
+fi
 zsame -l basic
 same -l basic                                 # with .zip
 same -t basic dir/text.txt
@@ -739,6 +773,9 @@ if [ -n "$holes" ]; then
     # that its offsets leave out, as UnZip takes them
     same -l prefix4g.zip
     same -t prefix4g.zip
+    # ZipInfo's -v shows the offsets as recorded, wrapped
+    zsame -v offwrap.zip
+    zsame -v prefix4g.zip
 fi
 
 # Departure: a central header whose Zip64 extra lacks a field that its
@@ -763,6 +800,7 @@ cmp -s want got || fail "-p overrun.zip output"
 for z in wrapped wrappedoff wrapped64; do
     same -l $z.zip
     same -v $z.zip
+    zsame -v $z.zip
 done
 same -t wrapped.zip
 { echo 0 >got.st; "$U" -p wrapped.zip 2>got.err || echo $? >got.st; } |
@@ -860,6 +898,19 @@ UB= RB=
 exits 0 "$ZU" -m ratio.zip >got 2>&1
 grep -q ' Bx-214748363% ' got && grep -q ':  -214748364.2%$' got ||
     fail "zipinfo -m ratio.zip: $(cat got)"
+# and under -v, text from subfields that UnZip writes as it is, shown as
+# names are, and a SmartZip name's length past its 31 bytes as 31, past
+# which UnZip writes; and the end records as tugz takes them, a Zip64
+# end record beside a 32-bit one that counts otherwise
+exits 0 "$ZU" -v vraw.zip >got 2>&1
+grep -q "^    The QDOS extra field subtype is \`Q^@^\[^J'\.\$" got &&
+    grep -q '^    The Mac long filename is a^\[b^G\.$' got &&
+    grep -q '^    field is stored and has 4 bytes of VMS version information (V^A^\[5)\.$' got &&
+    grep -q '^    The Mac long filename is Smart Name and so on and on ABC\.$' got ||
+    fail "zipinfo -v vraw.zip: $(cat got)"
+exits 3 "$ZU" -v mixed64.zip >got 2>&1
+grep -q '^  central directory contains 1 entry\.$' got ||
+    fail "zipinfo -v mixed64.zip: $(cat got)"
 
 # ---- Extraction -----------------------------------------------------
 
