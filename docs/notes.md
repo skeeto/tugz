@@ -79,7 +79,8 @@ with unzip in `platform/zipfs_*.c`.
 | `test/unzip_windows.sh`  | unzip.exe beside Windows' own extractors        |
 | `test/pty.cs`            | pseudo console for the Windows tests' prompts   |
 | `test/xp.sh`             | all three on Windows XP (and later): times,     |
-|                          | attributes, long and Unicode names, Ctrl+C      |
+|                          | attributes, long and Unicode names, copies      |
+|                          | named zipinfo.exe, Ctrl+C                       |
 | `test/winhelp.c`         | cli.sh's and xp.sh's Windows steps, built by    |
 |                          | them: attributes, junctions, Ctrl+C, long paths |
 | `test/seeds.py`          | fuzzing seed corpus generator                   |
@@ -1799,7 +1800,12 @@ for entries.
   members notwithstanding. A damaged central directory ends it as it
   ends `unzip -l`. Memory is `unzip -l`'s: an entry at a time, in
   scratch, none of it growing with the number of entries
-  (`test_zipinfo`, 20,000 entries).
+  (`test_zipinfo`, 20,000 entries). On Windows, copies named
+  `zipinfo.exe`, `ii.exe`, and `ZIPINFO.EXE` list as `unzip -Z` does,
+  run by a path with either separator or by `cmd` without the
+  extension, with `ZIPINFO` (not `UNZIP`), its statuses, and names in
+  the OEM code page shown as unzip shows them (`unzip_windows.sh` and
+  `xp.sh`, "ZipInfo mode").
 - ZipInfo's verbose report, `-v` (`zipinfo_comment`, `zipinfo_end`, and
   `zipinfo_long` in `src/unzipcli.c`, their text from `src/zipinfo.c`):
   the comment section (`process_zip_cmmnt`) whatever `-z` says: "There
@@ -2006,7 +2012,16 @@ ones as invariants. Those that no test asserts are marked untested.
   as `?`, where UnZip leaves them to the locale (`unzip.sh`,
   "comments.zip"). A name is shown in Unicode whenever a Unicode path
   field gives it, as Debian's UnZip shows it in a UTF-8 locale
-  (`unzip.sh`, "names.zip"). Listings' dates are ISO, as Debian's.
+  (`unzip.sh`, "names.zip"). One that does not apply, its CRC not the
+  stored name's (or cut too short to hold one) or its version past 1, is
+  ignored silently, as UnZip built without Unicode support ignores it
+  (Apple's), where a build with it (`UNICODE_SUPPORT`, the default on
+  Windows and, through `unix/configure`, on Unix: Debian's, say) warns
+  of each such entry, "warning:  Unicode Path checksum invalid" or
+  "warning:  Unicode Path version > 1", on standard error, in every
+  mode, ZipInfo's too (`getUnicodeData` in `process.c`, from
+  `do_string`) (`unzip.sh`, `vunicode.zip`, compared with Apple's in
+  both modes). Listings' dates are ISO, as Debian's.
   `-v`'s compression factor is UnZip's where UnZip's arithmetic holds,
   and where it overflows (a Zip64 size with an encrypted entry's
   compressed size under its 12-byte header, wrapped, or a compressed
@@ -2053,6 +2068,19 @@ ones as invariants. Those that no test asserts are marked untested.
   the process at once, as before (`test_pace`: held while extracting
   and testing, not under `-p` or `-c`; `unzipos` checks it is released
   at the end).
+- Extended timestamps: times are unsigned 32-bit, as a build with a
+  64-bit `time_t` reads them (Apple's, Debian's): one with bit 31 set
+  counts only with a DOS time from 2038-01-18 on, else its field's times
+  are void. A build with a 32-bit `time_t` takes such a time beside the
+  DOS time 1980-01-01 00:00 (`DOSTIME_MINIMUM`) for one before 1970
+  (`ef_scan_for_izux` in `process.c`), whose conversion on Windows the
+  C runtime's `localtime` and `gmtime` refuse, so that ZipInfo's `-v`
+  shows "???? ??? ?? ??:??:??" on both of its lines (`zi_time` in
+  `zipinfo.c`), where tugz shows the DOS time alone (`unzip.sh`,
+  `dates.zip`, "ut-min"). A time that is local before 1970 (within the
+  zone's offset of the epoch, west of UTC) is shown, on Windows too, as
+  the C runtime's `localtime` gives it (`unzip_windows.sh`,
+  `epoch.zip`).
 - Windows: a link becomes a file holding its target, with a file's
   attributes and times, as in the port, but made last, as on POSIX
   (`unzip_windows.sh`, "Links"; `test_windows`).
@@ -2265,18 +2293,25 @@ Fuzzers:
   Windows 11, `test/unzip_windows.sh` passes for the x86-64 build, the
   amalgamation, and the i686 build, and the amalgamation, built by its
   header's command, imports only KERNEL32 and SHELL32, with no stack
-  frame over 4000 bytes.
+  frame over 4000 bytes. Natively there (w64devkit GCC 16, `cmake -G
+  Ninja`), `unzip-windows` and `xp-windows` pass, ZipInfo mode's copies
+  of `unzip.exe` among their checks, and the amalgamation's ZipInfo
+  mode (`-Z`, `-Z -v`) lists the archives of tugz's zip.
 - Windows XP: on XP itself (5.1.2600, i686, one core) with w64devkit
   GCC 16, the i686 programs pass `test/cli.sh` (its REF a renamed copy
   of tugz's gzip, there being no other gzip there) and `test/xp.sh`,
-  over SSH. On Windows 11 with w64devkit GCC 16, the x86-64 and i686
+  over SSH; the three built there from the amalgamations by their
+  headers' commands pass `test/xp.sh` too, ZipInfo mode's checks
+  included, and a copy named `zipinfo.exe` lists archives in its
+  formats (`-1`, the default, `-m -T`, `-v`). On Windows 11 with
+  w64devkit GCC 16, the x86-64 and i686
   programs, and the amalgamations, built normally and with
   `-DTUGZ_FORCE_XP`, pass `test/cli.sh`, `test/zip_windows.sh` (with
   `TUGZ_FORCE_XP=1` for the forced builds), and `test/unzip_windows.sh`,
   but for the missing-share case, which fails the same way before the
   change on that machine, and the x86-64 programs, both ways, pass
   `test/xp.sh`. Each program
-  imports the same functions in every build, 34 in all across the three,
+  imports the same functions in every build, 37 in all across the three,
   from KERNEL32 and SHELL32 alone, each documented for Windows XP or
   earlier.
 - zip speed versus Info-ZIP 3.0 on the 267 MB benchmark corpus (Apple

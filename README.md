@@ -5,9 +5,9 @@
 A from-specification implementation of gzip ([RFC 1952][]), zlib ([RFC
 1950][]), and DEFLATE ([RFC 1951][]) in C11 with C23 attributes, for GCC
 or Clang, as a drop-in `gzip` command, a streaming library, and Info-ZIP
-compatible `zip` and `unzip`. It compresses faster than zlib at every
-level with better ratios, and validates input exactly as strictly as
-zlib.
+compatible `zip` and `unzip`, with ZipInfo mode (`zipinfo`). It
+compresses faster than zlib at every level with better ratios, and
+validates input exactly as strictly as zlib.
 
 The core has no dependencies, no global state, no platform conditionals,
 and does no I/O. Each program is a unity build: a platform layer
@@ -589,16 +589,18 @@ every level and the history.
 unzip's tests are `tests-unzip`, its rules against tables recorded from
 UnZip 6.0, `tests-unzipcli`, the program in memory (with Windows
 conventions too), and `unzip-cli`, which runs `test/unzip.sh` to compare
-its statuses, output, and extracted trees with Info-ZIP's (`REF=unzip sh
-test/unzip.sh build/unzip`); on Windows, `unzip-windows` runs
-`test/unzip_windows.sh` under w64devkit instead (`TUGZ_ZIP=zip.exe sh
-test/unzip_windows.sh unzip.exe`), comparing with Explorer, .NET, and
-tar, and `xp-windows` runs `test/xp.sh`, the platform's checks for all
-three programs that need nothing newer than XP (`sh test/xp.sh gzip.exe
-zip.exe unzip.exe`). Options add the libFuzzer harnesses, `fuzz-unzip`
-among them, and differential ones (`-DTUGZ_BUILD_FUZZ=ON`, with LLVM
-clang as `CMAKE_C_COMPILER`), and a benchmark against zlib and
-libdeflate (`-DTUGZ_BUILD_BENCH=ON`).
+its statuses, output, and extracted trees with Info-ZIP's, and its
+ZipInfo mode with Info-ZIP's `zipinfo` (`REF=unzip sh test/unzip.sh
+build/unzip`); on Windows, `unzip-windows` runs `test/unzip_windows.sh`
+under w64devkit instead (`TUGZ_ZIP=zip.exe sh test/unzip_windows.sh
+unzip.exe`), comparing with Explorer, .NET, and tar, and `xp-windows`
+runs `test/xp.sh`, the platform's checks for all three programs that
+need nothing newer than XP (`sh test/xp.sh gzip.exe zip.exe
+unzip.exe`), both of them running copies named `zipinfo.exe` too.
+Options add the libFuzzer harnesses, `fuzz-unzip` among them, and
+differential ones (`-DTUGZ_BUILD_FUZZ=ON`, with LLVM clang as
+`CMAKE_C_COMPILER`), and a benchmark against zlib and libdeflate
+(`-DTUGZ_BUILD_BENCH=ON`).
 
 Tests and benchmarks use zlib and libdeflate as references, and zip
 archives are verified with unzip, Python's zipfile, and on Windows with
