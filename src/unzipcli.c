@@ -1565,6 +1565,9 @@ static i32 test_member(unzip *u, zarchive *ar, zentry *e, zlocal *l,
                 b.out    = u->window;
                 b.outlen = UZ_WSIZE;
             }
+            if (!data.len) {
+                continue;  // as for an empty stored entry, data.s null
+            }
             crc = crc32_update(crc, data.s, data.len, &u->crccpu);
             i64 at   = out;
             out += data.len;
