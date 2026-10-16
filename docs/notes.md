@@ -2202,21 +2202,22 @@ Fuzzers:
   `test/unzipos.c`), with arbitrary bytes as its archive, in sixteen
   modes (extraction with `-o`, the prompt, `-n`, `-j`, `-x`, `-f`, `-u`,
   `-V`, a linked `-d`, `-KX`, `-DDC`, or from standard input; `-l`,
-  `-v`, `-t`, `-p`), with POSIX or Windows conventions, the umask, the
-  prompt's answers, and faults (the archive shrinking or failing to
-  read, as it is opened or once extraction began, and directories,
-  files, keeps, attributes, or links failing), on a file system that
-  gives a new file the inode last freed, as ext4 does, over a tree with
-  a sentinel outside the `-d` directory and links within it that lead
-  there. It must exit with a status UnZip may, change nothing outside
-  the `-d` directory and write over no file there, leave every file it
-  extracts equal to an entry of that name as `src/zip.c`'s parser and
-  zlib read it, pipe no more than the entries' sizes, leave nothing
-  open, and claim no memory once it has changed the file system; then,
-  run again with `-n`, change nothing. Its central directory is read
-  again for each entry through a window no larger than its longest
-  header (`test/unzipos.c`'s `UZ_CDWIN`), as a large archive's is.
-  Its inputs need more than 64 KiB (`-max_len=70000`) to reach comments
+  `-v`, `-t`, `-p`; or in place of `-l` and `-v`, ZipInfo mode runs of
+  its listings and of its verbose report), with POSIX or Windows
+  conventions, the umask, the prompt's answers, and faults (the archive
+  shrinking or failing to read, as it is opened or once extraction
+  began, and directories, files, keeps, attributes, or links failing),
+  on a file system that gives a new file the inode last freed, as ext4
+  does, over a tree with a sentinel outside the `-d` directory and links
+  within it that lead there. It must exit with a status UnZip may,
+  change nothing outside the `-d` directory and write over no file
+  there, leave every file it extracts equal to an entry of that name as
+  `src/zip.c`'s parser and zlib read it, pipe no more than the entries'
+  sizes, leave nothing open, and claim no memory once it has changed
+  the file system; then, run again with `-n`, change nothing. Its
+  central directory is read again for each entry through a window no
+  larger than its longest header (`test/unzipos.c`'s `UZ_CDWIN`), as a
+  large archive's is. Its inputs need more than 64 KiB (`-max_len=70000`) to reach comments
   and names of their full 65,535 bytes, and headers that long: at 8192,
   it missed unzip's memory growing quadratically with their comments'
   lengths, since fixed.

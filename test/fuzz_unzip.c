@@ -14,9 +14,10 @@
 //   milliseconds the fake clock advances at each reading (bits 1-7).
 // - cfg: the umask (bits 0-1), standard error a terminal (bit 2), the
 //   archive on standard input a regular file (bit 3), and the answers
-//   to the prompts (bits 4-7), unless given; in the listing mode (11),
-//   which asks nothing, bits 4-7 instead pick a ZipInfo mode run (the
-//   program's name and its arguments), or for 0 the mode's own (-l).
+//   to the prompts (bits 4-7), unless given; in the listing modes (11
+//   and 12), which ask nothing, bits 4-7 instead pick a ZipInfo mode
+//   run (the program's name and its arguments), its listings in 11, its
+//   verbose report (-v) in 12, or for 0 the mode's own (-l, -v).
 // - n, then n bytes: the answers, if n is not zero.
 // Whatever unzip does, it must exit with a status UnZip may; change
 // nothing outside the -d directory (nothing at all but to extract), nor
@@ -65,7 +66,10 @@ static struct {
     {{"-p", "a.zip"}, 0, 0, 0},
     {{"-o", "-", "-d", "out"}, "out/", "out", 1},
 };
-enum { MODE_ASK = 1, MODE_LIST = 11, MODE_PIPE = 14, MODE_STDIN = 15 };
+enum {
+    MODE_ASK = 1, MODE_LIST = 11, MODE_VLIST = 12, MODE_PIPE = 14,
+    MODE_STDIN = 15,
+};
 
 // ZipInfo mode runs, in place of the listing mode's arguments: the
 // program's name, then its arguments
@@ -86,6 +90,27 @@ static char *const zipinfos[16][8] = {
     {"zipinfo", "--h", "-s", "a.zip", "d/*"},
     {"zipinfo", "-2", "a.zip", "-d", "out"},
     {"zipinfo", "-tz", "a.zip", "-x", "*"},
+};
+
+// ZipInfo's verbose report, in place of the verbose listing mode's
+// arguments, likewise
+static char *const zipinfovs[16][8] = {
+    {0},
+    {"zipinfo", "-v", "a.zip"},
+    {"zipinfo", "-vt", "a.zip"},
+    {"zipinfo", "-v", "--h", "a.zip"},
+    {"zipinfo", "-v", "a.zip", "*a*"},
+    {"zipinfo", "-vz", "a.zip", "-x", "*b*"},
+    {"unzip", "-Z", "-v", "a.zip"},
+    {"unzip", "-Zv", "a.zip", "[A-M]*"},
+    {"ii", "-vT", "a.zip"},
+    {"zipinfo", "-vC", "a.zip", "*.TXT", "nomatch"},
+    {"zipinfo", "-t-h", "-v", "a.zip"},
+    {"C:\\bin\\ZipInfo.exe", "-vt", "a.zip"},
+    {"zipinfo", "-v", "-t", "a.zip", "d/*"},
+    {"zipinfo", "-lv", "a.zip", "-d", "out"},
+    {"zipinfo", "-vh", "a.zip", "-x", "*"},
+    {"zipinfo", "-2v", "a.zip", "nomatch"},
 };
 
 // Answers to the prompts
@@ -328,9 +353,11 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     msnap before = mfs_snapshot(ctx);
     char **argv  = (char **)modes[mode].argv;
     unzipenv env = {0};
-    if (mode==MODE_LIST && cfg>>4) {
-        env.argv0 = zipinfos[cfg>>4][0];
-        argv = (char **)zipinfos[cfg>>4] + 1;
+    if ((mode==MODE_LIST || mode==MODE_VLIST) && cfg>>4) {
+        char *const *run = mode==MODE_LIST ? zipinfos[cfg>>4]
+                                           : zipinfovs[cfg>>4];
+        env.argv0 = run[0];
+        argv = (char **)run + 1;
     }
     i32    argc  = 0;
     for (; argc<countof(modes[0].argv)-1 && argv[argc]; argc++) {}
