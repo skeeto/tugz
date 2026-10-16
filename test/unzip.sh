@@ -506,6 +506,8 @@ zsame -v wrap.zip '1000*'                     # 4,097th, and the last 3
 if [ $debian = 0 ]; then  # Debian's warns of these Unicode path fields
     zsame -v vunicode.zip
     zsame vunicode.zip
+    same -l vunicode.zip                      # and so in unzip's modes
+    same -t vunicode.zip
 fi
 zsame -v extrabytes.zip 'after*' utime        # an entry not listed between
 zsame -v verbose.zip cut                      # its error to standard error

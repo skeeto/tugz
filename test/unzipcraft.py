@@ -601,7 +601,11 @@ for h in (3, 0, 6, 11):
                                   extattr=0o100644 << 16 | ext))
 write("flags.zip", build(flags))
 # Dates: DOS fields as stored (months 0 and 13 to 15 too), else central
-# timestamps' in local time (UTC here), and "UX"'s
+# timestamps' in local time (UTC here), and "UX"'s. A timestamp with bit
+# 31 set counts only with a DOS time from 2038-01-18 on: else its times
+# are void, even with the DOS time 1980-01-01 00:00 ("ut-min"), which a
+# build with a 32-bit time_t takes as a time before 1970, its -v lines
+# "???? ??? ?? ??:??:??" where Windows' C runtime fails to convert it
 def dos(y, mo, d, h, mi, s2):
     return (y - 1980) << 25 | mo << 21 | d << 16 | h << 11 | mi << 5 | s2
 write("dates.zip", build([
@@ -614,6 +618,7 @@ write("dates.zip", build([
                                               1600000000, 2147483647)] + [
     bare("ut2038", cextra=ut(0x80000000), dostime=dos(2038, 1, 19, 3, 14, 8)),
     bare("ut-early", cextra=ut(0x80000000)),
+    bare("ut-min", cextra=ut(0x80000000), dostime=dos(1980, 1, 1, 0, 0, 0)),
     bare("ux", cextra=struct.pack("<HHII", 0x5855, 8, 1, 1500000000)),
 ]))
 # Compression factors, -m's rounded as C divides
