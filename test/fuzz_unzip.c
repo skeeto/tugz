@@ -14,7 +14,9 @@
 //   milliseconds the fake clock advances at each reading (bits 1-7).
 // - cfg: the umask (bits 0-1), standard error a terminal (bit 2), the
 //   archive on standard input a regular file (bit 3), and the answers
-//   to the prompts (bits 4-7), unless given:
+//   to the prompts (bits 4-7), unless given; in the listing mode (11),
+//   which asks nothing, bits 4-7 instead pick a ZipInfo mode run (the
+//   program's name and its arguments), or for 0 the mode's own (-l).
 // - n, then n bytes: the answers, if n is not zero.
 // Whatever unzip does, it must exit with a status UnZip may; change
 // nothing outside the -d directory (nothing at all but to extract), nor
@@ -63,7 +65,28 @@ static struct {
     {{"-p", "a.zip"}, 0, 0, 0},
     {{"-o", "-", "-d", "out"}, "out/", "out", 1},
 };
-enum { MODE_ASK = 1, MODE_PIPE = 14, MODE_STDIN = 15 };
+enum { MODE_ASK = 1, MODE_LIST = 11, MODE_PIPE = 14, MODE_STDIN = 15 };
+
+// ZipInfo mode runs, in place of the listing mode's arguments: the
+// program's name, then its arguments
+static char *const zipinfos[16][8] = {
+    {0},
+    {"zipinfo", "a.zip"},
+    {"zipinfo", "-1", "a.zip"},
+    {"zipinfo", "-2htz", "a.zip"},
+    {"zipinfo", "-m", "a.zip"},
+    {"zipinfo", "-l", "a.zip", "*a*"},
+    {"zipinfo", "-T", "a.zip", "-x", "*b*"},
+    {"unzip", "-Z", "-s", "a.zip"},
+    {"unzip", "-Z1", "a.zip", "[A-M]*"},
+    {"ii", "-hz", "a.zip"},
+    {"zipinfo", "-C", "a.zip", "*.TXT", "nomatch"},
+    {"zipinfo", "-t-h", "a.zip"},
+    {"C:\\bin\\ZipInfo.exe", "-lt", "a.zip"},
+    {"zipinfo", "--h", "-s", "a.zip", "d/*"},
+    {"zipinfo", "-2", "a.zip", "-d", "out"},
+    {"zipinfo", "-tz", "a.zip", "-x", "*"},
+};
 
 // Answers to the prompts
 static char const *const answers[16] = {
@@ -304,10 +327,15 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
 
     msnap before = mfs_snapshot(ctx);
     char **argv  = (char **)modes[mode].argv;
+    unzipenv env = {0};
+    if (mode==MODE_LIST && cfg>>4) {
+        env.argv0 = zipinfos[cfg>>4][0];
+        argv = (char **)zipinfos[cfg>>4] + 1;
+    }
     i32    argc  = 0;
-    for (; argc<countof(modes[0].argv) && argv[argc]; argc++) {}
+    for (; argc<countof(modes[0].argv)-1 && argv[argc]; argc++) {}
     i32 open   = 0;
-    i32 status = unzipos_run(ctx, argv, argc, 0, &open);
+    i32 status = unzipos_run(ctx, argv, argc, &env, &open);
     if (getenv("FUZZ_UNZIP_SHOW")) {
         s8 out = unzipos_output(ctx, 3);
         fprintf(stderr, "mode %d: status %d, %d changes\n%.*s", mode, status,

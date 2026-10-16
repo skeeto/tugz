@@ -625,8 +625,9 @@ print(nzip, "zip program seeds")
 # The same and more for fuzz-unzip after its header (see
 # test/fuzz_unzip.c): how (the mode, low four bits; Windows, bit 4; a
 # fault, bits 5-7), at, cfg (the umask, a terminal, standard input a
-# file, and canned answers, bits 4-7), and n, the length of answers
-# given instead (here none). The archives: those above, test/unzipcraft.py's
+# file, and canned answers, bits 4-7, or in the listing mode, 11, a
+# ZipInfo mode run), and n, the length of answers given instead (here
+# none). The archives: those above, test/unzipcraft.py's
 # hostile ones (written by it to a scratch directory), entries aimed at
 # the links the harness plants in its -d directory, and two of the
 # Deflate64 streams above, whose output slides the window.
@@ -703,4 +704,11 @@ for name, z in uzips.items():
     for cfg in (0x00, 0x50, 0x70, 0xa0, 0xc0):
         put("unzip", f"{name}-01-{cfg:02x}", bytes([1, 0, cfg, 0]) + z)
         nunzip += 1
+    # The listing mode's ZipInfo runs, by bits 4-7 of cfg, and the one
+    # named ZipInfo.exe after a '\' with Windows conventions too
+    for cfg in range(0x10, 0x100, 0x10):
+        put("unzip", f"{name}-0b-{cfg:02x}", bytes([11, 128, cfg, 0]) + z)
+        nunzip += 1
+    put("unzip", f"{name}-1b-c0", bytes([16 | 11, 128, 0xc0, 0]) + z)
+    nunzip += 1
 print(nunzip, "unzip program seeds")
