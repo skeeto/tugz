@@ -43,8 +43,10 @@
 // DPI awareness (as the GUI also asks at run time), and the Windows
 // versions it was tested on. It asks for no activeCodePage, which would
 // change how names in the archive's code pages are decoded (os_fromcp).
-// The icon is read from the source's root (CMake passes -Wa,-I); its
-// entries' offsets are as the file was laid out, and must follow it.
+// The icon is read from the source's root (CMake passes -Wa,-I), each
+// .incbin of it a literal slice, which the single-file tugz.c has as
+// bytes (cmake/amalgamate.cmake); its entries' offsets are as the file
+// was laid out, and must follow it.
 // GCC emits top-level asm first, or without -ftoplevel-reorder (-O0) in
 // place, here after functions, in .text, to which it returns.
 __asm__(
@@ -87,23 +89,44 @@ __asm__(
     // The group: each icon's entry in the file but for its offset, then
     // its ID; then the icons, at their offsets in the file, the PNG last
     ".Lgrp: .short 0, 1, 8\n"
-    "    .irp i, 1, 2, 3, 4, 5, 6, 7, 8\n"
-    "    .incbin \"platform/tugz.ico\", 16*\\i - 10, 12\n"
-    "    .short \\i\n"
-    "    .endr\n"
+    "    .incbin \"platform/tugz.ico\", 6, 12\n"
+    "    .short 1\n"
+    "    .incbin \"platform/tugz.ico\", 22, 12\n"
+    "    .short 2\n"
+    "    .incbin \"platform/tugz.ico\", 38, 12\n"
+    "    .short 3\n"
+    "    .incbin \"platform/tugz.ico\", 54, 12\n"
+    "    .short 4\n"
+    "    .incbin \"platform/tugz.ico\", 70, 12\n"
+    "    .short 5\n"
+    "    .incbin \"platform/tugz.ico\", 86, 12\n"
+    "    .short 6\n"
+    "    .incbin \"platform/tugz.ico\", 102, 12\n"
+    "    .short 7\n"
+    "    .incbin \"platform/tugz.ico\", 118, 12\n"
+    "    .short 8\n"
     ".Lgrpend:\n"
-    "    .macro icon i, offset, len\n"
     "    .p2align 3\n"
-    ".Lico\\i: .incbin \"platform/tugz.ico\", \\offset, \\len\n"
-    ".Lico\\i\\()end:\n"
-    "    .endm\n"
-    "    icon 1, 134, 1128\n"                // 16x16
-    "    icon 2, 1262, 1720\n"               // 20x20
-    "    icon 3, 2982, 2440\n"               // 24x24
-    "    icon 4, 5422, 4264\n"               // 32x32
-    "    icon 5, 9686, 6760\n"               // 40x40
-    "    icon 6, 16446, 9640\n"              // 48x48
-    "    icon 7, 26086, 16936\n"             // 64x64
+    ".Lico1: .incbin \"platform/tugz.ico\", 134, 1128\n"  // 16x16
+    ".Lico1end:\n"
+    "    .p2align 3\n"
+    ".Lico2: .incbin \"platform/tugz.ico\", 1262, 1720\n"  // 20x20
+    ".Lico2end:\n"
+    "    .p2align 3\n"
+    ".Lico3: .incbin \"platform/tugz.ico\", 2982, 2440\n"  // 24x24
+    ".Lico3end:\n"
+    "    .p2align 3\n"
+    ".Lico4: .incbin \"platform/tugz.ico\", 5422, 4264\n"  // 32x32
+    ".Lico4end:\n"
+    "    .p2align 3\n"
+    ".Lico5: .incbin \"platform/tugz.ico\", 9686, 6760\n"  // 40x40
+    ".Lico5end:\n"
+    "    .p2align 3\n"
+    ".Lico6: .incbin \"platform/tugz.ico\", 16446, 9640\n"  // 48x48
+    ".Lico6end:\n"
+    "    .p2align 3\n"
+    ".Lico7: .incbin \"platform/tugz.ico\", 26086, 16936\n"  // 64x64
+    ".Lico7end:\n"
     "    .p2align 3\n"
     ".Lico8: .incbin \"platform/tugz.ico\", 43022\n"  // 256x256, PNG
     ".Lico8end:\n"
@@ -140,7 +163,6 @@ __asm__(
     ".Lmanend:\n"
     "    .purgem dir\n"
     "    .purgem data\n"
-    "    .purgem icon\n"
     "    .text\n"
 );
 

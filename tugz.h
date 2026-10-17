@@ -150,15 +150,15 @@
 // marks levels 1 and 9 as GNU gzip and zlib mark them.
 //
 // Define TUGZ_API (e.g. as static) to control the linkage of definitions.
-// The single-file tugz.c (in each release, or from cmake -P
+// The single-file libtugz.c (in each release, or from cmake -P
 // cmake/amalgamate.cmake) may so be embedded in a program's translation
 // unit. Its macros are its own: any of the program's with the same names
 // (assert, MIN, ...) are saved before it and restored after, and its
 // type names are renamed (u8 to tugz__u8, and so on).
 // Its other internal names are not: static functions such as alloc and
 // enumerators such as GZ_OK. Should those collide with the program's,
-// compile tugz.c on its own instead. A shared Windows build (CMake with
-// BUILD_SHARED_LIBS) exports the functions by a module-definition file,
+// compile libtugz.c on its own instead. A shared Windows build (CMake
+// with BUILD_SHARED_LIBS) exports the functions by a module-definition file,
 // and they are functions only, so programs need not define TUGZ_API as
 // __declspec(dllimport): with MinGW and MSVC-ABI toolchains alike, calls
 // link through the import library's stubs.

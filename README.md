@@ -51,13 +51,16 @@ CMake builds the library, the programs, and the tests (see Development):
     $ cmake -B build && cmake --build build
 
 Each release also carries `tugz-amalgams-VERSION.zip`, which holds
-`gzip.c`, `zip.c`, and `unzip.c`, the Windows builds as single source
-files with their build commands in the header, which `cmake -P
-cmake/amalgamate.cmake` writes from a source tree:
+`gzip.c`, `zip.c`, `unzip.c`, and `tugz.c` (the GUI, its icon
+inlined), the Windows builds as single source files with their build
+commands in the header, beside the library's `libtugz.c` and `tugz.h`,
+all of which `cmake -P cmake/amalgamate.cmake` writes from a source
+tree:
 
     $ cc -O2 -nostartfiles -o gzip.exe gzip.c -lmemory
     $ cc -O2 -nostartfiles -o zip.exe zip.c -lmemory
     $ cc -O2 -nostartfiles -o unzip.exe unzip.c -lmemory
+    $ cc -O2 -fno-builtin -nostartfiles -mwindows -o tugz.exe tugz.c -lmemory -lcomctl32 -lole32
 
 The Windows programs are meant to run on Windows XP and later (i686 on
 XP, x86-64 on XP x64), built as above with w64devkit, whose `-lmemory`
@@ -121,8 +124,8 @@ previous stream's input, rather than init's clearing of 512 KiB, so
 and FULL flushes that follow a longer history still clears as init
 does. Inflate init and `tugz_inflate_reset` both take a small constant
 time. Build `platform/libtugz.c` as an object (`cc -c -O2
-platform/libtugz.c`), or use the `tugz.c` in a release's amalgams zip
-(or `cmake -DTUGZ_ARTIFACT=tugz -P cmake/amalgamate.cmake`), a
+platform/libtugz.c`), or use the `libtugz.c` in a release's amalgams
+zip (or `cmake -DTUGZ_ARTIFACT=libtugz -P cmake/amalgamate.cmake`), a
 single-file amalgamation with the header inlined. Define `TUGZ_API` as
 `static` before including it to embed the library in another program.
 
@@ -143,7 +146,7 @@ built with, which for a shared library may differ from the header's.
 Deflate64 (ZIP method 9, as unzip reads it) is an option, off by
 default: compiled with `TUGZ_DEFLATE64` defined (`cc -c -O2
 -DTUGZ_DEFLATE64 platform/libtugz.c`, the same before compiling or
-including `tugz.c`, or the CMake option below), the library inflates
+including `libtugz.c`, or the CMake option below), the library inflates
 raw Deflate64 streams as format `TUGZ_RAW64`, with a state of 398 KiB
 rather than 301 KiB. It only decodes: deflate rejects the format.
 `TUGZ_RAW64` is declared either way, and a library built without the

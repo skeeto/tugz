@@ -474,7 +474,7 @@ placement only.
   against 301 KiB. The enumerator is declared in every build, rather
   than under the macro: the installed header is then the same whatever
   the library was built with, consumers need no define (none to forget,
-  or to mismatch with a separately compiled `tugz.c`), and a program
+  or to mismatch with a separately compiled `libtugz.c`), and a program
   asks at run time, `tugz_inflate_size(TUGZ_RAW64)` being zero without
   it, as for any invalid format (format 3 was already rejected so). No
   symbol or struct changes, so the ABI is the same either way. Off, the
@@ -487,7 +487,7 @@ placement only.
   every prefix, on junk-filled memory, and after a reset; codes 30 and
   31 rejected by `TUGZ_RAW`, 285 read differently, and DEFLATE streams
   without 285 decoded alike), and `amalgamation-deflate64` embeds
-  `tugz.c` with it. The fuzzers already reach the same decoder through
+  `libtugz.c` with it. The fuzzers already reach the same decoder through
   `inflate64_new` (`fuzz-inflate`), and `fuzz-diff-inflate` compares
   with zlib, which has no Deflate64, so neither takes the format.
 - `platform/libtugz.c` builds an object, or the CMake target
@@ -495,7 +495,7 @@ placement only.
   only `tugz_*` (no writable data): the core's other functions are all
   static, so ELF, Mach-O, and MinGW DLL builds export no more without a
   visibility attribute. `cmake/amalgamate.cmake` (a `cmake -P` script,
-  sorting by byte, so the same in every locale) produces `tugz.c`, a
+  sorting by byte, so the same in every locale) produces `libtugz.c`, a
   single-file amalgamation with the header inlined; define `TUGZ_API` as
   `static` to embed it. Around the core it saves and restores
   (`push_macro`, `pop_macro`) every name the core defines as a macro, so
@@ -513,7 +513,7 @@ placement only.
   string for `project()` and refuses to configure unless the numbers
   make it; the amalgamations read it for their banners, and in `gzip.c`,
   `zip.c`, and `unzip.c` the header's four version lines take the place
-  of base.c's include (`tugz.c` has the whole header first); the release
+  of base.c's include (`libtugz.c` has the whole header first); the release
   workflow checks the tag against it, and its FetchContent consumer
   checks `tugz_version()` against the header. That function returns the
   string the library was built with, for a program to tell which shared
@@ -2240,9 +2240,15 @@ resource block, which follows from the BMPs' sizes.
 Resources are assembled from a top-level `asm` block: a `.rsrc` section
 with its directories, `.rva` data entries, the manifest text, and the
 icons by `.incbin` slices of `platform/tugz.ico`, read from the source
-root (`-Wa,-I`). ld keeps `.rsrc` under `--gc-sections`. PE GAS has no
-`.pushsection`, so the block ends with `.text`, which is where GCC
-expects to be after top-level asm.
+root (`-Wa,-I`). Each slice is literal (an offset, and a length or the
+rest), so that `cmake/amalgamate.cmake` can write it out as `.byte`
+lines in the single-file `tugz.c`, which then needs no other file. The
+script inlines `gui_windows.c`'s includes where they are, inside their
+`#define os_oom` lines, rather than first, as for the programs. On
+Windows, ctest's `gui-amalgamation` builds `tugz.c` alone and checks
+that it is `tugz.exe` byte for byte. ld keeps `.rsrc` under
+`--gc-sections`. PE GAS has no `.pushsection`, so the block ends with
+`.text`, which is where GCC expects to be after top-level asm.
 
 ### Drag and drop
 
@@ -2343,8 +2349,9 @@ the tree's context menu were checked there too.
     ./bench -o bench_corpus/silesia/*  # -o: ours only, as are BENCH_REF=0
                                # builds; its #crc and #total lines are
                                # for comparing two builds (see bench.c)
-    cmake -P cmake/amalgamate.cmake    # gzip.c, zip.c, unzip.c, tugz.c (and
-                                       # the build's amalgamation/ has them)
+    cmake -P cmake/amalgamate.cmake    # gzip.c, zip.c, unzip.c, tugz.c,
+                                       # libtugz.c, tugz.h (and the
+                                       # build's amalgamation/ has them)
     SLOW=1 sh test/zip.sh build/zip    # adds Zip64: 4 and 5 GiB files, 70,000 entries
                                        # (needs about 10 GiB free in TMPDIR)
     sh test/zip_windows.sh ./zip.exe   # on Windows, under w64devkit
@@ -2450,7 +2457,7 @@ Fuzzers:
 - Library: big-endian ppc (also under UBSan), Windows x86-64 and i686,
   and 32-bit Linux under UBSan produce byte-identical compressed output
   to the Mac in all formats, with SYNC flushes and odd buffer pieces.
-  `test/libtests.c` passes under ASan/UBSan/LSan in WSL. `tugz.c` builds
+  `test/libtests.c` passes under ASan/UBSan/LSan in WSL. `libtugz.c` builds
   warning-free with GCC and mingw, and `tugz.h` parses as C++.
 
 - zip: `test/zip.sh` passes on macOS (also `SLOW=1`: 5 GiB entries

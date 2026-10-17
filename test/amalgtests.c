@@ -1,9 +1,9 @@
-// Test of the single-file library, tugz.c, embedded with TUGZ_API static
+// Test of the single-file library, libtugz.c, embedded with TUGZ_API static
 // in a program that has its own assert and MIN macros and its own i64 and
 // byte types, which must all survive it. Round-trips data through each
 // format. On success prints "all amalgamation tests pass". With
 // TUGZ_DEFLATE64 defined, it also decodes Deflate64.
-// $ cmake -DTUGZ_ARTIFACT=tugz -P cmake/amalgamate.cmake
+// $ cmake -DTUGZ_ARTIFACT=libtugz -P cmake/amalgamate.cmake
 // $ cc -I. -o tests-amalg test/amalgtests.c
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,7 +15,7 @@ typedef long          i64;   // as int64_t is on LP64
 typedef unsigned char byte;  // as <windows.h> defines it
 
 #define TUGZ_API static
-#include "tugz.c"
+#include "libtugz.c"
 
 #define TEST(c) \
     do { \

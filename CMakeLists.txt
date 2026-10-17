@@ -252,13 +252,15 @@ endif()
 
 # ---- Single-file sources ---------------------------------------------
 
-# gzip.c, zip.c, unzip.c, tugz.c, and tugz.h in the build's amalgamation/
+# gzip.c, zip.c, unzip.c, tugz.c (the GUI), libtugz.c, and tugz.h in the
+# build's amalgamation/
 set(tugz_amalgamation_dir ${PROJECT_BINARY_DIR}/amalgamation)
 set(tugz_amalgamation
     ${tugz_amalgamation_dir}/gzip.c
     ${tugz_amalgamation_dir}/zip.c
     ${tugz_amalgamation_dir}/unzip.c
     ${tugz_amalgamation_dir}/tugz.c
+    ${tugz_amalgamation_dir}/libtugz.c
     ${tugz_amalgamation_dir}/tugz.h)
 file(GLOB tugz_sources CONFIGURE_DEPENDS
     ${PROJECT_SOURCE_DIR}/src/*.c ${PROJECT_SOURCE_DIR}/platform/*.c)
@@ -268,8 +270,9 @@ add_custom_command(
             -DTUGZ_OUTPUT_DIR=${tugz_amalgamation_dir}
             -P ${PROJECT_SOURCE_DIR}/cmake/amalgamate.cmake
     DEPENDS ${PROJECT_SOURCE_DIR}/cmake/amalgamate.cmake
-            ${PROJECT_SOURCE_DIR}/tugz.h ${tugz_sources}
-    COMMENT "Generating gzip.c, zip.c, unzip.c, and tugz.c"
+            ${PROJECT_SOURCE_DIR}/tugz.h ${PROJECT_SOURCE_DIR}/platform/tugz.ico
+            ${tugz_sources}
+    COMMENT "Generating gzip.c, zip.c, unzip.c, tugz.c, and libtugz.c"
     VERBATIM)
 add_custom_target(tugz_amalgamation DEPENDS ${tugz_amalgamation})
 
@@ -564,7 +567,8 @@ if(TUGZ_BUILD_TESTS)
 
     # The single-file library, compiled alone, and embedded in a program
     # with TUGZ_API static
-    add_library(tugz_amalgamation_lib STATIC ${tugz_amalgamation_dir}/tugz.c)
+    add_library(tugz_amalgamation_lib STATIC
+                ${tugz_amalgamation_dir}/libtugz.c)
     add_dependencies(tugz_amalgamation_lib tugz_amalgamation)
     tugz_common(tugz_amalgamation_lib)
     add_executable(tugz_tests_amalg test/amalgtests.c)
@@ -591,6 +595,28 @@ if(TUGZ_BUILD_TESTS)
     tugz_sanitize_test(amalgamation-deflate64)
     set_property(GLOBAL APPEND PROPERTY tugz_test_targets
                  tugz_amalgamation_lib tugz_tests_amalg tugz_tests_amalg64)
+
+    # The single-file GUI, built as its header says, with no source tree
+    # for its icon: the same program as tugz.exe, byte for byte
+    if(TARGET tugz_gui)
+        add_executable(tugz_gui_amalg WIN32 ${tugz_amalgamation_dir}/tugz.c)
+        add_dependencies(tugz_gui_amalg tugz_amalgamation)
+        set_target_properties(tugz_gui_amalg PROPERTIES
+            OUTPUT_NAME tugz-amalg)
+        tugz_common(tugz_gui_amalg)
+        tugz_crtfree(tugz_gui_amalg)
+        target_link_libraries(tugz_gui_amalg PRIVATE
+            comctl32 ole32 comdlg32 gdi32 user32 advapi32)
+        if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+            target_link_options(tugz_gui_amalg PRIVATE
+                                -Wl,--large-address-aware)
+        endif()
+        add_test(NAME gui-amalgamation
+            COMMAND ${CMAKE_COMMAND} -E compare_files
+                    $<TARGET_FILE:tugz_gui> $<TARGET_FILE:tugz_gui_amalg>)
+        set_property(GLOBAL APPEND PROPERTY tugz_test_targets
+                     tugz_gui_amalg)
+    endif()
 
     if(NOT TUGZ_TEST_SCRIPTS)
         message(STATUS "tugz: the shell-script tests are disabled "
