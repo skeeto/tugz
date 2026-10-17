@@ -1,9 +1,11 @@
 # On a version tag (v1.2.3, which must equal TUGZ_VERSION in tugz.h),
-# test, then publish a release of two assets: a deterministic source
-# tarball, and a zip of the single-file sources (libtugz.c with tugz.h,
+# test, then publish a release of three assets: a deterministic source
+# tarball, a zip of the single-file sources (libtugz.c with tugz.h,
 # gzip.c, zip.c, unzip.c, and the GUI's tugz.c), made by the tag's own
-# zip, as deterministic.
-# GitHub records each asset's SHA-256 digest.
+# zip, as deterministic, and the GUI, tugz.exe, for i686 (so XP and
+# later), large address aware, stripped, and signed through Azure
+# Artifact Signing (aas-sign, by OIDC, with the release environment's
+# secrets). GitHub records each asset's SHA-256 digest.
 name: release
 
 on:
@@ -22,6 +24,10 @@ defaults:
 jobs:
   release:
     runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write  # gh release create
+      id-token: write  # aas-sign's OIDC exchange
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
 
@@ -32,12 +38,18 @@ jobs:
               echo "::error::tag $GITHUB_REF_NAME is not v$v (TUGZ_VERSION)"
               exit 1
           fi
+          # The GUI's manifest names the version too, by hand
+          if ! grep -q "name='tugz' version='$v.0'" platform/gui_windows.c; then
+              echo "::error::platform/gui_windows.c's manifest is not $v.0"
+              exit 1
+          fi
           echo "V=$v" >>"$GITHUB_ENV"
 
       - name: Install the test references
         run: |
           sudo apt-get update
-          sudo apt-get install -y zlib1g-dev libdeflate-dev unzip
+          sudo apt-get install -y zlib1g-dev libdeflate-dev unzip \
+              gcc-mingw-w64-i686
 
       - name: Build and test
         run: |
@@ -63,6 +75,50 @@ jobs:
           cc -O2 -o zp platform/zip_posix.c
           t=$(git log -1 --format=%ct "$GITHUB_SHA")
           (cd amalgams && SOURCE_DATE_EPOCH=$t ../zp -qX9r "../dist/$d.zip" "$d")
+
+      # With no w64devkit libmemory here, its memcpy and memset come from
+      # msvcrt.dll, which XP has too
+      - name: GUI, i686
+        run: |
+          cmake -B build-gui -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-i686.cmake \
+              -DCMAKE_BUILD_TYPE=Release -DTUGZ_BUILD_GUI=ON \
+              -DTUGZ_BUILD_LIBRARY=OFF -DTUGZ_BUILD_GZIP=OFF \
+              -DTUGZ_BUILD_ZIP=OFF -DTUGZ_BUILD_UNZIP=OFF -DTUGZ_BUILD_TESTS=OFF
+          cmake --build build-gui
+          # (whole outputs, as grep -q would SIGPIPE objdump under pipefail)
+          headers=$(i686-w64-mingw32-objdump -p -h build-gui/tugz.exe)
+          symbols=$(i686-w64-mingw32-nm build-gui/tugz.exe 2>&1 || true)
+          if ! grep -q 'large address aware' <<<"$headers"; then
+              echo "::error::tugz.exe is not large address aware"
+              exit 1
+          elif grep -qE '^ *[0-9]+ \.debug' <<<"$headers" ||
+               ! grep -q 'no symbols' <<<"$symbols"; then
+              echo "::error::tugz.exe is not stripped"
+              exit 1
+          fi
+          cp build-gui/tugz.exe dist/tugz.exe
+
+      - name: Sign tugz.exe
+        uses: skeeto/aas-sign@0008af00d4dd2ff2e482ba5ede70831d78f9da59  # v1.1.0
+        with:
+          version:   v1.1.0
+          endpoint:  ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          account:   ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          profile:   ${{ secrets.CERTIFICATE_PROFILE }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          files:     dist/tugz.exe
+
+      # A signature is a nonempty security directory (data directory 4):
+      # "Entry 4 <offset> <size> Security Directory"
+      - name: Check the signature
+        run: |
+          size=$(i686-w64-mingw32-objdump -p dist/tugz.exe |
+                 sed -n 's/^Entry 4 [0-9a-f]* \([0-9a-f]*\) Security Directory$/\1/p')
+          if [ -z "$size" ] || [ $((16#$size)) -eq 0 ]; then
+              echo "::error::tugz.exe is not signed"
+              exit 1
+          fi
 
       - name: Smoke test, FetchContent from the tarball
         run: |

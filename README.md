@@ -44,7 +44,10 @@ whose `platform/tugz.ico` it embeds:
 
     $ cc -O2 -fno-builtin -nostartfiles -mwindows -o tugz.exe platform/gui_windows.c -lmemory -lcomctl32 -lole32
 
-For XP, i686, add `-Wl,--large-address-aware`.
+For XP, i686, add `-Wl,--large-address-aware`. Releases after 1.1.0
+also carry `tugz.exe` itself, for i686 (so XP and later), large address
+aware, stripped, and signed, built by the release workflow with
+Ubuntu's Mingw-w64, whose `msvcrt.dll` provides `memcpy` and `memset`.
 
 CMake builds the library, the programs, and the tests (see Development):
 

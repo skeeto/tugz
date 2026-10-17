@@ -513,8 +513,10 @@ placement only.
   string for `project()` and refuses to configure unless the numbers
   make it; the amalgamations read it for their banners, and in `gzip.c`,
   `zip.c`, and `unzip.c` the header's four version lines take the place
-  of base.c's include (`libtugz.c` has the whole header first); the release
-  workflow checks the tag against it, and its FetchContent consumer
+  of base.c's include (`libtugz.c` has the whole header first); the
+  release workflow checks the tag against it, and against the GUI's
+  manifest version (`X.Y.Z.0`, written by hand in
+  `platform/gui_windows.c`), and its FetchContent consumer
   checks `tugz_version()` against the header. That function returns the
   string the library was built with, for a program to tell which shared
   library it loaded. Through 0.4 the string lived in `src/base.c`, out of
