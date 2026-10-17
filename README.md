@@ -44,7 +44,7 @@ whose `platform/tugz.ico` it embeds:
 
     $ cc -O2 -fno-builtin -nostartfiles -mwindows -o tugz.exe platform/gui_windows.c -lmemory -lcomctl32 -lole32
 
-For XP, i686, add `-Wl,--large-address-aware`. Releases after 1.1.0
+For XP, i686, add `-Wl,--large-address-aware`. Releases from 1.2.0
 also carry `tugz.exe` itself, for i686 (so XP and later), large address
 aware, stripped, and signed, built by the release workflow with
 Ubuntu's Mingw-w64, whose `msvcrt.dll` provides `memcpy` and `memset`.
@@ -246,14 +246,14 @@ builds only the library, `tugz::tugz`:
 ```cmake
 include(FetchContent)
 FetchContent_Declare(tugz
-    URL https://github.com/skeeto/tugz/releases/download/v1.1.0/tugz-1.1.0.tar.gz
+    URL https://github.com/skeeto/tugz/releases/download/v1.2.0/tugz-1.2.0.tar.gz
     URL_HASH SHA256=<the asset's digest on the release page>
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(tugz)
 target_link_libraries(app PRIVATE tugz::tugz)
 ```
 
-Or, after `cmake --install`, `find_package(tugz 1.1 CONFIG REQUIRED)`
+Or, after `cmake --install`, `find_package(tugz 1.2 CONFIG REQUIRED)`
 provides the same target. The library is static unless
 `BUILD_SHARED_LIBS` is set, and position-independent code is the
 consumer's choice (`CMAKE_POSITION_INDEPENDENT_CODE`). A shared Windows
