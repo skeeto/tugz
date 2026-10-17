@@ -574,7 +574,8 @@ progress dialog and Cancel; their messages are shown when something did
 not go as planned.
 
 - Open an archive from the File menu, the command line (`tugz
-  archive.zip`), or by dropping it on the window.
+  archive.zip`), or by dropping it on the window. New makes an empty
+  one to add to.
 - Double-click (or Enter) opens a file with its default program, from a
   temporary folder removed when tugz exits; Open with... is in the
   context menu.
@@ -585,11 +586,16 @@ not go as planned.
 - Extract asks for a folder (by default beside the archive, named for
   it), whether to keep folders, and what to do with existing files.
   Selections extract as they are seen, relative to the folder shown.
-- Rename with F2, a file or a folder, which renames every entry within
-  it. New names are stored as UTF-8.
+- Rename with F2, a file or a folder, in the list or the tree, which
+  renames every entry within it. New names are stored as UTF-8.
+- The tree's folders have their own context menu, to add into, extract,
+  move out, test, rename, or delete one without opening it.
 - Edit (F4) runs a command on a temporary copy, `notepad.exe` unless set
   in Tools, Options (`%1` is the file), and once it exits with status 0
-  having changed the file, replaces the entry.
+  having changed the file, replaces the entry. Meanwhile a bar above the
+  panes says what is being edited, and the window stays free. For an
+  editor that hands the file to a running program and exits at once
+  (VS Code, Office), the bar offers Update, for once it is saved.
 - Properties (Alt+Enter) shows zipinfo's `-v` report.
 - An archive that unzip reads but zip would misread (data before it, as
   in a self-extractor, or a damaged central directory) opens read-only,

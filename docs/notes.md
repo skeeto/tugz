@@ -2257,6 +2257,20 @@ job and runs a message loop until it ends, then lets the drop proceed
 thread. The temporary folders stay until exit, since a target may copy
 after `DoDragDrop` returns. Self-drops are refused.
 
+### Edit
+
+The editor is not a job: the window stays free while it runs, and a bar
+above the panes (the read-only note's colors, a row of its own) names
+the file, with Stop waiting. A timer on the UI thread polls each
+editor's process. One that exits 0 with the file changed (size, time,
+or CRC-32) queues its entry's replacement, run as a zip job once no
+other job is running, against the archive it came from (reloaded only
+if it is the one shown). One that exits at once unchanged has likely
+handed the file to a program already running (VS Code, Office), so the
+bar waits for Update instead. Each edit holds its own small region,
+freed with it. Quitting with edits pending asks first, since the
+temporary copies go at exit.
+
 ### Mark of the web
 
 Files that leave the archive through Open, Edit, Extract, Move, and
@@ -2273,7 +2287,11 @@ names; extract (with Replace's every answer), move, delete, file and
 folder renames (UTF-8 flag set, old Unicode extras gone), add with the
 replace question, Edit by a scripted command, Properties, drags to and
 from Explorer, the read-only note on a self-extractor-like archive,
-settings kept, and the temporary folder removed at exit. After each
+settings kept, and the temporary folder removed at exit; then New
+(an empty archive, added to), the edit bar for an editor that waits and
+for one that hands off (Update), the tree's expanded folders kept when
+a delete reloads it, focus kept across switching windows and dialogs,
+and the tree's context menu (delete, rename) and F2. After each
 change, Python's `zipfile` tested and listed the archive. A
 cross-process `WM_DPICHANGED` is filtered by Windows, so a DPI change
 was not exercised.
@@ -2283,7 +2301,8 @@ styles, alpha-blended toolbar icons, and its icon in Explorer from the
 BMP entries; listing, test, extract (Unicode names checked by a
 wide-API lister, as XP's busybox shows ANSI names only), rename,
 delete, Edit, and dragging a folder out to Explorer all work. XP lacks
-East Asian fonts, so CJK names show as boxes there.
+East Asian fonts, so CJK names show as boxes there. The edit bar and
+the tree's context menu were checked there too.
 
 ## Workflow
 

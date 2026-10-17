@@ -606,6 +606,8 @@ W32(i32)    GetWindowTextW(iptr, c16 *, i32);
 W32(b32)    InvalidateRect(iptr, rect *, b32);
 W32(b32)    IsDialogMessageW(iptr, winmsg *);
 W32(b32)    IsWindowEnabled(iptr);
+W32(b32)    IsWindowVisible(iptr);
+W32(b32)    IsChild(iptr, iptr);
 W32(b32)    KillTimer(iptr, uptr);
 W32(iptr)   LoadCursorW(iptr, uptr);
 W32(i32)    MessageBoxW(iptr, c16 const *, c16 const *, u32);
@@ -992,6 +994,7 @@ W32(i32)    RegSetValueExW(iptr, c16 const *, u32, u32, void const *, u32);
 #define TVIS_SELECTED       0x0002u
 #define TVIS_DROPHILITED    0x0008u
 #define TVIS_EXPANDED       0x0020u
+#define TVM_GETITEMSTATE    (TV_FIRST+39)
 #define TVI_ROOT            ((iptr)(iz)-0x10000)
 #define TVI_LAST            ((iptr)(iz)-0x0fffe)
 #define TVGN_ROOT           0x0000u
@@ -1008,6 +1011,7 @@ W32(i32)    RegSetValueExW(iptr, c16 const *, u32, u32, void const *, u32);
 #define TVM_DELETEITEM      (TV_FIRST+1)
 #define TVM_EXPAND          (TV_FIRST+2)
 #define TVM_SETIMAGELIST    (TV_FIRST+9)
+#define TVM_GETITEMRECT     (TV_FIRST+4)
 #define TVM_GETNEXTITEM     (TV_FIRST+10)
 #define TVM_SELECTITEM      (TV_FIRST+11)
 #define TVM_HITTEST         (TV_FIRST+17)
@@ -1634,12 +1638,6 @@ struct job {
     s8         zone;         // the archive's mark of the web, if any
     b32        move;         // extracting, then deleting what it did
     b32        openafter;    // the folder extracted to
-    iptr       process;      // an editor's, waited on
-    u32        exitcode;
-    i64        size0;        // the edited file's, as it began
-    u64        written0;
-    u32        crc0;
-    s8         path;         // a file it made (open, edit)
     entry     *entry;
 };
 
@@ -1679,6 +1677,7 @@ static i32 job_run(os *ctx, void *arg)
 
 enum {
     ID_TREE = 1, ID_LIST, ID_TOOLBAR, ID_STATUS, ID_ADDRESS, ID_UP, ID_INFO,
+    ID_EDITBAR, ID_EDITUPDATE, ID_EDITSTOP,
 };
 
 enum {
@@ -1694,7 +1693,7 @@ enum {
     COL_ATTRIBS, COL_CRC, COL_VERSION, NCOLS
 };
 
-enum { TIMER_JOB = 1 };
+enum { TIMER_JOB = 1, TIMER_EDIT };
 
 // The fixed images of the tree's and list's image list
 enum { IMG_FOLDER, IMG_OPENFOLDER, IMG_ARCHIVE, IMG_FILE, IMG_FIXED };
@@ -1728,6 +1727,12 @@ struct app {
     guiapi   api;
     b32      xp;         // Windows XP (or 2003)
     iptr     hwnd, toolbar, address, upbutton, info, tree, list, status;
+    iptr     editbar, editupdate, editstop;  // files being edited
+    struct edit *edits;  // the latest first
+    b32      ticking;    // watching the editors
+    iptr     lastfocus;  // the control focused, while the window is not
+    b32      popup;      // a context menu, enabled as it was made, is up
+    rect     editrow;    // the edit bar's, painted as a note
     u32      dpi;
     iptr     font, monofont;
     i32      fontheight;
@@ -2311,10 +2316,64 @@ static void navigate(app *a, node *d, node *select)
 static void layout(app *a);
 static void update_commands(app *a);
 
+// The folder at a path, '/' between names, or as far as it goes if
+// partial, else null.
+static node *folder_at(model *m, s8 at, b32 partial)
+{
+    node *d = &m->root;
+    for (iz beg = 0, i = 0; i <= at.len; i++) {
+        if (i<at.len && at.s[i]!='/') {
+            continue;
+        }
+        s8    name = {at.s+beg, i-beg};
+        node *next = 0;
+        for (iz k = 0; name.len && k<d->nfolders && !next; k++) {
+            next = s8equals(d->kids[k]->name, name) ? d->kids[k] : 0;
+        }
+        if (!next) {
+            return name.len && !partial ? 0 : d;
+        }
+        d = next;
+        beg = i + 1;
+    }
+    return d;
+}
+
+// Expand a folder in the tree, and those above it.
+static void tree_expand(app *a, node *d)
+{
+    if (!d->item && d->parent) {
+        tree_expand(a, d->parent);
+    }
+    if (d->item) {
+        tree_fill(a, d);
+        SendMessageW(a->tree, TVM_EXPAND, TVE_EXPAND, (iz)d->item);
+    }
+}
+
 // Show an archive's model, the old one's let go, at a folder of the same
-// path, if it has one, else at the root.
+// path, if it has one, else at the root. Shown again, the same archive's
+// folders expanded in the tree stay expanded.
 static void show_model(app *a, model *m, s8 at)
 {
+    arena *tmp      = &a->scratch;
+    s8    *expanded = 0;
+    iz     nexpanded = 0;
+    if (a->m && m && s8equals(a->m->path, m->path)) {
+        iz cap = 0;
+        for (node *d = &a->m->root; d; d = d->nextdir) {
+            cap += d->item != 0;
+        }
+        expanded = new(tmp, cap, s8);
+        for (node *d = &a->m->root; d; d = d->nextdir) {
+            if (d->item && (SendMessageW(a->tree, TVM_GETITEMSTATE,
+                                         (uptr)d->item, TVIS_EXPANDED) &
+                            TVIS_EXPANDED)) {
+                expanded[nexpanded++] = node_path(d, &a->m->root, tmp);
+            }
+        }
+    }
+
     SendMessageW(a->list, LVM_SETITEMCOUNT, 0, 0);
     SendMessageW(a->tree, TVM_DELETEITEM, 0, (iz)TVI_ROOT);
     a->folder = 0;
@@ -2337,25 +2396,13 @@ static void show_model(app *a, model *m, s8 at)
                                           (iz)&t);
         tree_fill(a, &m->root);
         SendMessageW(a->tree, TVM_EXPAND, TVE_EXPAND, (iz)m->root.item);
-
-        // The folder of the same path, as far as it goes
-        node *d = &m->root;
-        for (iz beg = 0, i = 0; i <= at.len; i++) {
-            if (i<at.len && at.s[i]!='/') {
-                continue;
+        for (iz i = 0; i < nexpanded; i++) {
+            node *d = folder_at(m, expanded[i], 0);
+            if (d) {
+                tree_expand(a, d);
             }
-            s8    name = {at.s+beg, i-beg};
-            node *next = 0;
-            for (iz k = 0; name.len && k<d->nfolders && !next; k++) {
-                next = s8equals(d->kids[k]->name, name) ? d->kids[k] : 0;
-            }
-            if (!next) {
-                break;
-            }
-            d = next;
-            beg = i + 1;
         }
-        navigate(a, d, 0);
+        navigate(a, folder_at(m, at, 1), 0);
     } else {
         set_address(a);
         set_status(a);
@@ -2402,6 +2449,22 @@ static void layout(app *a)
         MoveWindow(a->info, 0, y, w, ih, 1);
         y += ih;
     }
+    if (a->edits) {
+        i32 bw = scale(a, 90);
+        i32 bh = rowh - 2*pad;
+        b32 up = IsWindowVisible(a->editupdate);
+        i32 x  = w - pad - bw;
+        MoveWindow(a->editstop, x, y+pad, bw, bh, 1);
+        if (up) {
+            x -= pad + bw;
+            MoveWindow(a->editupdate, x, y+pad, bw, bh, 1);
+        }
+        MoveWindow(a->editbar, 2*pad, y+pad+(bh-a->fontheight)/2,
+                   x-3*pad, a->fontheight, 1);
+        a->editrow = (rect){0, y, w, y+rowh};
+        InvalidateRect(a->hwnd, &a->editrow, 1);
+        y += rowh;
+    }
 
     i32 gap   = scale(a, 5);
     i32 split = MAX(MIN(scale(a, a->split), w - scale(a, 160)),
@@ -2417,9 +2480,9 @@ static b32 command_on(app *a, i32 cmd, nodes s)
     b32 can  = open && !a->m->readonly && !a->m->damaged;
     b32 file = s.n==1 && !s.v[0]->dir;
     switch (cmd) {
-    case CMD_CLOSE:
     case CMD_EXTRACT:
-    case CMD_TEST:
+    case CMD_TEST:        return open && a->m->nentries;
+    case CMD_CLOSE:
     case CMD_SELECTALL:
     case CMD_REFRESH:     return open;
     case CMD_PROPERTIES:  return open && s.n<=1;
@@ -2444,8 +2507,8 @@ static void update_commands(app *a)
     arena tmp = a->scratch;
     nodes s   = selection(a, &tmp);
     i32   cmds[] = {
-        CMD_ADD, CMD_EXTRACT, CMD_MOVE, CMD_DELETE, CMD_RENAME, CMD_TEST,
-        CMD_EDIT,
+        CMD_ADD, CMD_EXTRACT, CMD_MOVE, CMD_DELETE, CMD_RENAME, CMD_EDIT,
+        CMD_TEST,
     };
     for (i32 i = 0; i < countof(cmds); i++) {
         SendMessageW(a->toolbar, TB_ENABLEBUTTON, (uptr)cmds[i],
@@ -2687,6 +2750,28 @@ static void message(app *a, c16 const *text, u32 icon)
 }
 
 
+// Focus: the control that had it, kept while the window is inactive or
+// disabled (a dialog, a job), and given back, else the list.
+
+static void save_focus(app *a)
+{
+    iptr f = GetFocus();
+    if (f && IsChild(a->hwnd, f)) {
+        a->lastfocus = f;
+    }
+}
+
+static void restore_focus(app *a)
+{
+    iptr f = a->lastfocus;
+    if (!f || !IsChild(a->hwnd, f) || !IsWindowVisible(f) ||
+        !IsWindowEnabled(f)) {
+        f = a->list;
+    }
+    SetFocus(f);
+}
+
+
 // Jobs: started, watched, and ended on the UI thread
 
 static u32 __stdcall worker(void *arg)
@@ -2755,6 +2840,7 @@ static b32 job_start(app *a, job *j)
         message(a, L"Could not start the work.", MB_ICONERROR);
         return 0;
     }
+    save_focus(a);
     EnableWindow(a->hwnd, 0);
     SetTimer(a->hwnd, TIMER_JOB, 100, 0);
     return 1;
@@ -2927,6 +3013,7 @@ static void job_end(app *a, job *j)
     }
     EnableWindow(a->hwnd, 1);
     SetForegroundWindow(a->hwnd);
+    restore_focus(a);
     j->logtext = read_log(j, &j->perm);
     if (j->log) {
         CloseHandle(j->log);
@@ -3163,6 +3250,8 @@ static i32 ask_choice(app *a, c16 const *title, c16 const *question,
 }
 
 static void cmd(app *a, i32 id);
+
+static void run_cmd(app *a, i32 id, nodes s, node *base);
 
 static void stop_job(app *a)
 {
@@ -3412,11 +3501,11 @@ static void sort_chosen(chosen *v, iz n, arena scratch)
     }
 }
 
-// Pick the nodes' entries, or with none, everything in the folder shown,
-// into the job: its call's picks, their entries, and their bytes.
-static void pick_nodes(app *a, job *j, nodes s, b32 flat)
+// Pick the nodes' entries, within the folder base, or with none,
+// everything in it, into the job: its call's picks, named relative to
+// base, their entries, and their bytes.
+static void pick_nodes(job *j, nodes s, node *base, b32 flat)
 {
-    node  *base = a->folder;
     nodes  all  = s;
     if (!s.n) {
         all = (nodes){&base, 1};
@@ -3521,7 +3610,9 @@ static void zip_done(app *a, job *j)
     if (j->status!=ZE_OK && j->status!=STATUS_STOPPED) {
         job_report(a, j, j->title);
     }
-    open_zip(a, j->zc.archive, j->dest, 1);
+    if (!a->m || s8equals(a->m->path, j->zc.archive)) {
+        open_zip(a, j->zc.archive, j->dest, 1);
+    }
 }
 
 
@@ -3622,7 +3713,7 @@ static s8 default_dest(app *a, arena *perm)
 
 static void extract_done(app *a, job *j);
 
-static void cmd_extract(app *a, nodes s, b32 move)
+static void cmd_extract(app *a, nodes s, node *base, b32 move)
 {
     extract_data x = {0};
     x.dest = default_dest(a, &a->scratch);
@@ -3664,7 +3755,7 @@ static void cmd_extract(app *a, nodes s, b32 move)
     j->move         = move;
     j->openafter    = a->opt.openafter;
     j->done         = extract_done;
-    pick_nodes(a, j, s, a->opt.flat);
+    pick_nodes(j, s, base, a->opt.flat);
     if (!make_folders(longpath(&j->perm, x.dest))) {
         message(a, L"The folder could not be made.", MB_ICONERROR);
         region_free(&j->h);
@@ -3720,7 +3811,7 @@ static void test_done(app *a, job *j)
     show_report(a, L"Test", summary, j->logtext);
 }
 
-static void cmd_test(app *a, nodes s)
+static void cmd_test(app *a, nodes s, node *base)
 {
     job *j = archive_job(a, WHO_UNZIP, L"Testing");
     if (!j) {
@@ -3728,8 +3819,8 @@ static void cmd_test(app *a, nodes s)
     }
     j->uc.mode = CALL_TEST;
     j->done    = test_done;
-    if (s.n || a->folder!=&a->m->root) {
-        pick_nodes(a, j, s, 0);
+    if (s.n || base!=&a->m->root) {
+        pick_nodes(j, s, base, 0);
     } else {
         j->total = a->m->root.csize;  // all: UnZip's own summary
     }
@@ -4006,6 +4097,32 @@ static s8 new_archive(app *a, arena *perm)
     return GetSaveFileNameW(&o) ? full_path(perm, file) : (s8){0};
 }
 
+// New: an empty archive (an end record alone), made, then opened. The
+// save dialog asked before replacing a file.
+static void cmd_new(app *a)
+{
+    arena *tmp  = &a->scratch;
+    s8     path = new_archive(a, tmp);
+    if (!path.s) {
+        return;
+    }
+    static u8 const empty[22] = {'P', 'K', 5, 6};
+    iptr h = CreateFileW(longpath(tmp, path), GENERIC_WRITE, 0, 0,
+                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+    u32  n = 0;
+    b32  ok = h!=INVALID_HANDLE_VALUE &&
+              WriteFile(h, (u8 *)empty, sizeof(empty), &n, 0) &&
+              n==sizeof(empty);
+    if (h != INVALID_HANDLE_VALUE) {
+        ok &= CloseHandle(h);
+    }
+    if (!ok) {
+        message(a, L"The archive could not be made.", MB_ICONERROR);
+        return;
+    }
+    open_zip(a, path, (s8){0}, 0);
+}
+
 // Add files and folders, by their absolute paths, to a folder, or to a
 // new archive if none is open.
 static void add_paths(app *a, node *into, s8 *paths, iz n)
@@ -4081,7 +4198,7 @@ static void add_paths(app *a, node *into, s8 *paths, iz n)
     job_start(a, j);
 }
 
-static void cmd_addfiles(app *a)
+static void cmd_addfiles(app *a, node *into)
 {
     arena *tmp = &a->scratch;
     iz     cap = 1 << 16;
@@ -4112,15 +4229,15 @@ static void cmd_addfiles(app *a)
         b32 sep = d.len && d.s[d.len-1]=='\\';
         v[n++] = JOIN(tmp, d, sep ? S("") : S("\\"), towtf8(tmp, p));
     }
-    add_paths(a, a->folder, v, n);
+    add_paths(a, into, v, n);
 }
 
-static void cmd_addfolder(app *a)
+static void cmd_addfolder(app *a, node *into)
 {
     arena *tmp = &a->scratch;
     s8 dir = browse_folder(a, a->hwnd, L"Add a folder:", tmp);
     if (dir.s) {
-        add_paths(a, a->folder, &dir, 1);
+        add_paths(a, into, &dir, 1);
     }
 }
 
@@ -4163,7 +4280,7 @@ static void extract_temp(app *a, node *n, i32 then)
     j->entry        = n->e;
     j->done         = open_done;
     nodes s = {&n, 1};
-    pick_nodes(a, j, s, 1);
+    pick_nodes(j, s, n->parent, 1);
     job_start(a, j);
 }
 
@@ -4198,24 +4315,30 @@ static void open_done(app *a, job *j)
     }
 }
 
-// Edit: the configured command run on the file, waited on by a job
-// (Cancel stops the waiting, not the editor), then the entry replaced if
-// the command succeeded and the file changed.
+// Edit: the configured command run on the file, the window free
+// meanwhile, a bar above the panes saying what is being edited. A timer
+// watches each editor; once one exits 0 having changed its file, the
+// entry is replaced as soon as no other job runs. An editor that exits
+// at once, unchanged, has likely handed the file to another program
+// (VS Code, Office): the bar then waits for Update. Stop waiting forgets
+// them all, and the editors run on.
 
-static i32 wait_work(job *j)
-{
-    for (;;) {
-        u32 r = WaitForSingleObject(j->process, 100);
-        if (r != WAIT_TIMEOUT) {
-            GetExitCodeProcess(j->process, &j->exitcode);
-            return 0;
-        } else if (__atomic_load_n(&j->stop, __ATOMIC_RELAXED)) {
-            return STATUS_STOPPED;
-        }
-    }
-}
-
-static void edit_done(app *a, job *j);
+typedef struct edit edit;
+struct edit {
+    host  h;          // its own region, freed with it
+    edit *next;
+    iptr  process;    // the editor's, until it exits
+    s8    archive;
+    s8    path;       // the temporary file
+    s8    name;       // its entry's name
+    c16  *shown;      // the file's own name, for the bar
+    i64   size0;      // the file as it began
+    u64   written0;
+    u32   crc0;
+    u32   began;
+    b32   handed;     // returned at once, unchanged: waiting on Update
+    b32   ready;      // changed: to replace the entry once free
+};
 
 // The command line: the configured command, %1 replaced by the quoted
 // path, or the path appended.
@@ -4246,29 +4369,79 @@ static c16 *edit_command(app *a, s8 path, arena *perm)
     return cmd;
 }
 
+static void layout(app *a);
+
+// The bar's text and buttons, as the edits stand.
+static void show_edits(app *a)
+{
+    iz   n      = 0;
+    b32  handed = 0;
+    for (edit *e = a->edits; e; e = e->next) {
+        n++;
+        handed |= e->handed;
+    }
+    c16  buf[512];
+    wbuf b = wbuf_of(buf, countof(buf));
+    if (n) {
+        edit *e = a->edits;  // the latest
+        for (edit *h = a->edits; handed && h; h = h->next) {
+            e = h->handed ? h : e;
+        }
+        wput(&b, handed ? L"\x201c" : L"Editing \x201c");
+        wput(&b, e->shown);
+        wput(&b, handed ? L"\x201d was opened in another program: once "
+                          L"it is saved, choose Update."
+                        : L"\x201d: the archive is updated when its "
+                          L"editor closes.");
+        if (n > 1) {
+            wput(&b, L" (and ");
+            wputnum(&b, (u64)(n-1), a->sep);
+            wput(&b, n==2 ? L" more file)" : L" more files)");
+        }
+    }
+    SetWindowTextW(a->editbar, buf);
+    i32 show = n ? SW_SHOW : SW_HIDE;
+    ShowWindow(a->editbar, show);
+    ShowWindow(a->editstop, show);
+    ShowWindow(a->editupdate, handed ? SW_SHOW : SW_HIDE);
+    layout(a);
+}
+
+static void edit_remove(app *a, edit *e)
+{
+    for (edit **p = &a->edits; *p; p = &(*p)->next) {
+        if (*p == e) {
+            *p = e->next;
+            break;
+        }
+    }
+    if (e->process) {
+        CloseHandle(e->process);
+    }
+    region_free(&e->h);
+}
+
+static b32 edit_changed(edit *e, arena scratch)
+{
+    c16 *file    = towide(&scratch, e->path);
+    i64  size    = 0;
+    u64  written = 0;
+    file_state(file, &size, &written);
+    return size!=e->size0 || written!=e->written0 ||
+           file_crc(file, scratch)!=e->crc0;
+}
+
 static void edit_start(app *a, s8 path, entry *e)
 {
     arena *tmp  = &a->scratch;
     c16   *file = towide(tmp, path);
     SetFileAttributesW(file, FILE_ATTRIBUTE_NORMAL);  // not read-only
 
-    job *j = archive_job(a, WHO_UNZIP, L"Editing");
-    if (!j) {
-        return;
-    }
-    j->path  = JOIN(&j->perm, path);
-    j->entry = e;
-    j->work  = wait_work;
-    j->done  = edit_done;
-    file_state(file, &j->size0, &j->written0);
-    j->crc0  = file_crc(file, *tmp);
-
     startupinfo si = {0};
     si.cb = (u32)sizeof(si);
     processinfo pi = {0};
     c16 *cmd = edit_command(a, path, tmp);
     if (!CreateProcessW(0, cmd, 0, 0, 0, 0, 0, 0, &si, &pi)) {
-        region_free(&j->h);
         c16  buf[400];
         wbuf b = wbuf_of(buf, countof(buf));
         wput(&b, L"The editor could not be run:\n\n");
@@ -4278,67 +4451,140 @@ static void edit_start(app *a, s8 path, entry *e)
         return;
     }
     CloseHandle(pi.thread);
-    j->process = pi.process;
 
-    // The progress dialog's name: what is being waited on
-    wbuf b = wbuf_of(j->named[0], countof(j->named[0]));
-    wput(&b, L"Waiting for the editor: ");
+    edit *d = region_new((iz)1<<24, (iz)sizeof(edit));
+    if (!d) {
+        CloseHandle(pi.process);
+        message(a, L"Not enough memory.", MB_ICONERROR);
+        return;
+    }
+    arena perm = host_perm(&d->h);
+    d->process = pi.process;
+    d->archive = JOIN(&perm, a->m->path);
+    d->path    = JOIN(&perm, path);
+    d->name    = JOIN(&perm, e->name);
     iz cut = path.len;
     for (; cut>0 && path.s[cut-1]!='\\'; cut--) {}
-    wput8(&b, (s8){path.s+cut, path.len-cut});
-    job_start(a, j);
+    d->shown   = towide(&perm, (s8){path.s+cut, path.len-cut});
+    d->began   = GetTickCount();
+    file_state(file, &d->size0, &d->written0);
+    d->crc0    = file_crc(file, *tmp);
+    d->next    = a->edits;
+    a->edits   = d;
+    SetTimer(a->hwnd, TIMER_EDIT, 250, 0);
+    show_edits(a);
 }
 
-static b32 edit_changed(job *j, arena scratch)
+// Replace an edited entry, the archive shown again if it is the one.
+static void edit_update(app *a, edit *e)
 {
-    c16 *file    = towide(&scratch, j->path);
-    i64  size    = 0;
-    u64  written = 0;
-    file_state(file, &size, &written);
-    return size!=j->size0 || written!=j->written0 ||
-           file_crc(file, scratch)!=j->crc0;
-}
-
-static void edit_done(app *a, job *j)
-{
-    CloseHandle(j->process);
-    if (j->status == STATUS_STOPPED) {
-        return;
-    } else if (j->exitcode) {
-        c16  buf[200];
-        wbuf b = wbuf_of(buf, countof(buf));
-        wput(&b, L"The editor ended with status ");
-        wputnum(&b, j->exitcode, 0);
-        wput(&b, L", so the archive is unchanged.");
-        message(a, buf, MB_ICONWARNING);
-        return;
-    }
-    b32 changed = edit_changed(j, a->scratch);
-    if (!changed && GetTickCount()-j->began<3000) {
-        // An editor that handed the file to another, still open there
-        if (MessageBoxW(a->hwnd, L"The editor returned at once, perhaps "
-                        L"opening the file elsewhere.\n\nOnce it is saved "
-                        L"and closed, choose OK to update the archive.",
-                        L"Edit", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) {
-            return;
-        }
-        changed = edit_changed(j, a->scratch);
-    }
-    if (!changed) {
-        return;
-    }
-
-    job *z = archive_job(a, WHO_ZIP, L"Updating");
+    job *z = job_new(a, WHO_ZIP);
     if (!z) {
         return;
     }
-    z->zc.sources  = new(&z->perm, 1, zipsource);
+    arena *perm = &z->perm;
+    z->title       = L"Updating";
+    z->work        = zip_work;
+    z->done        = zip_done;
+    z->zc.archive  = JOIN(perm, e->archive);
+    z->zc.level    = a->opt.level;
+    z->zc.data     = z;
+    z->zc.sources  = new(perm, 1, zipsource);
     z->zc.nsources = 1;
-    z->zc.sources[0].path = JOIN(&z->perm, j->path);
-    z->zc.sources[0].name = JOIN(&z->perm, j->entry->name);
-    z->dest = folder_path(a, &z->perm);
-    z->done = zip_done;
+    z->zc.sources[0].path = JOIN(perm, e->path);
+    z->zc.sources[0].name = JOIN(perm, e->name);
+    z->dest = folder_path(a, perm);
     job_start(a, z);
+}
+
+// Watch the editors: which exited, how, and what to update.
+static void edit_tick(app *a)
+{
+    if (a->ticking) {
+        return;  // (within a message box of its own)
+    }
+    a->ticking = 1;
+    b32 changed = 0;
+    for (edit *e = a->edits, *next; e; e = next) {
+        next = e->next;
+        if (!e->process || WaitForSingleObject(e->process, 0)!=WAIT_OBJECT_0) {
+            continue;
+        }
+        u32 status = 0;
+        GetExitCodeProcess(e->process, &status);
+        CloseHandle(e->process);
+        e->process = 0;
+        changed = 1;
+        if (status) {
+            c16  buf[400];
+            wbuf b = wbuf_of(buf, countof(buf));
+            wput(&b, L"The editor of \x201c");
+            wput(&b, e->shown);
+            wput(&b, L"\x201d ended with status ");
+            wputnum(&b, status, 0);
+            wput(&b, L", so its entry is unchanged.");
+            edit_remove(a, e);
+            show_edits(a);
+            message(a, buf, MB_ICONWARNING);
+        } else if (edit_changed(e, a->scratch)) {
+            e->ready = 1;
+        } else if (GetTickCount()-e->began < 3000) {
+            e->handed = 1;
+        } else {
+            edit_remove(a, e);  // closed unchanged
+        }
+    }
+
+    // One update at a time, as jobs go
+    b32 waiting = 0;
+    for (edit *e = a->edits; e; e = e->next) {
+        waiting |= e->process || e->ready;
+    }
+    if (!a->job) {
+        for (edit *e = a->edits; e; e = e->next) {
+            if (e->ready) {
+                edit_update(a, e);
+                edit_remove(a, e);
+                changed = 1;
+                break;
+            }
+        }
+    }
+    if (!waiting) {
+        KillTimer(a->hwnd, TIMER_EDIT);
+    }
+    if (changed) {
+        show_edits(a);
+    }
+    a->ticking = 0;
+}
+
+// Update: the files handed to other programs, as they are saved now.
+static void edit_handed(app *a)
+{
+    b32 any = 0;
+    for (edit *e = a->edits; e; e = e->next) {
+        if (e->handed && edit_changed(e, a->scratch)) {
+            e->handed = 0;
+            e->ready  = any = 1;
+        }
+    }
+    if (!any) {
+        message(a, L"Nothing has changed yet: save the file first.",
+                MB_ICONINFORMATION);
+        return;
+    }
+    SetTimer(a->hwnd, TIMER_EDIT, 250, 0);
+    edit_tick(a);
+}
+
+static void edit_stop(app *a)
+{
+    while (a->edits) {
+        edit_remove(a, a->edits);
+    }
+    KillTimer(a->hwnd, TIMER_EDIT);
+    show_edits(a);
 }
 
 
@@ -4545,7 +4791,7 @@ static void context_menu(app *a, i32 x, i32 y)
         AppendMenuW(menu, MF_STRING, CMD_RENAME,  L"&Rename");
         AppendMenuW(menu, MF_STRING, CMD_DELETE,  L"De&lete");
         AppendMenuW(menu, MF_SEPARATOR, 0, 0);
-        AppendMenuW(menu, MF_STRING, CMD_PROPERTIES, L"P&roperties");
+        AppendMenuW(menu, MF_STRING, CMD_PROPERTIES, L"&Properties");
     } else {
         AppendMenuW(menu, MF_STRING, CMD_ADDFILES,  L"&Add files...");
         AppendMenuW(menu, MF_STRING, CMD_ADDFOLDER, L"Add f&older...");
@@ -4554,7 +4800,7 @@ static void context_menu(app *a, i32 x, i32 y)
         AppendMenuW(menu, MF_STRING, CMD_TEST,      L"&Test");
         AppendMenuW(menu, MF_SEPARATOR, 0, 0);
         AppendMenuW(menu, MF_STRING, CMD_SELECTALL, L"Select a&ll");
-        AppendMenuW(menu, MF_STRING, CMD_PROPERTIES, L"P&roperties");
+        AppendMenuW(menu, MF_STRING, CMD_PROPERTIES, L"&Properties");
     }
     enable_menu(a, menu);
     i32 c = (i32)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y,
@@ -4562,6 +4808,112 @@ static void context_menu(app *a, i32 x, i32 y)
     DestroyMenu(menu);
     if (c) {
         cmd(a, c);
+    }
+}
+
+// The tree's own commands, on a folder there (or the archive, at its
+// root), wherever the folder shown is: as if chosen in its parent.
+
+static node *tree_node(app *a, iptr item)
+{
+    tvitem it = {0};
+    it.mask = TVIF_PARAM;
+    it.item = item;
+    return item && SendMessageW(a->tree, TVM_GETITEMW, 0, (iz)&it)
+           ? (node *)it.lparam : 0;
+}
+
+static void tree_cmd(app *a, node *n, i32 id)
+{
+    b32   root = !n->parent;
+    nodes s    = root ? (nodes){0} : (nodes){&n, 1};
+    node *base = root ? n : n->parent;
+    switch (id) {
+    case CMD_OPENENTRY:
+        navigate(a, n, 0);
+        update_commands(a);
+        break;
+    case CMD_ADDFILES:
+        if (!a->job && command_on(a, id, s)) cmd_addfiles(a, n);
+        break;
+    case CMD_ADDFOLDER:
+        if (!a->job && command_on(a, id, s)) cmd_addfolder(a, n);
+        break;
+    case CMD_RENAME:
+        if (!root && !a->job && command_on(a, id, s)) {
+            SetFocus(a->tree);
+            SendMessageW(a->tree, TVM_EDITLABELW, 0, (iz)n->item);
+        }
+        break;
+    default:
+        run_cmd(a, id, s, base);
+    }
+}
+
+static void tree_menu(app *a, i32 x, i32 y)
+{
+    node *n = 0;
+    if (x==-1 && y==-1) {  // the keyboard's: at the selected item
+        iptr item = (iptr)SendMessageW(a->tree, TVM_GETNEXTITEM, TVGN_CARET,
+                                       0);
+        n = tree_node(a, item);
+        union { rect r; iptr item; } u = {0};  // in: the item, out: its rect
+        u.item = item;
+        if (!n || !SendMessageW(a->tree, TVM_GETITEMRECT, 1, (iz)&u)) {
+            return;
+        }
+        point p = {u.r.left, u.r.bottom};
+        ClientToScreen(a->tree, &p);
+        x = p.x;
+        y = p.y;
+    } else {
+        tvhittestinfo h = {0};
+        h.pt = (point){x, y};
+        ScreenToClient(a->tree, &h.pt);
+        iptr item = (iptr)SendMessageW(a->tree, TVM_HITTEST, 0, (iz)&h);
+        n = h.flags&TVHT_ONITEM ? tree_node(a, item) : 0;
+    }
+    if (!n) {
+        return;
+    }
+
+    iptr menu = CreatePopupMenu();
+    if (n->parent) {
+        AppendMenuW(menu, MF_STRING, CMD_OPENENTRY, L"&Open");
+        AppendMenuW(menu, MF_SEPARATOR, 0, 0);
+    }
+    AppendMenuW(menu, MF_STRING, CMD_ADDFILES,  L"&Add files...");
+    AppendMenuW(menu, MF_STRING, CMD_ADDFOLDER, L"Add fol&der...");
+    AppendMenuW(menu, MF_SEPARATOR, 0, 0);
+    AppendMenuW(menu, MF_STRING, CMD_EXTRACT,   L"&Extract...");
+    if (n->parent) {
+        AppendMenuW(menu, MF_STRING, CMD_MOVE,  L"&Move out...");
+    }
+    AppendMenuW(menu, MF_STRING, CMD_TEST,      L"&Test");
+    if (n->parent) {
+        AppendMenuW(menu, MF_SEPARATOR, 0, 0);
+        AppendMenuW(menu, MF_STRING, CMD_RENAME, L"&Rename");
+        AppendMenuW(menu, MF_STRING, CMD_DELETE, L"De&lete");
+    }
+    AppendMenuW(menu, MF_SEPARATOR, 0, 0);
+    AppendMenuW(menu, MF_STRING, CMD_PROPERTIES, L"&Properties");
+
+    nodes s = n->parent ? (nodes){&n, 1} : (nodes){0};
+    for (i32 id = CMD_NEW; id <= CMD_ABOUT; id++) {
+        b32 on = !a->job && (id==CMD_OPENENTRY || command_on(a, id, s));
+        EnableMenuItem(menu, (u32)id, on ? MF_ENABLED : MF_GRAYED);
+    }
+
+    // Lit while its menu is up, as Explorer does
+    SendMessageW(a->tree, TVM_SELECTITEM, TVGN_DROPHILITE, (iz)n->item);
+    a->popup = 1;
+    i32 c = (i32)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y,
+                                0, a->hwnd, 0);
+    a->popup = 0;
+    SendMessageW(a->tree, TVM_SELECTITEM, TVGN_DROPHILITE, 0);
+    DestroyMenu(menu);
+    if (c) {
+        tree_cmd(a, n, c);
     }
 }
 
@@ -5424,7 +5776,7 @@ static i32 __stdcall ds_querycontinuedrag(dropsource *s, b32 escape,
     j->uc.exdir     = JOIN(&j->perm, s->dir);
     j->uc.overwrite = OVERWRT_ALWAYS;
     j->done         = drag_done;
-    pick_nodes(a, j, s->chosen, 0);
+    pick_nodes(j, s->chosen, s->base, 0);
     a->drag = s;
     if (!job_start(a, j)) {
         return DRAGDROP_S_CANCEL;
@@ -5698,6 +6050,15 @@ static void create_controls(app *a)
     a->info = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_LEFT |
                               SS_NOPREFIX | SS_ENDELLIPSIS, 0, 0, 0, 0, w,
                               ID_INFO, a->instance, 0);
+    a->editbar = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_LEFT |
+                                 SS_NOPREFIX | SS_ENDELLIPSIS, 0, 0, 0, 0, w,
+                                 ID_EDITBAR, a->instance, 0);
+    a->editupdate = CreateWindowExW(0, L"BUTTON", L"Update", WS_CHILD |
+                                    BS_PUSHBUTTON, 0, 0, 0, 0, w,
+                                    ID_EDITUPDATE, a->instance, 0);
+    a->editstop = CreateWindowExW(0, L"BUTTON", L"Stop waiting", WS_CHILD |
+                                  BS_PUSHBUTTON, 0, 0, 0, 0, w, ID_EDITSTOP,
+                                  a->instance, 0);
     u32 lines = a->xp ? TVS_HASLINES : 0;
     a->tree = CreateWindowExW(WS_EX_CLIENTEDGE, L"SysTreeView32", 0,
                               WS_CHILD | WS_VISIBLE | WS_TABSTOP |
@@ -5731,6 +6092,7 @@ static void create_controls(app *a)
 static void set_fonts(app *a)
 {
     iptr controls[] = {a->toolbar, a->upbutton, a->address, a->info,
+                       a->editbar, a->editupdate, a->editstop,
                        a->tree, a->list, a->status};
     for (i32 i = 0; i < countof(controls); i++) {
         SendMessageW(controls[i], WM_SETFONT, (uptr)a->font, 1);
@@ -5846,13 +6208,25 @@ static iz main_message(app *a, iptr hwnd, u32 msg, uptr wp, iz lp)
     case WM_COMMAND:
         if ((wp & 0xffff) == ID_UP) {
             cmd(a, CMD_UP);
+        } else if ((wp & 0xffff) == ID_EDITUPDATE) {
+            edit_handed(a);
+        } else if ((wp & 0xffff) == ID_EDITSTOP) {
+            edit_stop(a);
         } else if (!lp || (iptr)lp==a->toolbar) {
             cmd(a, (i32)(wp & 0xffff));
         }
         return 0;
 
+    case WM_ERASEBKGND:
+        if (a->edits) {
+            iz r = DefWindowProcW(hwnd, msg, wp, lp);
+            FillRect((iptr)wp, &a->editrow, GetSysColorBrush(COLOR_INFOBK));
+            return r;
+        }
+        break;
+
     case WM_CTLCOLORSTATIC:
-        if ((iptr)lp == a->info) {
+        if ((iptr)lp==a->info || (iptr)lp==a->editbar) {
             SetTextColor((iptr)wp, GetSysColor(COLOR_INFOTEXT));
             SetBkMode((iptr)wp, TRANSPARENT);
             return (iz)GetSysColorBrush(COLOR_INFOBK);
@@ -5862,6 +6236,8 @@ static iz main_message(app *a, iptr hwnd, u32 msg, uptr wp, iz lp)
     case WM_TIMER:
         if (wp == TIMER_JOB) {
             job_tick(a);
+        } else if (wp == TIMER_EDIT) {
+            edit_tick(a);
         }
         return 0;
 
@@ -5871,6 +6247,18 @@ static iz main_message(app *a, iptr hwnd, u32 msg, uptr wp, iz lp)
 
     case WM_APP_DROP:
         on_drop(a, (dropping *)lp);
+        return 0;
+
+    case WM_ACTIVATE:
+        if ((wp & 0xffff) == 0) {  // WA_INACTIVE
+            save_focus(a);
+        } else if (!(wp >> 16 & 0xffff) && IsWindowEnabled(hwnd)) {
+            restore_focus(a);  // not minimized
+        }
+        return 0;
+
+    case WM_SETFOCUS:
+        restore_focus(a);
         return 0;
 
     case WM_ACTIVATEAPP:
@@ -5888,11 +6276,17 @@ static iz main_message(app *a, iptr hwnd, u32 msg, uptr wp, iz lp)
             context_menu(a, (i32)(short)(lp & 0xffff),
                          (i32)(short)(lp >> 16 & 0xffff));
             return 0;
+        } else if ((iptr)wp == a->tree) {
+            tree_menu(a, (i32)(short)(lp & 0xffff),
+                      (i32)(short)(lp >> 16 & 0xffff));
+            return 0;
         }
         break;
 
     case WM_INITMENUPOPUP:
-        enable_menu(a, (iptr)wp);
+        if (!a->popup) {
+            enable_menu(a, (iptr)wp);
+        }
         return 0;
 
     case WM_APP_JOBDONE:
@@ -5903,6 +6297,12 @@ static iz main_message(app *a, iptr hwnd, u32 msg, uptr wp, iz lp)
         return 0;
 
     case WM_CLOSE:
+        if (a->edits && MessageBoxW(hwnd, L"Files are still being edited. "
+                                    L"Quit without updating the archive "
+                                    L"from them?", L"tugz", MB_YESNO |
+                                    MB_ICONQUESTION | MB_DEFBUTTON2)!=IDYES) {
+            return 0;
+        }
         if (a->job) {
             if (MessageBoxW(a->progress ? a->progress : hwnd,
                             L"Stop the work under way, and quit?", L"tugz",
@@ -6046,8 +6446,32 @@ static iz on_tree_notify(app *a, nmhdr *h)
         }
         return 0;
     }
-    case TVN_BEGINLABELEDITW:
-        return 1;  // (renaming from the tree: not yet)
+    case TVN_BEGINLABELEDITW: {
+        nmtvdispinfo *d = (nmtvdispinfo *)h;
+        node *n = (node *)d->item.lparam;
+        nodes s = {&n, 1};
+        return !n || !n->parent || a->job || !command_on(a, CMD_RENAME, s);
+    }
+    case TVN_ENDLABELEDITW: {
+        nmtvdispinfo *d = (nmtvdispinfo *)h;
+        node *n = tree_node(a, d->item.item);
+        if (n && d->item.text) {
+            rename_node(a, n, d->item.text);
+        }
+        return 0;
+    }
+    case TVN_KEYDOWN: {
+        nmkeydown *k = (nmkeydown *)h;
+        iptr item = (iptr)SendMessageW(a->tree, TVM_GETNEXTITEM, TVGN_CARET,
+                                       0);
+        node *n = tree_node(a, item);
+        if (n && k->vkey==VK_F2) {
+            tree_cmd(a, n, CMD_RENAME);
+        } else if (n && n->parent && k->vkey==VK_DELETE) {
+            tree_cmd(a, n, CMD_DELETE);
+        }
+        return 0;
+    }
     }
     return 0;
 }
@@ -6109,8 +6533,8 @@ static button const buttons[] = {
     {CMD_MOVE,    3, L"Move",    L"Extract, then delete from the archive", 0},
     {CMD_DELETE,  4, L"Delete",  L"Delete from the archive (Del)", 0},
     {CMD_RENAME,  5, L"Rename",  L"Rename (F2)", 0},
-    {CMD_TEST,    6, L"Test",    L"Test the entries' data (Ctrl+T)", 0},
     {CMD_EDIT,    7, L"Edit",    L"Edit with a tool, then update (F4)", 0},
+    {CMD_TEST,    6, L"Test",    L"Test the entries' data (Ctrl+T)", 0},
 };
 
 static void make_toolbar(app *a)
@@ -6141,15 +6565,12 @@ static void make_toolbar(app *a)
 
 // Commands
 
-static void cmd(app *a, i32 id)
+// A command on nodes within a folder, base: the list's selection in the
+// folder shown, or the tree's item in its parent.
+static void run_cmd(app *a, i32 id, nodes s, node *base)
 {
-    if (a->job) {
+    if (a->job || !command_on(a, id, s)) {
         return;  // one at a time
-    }
-    arena *tmp = &a->scratch;
-    nodes  s   = selection(a, tmp);
-    if (!command_on(a, id, s)) {
-        return;
     }
     switch (id) {
     case CMD_OPEN:    cmd_open(a);  break;
@@ -6168,16 +6589,13 @@ static void cmd(app *a, i32 id)
         SendMessageW(a->list, LVM_SETITEMSTATE, (uptr)-1, (iz)&it);
         break;
     }
-    case CMD_NEW:
-        cmd_close(a);
-        cmd_addfiles(a);
-        break;
+    case CMD_NEW:        cmd_new(a);                     break;
     case CMD_ADD:
-    case CMD_ADDFILES:   cmd_addfiles(a);          break;
-    case CMD_ADDFOLDER:  cmd_addfolder(a);         break;
-    case CMD_EXTRACT:    cmd_extract(a, s, 0);     break;
-    case CMD_MOVE:       cmd_extract(a, s, 1);     break;
-    case CMD_TEST:       cmd_test(a, s);           break;
+    case CMD_ADDFILES:   cmd_addfiles(a, a->folder);     break;
+    case CMD_ADDFOLDER:  cmd_addfolder(a, a->folder);    break;
+    case CMD_EXTRACT:    cmd_extract(a, s, base, 0);     break;
+    case CMD_MOVE:       cmd_extract(a, s, base, 1);     break;
+    case CMD_TEST:       cmd_test(a, s, base);           break;
     case CMD_DELETE:     cmd_delete(a, s);         break;
     case CMD_RENAME:     cmd_rename(a);            break;
     case CMD_PROPERTIES: cmd_properties(a, s);     break;
@@ -6194,6 +6612,12 @@ static void cmd(app *a, i32 id)
     case CMD_OPENWITH:   extract_temp(a, s.v[0], THEN_OPENWITH);  break;
     case CMD_EDIT:       extract_temp(a, s.v[0], THEN_EDIT);      break;
     }
+}
+
+static void cmd(app *a, i32 id)
+{
+    arena *tmp = &a->scratch;
+    run_cmd(a, id, selection(a, tmp), a->folder);
 }
 
 
