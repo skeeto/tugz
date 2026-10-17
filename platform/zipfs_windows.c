@@ -32,7 +32,7 @@ W32(b32)  SystemTimeToTzSpecificLocalTime(uptr, systemtime *, systemtime *);
 // use: perm from the bottom up, and scratch from the top down. As much
 // as the system will reserve, up to 64 GiB (1 GiB in 32-bit processes),
 // halving on refusal.
-static void reserve(os *ctx)
+[[maybe_unused]] static void reserve(os *ctx)
 {
     iz cap = (iz)1 << (sizeof(void *)==8 ? 36 : 30);
     for (; cap >= (iz)1<<24; cap /= 2) {
@@ -126,6 +126,7 @@ static b32 handle_info(os *ctx, iptr h, os_info *info)
 static b32 os_stat(os *ctx, s8 path, b32 follow, os_info *info,
                    arena scratch)
 {
+    meter(ctx, path, 0);
     c16 *wpath = winpath(&scratch, path);
     if (!wpath) {
         SetLastError(ERROR_INVALID_NAME);  // no file can have it
@@ -176,6 +177,7 @@ static i32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
         } else if (!got) {
             return 0;
         }
+        meter(ctx, (s8){0}, got);
         buf += got;
         len -= got;
         off += got;
@@ -200,7 +202,7 @@ static s8 os_fromcp(os *ctx, s8 name, b32 oem, arena *perm, arena scratch)
 }
 
 // An environment variable as WTF-8, or a null string if it is unset.
-static s8 getenv8(arena *a, c16 *name)
+[[maybe_unused]] static s8 getenv8(arena *a, c16 *name)
 {
     SetLastError(0);  // zero is also the length of an empty value
     u32 cap = GetEnvironmentVariableW(name, 0, 0);  // including the null

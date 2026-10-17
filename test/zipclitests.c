@@ -539,6 +539,315 @@ static void test_order(os *ctx)
     }
 }
 
+// Whether extra fields hold one of an id.
+static b32 has_extra(s8 x, u32 id)
+{
+    for (iz i = 0; x.len-i >= 4; i += 4 + get16(x.s+i+2)) {
+        if (get16(x.s+i) == id) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// The local header's extra fields of an archive's entry.
+static s8 local_extra(s8 z, zentry *e)
+{
+    u8 *h = z.s + e->offset;
+    return (s8){h + ZIP_LOCAL_LEN + get16(h+26), (iz)get16(h+28)};
+}
+
+// An archive of one stored entry made on MS-DOS, its name in the OEM
+// code page ("caf\x82", CP437's é) with Info-ZIP's Unicode path field
+// ("café") and an extended timestamp, in both headers, then "z".
+static s8 build_upath(void)
+{
+    static u8 x[32];
+    s8  stored = S("caf\x82");
+    s8  uname  = S("caf\xc3\xa9");
+    u32 crc    = crc32_update(0, stored.s, stored.len, &(i32){0});
+    u8 *p      = x;
+    p = put16(p, ZIP_EXTRA_TIME);
+    p = put16(p, 5);
+    *p++ = 1;
+    p = put32(p, 1700000000);
+    p = put16(p, ZIP_EXTRA_UPATH);
+    p = put16(p, (u32)(5 + uname.len));
+    *p++ = 1;
+    p = put32(p, crc);
+    p = putbytes(p, uname);
+
+    zentry e[2] = {0};
+    s8     data[2] = {S("cafe\n"), S("z\n")};
+    for (i32 i = 0; i < 2; i++) {
+        e[i].name    = i ? S("z") : stored;
+        e[i].made    = 0x0014;  // MS-DOS, version 2.0
+        e[i].method  = ZIP_STORE;
+        e[i].dostime = 0x57654321;
+        e[i].crc     = crc32_update(0, data[i].s, data[i].len, &(i32){0});
+        e[i].csize   = e[i].usize = data[i].len;
+        e[i].lextra  = e[i].cextra = i ? (s8){0} : (s8){x, p-x};
+    }
+    u8 *buf = malloc(1024);
+    TEST(buf);
+    u8 *q = buf;
+    for (i32 i = 0; i < 2; i++) {
+        e[i].offset = q - buf;
+        q = zip_local(q, e+i);
+        q = putbytes(q, data[i]);
+    }
+    i64 cdoff = q - buf;
+    q = zip_central(q, e);
+    q = zip_central(q, e+1);
+    q = zip_end(q, 2, q-buf-cdoff, cdoff, (s8){0}, 0x0014);
+    return (s8){buf, q-buf};
+}
+
+// A caller's answers to whether files replace entries, counted.
+typedef struct {
+    i32 asked;
+    b32 answer;
+} replies;
+
+static b32 replace_hook(void *data, s8 name)
+{
+    (void)name;
+    replies *r = data;
+    r->asked++;
+    return r->answer;
+}
+
+// A caller's changes (zip_call): entries found by ordinal and stored name,
+// deleted or renamed exactly, whatever wildcards or duplicates their
+// names hold, renamed folders' entries all at once, files added under
+// names of its own, and, cancelled at any point, the archive as it was
+static void test_call(os *ctx, arena a)
+{
+    zspec spec[] = {
+        {S("a[1].txt"), S("one\n")},
+        {S("b?.txt"),   S("two\n")},
+        {S("d/"),       S("")},
+        {S("d/x"),      S("x\n")},
+        {S("d/y"),      S("y\n")},
+        {S("dup"),      S("first\n")},
+        {S("dup"),      S("second\n")},
+    };
+    s8 z = build(spec, countof(spec), 0);
+
+    // Deleted by ordinal, the second of two names, and nothing matched
+    // as a pattern; the bytes to read are those kept
+    mfs_reset(ctx);
+    mfs_put(ctx, "a.zip", FT_FILE, z.s, z.len, 1600000000);
+    zipchange del[] = {{0, S("a[1].txt"), {0}}, {6, S("dup"), {0}}};
+    zipcall   c     = {0};
+    c.archive  = S("a.zip");
+    c.changes  = del;
+    c.nchanges = countof(del);
+    c.level    = 6;
+    TEST(zipos_call(ctx, &c, 0) == 0);
+    TEST(equals(zipos_output(ctx, 1),
+                "deleting: a[1].txt\ndeleting: dup\n"));
+    TEST(c.total == 4+0+2+2+6);
+    arena t = a;
+    zlist l = entries(mfs_get(ctx, "a.zip"), &t);
+    TEST(l.count == 5);
+    TEST(equals(l.entries[0].name, "b?.txt") && equals(l.data[0], "two\n"));
+    TEST(equals(l.entries[4].name, "dup") && equals(l.data[4], "first\n"));
+    TEST(no_temp(ctx));
+
+    // A stale view, its stored name not the entry's, changes nothing, nor
+    // does one that both adds and changes
+    s8 before = mfs_get(ctx, "a.zip");
+    before = (s8){memcpy(malloc((uz)before.len), before.s, (uz)before.len),
+                  before.len};
+    zipchange stale[] = {{1, S("x"), {0}}};
+    c.changes  = stale;
+    c.nchanges = 1;
+    TEST(zipos_call(ctx, &c, 0) == ZE_PARMS);
+    TEST(s8equals(mfs_get(ctx, "a.zip"), before));
+    zipsource some[] = {{S("a.zip"), S("x")}};
+    c.sources  = some;
+    c.nsources = 1;
+    TEST(zipos_call(ctx, &c, 0) == ZE_PARMS);
+    TEST(s8equals(mfs_get(ctx, "a.zip"), before));
+    c.sources  = 0;
+    c.nsources = 0;
+    free(before.s);
+
+    // Renamed: a name made UTF-8, flagged so in both headers, and a
+    // folder with its entries, in one call
+    zipchange ren[] = {
+        {0, S("b?.txt"), S("b\xc3\xa9.txt")},
+        {1, S("d/"),     S("e/")},
+        {2, S("d/x"),    S("e/x")},
+        {3, S("d/y"),    S("e/y")},
+    };
+    c.changes  = ren;
+    c.nchanges = countof(ren);
+    TEST(zipos_call(ctx, &c, 0) == 0);
+    TEST(!zipos_output(ctx, 1).len && !zipos_output(ctx, 2).len);
+    t = a;
+    s8 zz = mfs_get(ctx, "a.zip");
+    l = entries(zz, &t);
+    TEST(l.count == 5);
+    char const *want[] = {"b\xc3\xa9.txt", "e/", "e/x", "e/y", "dup"};
+    char const *data[] = {"two\n", "", "x\n", "y\n", "first\n"};
+    for (iz i = 0; i < l.count; i++) {
+        TEST(equals(l.entries[i].name, want[i]));
+        TEST(equals(l.data[i], data[i]));
+        b32 flagged = (l.entries[i].flags & ZIP_FLAG_UTF8) != 0;
+        TEST(flagged == !i);
+        TEST(get16(zz.s+l.entries[i].offset+6) == l.entries[i].flags);
+    }
+
+    // A name taken by an entry kept, or by another renamed, is refused;
+    // one's own in another case is not, with Windows conventions, nor are
+    // two names swapped
+    zipchange taken[] = {{4, S("dup"), S("e/x")}};
+    zipchange twice[] = {{3, S("e/y"), S("f")}, {4, S("dup"), S("f")}};
+    zipchange bad[]   = {{4, S("dup"), S("\xff")}};
+    zipchange *refused[] = {taken, twice, bad};
+    iz         counts[]  = {1, 2, 1};
+    for (i32 k = 0; k < countof(refused); k++) {
+        before = mfs_get(ctx, "a.zip");
+        before = (s8){memcpy(malloc((uz)before.len), before.s,
+                             (uz)before.len), before.len};
+        c.changes  = refused[k];
+        c.nchanges = counts[k];
+        TEST(zipos_call(ctx, &c, 1) == ZE_PARMS);
+        TEST(s8equals(mfs_get(ctx, "a.zip"), before));
+        free(before.s);
+    }
+    zipchange cased[] = {{4, S("dup"), S("DUP")}};
+    zipchange swap[]  = {{2, S("e/x"), S("e/y")}, {3, S("e/y"), S("e/x")}};
+    c.changes  = cased;
+    c.nchanges = 1;
+    TEST(zipos_call(ctx, &c, 1) == 0);
+    c.changes  = swap;
+    c.nchanges = 2;
+    TEST(zipos_call(ctx, &c, 1) == 0);
+    t = a;
+    l = entries(mfs_get(ctx, "a.zip"), &t);
+    TEST(l.count == 5);
+    TEST(equals(l.entries[2].name, "e/y") && equals(l.data[2], "x\n"));
+    TEST(equals(l.entries[3].name, "e/x") && equals(l.data[3], "y\n"));
+    TEST(equals(l.entries[4].name, "DUP"));
+    TEST(no_temp(ctx));
+
+    // Renamed from a name in a code page with a Unicode path field: that
+    // field goes from both headers, the timestamp stays, and an ASCII
+    // name is not flagged
+    s8 u = build_upath();
+    mfs_reset(ctx);
+    mfs_put(ctx, "a.zip", FT_FILE, u.s, u.len, 1600000000);
+    zipchange plain[] = {{0, S("caf\x82"), S("new.txt")}};
+    c.changes  = plain;
+    c.nchanges = 1;
+    TEST(zipos_call(ctx, &c, 1) == 0);
+    t  = a;
+    zz = mfs_get(ctx, "a.zip");
+    l  = entries(zz, &t);
+    TEST(l.count==2 && equals(l.entries[0].name, "new.txt"));
+    TEST(!(l.entries[0].flags & ZIP_FLAG_UTF8));
+    TEST(!has_extra(l.entries[0].cextra, ZIP_EXTRA_UPATH));
+    TEST(has_extra(l.entries[0].cextra, ZIP_EXTRA_TIME));
+    TEST(!has_extra(local_extra(zz, l.entries), ZIP_EXTRA_UPATH));
+    TEST(has_extra(local_extra(zz, l.entries), ZIP_EXTRA_TIME));
+    TEST(equals(l.data[0], "cafe\n") && equals(l.data[1], "z\n"));
+    free(u.s);
+
+    // Files added under names of the caller's choosing, a directory's
+    // entries under its name, to an existing archive
+    zspec one[] = {{S("keep"), S("k\n")}};
+    s8    k     = build(one, 1, 0);
+    mfs_reset(ctx);
+    put_files(ctx, (s8){0});
+    mfs_put(ctx, "a.zip", FT_FILE, k.s, k.len, 1600000000);
+    zipsource add[] = {{S("f"), S("docs/f")}, {S("d"), S("docs/d")}};
+    c.changes  = 0;
+    c.nchanges = 0;
+    c.sources  = add;
+    c.nsources = countof(add);
+    TEST(zipos_call(ctx, &c, 0) == 0);
+    TEST(equals(zipos_output(ctx, 1),
+                "  adding: docs/f (deflated 99%)\n"
+                "  adding: docs/d/ (stored 0%)\n"
+                "  adding: docs/d/g (stored 0%)\n"));
+    TEST(c.total == 2 + 3000 + 2);
+    t = a;
+    l = entries(mfs_get(ctx, "a.zip"), &t);
+    TEST(l.count == 4);
+    TEST(equals(l.entries[0].name, "keep") && equals(l.entries[1].name,
+                                                     "docs/f"));
+    TEST(equals(l.entries[2].name, "docs/d/") && equals(l.entries[3].name,
+                                                        "docs/d/g"));
+    TEST(equals(l.data[0], "k\n"));
+    TEST(no_temp(ctx));
+
+    // Not newer, under -u, an entry is left, and asked of first, a caller
+    // may keep an entry that a file would replace
+    c.mode = MODE_UPDATE;
+    TEST(zipos_call(ctx, &c, 0) == 0);
+    TEST(!zipos_output(ctx, 1).len);
+    replies hook = {0};
+    c.mode    = MODE_ADD;
+    c.replace = replace_hook;
+    c.data    = &hook;
+    for (hook.answer = 0; hook.answer < 2; hook.answer++) {
+        hook.asked = 0;
+        TEST(zipos_call(ctx, &c, 0) == 0);
+        TEST(hook.asked == 3);
+        TEST(equals(zipos_output(ctx, 1), hook.answer
+                    ? "updating: docs/f (deflated 99%)\n"
+                      "updating: docs/d/ (stored 0%)\n"
+                      "updating: docs/d/g (stored 0%)\n"
+                    : ""));
+    }
+    c.replace = 0;
+    c.data    = 0;
+
+    // A name not on disk is no pattern: nothing to do
+    zipsource none[] = {{S("*"), S("*")}};
+    c.sources  = none;
+    c.nsources = 1;
+    TEST(zipos_call(ctx, &c, 0) == ZE_NONE);
+    TEST(equals(zipos_output(ctx, 2),
+                "zip warning: name not matched: *\n"
+                "\nzip error: Nothing to do! (a.zip)\n"));
+
+    // Cancelled at every open, read, and write, the archive is as it was,
+    // with no temporary file left, until it completes
+    for (i32 kind = 0; kind < 2; kind++) {
+        i32 exits = 0;
+        for (i32 at = 1;; at++) {
+            mfs_reset(ctx);
+            put_files(ctx, (s8){0});
+            mfs_put(ctx, "a.zip", FT_FILE, z.s, z.len, 1600000000);
+            zipchange moved[] = {
+                {2, S("d/"), S("e/")}, {3, S("d/x"), S("e/x")},
+                {4, S("d/y"), S("e/y")},
+            };
+            ctx->exitat = at;
+            c.sources   = kind ? 0 : add;
+            c.nsources  = kind ? 0 : countof(add);
+            c.changes   = kind ? moved : 0;
+            c.nchanges  = kind ? countof(moved) : 0;
+            i32 r = zipos_call(ctx, &c, 0);
+            if (r != EXIT_CANCEL) {
+                TEST(r == 0);
+                break;
+            }
+            exits++;
+            TEST(s8equals(mfs_get(ctx, "a.zip"), z));
+            TEST(no_temp(ctx));
+        }
+        TEST(exits > 3);
+    }
+    ctx->exitat = 0;
+    free(z.s);
+    free(k.s);
+}
+
 int main(void)
 {
     (void)bytemove;
@@ -557,6 +866,7 @@ int main(void)
     test_swapped_link(ctx, a);
     test_pace(ctx);
     test_order(ctx);
+    test_call(ctx, a);
 
     free(a.beg);
     zipos_free(ctx);

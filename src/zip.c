@@ -485,6 +485,28 @@ static s8 zip_filter_extra(arena *a, s8 x)
     return r;
 }
 
+// Drop the extra fields of one id from x, in place, as a renamed entry
+// drops the Unicode path field of its old name. Malformed trailing data
+// is dropped too.
+[[maybe_unused]] static s8 zip_drop_extra(s8 x, u32 drop)
+{
+    iz n = 0;
+    for (iz i = 0; x.len-i >= 4;) {
+        u32 id  = get16(x.s+i);
+        iz  len = get16(x.s+i+2);
+        if (len > x.len-i-4) {
+            break;
+        }
+        if (id != drop) {
+            bytemove(x.s+n, x.s+i, 4+len);
+            n += 4 + len;
+        }
+        i += 4 + len;
+    }
+    x.len = n;
+    return x;
+}
+
 // The modification time among extra fields as Info-ZIP's -u and -f
 // compare it (its ef_scan_ut_time), unsigned as it reads it: that of the
 // last extended timestamp ("UT") field, if it has one, else of an old

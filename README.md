@@ -39,6 +39,13 @@ The zip and unzip programs build the same way from
     $ cc -O2 -o unzip platform/unzip_posix.c
     $ cc -O2 -fno-builtin -nostartfiles -o unzip.exe platform/unzip_windows.c -lmemory -lshell32 -lkernel32
 
+The Windows GUI, `tugz.exe` (see GUI below), builds from the source root,
+whose `platform/tugz.ico` it embeds:
+
+    $ cc -O2 -fno-builtin -nostartfiles -mwindows -o tugz.exe platform/gui_windows.c -lmemory -lcomctl32 -lole32
+
+For XP, i686, add `-Wl,--large-address-aware`.
+
 CMake builds the library, the programs, and the tests (see Development):
 
     $ cmake -B build && cmake --build build
@@ -553,6 +560,45 @@ attributes. ZipInfo's `-M` (its pager) and Debian's `-U` are refused
 [docs/notes.md](docs/notes.md#departures-from-info-zip-unzip), include
 the end record looked for where unzip looks for it, among the last 64
 KiB, rather than in the whole file, and names shown as unzip shows them.
+
+## GUI
+
+`tugz.exe` is an archive manager for Windows XP and later: a folder tree
+of the archive beside a list of its entries, with zipinfo's fields for
+columns (sizes, ratio, method, time, attributes, CRC-32, version and
+system), the system's icons for each type, and a toolbar to add,
+extract, move out (extract, then delete), delete, rename, test, and edit
+entries. Its work is zip's and unzip's own, through caller interfaces
+in their drivers (`zip_call`, `unzip_call`), on a worker thread with a
+progress dialog and Cancel; their messages are shown when something did
+not go as planned.
+
+- Open an archive from the File menu, the command line (`tugz
+  archive.zip`), or by dropping it on the window.
+- Double-click (or Enter) opens a file with its default program, from a
+  temporary folder removed when tugz exits; Open with... is in the
+  context menu.
+- Drop files and folders on the list or the tree to add them, into the
+  folder under the cursor. Drag entries out to Explorer or anywhere
+  files drop: they are extracted when the button is released over a
+  place that takes them.
+- Extract asks for a folder (by default beside the archive, named for
+  it), whether to keep folders, and what to do with existing files.
+  Selections extract as they are seen, relative to the folder shown.
+- Rename with F2, a file or a folder, which renames every entry within
+  it. New names are stored as UTF-8.
+- Edit (F4) runs a command on a temporary copy, `notepad.exe` unless set
+  in Tools, Options (`%1` is the file), and once it exits with status 0
+  having changed the file, replaces the entry.
+- Properties (Alt+Enter) shows zipinfo's `-v` report.
+- An archive that unzip reads but zip would misread (data before it, as
+  in a self-extractor, or a damaged central directory) opens read-only,
+  with a note saying why.
+- Extracted and opened files get the archive's mark of the web.
+
+Names are Unicode throughout, and the window is sharp at any DPI, per
+monitor: its icons are painted in code at the size each needs. Settings
+are kept in `HKEY_CURRENT_USER\Software\tugz`.
 
 ## Performance
 

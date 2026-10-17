@@ -2980,6 +2980,289 @@ static void test_zipinfo_verbose(os *ctx)
     free(z.s);
 }
 
+// What a caller lists (unzip_call's visit): each entry's offset, stored
+// name, decoded name, and size, then the archive's end, its strings
+// copied out of the run's memory, which the next run reuses.
+typedef struct {
+    i64  at[8];
+    s8   stored[8];
+    s8   name[8];
+    i64  usize[8];
+    i32  n;
+    b32  ended;
+    i32  cderr;
+    s8   comment;
+    u8   buf[1024];
+    iz   used;
+} listing;
+
+static s8 keep_copy(listing *l, s8 s)
+{
+    TEST(s.len <= countof(l->buf) - l->used);
+    s8 r = {l->buf + l->used, s.len};
+    if (s.len) {
+        memcpy(r.s, s.s, (uz)s.len);
+    }
+    l->used += s.len;
+    return r;
+}
+
+static void visit_hook(void *data, unzipvisit *v)
+{
+    listing *l = data;
+    TEST(!l->ended);
+    if (!v->e) {
+        l->ended   = 1;
+        l->cderr   = v->cderr;
+        l->comment = keep_copy(l, v->ar->end.comment);
+        return;
+    }
+    TEST(l->n<countof(l->at) && v->ordinal==l->n);
+    l->at[l->n]     = v->at;
+    l->stored[l->n] = keep_copy(l, v->e->name);
+    l->name[l->n]   = keep_copy(l, v->name);
+    l->usize[l->n]  = v->e->usize;
+    l->n++;
+}
+
+// A caller's answers to questions (unzip_call's ask), a line each in
+// order, then none, as at the end of input, counted by question.
+typedef struct {
+    char const *lines[4];
+    i32         next;
+    i32         asked[3];
+    s8          about;  // the path last asked about
+    u8          buf[256];
+} asker;
+
+static iz ask_hook(void *data, i32 question, s8 path, u8 *buf, iz cap)
+{
+    asker *a = data;
+    a->asked[question]++;
+    TEST(path.len <= countof(a->buf));
+    memcpy(a->buf, path.s, (uz)path.len);
+    a->about = (s8){a->buf, path.len};
+    char const *line = a->next<countof(a->lines) ? a->lines[a->next] : 0;
+    if (!line) {
+        return -1;
+    }
+    a->next++;
+    iz n = (iz)strlen(line);
+    TEST(n <= cap);
+    memcpy(buf, line, (uz)n);
+    return n;
+}
+
+// A caller's runs (unzip_call): an archive listed an entry at a time,
+// then entries picked by where their central headers are, whatever their
+// names hold, extracted under names of the caller's (still made safe, as
+// entries' own names are), tested, or reported by ZipInfo -v, each marked
+// as met and once done, with questions answered by the caller, never
+// standard input, and cancelled at any point, nothing written half
+static void test_call(os *ctx)
+{
+    xspec spec[] = {
+        {.name="a[1].txt",    .data="one\n"},
+        {.name="dup",         .data="first\n"},
+        {.name="dup",         .data="second\n"},
+        {.name="d/",          .extattr=DIRM(0755)},
+        {.name="d/x.txt",     .data=TEXT, .method=8},
+        {.name="d/sub/y.txt", .data="y\n"},
+        {.name="enc",         .data="secret", .flags=1},
+    };
+    s8 z = build(spec, countof(spec), "note");
+
+    // Listed quietly: each entry, then the end
+    mfs_reset(ctx);
+    put_archive(ctx, "a.zip", z);
+    listing   l    = {0};
+    unzipcall c    = {0};
+    i32       open = 0;
+    c.archive = S("a.zip");
+    c.mode    = CALL_LIST;
+    c.visit   = visit_hook;
+    c.data    = &l;
+    TEST(unzipos_call(ctx, &c, &open) == 0 && !open);
+    TEST(l.n==7 && l.ended && l.cderr==CD_OK);
+    TEST(equals(l.stored[2], "dup") && equals(l.name[4], "d/x.txt"));
+    TEST(l.usize[4] == (iz)strlen(TEXT));
+    TEST(equals(l.comment, "note"));
+    TEST(output_is(ctx, 3, ""));
+    c.visit = 0;
+    c.data  = 0;
+
+    // Picked: the second "dup", not the first, and a name of wildcards,
+    // which as a pattern would match neither itself nor only itself
+    unzippick p1[] = {
+        {l.at[0], l.stored[0], S("a[1].txt"), 0, 0},
+        {l.at[2], l.stored[2], {0}, 0, 0},  // under its own name
+    };
+    mfs_reset(ctx);
+    put_archive(ctx, "a.zip", z);
+    ctx->dest = S("out/");
+    c.mode    = CALL_EXTRACT;
+    c.exdir   = S("out");
+    c.picks   = p1;
+    c.npicks  = countof(p1);
+    TEST(unzipos_call(ctx, &c, &open) == 0 && !open);
+    TEST(equals(file_data(ctx, "out/a[1].txt"), "one\n"));
+    TEST(equals(file_data(ctx, "out/dup"), "second\n"));
+    TEST(p1[0].met && p1[0].done && p1[1].met && p1[1].done);
+    TEST(output_has(ctx, 1, " extracting: out/dup"));
+
+    // Under the caller's names, a folder and its entries put elsewhere,
+    // a ".." dropped, and with Windows conventions, a device's name
+    // mapped, all as the entries' own names would be
+    unzippick p2[] = {
+        {l.at[3], l.stored[3], S("dd/"), 0, 0},
+        {l.at[4], l.stored[4], S("dd/x.txt"), 0, 0},
+        {l.at[5], l.stored[5], S("../../dd/sub/con.txt"), 0, 0},
+    };
+    mfs_reset(ctx);
+    put_archive(ctx, "a.zip", z);
+    ctx->dest    = S("out/");
+    ctx->windows = 1;
+    c.picks  = p2;
+    c.npicks = countof(p2);
+    TEST(unzipos_call(ctx, &c, &open) == 1 && !open);  // the ".." warned of
+    TEST(equals(file_data(ctx, "out/dd/x.txt"), TEXT));
+    TEST(equals(file_data(ctx, "out/dd/sub/_con.txt"), "y\n"));
+    TEST(p2[0].done && p2[1].done && p2[2].done);
+    TEST(output_has(ctx, 1, "skipped \"../\" path component"));
+
+    // Met but not done: an encrypted entry, skipped (81); and a pick not
+    // there, by its stored name, as when the archive has changed (11)
+    unzippick p3[] = {{l.at[6], l.stored[6], {0}, 0, 0}};
+    unzippick p4[] = {{l.at[0], S("zzz"), {0}, 0, 0}};
+    mfs_reset(ctx);
+    put_archive(ctx, "a.zip", z);
+    ctx->dest = S("out/");
+    c.picks  = p3;
+    c.npicks = 1;
+    TEST(unzipos_call(ctx, &c, &open) == IZ_UNSUP && !open);
+    TEST(p3[0].met && !p3[0].done);
+    c.picks = p4;
+    TEST(unzipos_call(ctx, &c, &open) == PK_FIND && !open);
+    TEST(!p4[0].met && !p4[0].done);
+    TEST(output_has(ctx, 2, "caution: filename not matched:  zzz\n"));
+    TEST(!mfs_get(ctx, "out/a[1].txt"));
+
+    // The caller answers whether to replace a file there, then any new
+    // name: no, yes, rename, no answer (None, a warning), None, All
+    struct {
+        char const *lines[3];
+        i32  status;
+        char const *a;     // out/a[1].txt's data after
+        char const *dup;   // out/dup's
+        b32  done[2];
+        i32  asked;
+    } cases[] = {
+        {{"n", "n"},         0, "old", "old", {0, 0}, 2},
+        {{"y", "y"},         0, "one\n", "second\n", {1, 1}, 2},
+        {{"r", "new.txt", "n"}, 0, "old", "old", {1, 0}, 2},
+        {{0},                1, "old", "old", {0, 0}, 1},
+        {{"N"},              0, "old", "old", {0, 0}, 1},
+        {{"A"},              0, "one\n", "second\n", {1, 1}, 1},
+    };
+    for (i32 k = 0; k < countof(cases); k++) {
+        asker a = {0};
+        for (i32 i = 0; i < 3; i++) {
+            a.lines[i] = cases[k].lines[i];
+        }
+        unzippick p[] = {
+            {l.at[0], l.stored[0], {0}, 0, 0},
+            {l.at[2], l.stored[2], {0}, 0, 0},
+        };
+        mfs_reset(ctx);
+        put_archive(ctx, "a.zip", z);
+        mfs_put(ctx, "out", FT_DIR, 0, 0, 0);
+        mfs_put(ctx, "out/a[1].txt", FT_FILE, "old", 3, 1500000000);
+        mfs_put(ctx, "out/dup", FT_FILE, "old", 3, 1500000000);
+        ctx->dest = S("out/");
+        c.picks  = p;
+        c.npicks = countof(p);
+        c.ask    = ask_hook;
+        c.data   = &a;
+        TEST(unzipos_call(ctx, &c, &open) == cases[k].status && !open);
+        TEST(equals(file_data(ctx, "out/a[1].txt"), cases[k].a));
+        TEST(equals(file_data(ctx, "out/dup"), cases[k].dup));
+        TEST(p[0].done==cases[k].done[0] && p[1].done==cases[k].done[1]);
+        TEST(a.asked[ASK_REPLACE] == cases[k].asked);
+        TEST(equals(a.about, k==2 ? "out/dup" : cases[k].asked==2
+                                  ? "out/dup" : "out/a[1].txt"));
+        if (k == 2) {
+            TEST(a.asked[ASK_NAME] == 1);
+            TEST(equals(file_data(ctx, "out/new.txt"), "one\n"));
+        }
+        TEST(!ctx->inoff);  // never standard input
+    }
+    c.ask  = 0;
+    c.data = 0;
+
+    // Tested: the picks, each done, then all, with UnZip's summaries, the
+    // encrypted entry skipped
+    unzippick p5[] = {
+        {l.at[0], l.stored[0], {0}, 0, 0},
+        {l.at[4], l.stored[4], {0}, 0, 0},
+    };
+    mfs_reset(ctx);
+    put_archive(ctx, "a.zip", z);
+    c.mode   = CALL_TEST;
+    c.picks  = p5;
+    c.npicks = countof(p5);
+    TEST(unzipos_call(ctx, &c, &open) == 0 && !open);
+    TEST(p5[0].done && p5[1].done);
+    TEST(output_has(ctx, 1, "    testing: d/x.txt"));
+    TEST(output_has(ctx, 1, "No errors detected in a.zip for the 2 files "
+                            "tested.\n"));
+    c.picks  = 0;
+    c.npicks = 0;
+    TEST(unzipos_call(ctx, &c, &open) == IZ_UNSUP && !open);
+    TEST(output_has(ctx, 1, "1 file skipped because of unsupported "
+                            "compression or encoding.\n"));
+
+    // ZipInfo -v of one entry: the archive's sections, then its own,
+    // the fifth's, and no other's
+    unzippick p6[] = {{l.at[4], l.stored[4], {0}, 0, 0}};
+    c.mode   = CALL_ZIPINFO;
+    c.picks  = p6;
+    c.npicks = 1;
+    TEST(unzipos_call(ctx, &c, &open) == 0 && !open);
+    TEST(output_has(ctx, 1, "Central directory entry #5:\n"));
+    TEST(output_has(ctx, 1, "  d/x.txt\n"));
+    TEST(!output_has(ctx, 1, "a[1].txt"));
+
+    // Cancelled at every open, read, and write: whatever was extracted is
+    // whole, the file being written gone, nothing left open, until done
+    unzippick p7[] = {
+        {l.at[0], l.stored[0], {0}, 0, 0},
+        {l.at[4], l.stored[4], {0}, 0, 0},
+    };
+    i32 exits = 0;
+    for (i32 at = 1;; at++) {
+        mfs_reset(ctx);
+        put_archive(ctx, "a.zip", z);
+        ctx->dest   = S("out/");
+        ctx->exitat = at;
+        c.mode   = CALL_EXTRACT;
+        c.picks  = p7;
+        c.npicks = countof(p7);
+        i32 r = unzipos_call(ctx, &c, &open);
+        if (r != EXIT_CANCEL) {
+            TEST(r==0 && !open);
+            break;
+        }
+        exits++;
+        mfile *a = mfs_get(ctx, "out/a[1].txt");
+        mfile *x = mfs_get(ctx, "out/d/x.txt");
+        TEST(!a || equals((s8){a->data, a->len}, "one\n"));
+        TEST(!x || equals((s8){x->data, x->len}, TEXT));
+    }
+    TEST(exits > 3);
+    ctx->exitat = 0;
+    free(z.s);
+}
+
 int main(void)
 {
     (void)bytemove;
@@ -3006,6 +3289,7 @@ int main(void)
     test_pace(ctx);
     test_zipinfo(ctx);
     test_zipinfo_verbose(ctx);
+    test_call(ctx);
     unzipos_free(ctx);
     puts("all unzip program tests pass");
     return 0;

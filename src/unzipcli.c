@@ -255,6 +255,43 @@ enum { UZ_LINKMAX = 4096 };
 #  define UZ_CDWIN (1 << 18)
 #endif
 
+// A caller's selection (unzip_call), in place of member patterns: an
+// entry found by where its central header is, as unzip reads them, and
+// checked by its stored name, then extracted under a name of the
+// caller's, relative and '/'-separated, made a path as an entry's own
+// name is (uz_mapname), else under its own; marked as it is met, and
+// once done: extracted, made, or tested without error.
+typedef struct {
+    i64 at;
+    s8  stored;
+    s8  as;      // or null
+    b32 met;
+    b32 done;
+} unzippick;
+
+// The questions of a run, which a caller (unzip_call) may answer in
+// place of standard input, a line at a time, as UnZip reads them: to
+// replace a file, the answer, then if [r]ename, the new name; to go on
+// past a write error
+enum { ASK_REPLACE, ASK_NAME, ASK_DISK };
+
+// An entry as a caller lists it (unzip_call's visit), the ordinal'th,
+// then, without one (e null), the archive as it was read: its comment,
+// cut short (ar->end.cut), its offsets shifted (ar->shift) or wrapped,
+// its Zip64 end record moved (ar->moved64), and what ended its central
+// directory early (cderr), as a caller may take an archive for one that
+// zip, which reads none of these, cannot change.
+typedef struct {
+    zarchive *ar;
+    zentry   *e;
+    s8        name;     // decoded, as entry_name decodes it
+    i64       at;       // its central header's offset
+    i64       ordinal;
+    i32       cderr;    // CD_*
+    arena    *perm;     // for what the caller keeps
+    arena    *scratch;  // for its temporaries, each gone by the next visit
+} unzipvisit;
+
 // A link, deferred until the files are extracted, with the empty file
 // that holds its place meanwhile, as UnZip's slinkentry with the file
 // holding its target
@@ -265,6 +302,7 @@ typedef struct {
     u64     dev;     // the placeholder's identity
     u64     ino[2];
     b32     gone;    // its placeholder was replaced by a later entry
+    unzippick *pick; // its entry's, to mark done once made (unzip_call)
 } xlink;
 
 // The links, and an index of their placeholders' identities: a table
@@ -365,6 +403,14 @@ typedef struct {
     i64     nentries; // entries read from its central directory
     i32     cderr;    // what ended the reading early: CD_*
     i64     oldshift; // the shift undone to find an entry (UnZip's)
+
+    // A caller's (unzip_call)
+    unzippick *picks;  // sorted by at, else null, for member patterns
+    iz         npicks;
+    unzippick *pick;   // the entry in hand's
+    iz       (*ask)(void *data, i32 question, s8 path, u8 *buf, iz cap);
+    void     (*visit)(void *data, unzipvisit *);
+    void      *data;
 } unzip;
 
 // What ended reading a central directory, as UnZip finds it only once
@@ -931,6 +977,46 @@ static b32 wanted(unzip *u, s8 name, u8 *fm, u8 *xm)
     return hit;
 }
 
+// The caller's pick of an entry (unzip_call), by where its central
+// header is, if its stored name is the pick's too, else null.
+static unzippick *pick_of(unzip *u, i64 at, zentry *e)
+{
+    iz lo = 0;
+    for (iz hi = u->npicks; lo < hi;) {
+        iz mid = lo + (hi - lo)/2;
+        if (u->picks[mid].at < at) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    unzippick *p = lo<u->npicks && u->picks[lo].at==at ? u->picks+lo : 0;
+    return p && zequals(p->stored, e->name) ? p : 0;
+}
+
+// Whether an entry is the caller's pick, as every entry is without
+// picks.
+static b32 picked(unzip *u, i64 at, zentry *e)
+{
+    return !u->picks || pick_of(u, at, e);
+}
+
+// The name by which an entry's path is made: the caller's for it, if
+// any, else its own.
+static s8 path_name(unzip *u, i64 at, zentry *e, s8 name)
+{
+    unzippick *p = u->picks ? pick_of(u, at, e) : 0;
+    return p && p->as.s ? p->as : name;
+}
+
+// The entry in hand is done, if it is the caller's pick.
+static void pick_done(unzip *u)
+{
+    if (u->pick) {
+        u->pick->done = 1;
+    }
+}
+
 // Report the members, then the -x patterns, that matched no entry (none
 // noted in fm and xm), as UnZip does once it has been through an
 // archive. Returns whether a member matched none.
@@ -1088,9 +1174,10 @@ static i32 list_files(unzip *u, zarchive *ar, arena scratch)
         zentry  ent  = {0};
         zentry *e    = &ent;
         writer_poll(u->out);
+        i64     at   = off;
         next_entry(u, ar, &off, e, &tmp);
         s8      name = entry_name(u, e, &tmp);
-        if (!wanted(u, name, 0, 0)) {
+        if (!wanted(u, name, 0, 0) || !picked(u, at, e)) {
             continue;
         }
         i32 tm[6];
@@ -1239,10 +1326,11 @@ static i32 zipinfo_files(unzip *u, zarchive *ar, arena scratch)
         zentry  ent  = {0};
         zentry *e    = &ent;
         writer_poll(u->out);
+        i64     at   = off;
         next_raw(u, ar, &off, e);
         u->zilast = e->offset;
         s8      name = entry_name(u, e, &tmp);
-        if (!wanted(u, name, fm, xm)) {
+        if (!wanted(u, name, fm, xm) || !picked(u, at, e)) {
             endprev = 0;
             continue;
         }
@@ -1431,14 +1519,22 @@ static iz read_answer(unzip *u, u8 *buf, iz cap)
     return n ? n : -1;
 }
 
+// The answer to a question about the file at path, as read_answer reads
+// it, or the caller's (unzip_call).
+static iz answer(unzip *u, i32 question, s8 path, u8 *buf, iz cap)
+{
+    return u->ask ? u->ask(u->data, question, path, buf, cap)
+                  : read_answer(u, buf, cap);
+}
+
 // A write to an extracted file failed: ask, as UnZip's disk_error does,
 // whether to go on with the next entry.
 static b32 disk_error(unzip *u, s8 sname, arena scratch)
 {
     info(u, MSG_STDERR|MSG_LNEWLN, JOIN(&scratch, sname,
          S(":  write error (disk full?).  Continue? (y/n/^C) ")));
-    u8 answer[10];
-    return read_answer(u, answer, countof(answer))>0 && answer[0]=='y';
+    u8 buf[10];
+    return answer(u, ASK_DISK, sname, buf, countof(buf))>0 && buf[0]=='y';
 }
 
 // Where an entry's data goes when extracted to disk.
@@ -1893,20 +1989,20 @@ static u8 ask_replace(unzip *u, s8 full, i32 *err, s8 *rename, u8 *buf,
         arena tmp = scratch;
         info(u, MSG_STDERR, JOIN(&tmp, S("replace "), shown(u, full, &tmp),
              S("? [y]es, [n]o, [A]ll, [N]one, [r]ename: ")));
-        u8 answer[10];  // as UnZip's answerbuf, a longer answer split
-        iz n = read_answer(u, answer, countof(answer));
+        u8 reply[10];  // as UnZip's answerbuf, a longer answer split
+        iz n = answer(u, ASK_REPLACE, full, reply, countof(reply));
         if (n < 0) {
             info(u, MSG_STDERR, S(" NULL\n(EOF or read error, treating as "
                                   "\"[N]one\" ...)\n"));
             *err = MAX(*err, PK_WARN);  // not extracted: a warning
-            answer[0] = 'N';
+            reply[0] = 'N';
         }
-        switch (answer[0]) {
+        switch (reply[0]) {
         case 'r':
         case 'R':
             for (;;) {
                 info(u, MSG_STDERR, S("new name: "));
-                iz len = read_answer(u, buf, UZ_NEWNAME);
+                iz len = answer(u, ASK_NAME, full, buf, UZ_NEWNAME);
                 if (len < 0) {
                     *rename = (s8){0};  // UnZip keeps the name it had
                     return 'r';
@@ -1929,8 +2025,8 @@ static u8 ask_replace(unzip *u, s8 full, i32 *err, s8 *rename, u8 *buf,
         case 'n':
             return 'n';
         }
-        s8 bad = {answer, n};
-        if (answer[0]=='\n' || answer[0]=='\r') {
+        s8 bad = {reply, n};
+        if (reply[0]=='\n' || reply[0]=='\r') {
             bad = S("{ENTER}");
         } else {
             bad.len -= bad.s[bad.len-1] == '\n';
@@ -2052,7 +2148,8 @@ static i32 extract_member(unzip *u, zarchive *ar, zentry *e, s8 name,
     i32    opts = (u->windows ? UZ_WINDOWS : 0) | (u->jflag ? UZ_JUNK : 0) |
                   (u->Vflag ? UZ_KEEPVER : 0);
     u32    mask = um.umask ? u->umask : 0;
-    uzpath mp   = uz_mapname(name, e->made, opts, &scratch);
+    s8     as   = u->pick && u->pick->as.s ? u->pick->as : name;
+    uzpath mp   = uz_mapname(as, e->made, opts, &scratch);
     s8     full = {0};
     i32    have = DOES_NOT_EXIST;
     b32    renamed = 0;
@@ -2111,6 +2208,7 @@ static i32 extract_member(unzip *u, zarchive *ar, zentry *e, s8 name,
         }
         if (isdir) {
             if (!made) {
+                pick_done(u);
                 return err;  // it was there: nothing to do
             }
             s8 path = {0};
@@ -2142,6 +2240,7 @@ static i32 extract_member(unzip *u, zarchive *ar, zentry *e, s8 name,
                 d->attrs.gid    = ux.gid;
                 d->attrs.flags |= OS_AOWNER;
             }
+            pick_done(u);
             return err;
         }
         if (mp.flags & UZ_FAILED) {
@@ -2263,6 +2362,7 @@ static i32 extract_member(unzip *u, zarchive *ar, zentry *e, s8 name,
         k->dev    = id.dev;
         k->ino[0] = id.ino[0];
         k->ino[1] = id.ino[1];
+        k->pick   = u->pick;
         index_link(&u->links, k);
         if (u->Xflag && (ux.flags & UZ_OWNER)) {
             k->attrs.uid   = ux.uid;
@@ -2310,6 +2410,7 @@ static i32 extract_member(unzip *u, zarchive *ar, zentry *e, s8 name,
             *stop = !out.goon;
             return MAX(err, PK_DISK);
         }
+        pick_done(u);
     }
     if (!u->qflag) {
         info(u, 0, S("\n"));
@@ -2350,6 +2451,9 @@ static i32 finish_links(unzip *u, arena scratch)
         s8  why[OS_AWHY] = {0};
         i32 failed = os_symlink(ctx, k->target, k->path, &k->attrs, why,
                                 &tmp);
+        if (k->pick && !(failed & OS_ALINK)) {
+            k->pick->done = 1;
+        }
         if (failed & OS_ALINK) {
             perror_(u, S("symlink error"), why[3], tmp);
         } else if (failed) {
@@ -2501,6 +2605,9 @@ static i32 do_member(unzip *u, zarchive *ar, zentry *e, s8 name, i64 filnum,
     }
     r = test_member(u, ar, e, &l, usize, name, 0, scratch);
     *stop = r == PK_DISK;
+    if (r == PK_OK) {
+        pick_done(u);
+    }
     return MAX(err, r);
 }
 
@@ -2527,17 +2634,20 @@ static void plan(unzip *u, zarchive *ar, arena *scratch)
     for (i64 i = 0; i < count; i++) {
         arena  tmp  = *scratch;
         zentry e    = {0};
+        i64    at   = off;
         next_entry(u, ar, &off, &e, &tmp);
         s8     name = entry_name(u, &e, &tmp);
         def64 |= e.method == ZIP_DEFLATE64;
-        if (!readable(&e) || !wanted(u, name, 0, 0) || beyond(ar, &e)) {
+        if (!readable(&e) || !wanted(u, name, 0, 0) || !picked(u, at, &e) ||
+            beyond(ar, &e)) {
             continue;
         }
         ar->spans[ar->nspans++] = e.offset;
         if (!u->extract) {
             continue;
         }
-        uzpath mp  = uz_mapname(name, e.made, opts, &tmp);
+        s8     as  = path_name(u, at, &e, name);
+        uzpath mp  = uz_mapname(as, e.made, opts, &tmp);
         iz     len = u->root.len + mp.path.len;  // its path to make
         maxname = MAX(maxname, name.len);
         longest = MAX(longest, len + 1);
@@ -2635,12 +2745,13 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
     for (i64 i = 0; i<count && !bomb; i++) {
         arena  tmp  = scratch;
         zentry e    = {0};
+        i64    at   = off;
         next_entry(u, ar, &off, &e, &tmp);
         s8     name = entry_name(u, &e, &tmp);
         // (a compressed size, which listings take as it is, may reach
         // anywhere, up to 2^63: zar_overlaps subtracts)
-        bomb = readable(&e) && wanted(u, name, 0, 0) && !beyond(ar, &e) &&
-               zar_overlaps(ar, &e);
+        bomb = readable(&e) && wanted(u, name, 0, 0) && picked(u, at, &e) &&
+               !beyond(ar, &e) && zar_overlaps(ar, &e);
     }
     if (bomb) {
         info(u, MSG_STDERR, bomb_msg);
@@ -2698,9 +2809,12 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
             i64    floor = ar->floor;
             next_entry(u, ar, &off, &e, &tmp);
             s8     name  = entry_name(u, &e, &tmp);
-            if (!wanted(u, name, fm, xm)) {
+            if (!wanted(u, name, fm, xm) || !picked(u, at, &e)) {
                 continue;
-            } else if (!store_info(u, &e, name, tmp)) {
+            } else if (u->picks) {
+                pick_of(u, at, &e)->met = 1;
+            }
+            if (!store_info(u, &e, name, tmp)) {
                 skipped++;
                 continue;
             }
@@ -2722,9 +2836,11 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
             next_entry(u, ar, &at, &e, &tmp);
             s8     name = entry_name(u, &e, &tmp);
             if (!readable(&e) || !wanted(u, name, 0, 0) ||
+                !picked(u, block[k], &e) ||
                 (e.method==ZIP_DEFLATE64 && !u->inf64)) {
                 reread_failed(u);
             }
+            u->pick = u->picks ? pick_of(u, block[k], &e) : 0;
             writer_poll(u->out);
             i32 r = do_member(u, ar, &e, name, ++filnum, read, &stop, tmp);
             err = MAX(err, r);
@@ -2750,6 +2866,18 @@ static i32 extract_or_test(unzip *u, zarchive *ar, arena scratch)
 
     if (unmatched(u, fm, xm, scratch)) {
         err = err<=PK_WARN ? PK_FIND : err;
+    }
+    for (iz i = 0; i < u->npicks; i++) {
+        // As members are, picks of entries not there, as when the
+        // archive has changed since the caller listed it
+        if (!u->picks[i].met) {
+            arena tmp = scratch;
+            info(u, MSG_STDERR, JOIN(&tmp, S("caution: filename not matched:"
+                                             "  "),
+                                     shown(u, u->picks[i].stored, &tmp),
+                                     S("\n")));
+            err = err<=PK_WARN ? PK_FIND : err;
+        }
     }
 
     if (u->tflag && u->qflag<2) {
@@ -2862,6 +2990,40 @@ static void zipinfo_end(unzip *u, zarchive *ar, i64 size, arena scratch)
     zitext t = zt_new(&scratch, 2048);
     zi_end_text(&t, &z);
     info(u, 0, zt_text(&t));
+}
+
+// Show the caller each entry (unzip_call's visit) as listings read them,
+// then the archive as it was read. Returns a status, as list_files does.
+static i32 visit_files(unzip *u, zarchive *ar, arena scratch)
+{
+    unzipvisit v = {0};
+    v.ar   = ar;
+    v.perm = &u->perm;
+    i64 off = ar->end.cdoff;
+    for (i64 i = 0; i < u->nentries; i++) {
+        arena  tmp = scratch;
+        zentry e   = {0};
+        v.at = off;
+        next_entry(u, ar, &off, &e, &tmp);
+        v.e       = &e;
+        v.name    = entry_name(u, &e, &tmp);
+        v.ordinal = i;
+        v.scratch = &tmp;
+        u->visit(u->data, &v);
+    }
+    v.e       = 0;
+    v.name    = (s8){0};
+    v.cderr   = u->cderr;
+    v.scratch = &scratch;
+    u->visit(u->data, &v);
+    if (u->cderr==CD_SIG || u->cderr==CD_NONAME) {
+        cd_error(u, u->nentries+1, scratch);
+        return PK_BADERR;
+    } else if (u->cderr == CD_END) {
+        info(u, MSG_STDERR, end_sig_msg);
+        return PK_WARN;
+    }
+    return PK_OK;
 }
 
 // Process one archive, at path, or with stdin, standard input, as
@@ -3129,7 +3291,9 @@ static i32 do_archive(unzip *u, s8 path, b32 lastchance, b32 stdin,
     }
     zar_reread(&ar, UZ_CDWIN, &u->perm);
 
-    if (u->zinfo) {
+    if (u->visit) {
+        r = visit_files(u, &ar, scratch);
+    } else if (u->zinfo) {
         r = zipinfo_files(u, &ar, scratch);
     } else if (u->vflag && !u->tflag && !u->cflag) {
         r = list_files(u, &ar, scratch);
@@ -3271,7 +3435,27 @@ static i32 process_zipfiles(unzip *u, arena scratch)
     return status;
 }
 
-static i32 unzip_main(unzipconfig *conf)
+// Ready a run once its options are set: the decoders to test or
+// extract, and to extract, how to overwrite, and the -d directory (as
+// UnZip's checkdir ROOT, dropping a '/').
+static void unzip_start(unzip *u)
+{
+    if (u->tflag || u->cflag || u->extract) {
+        u->inf    = inflate_new(&u->perm);
+        u->window = newbytes(&u->perm, UZ_WSIZE);
+    }
+    if (u->extract) {
+        u->overwrite = u->ovnone ? OVERWRT_NEVER :
+                       u->ovall  ? OVERWRT_ALWAYS : OVERWRT_QUERY;
+        u->umask = os_umask(u->ctx);
+        s8 dir = u->exdir;
+        dir.len -= dir.len && dir.s[dir.len-1]=='/';
+        u->root = u->hasexdir && u->exdir.len ? JOIN(&u->perm, dir, S("/"))
+                                              : S("");
+    }
+}
+
+[[maybe_unused]] static i32 unzip_main(unzipconfig *conf)
 {
     unzip *u = new(&conf->perm, 1, unzip);
     u->ctx     = conf->perm.ctx;
@@ -3305,27 +3489,77 @@ static i32 unzip_main(unzipconfig *conf)
         if (!u->cflag) {
             os_holdtext(u->ctx, u->out);
         }
-        if (u->tflag || u->cflag || u->extract) {
-            u->inf    = inflate_new(&u->perm);
-            u->window = newbytes(&u->perm, UZ_WSIZE);
+        // The prompts' answers, unless standard input is the archive
+        if (u->extract && !zequals(u->zipspec, S("-"))) {
+            u->answers = newreader(&u->perm, 0, 1<<12);
         }
-        if (u->extract) {
-            // The prompts' answers, unless standard input is the archive;
-            // the -d directory (as UnZip's checkdir ROOT, dropping a '/')
-            u->overwrite = u->ovnone ? OVERWRT_NEVER :
-                           u->ovall  ? OVERWRT_ALWAYS : OVERWRT_QUERY;
-            if (!zequals(u->zipspec, S("-"))) {
-                u->answers = newreader(&u->perm, 0, 1<<12);
-            }
-            u->umask = os_umask(u->ctx);
-            s8 dir = u->exdir;
-            dir.len -= dir.len && dir.s[dir.len-1]=='/';
-            u->root = u->hasexdir && u->exdir.len ? JOIN(&u->perm, dir, S("/"))
-                                                  : S("");
-        }
+        unzip_start(u);
         r = process_zipfiles(u, scratch);
     }
     writer_flush(u->out);
     os_holdtext(u->ctx, 0);
     return r;
+}
+
+// A caller's interface, for runs other than the command line's, as the
+// GUI makes them: an archive listed entry by entry (visit), or its picked
+// entries, or all, tested, or extracted below a directory under names of
+// the caller's, or one's ZipInfo -v report. No options come from the
+// environment, the archive's name is neither expanded nor tried with
+// ".zip" added, and the caller answers the questions (ask), if it would.
+// Messages are unzip's own, and the status is as unzip_main's.
+enum { CALL_LIST, CALL_TEST, CALL_EXTRACT, CALL_ZIPINFO };
+
+typedef struct {
+    s8         archive;
+    i32        mode;       // CALL_*
+    s8         exdir;      // to extract below, made one level if missing
+    unzippick *picks;      // sorted by at, else null for every entry
+    iz         npicks;
+    i32        overwrite;  // OVERWRT_*
+    iz       (*ask)(void *data, i32 question, s8 path, u8 *buf, iz cap);
+    void     (*visit)(void *data, unzipvisit *);
+    void      *data;
+} unzipcall;
+
+[[maybe_unused]] static i32 unzip_call(unzipconfig *conf, unzipcall *c)
+{
+    unzip *u = new(&conf->perm, 1, unzip);
+    u->ctx      = conf->perm.ctx;
+    u->perm     = conf->perm;
+    u->windows  = conf->windows;
+    u->sol      = 1;
+    u->out      = newwriter(&u->perm, 1, 1<<16);
+    u->zipspec  = c->archive;
+    u->allfiles = !c->picks;
+    u->picks    = c->picks;
+    u->npicks   = c->npicks;
+    u->ask      = c->ask;
+    u->visit    = c->visit;
+    u->data     = c->data;
+    switch (c->mode) {
+    case CALL_LIST:
+        u->qflag = 1;
+        break;
+    case CALL_TEST:
+        u->tflag = 1;
+        break;
+    case CALL_EXTRACT:
+        u->extract  = 1;
+        u->hasexdir = 1;
+        u->exdir    = c->exdir;
+        u->ovall    = c->overwrite == OVERWRT_ALWAYS;
+        u->ovnone   = c->overwrite == OVERWRT_NEVER;
+        break;
+    case CALL_ZIPINFO:
+        u->zinfo = 1;
+        u->zi    = zi_new();
+        zi_option(&u->zi, 'v');
+        zi_resolve(&u->zi, 1);
+        break;
+    }
+    unzip_start(u);
+    i32 r = do_archive(u, c->archive, 1, 0, conf->scratch);
+    writer_flush(u->out);
+    return r==IZ_DIR ? PK_NOZIP : r;
 }

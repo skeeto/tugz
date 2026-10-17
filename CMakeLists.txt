@@ -55,6 +55,13 @@ option(TUGZ_BUILD_LIBRARY "Build the tugz library" ON)
 option(TUGZ_BUILD_GZIP "Build the gzip program" ${PROJECT_IS_TOP_LEVEL})
 option(TUGZ_BUILD_ZIP "Build the zip program" ${PROJECT_IS_TOP_LEVEL})
 option(TUGZ_BUILD_UNZIP "Build the unzip program" ${PROJECT_IS_TOP_LEVEL})
+if(WIN32 AND PROJECT_IS_TOP_LEVEL AND NOT CMAKE_C_SIMULATE_ID STREQUAL "MSVC")
+    set(tugz_gui_default ON)
+else()
+    set(tugz_gui_default OFF)
+endif()
+option(TUGZ_BUILD_GUI "Build the Windows GUI, tugz.exe (MinGW only)"
+       ${tugz_gui_default})
 option(TUGZ_BUILD_TESTS "Build the tests" ${tugz_tests_default})
 option(TUGZ_BUILD_FUZZ "Build the libFuzzer harnesses (LLVM clang)" OFF)
 option(TUGZ_BUILD_BENCH "Build the benchmark (zlib, libdeflate)" OFF)
@@ -139,7 +146,7 @@ if(CMAKE_C_SIMULATE_ID STREQUAL "MSVC")
 endif()
 set(tugz_libmemory OFF)
 if(WIN32 AND (TUGZ_BUILD_GZIP OR TUGZ_BUILD_ZIP OR TUGZ_BUILD_UNZIP OR
-              TUGZ_BUILD_TESTS))
+              TUGZ_BUILD_GUI OR TUGZ_BUILD_TESTS))
     if(NOT TUGZ_LIBMEMORY MATCHES "^(AUTO|ON|OFF)$")
         message(FATAL_ERROR "TUGZ_LIBMEMORY must be AUTO, ON, or OFF")
     endif()
@@ -219,6 +226,28 @@ if(TUGZ_BUILD_ZIP)
 endif()
 if(TUGZ_BUILD_UNZIP)
     tugz_program(tugz_unzip unzip unzip)
+endif()
+
+# The GUI, tugz.exe: both programs in one, with its resources (manifest
+# and icon) assembled from top-level asm, which reads platform/tugz.ico
+# from the source root, so for GNU as and ld, not the MSVC ABI's tools.
+if(TUGZ_BUILD_GUI AND (NOT WIN32 OR tugz_msvc_abi))
+    message(STATUS "tugz: no GUI: it is for Windows, with a MinGW toolchain")
+    set(TUGZ_BUILD_GUI OFF)
+endif()
+if(TUGZ_BUILD_GUI)
+    add_executable(tugz_gui WIN32 platform/gui_windows.c)
+    set_target_properties(tugz_gui PROPERTIES OUTPUT_NAME tugz)
+    tugz_common(tugz_gui)
+    tugz_crtfree(tugz_gui)
+    target_compile_options(tugz_gui PRIVATE -Wa,-I${PROJECT_SOURCE_DIR})
+    set_property(SOURCE platform/gui_windows.c APPEND PROPERTY
+                 OBJECT_DEPENDS ${PROJECT_SOURCE_DIR}/platform/tugz.ico)
+    target_link_libraries(tugz_gui PRIVATE
+        comctl32 ole32 comdlg32 gdi32 user32 advapi32)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        target_link_options(tugz_gui PRIVATE -Wl,--large-address-aware)
+    endif()
 endif()
 
 # ---- Single-file sources ---------------------------------------------
@@ -399,6 +428,10 @@ if(TUGZ_BUILD_TESTS)
     tugz_test(tugz_tests_zipcli tests-zipcli test/zipclitests.c)
     tugz_test(tugz_tests_unzip tests-unzip test/unziptests.c)
     tugz_test(tugz_tests_unzipcli tests-unzipcli test/unzipclitests.c)
+    if(WIN32)
+        # The callers' interfaces, as the GUI runs them, on Windows itself
+        tugz_test(tugz_tests_callwin call-windows test/callwin.c)
+    endif()
 
     # The programs again, for their end-to-end tests
     tugz_program(tugz_gzip_debug gzip gzip-debug NOSTRIP)
@@ -573,7 +606,7 @@ if(TUGZ_BUILD_TESTS)
     # Builds what the tests need and runs them
     if(PROJECT_IS_TOP_LEVEL)
         get_property(deps GLOBAL PROPERTY tugz_test_targets)
-        foreach(tgt IN ITEMS tugz_gzip tugz_zip tugz_unzip)
+        foreach(tgt IN ITEMS tugz_gzip tugz_zip tugz_unzip tugz_gui)
             if(TARGET ${tgt})
                 list(APPEND deps ${tgt})
             endif()
@@ -675,8 +708,8 @@ if(TUGZ_INSTALL)
             DESTINATION ${tugz_cmakedir})
     endif()
     # Installed as gzip, zip, and unzip, whenever built, as they may be the
-    # system's
-    foreach(tgt IN ITEMS tugz_gzip tugz_zip tugz_unzip)
+    # system's, and the GUI as tugz
+    foreach(tgt IN ITEMS tugz_gzip tugz_zip tugz_unzip tugz_gui)
         if(TARGET ${tgt})
             install(TARGETS ${tgt}
                 RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

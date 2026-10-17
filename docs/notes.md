@@ -54,8 +54,12 @@ with unzip in `platform/zipfs_*.c`.
 | `platform/windows.c`     | shared CRT-free Win32 `os_*`, paths, arguments  |
 | `platform/gzip_*.c`      | gzip entry points (POSIX, Windows)              |
 | `platform/zipfs_*.c`     | file system functions for zip and unzip         |
-| `platform/zip_*.c`       | zip's archive replacement and entry points      |
-| `platform/unzip_*.c`     | unzip's extraction hooks and entry points       |
+| `platform/zip_*.c`       | zip's entry points (POSIX: and its hooks)       |
+| `platform/unzip_*.c`     | unzip's entry points (POSIX: and its hooks)     |
+| `platform/zipos_windows.c` | zip's Windows hooks: archive replacement      |
+| `platform/unzipos_windows.c` | unzip's Windows hooks: extraction           |
+| `platform/gui_windows.c` | the GUI, `tugz.exe`: both programs, as a host   |
+| `platform/tugz.ico`      | its icon, painted by its own painter            |
 | `platform/libtugz.c`     | library layer; `tugz.h` is its interface        |
 | `test/tests.c`           | test suite (in-memory file system)              |
 | `test/libtests.c`        | library interface tests                         |
@@ -69,6 +73,8 @@ with unzip in `platform/zipfs_*.c`.
 | `test/unziptests.c`      | unzip rule tests, with tables from UnZip 6.0    |
 | `test/unzipclitests.c`   | unzip program tests, in memory                  |
 | `test/unzipos.c`         | in-memory platform layer for the unzip program  |
+| `test/callwin.c`         | `zip_call` and `unzip_call` on Windows itself,  |
+|                          | stopped at each meter call (`call-windows`)     |
 | `test/fakeclock.c`       | the in-memory layers' clock (`os_now`)          |
 | `test/cli.sh`            | end-to-end gzip tests                           |
 | `test/zip.sh`            | end-to-end zip tests (unzip, zipinfo, Python)   |
@@ -2125,6 +2131,159 @@ ones as invariants. Those that no test asserts are marked untested.
   empty name ends the listing (":  bad filename length (central)", 3),
   as in `unzip -l`, where UnZip shows the name before it again
   (`test_zipinfo`).
+
+## GUI
+
+`platform/gui_windows.c` builds `tugz.exe`, an archive manager in the
+Explorer style: a folder tree beside an owner-data list with zipinfo's
+fields for columns. It is one translation unit holding both engines,
+`windows.c`, and both programs' hooks, CRT-free like the programs, with
+Win32 declared by hand. It imports only what XP has from KnownDLLs
+(kernel32, user32, gdi32, comctl32, shell32, ole32, comdlg32, advapi32);
+uxtheme, shlwapi, and shcore are loaded by full system32 path, and the
+newer DPI functions are looked up.
+
+### Driving the engines
+
+The command lines could not do it: members are wildcards (`a[1].txt`),
+there was no rename, no way to add `C:\x\f.txt` as `docs/f.txt`,
+prompts read standard input, and `os_exit` ended the process. So each
+driver gained a caller interface, additive, the command lines unchanged
+(their suites check):
+
+- `zip_call` takes the archive and either sources (`{path, name}`, a
+  directory's name its entries' prefix) or changes (`{ordinal, stored
+  name, new name or null to delete}`), never both, plus level, mode, and
+  `-S`/`-X`/`-D`. Changes find entries by ordinal and check the stored
+  name, so a stale view fails rather than changing the wrong entry.
+  Renames are a new `ITEM_RENAME`: the name and UTF-8 flag are set after
+  `check_local`, the Unicode path extra (0x7075) dropped from both
+  headers (`zip_drop_extra`), collisions checked over the final names,
+  so swaps and case-only renames pass. A `replace` hook asks about each
+  entry a file would replace, between planning and writing. `total`
+  reports the bytes to read, for progress. To share the code,
+  `zip_run` was split into `open_archive`, `plan_files`, and `finish`.
+- `unzip_call` lists (`visit`, each entry with its central header's
+  offset `at`, then the archive's state), tests, extracts, or reports
+  `-v` for picks: `{at, stored, as}` sorted by `at`, which every walk of
+  the central directory meets identically (local offsets are not stable).
+  `as` is a relative name to extract under, mapped as entry names are.
+  Each pick is marked `done` only once extracted (kept and closed),
+  made, or tested without error; Move deletes exactly those. An `ask`
+  hook answers the replace and disk-full prompts. Picks never met give
+  11, as unmatched names do.
+
+`os_oom` is the one name both drivers define: the GUI includes each
+inside `#define os_oom zip_os_oom` (`unzip_os_oom`), and its own
+`os_oom` calls the running engine's, for its message, by the job.
+
+### Escapes and meters
+
+`struct os` gained `escape`, `status`, and `meter`, all null for the
+programs. `os_call(ctx, fn, arg)` runs `fn` under a
+`__builtin_setjmp` that `os_exit` returns to instead of exiting, then
+closes descriptors 3 to 7, which a run cut short leaves open (a zip
+temporary file, delete-on-close, is discarded so; a partial extract is
+deleted by unzip's own failure path or here), and the guard. The meter
+is called with the path on each `os_open`, `os_stat`, and `os_listdir`,
+and with the bytes on each read of descriptor 3 and up, and once per
+write: the GUI's counts progress, names the file, and calls `os_exit`
+once Cancel is pressed. `test/callwin.c` stops a run at its k-th meter
+call for every k and checks that the archive is byte for byte as it
+was, no `zi*` temporary file or partial extract remains, and no handle
+leaked. zip had left its archive open on an early failure: `os_call`
+closing leftovers was the fix.
+
+### Jobs and the UI thread
+
+One job at a time runs on a worker thread with its own reservation (on
+i686 up to 512 MiB, halving until granted) and its own `os`, standard
+output and error going to a delete-on-close log read when it ends. A
+listing's reservation becomes the model's. The main window is disabled
+while a job runs, and a modeless progress dialog appears after 300 ms.
+Questions reach the UI thread by `SendMessage`; the progress dialog
+stays hidden while one is open. The UI thread never blocks on the
+worker: quitting during a job asks, sets Cancel, and closes when the
+job's end arrives. Each window procedure call takes scratch from where
+the previous left it and restores it, so nested loops (dialogs, a
+drag) take only what is free.
+
+### What zip could not change
+
+An archive is shown read-only, with a note, when unzip reads it but zip
+would misread it: data before it (`ar->shift`, as in a self-extractor),
+wrapped offsets, a moved Zip64 end record, a cut comment, or a damaged
+central directory (`cderr`). zip reads none of these as unzip does.
+
+### DPI and resources
+
+The manifest asks for PerMonitorV2 (and `true/pm`); at run time the GUI
+also tries `SetProcessDpiAwarenessContext`, then
+`SetProcessDpiAwareness`, then `SetProcessDPIAware`. Sizes come from
+`GetDpiForWindow` (else `LOGPIXELSX`), fonts from the message font
+(`SystemParametersInfoForDpi` where present; XP's `NONCLIENTMETRICS`
+without `iPaddedBorderWidth`), and `WM_DPICHANGED` rebuilds fonts, image
+lists, the toolbar, and the layout. Dialogs are `DLGTEMPLATEEX`
+templates built in memory with the message font in points, which
+PMv2 scales.
+
+The toolbar's icons, the Up button's, and the window's are painted in
+code (signed distance shapes, covered by fraction, premultiplied) at the
+exact pixel size, so they are sharp at 150% or anything else; disabled
+forms are grayed and faded. `platform/tugz.ico` was painted the same
+way, by a scratch program including `gui_windows.c` with its own entry
+point (`paint_archive(&c, 0.5f, 0.5f, 0.36f, 0.46f)` at each size,
+written out unpremultiplied): 32-bit BMP entries of 16 to 64 pixels,
+which XP reads, then a PNG of 256. Its offsets are fixed in the
+resource block, which follows from the BMPs' sizes.
+
+Resources are assembled from a top-level `asm` block: a `.rsrc` section
+with its directories, `.rva` data entries, the manifest text, and the
+icons by `.incbin` slices of `platform/tugz.ico`, read from the source
+root (`-Wa,-I`). ld keeps `.rsrc` under `--gc-sections`. PE GAS has no
+`.pushsection`, so the block ends with `.text`, which is where GCC
+expects to be after top-level asm.
+
+### Drag and drop
+
+In: an `IDropTarget` on the list and the tree takes `CF_HDROP`, lights
+the folder under the cursor, and posts the paths to itself, so the
+source is let go before any dialog. Out: our `IDataObject` offers
+`CF_HDROP` naming files in a new temporary folder that do not exist
+yet; when the button is released over a target that accepts (as
+`GiveFeedback` last said), `QueryContinueDrag` starts the extraction
+job and runs a message loop until it ends, then lets the drop proceed
+(or cancels it if extraction failed). No engine code runs on the UI
+thread. The temporary folders stay until exit, since a target may copy
+after `DoDragDrop` returns. Self-drops are refused.
+
+### Mark of the web
+
+Files that leave the archive through Open, Edit, Extract, Move, and
+drags get the archive's `Zone.Identifier` stream, if it has one, at the
+paths `uz_mapname` gives the done picks, so the shell treats them as it
+treats the archive.
+
+### Verification
+
+Windows 11 at 3840x2160, 150%: every operation through the real window,
+captured and driven by a scratch helper (`FindWindow`, `SendInput`,
+`BitBlt`), with archives of Latin, Cyrillic, Greek, CJK, and emoji
+names; extract (with Replace's every answer), move, delete, file and
+folder renames (UTF-8 flag set, old Unicode extras gone), add with the
+replace question, Edit by a scripted command, Properties, drags to and
+from Explorer, the read-only note on a self-extractor-like archive,
+settings kept, and the temporary folder removed at exit. After each
+change, Python's `zipfile` tested and listed the archive. A
+cross-process `WM_DPICHANGED` is filtered by Windows, so a DPI change
+was not exercised.
+
+Windows XP SP3 (1280x800, 96 DPI): the i686 build loads with visual
+styles, alpha-blended toolbar icons, and its icon in Explorer from the
+BMP entries; listing, test, extract (Unicode names checked by a
+wide-API lister, as XP's busybox shows ANSI names only), rename,
+delete, Edit, and dragging a folder out to Explorer all work. XP lacks
+East Asian fonts, so CJK names show as boxes there.
 
 ## Workflow
 

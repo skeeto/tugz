@@ -196,7 +196,25 @@ struct os {
     byte *lo;          // zip: the uncommitted middle of its memory
     byte *hi;
     winapi api;
+
+    // A host running a program's work in its own process (os_call), as
+    // the GUI does, rather than the program running alone: os_exit
+    // returns to its escape, and its meter sees each path opened, listed,
+    // or examined, and each read (of len bytes) and write of a file
+    // (descriptors 3 and up), and may end the work there, by os_exit.
+    void **escape;     // a __builtin_setjmp buffer, or null
+    i32    status;     // os_exit's, for the host
+    void (*meter)(os *, s8 path, iz len);
 };
+
+// The host's meter, if any, of a path, or of len bytes read (or of a
+// write, with neither).
+static void meter(os *ctx, s8 path, iz len)
+{
+    if (ctx->meter) {
+        ctx->meter(ctx, path, len);
+    }
+}
 
 // A console control event's handling (see on_ctrl): the writer it is to
 // write, and whether it has begun (1) or is done (2).
@@ -807,6 +825,7 @@ static i32 open_output(os *ctx, i32 fd, c16 *wpath, i32 mode)
 
 static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
 {
+    meter(ctx, path, 0);
     i32 fd = 3;
     for (; fd<MAX_HANDLES && ctx->handles[fd]; fd++) {}
     c16 *wpath = winpath(&scratch, path);
@@ -914,6 +933,9 @@ static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
     for (;;) {
         u32 got = 0;
         if (ReadFile(h, buf, (u32)MIN(cap, 1<<30), &got, 0)) {
+            if (fd >= 3) {
+                meter(ctx, (s8){0}, got);
+            }
             return got;
         }
         u32 err = GetLastError();
@@ -1073,7 +1095,11 @@ static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
     if (!held || fd!=held->fd) {
         stop_if_ending();  // (the held writer's stop at writer_begin)
     }
-    return write_fd(ctx, fd, buf, len);
+    b32 ok = write_fd(ctx, fd, buf, len);
+    if (ok && fd>=3) {
+        meter(ctx, (s8){0}, 0);
+    }
+    return ok;
 }
 
 static b32 os_isatty(os *ctx, i32 fd)
@@ -1220,6 +1246,7 @@ static iptr find_first(os *ctx, c16 *pattern, find_data *fd)
 static os_dirent *os_listdir(os *ctx, s8 path, b32 all, iz *count,
                              arena *a)
 {
+    meter(ctx, path, 0);
     arena tmp   = *a;
     c16  *wpath = winpath(&tmp, path);
     if (!wpath) {
@@ -1318,10 +1345,15 @@ static s8 os_upcase(os *ctx, s8 name, arena *a)
 
 // Created files not kept are delete-pending, so they need no cleanup.
 // An incomplete UTF-8 sequence still held for a console ended the
-// output, which makes it invalid: write it out as U+FFFD.
+// output, which makes it invalid: write it out as U+FFFD. A host's work
+// (os_call) ends instead of the process.
 static void os_exit(os *ctx, i32 status)
 {
     stop_if_ending();
+    if (ctx->escape) {
+        ctx->status = status;
+        __builtin_longjmp(ctx->escape, 1);
+    }
     for (i32 fd = 1; fd < 3; fd++) {
         if (ctx->nheld[fd]) {
             c16 bad = 0xfffd;
@@ -1333,8 +1365,39 @@ static void os_exit(os *ctx, i32 status)
     ExitProcess((u32)status);
 }
 
+// Run a program's work, fn, for a host in its own process, as the GUI
+// runs zip and unzip, on the calling thread, returning its status. Should
+// the work end by os_exit, as when memory runs out or the host's meter
+// stops it, that returns here, rather than ending the process. Either way
+// the files it left open are then closed, as the process's end would
+// close them, since a program may leave some open as it returns, as zip
+// leaves the archive when it fails before writing: those it created and
+// did not keep, delete-pending, are gone, and an archive being replaced
+// is as it was. The host keeps its state behind ctx, which the escape
+// leaves be.
+[[maybe_unused]] static i32 os_call(os *ctx, i32 (*fn)(os *, void *),
+                                    void *arg)
+{
+    void *jmp[5];
+    ctx->escape = jmp;
+    if (!__builtin_setjmp(jmp)) {
+        ctx->status = fn(ctx, arg);
+    }
+    ctx->escape = 0;
+    for (i32 fd = 3; fd < MAX_HANDLES; fd++) {
+        if (ctx->handles[fd]) {
+            os_close(ctx, fd);
+        }
+    }
+    if (ctx->guard) {
+        CloseHandle(ctx->guard);  // zip's archive (os_writable)
+        ctx->guard = 0;
+    }
+    return ctx->status;
+}
+
 // Initialize standard handles, and find the functions XP lacks.
-static void os_init(os *ctx)
+[[maybe_unused]] static void os_init(os *ctx)
 {
     load_api(&ctx->api);
     ctx->handles[0] = GetStdHandle((u32)-10);
@@ -1348,7 +1411,7 @@ static void os_init(os *ctx)
 }
 
 // Command line arguments as WTF-8, including the program name first.
-static s8 *os_args(arena *a, i32 *argc)
+[[maybe_unused]] static s8 *os_args(arena *a, i32 *argc)
 {
     *argc = 0;
     c16 **argv = CommandLineToArgvW(GetCommandLineW(), argc);

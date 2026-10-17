@@ -116,7 +116,14 @@ struct os {
     // A race: as zip opens the file so named, it becomes a link to swapto
     char   *swapname;
     char   *swapto;
+
+    // An exit, as a caller (the GUI) cancels, at the exitat'th open,
+    // read, or write of a file (zero for none), counted in ops
+    i32     exitat;
+    i32     ops;
 };
+
+enum { EXIT_CANCEL = 100 };  // the status of an exit at exitat
 
 static s8 cstrs8(char const *z)
 {
@@ -208,6 +215,7 @@ static void mfs_reset(os *ctx)
     ctx->failwriteat = -1;
     ctx->swapname    = 0;
     ctx->swapto      = 0;
+    ctx->exitat      = 0;
 }
 
 static os *zipos_new(iz cap)
@@ -272,9 +280,18 @@ static void mfs_arm(os *ctx, i32 when)
     }
 }
 
+// A file opened, read, or written: the exit at exitat, if asked.
+static void mfs_op(os *ctx)
+{
+    if (++ctx->ops == ctx->exitat) {
+        os_exit(ctx, EXIT_CANCEL);
+    }
+}
+
 static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
 {
     (void)scratch;
+    mfs_op(ctx);
     i32 fd = 3;
     for (; fd<MAX_FDS && ctx->fds[fd].open; fd++) {}
     CHECK(fd < MAX_FDS);
@@ -345,6 +362,7 @@ static iz os_read(os *ctx, i32 fd, u8 *buf, iz cap)
     if (fd == 0) {
         return 0;  // empty standard input
     }
+    mfs_op(ctx);
     mfile *f = mfs_fd(ctx, fd);
     iz     n = MAX(MIN(cap, f->len - ctx->fds[fd].off), 0);
     n = MIN(n, 1000);  // short reads
@@ -460,6 +478,7 @@ static s8 os_readlink(os *ctx, s8 path, arena *a)
 
 static i32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
 {
+    mfs_op(ctx);
     mfile *f = mfs_fd(ctx, fd);
     CHECK(len>=0 && off>=0);
     if (ctx->armed && ctx->failreadat>=0 && off+len>ctx->failreadat) {
@@ -475,6 +494,7 @@ static i32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
 
 static b32 os_writeat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
 {
+    mfs_op(ctx);
     mfile *f = mfs_fd(ctx, fd);
     CHECK(ctx->fds[fd].created && len>=0 && off>=0);
     if (ctx->failwriteat>=0 && off+len>ctx->failwriteat) {
@@ -673,6 +693,7 @@ static i32 zipos_run(os *ctx, char **argv, i32 argc, b32 windows)
     ctx->outlen[0] = ctx->outlen[1] = ctx->outlen[2] = 0;
     ctx->nwrites = ctx->clock.reads = 0;
     ctx->written = 0;
+    ctx->ops     = 0;
 
     s8 args[16];
     CHECK(argc <= countof(args));
@@ -697,6 +718,46 @@ static i32 zipos_run(os *ctx, char **argv, i32 argc, b32 windows)
             os_close(ctx, fd);
         }
     }
+    return status;
+}
+
+// Run a caller's change (zip_call), as zipos_run runs the program, in
+// fresh memory, returning its status, EXIT_CANCEL if it was made to exit
+// at exitat. The call itself is copied into that memory first, as the
+// GUI builds one in its job's own, its strings left where they are.
+static i32 zipos_call(os *ctx, zipcall *c, b32 windows)
+{
+    POISON(ctx->mem, ctx->lo-ctx->mem);
+    POISON(ctx->hi, ctx->mem+ctx->cap-ctx->hi);
+    ctx->lo = ctx->mem;
+    ctx->hi = ctx->mem + ctx->cap;
+    ctx->writing = ctx->faulted = ctx->armed = 0;
+    ctx->error   = 0;
+    ctx->outlen[0] = ctx->outlen[1] = ctx->outlen[2] = 0;
+    ctx->nwrites = ctx->clock.reads = 0;
+    ctx->written = 0;
+    ctx->ops     = 0;
+
+    zipconfig conf = {0};
+    conf.perm    = (arena){ctx->lo, ctx->lo, ctx, 0};
+    conf.scratch = (arena){ctx->hi, ctx->hi, ctx, 1};
+    conf.windows = windows;
+    zipcall *call = new(&conf.perm, 1, zipcall);
+    *call = *c;
+
+    i32 status = 0;
+    if (setjmp(ctx->jmp)) {
+        status = ctx->status;
+    } else {
+        status = zip_call(&conf, call);
+    }
+    for (i32 fd = 3; fd < MAX_FDS; fd++) {
+        if (ctx->fds[fd].open) {
+            os_close(ctx, fd);
+        }
+    }
+    oom_out  = 0;
+    c->total = call->total;
     return status;
 }
 

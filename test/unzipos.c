@@ -213,7 +213,14 @@ struct os {
     i32     ncreate;
     i32     nkeep;
     i32     nchanges;  // calls that changed the file system
+
+    // An exit, as a caller (the GUI) cancels, at the exitat'th open,
+    // read, or write of a file (zero for none), counted in ops
+    i32     exitat;
+    i32     ops;
 };
+
+enum { EXIT_CANCEL = 100 };  // the status of an exit at exitat
 
 static s8 cstrs8(char const *z)
 {
@@ -517,9 +524,18 @@ static b32 mfs_isarchive(os *ctx, mfile *f)
     return s8equals(f->name, cstrs8(ctx->archive));
 }
 
+// A file opened, read, or written: the exit at exitat, if asked.
+static void mfs_op(os *ctx)
+{
+    if (++ctx->ops == ctx->exitat) {
+        os_exit(ctx, EXIT_CANCEL);
+    }
+}
+
 static i32 os_open(os *ctx, s8 path, i32 mode, arena scratch)
 {
     (void)scratch;
+    mfs_op(ctx);
     CHECK(!(mode & OS_FORCE));  // unzip removes, then creates
     mpath *r = malloc(sizeof(*r));
     CHECK(r);
@@ -627,6 +643,9 @@ static void mbuf_put(mbuf *b, u8 const *p, iz len)
 static b32 os_write(os *ctx, i32 fd, u8 *buf, iz len)
 {
     CHECK(len >= 0);
+    if (fd > 2) {
+        mfs_op(ctx);
+    }
     if (fd==1 || fd==2) {
         mbuf *b = ctx->out + fd - 1;
         if (fd==1 && ctx->failstdout) {
@@ -767,6 +786,7 @@ static b32 os_fstat(os *ctx, i32 fd, os_info *info)
 static i32 os_readat(os *ctx, i32 fd, u8 *buf, iz len, i64 off)
 {
     CHECK(len>=0 && off>=0);
+    mfs_op(ctx);
     u8 *data = ctx->in;
     iz  size = ctx->inlen;
     if (fd) {
@@ -1153,6 +1173,7 @@ static void mfs_reset(os *ctx)
     ctx->failattrs   = 0;
     ctx->failsymlink = 0;
     ctx->failstdout  = 0;
+    ctx->exitat      = 0;
 }
 
 static os *unzipos_new(iz cap)
@@ -1201,6 +1222,7 @@ static i32 unzipos_run(os *ctx, char **argv, i32 argc, unzipenv *env,
     ctx->nwrites = ctx->clock.reads = 0;
     ctx->held    = 0;
     ctx->washeld = 0;
+    ctx->ops     = 0;
     for (i32 i = 0; i < 3; i++) {
         ctx->out[i].len = 0;
     }
@@ -1231,6 +1253,57 @@ static i32 unzipos_run(os *ctx, char **argv, i32 argc, unzipenv *env,
         status = unzip_main(&conf);
     }
     CHECK(ctx->exited || !ctx->held);  // released at its return
+    i32 left = 0;
+    for (i32 fd = 3; fd < MFS_FDS; fd++) {
+        if (ctx->fds[fd].open) {
+            left++;
+            os_close(ctx, fd);
+        }
+    }
+    if (open) {
+        *open = ctx->exited ? 0 : left;
+    }
+    return status;
+}
+
+// Run a caller's run (unzip_call), as unzipos_run runs the program, in
+// fresh memory, returning its status, EXIT_CANCEL if it was made to exit
+// at exitat. The call is copied into that memory first, as the GUI builds
+// one in its job's own, its strings and picks left where they are.
+static i32 unzipos_call(os *ctx, unzipcall *c, i32 *open)
+{
+    POISON(ctx->mem, ctx->lo-ctx->mem);
+    POISON(ctx->hi, ctx->mem+ctx->cap-ctx->hi);
+    ctx->lo = ctx->mem;
+    ctx->hi = ctx->mem + ctx->cap;
+    ctx->changed = ctx->faulted = ctx->renamed = ctx->armed = 0;
+    ctx->exited  = 0;
+    ctx->error   = 0;
+    ctx->inoff   = 0;
+    ctx->written = 0;
+    ctx->nmkdir  = ctx->ncreate = ctx->nkeep = ctx->nchanges = 0;
+    ctx->nwrites = ctx->clock.reads = 0;
+    ctx->held    = 0;
+    ctx->washeld = 0;
+    ctx->ops     = 0;
+    for (i32 i = 0; i < 3; i++) {
+        ctx->out[i].len = 0;
+    }
+
+    unzipconfig conf = {0};
+    conf.perm    = (arena){ctx->lo, ctx->lo, ctx, 0};
+    conf.scratch = (arena){ctx->hi, ctx->hi, ctx, 1};
+    conf.windows = ctx->windows;
+    unzipcall *call = new(&conf.perm, 1, unzipcall);
+    *call = *c;
+
+    i32 status = 0;
+    if (setjmp(ctx->jmp)) {
+        status = ctx->status;
+    } else {
+        status = unzip_call(&conf, call);
+    }
+    CHECK(!ctx->washeld);  // a caller's run holds nothing
     i32 left = 0;
     for (i32 fd = 3; fd < MFS_FDS; fd++) {
         if (ctx->fds[fd].open) {
