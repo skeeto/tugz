@@ -44,10 +44,10 @@ whose `platform/tugz.ico` it embeds:
 
     $ cc -O2 -fno-builtin -nostartfiles -mwindows -o tugz.exe platform/gui_windows.c -lmemory -lcomctl32 -lole32
 
-For XP, i686, add `-Wl,--large-address-aware`. Releases from 1.2.0
-also carry `tugz.exe` itself, for i686 (so XP and later), large address
-aware, stripped, and signed, built by the release workflow with
-Ubuntu's Mingw-w64, whose `msvcrt.dll` provides `memcpy` and `memset`.
+Releases from 1.2.0 also carry `tugz.exe` itself, for i686 (so XP and
+later), large address aware, stripped, and signed, built by the release
+workflow with Ubuntu's Mingw-w64, whose `msvcrt.dll` provides `memcpy`
+and `memset`.
 
 CMake builds the library, the programs, and the tests (see Development):
 
@@ -64,6 +64,10 @@ tree:
     $ cc -O2 -nostartfiles -o zip.exe zip.c -lmemory
     $ cc -O2 -nostartfiles -o unzip.exe unzip.c -lmemory
     $ cc -O2 -fno-builtin -nostartfiles -mwindows -o tugz.exe tugz.c -lmemory -lcomctl32 -lole32
+
+For 32-bit Windows programs (i686), add `-Wl,--large-address-aware`,
+as CMake does: they reserve memory in large ranges, which 64-bit Windows
+then gives them 4 GB of address space to hold, rather than 2 GB.
 
 The Windows programs are meant to run on Windows XP and later (i686 on
 XP, x86-64 on XP x64), built as above with w64devkit, whose `-lmemory`

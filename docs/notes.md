@@ -1029,7 +1029,14 @@ container.
   before its error. `fuzz-zip` paces at random clock rates.)
 - Memory: zip has no fixed cap. Its memory is one reservation of address
   space, as much as the system lends up to 16 GiB on 64-bit POSIX hosts
-  and 64 GiB on 64-bit Windows (1 GiB for 32-bit processes), halving on
+  and 64 GiB on 64-bit Windows (1 GiB for 32-bit processes, whose `iz`
+  must hold a region's size; 32-bit Windows builds are
+  large-address-aware, so that under WOW64 they have 4 GiB of address
+  space rather than 2: a probe that loads shell32, comctl32, and ole32,
+  then reserves four ranges as `reserve()` does, got 1024, 512, 256, and
+  128 MiB without the flag, and 1024, 1024, 512, and 512 MiB with it,
+  ranges above 2 GiB included; nothing in tugz treats an address as
+  signed or compares pointers across allocations), halving on
   refusal (on POSIX, the most that leaves 4 MiB for the C library's
   `malloc`, which `opendir` and the like still use, and the stack, which
   a limit on address space, `ulimit -v`, counts too, found by

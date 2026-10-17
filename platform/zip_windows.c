@@ -1,5 +1,6 @@
 // CRT-free Win32 platform layer for tugz zip
 // $ cc -O2 -nostartfiles -o zip.exe platform/zip_windows.c -lmemory
+// For 32-bit (i686), add -Wl,--large-address-aware: 4 GB under WOW64.
 #include "../src/base.c"
 #include "../src/crc32.c"
 #include "../src/deflate.c"

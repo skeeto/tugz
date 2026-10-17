@@ -181,6 +181,7 @@ function(tugz_gzip)
         "// tugz ${v}: tiny unity gzip, a drop-in gzip for Windows\n"
         "// Single-file amalgamation of the tugz sources. Build:\n"
         "//   $ cc -O2 -nostartfiles -o gzip.exe gzip.c -lmemory\n"
+        "// For 32-bit (i686), add -Wl,--large-address-aware: 4 GB under WOW64.\n"
         "// Copies named gunzip.exe or zcat.exe decompress by default.\n"
         "\n")
     string(CONCAT text ${text})
@@ -194,6 +195,7 @@ function(tugz_zip)
         "// tugz zip ${v}: an Info-ZIP compatible zip for Windows\n"
         "// Single-file amalgamation of the tugz sources. Build:\n"
         "//   $ cc -O2 -nostartfiles -o zip.exe zip.c -lmemory\n"
+        "// For 32-bit (i686), add -Wl,--large-address-aware: 4 GB under WOW64.\n"
         "\n")
     string(CONCAT text ${text})
     tugz_concat(text "${version_text}" ${files})
@@ -206,6 +208,7 @@ function(tugz_unzip)
         "// tugz unzip ${v}: an Info-ZIP compatible unzip for Windows\n"
         "// Single-file amalgamation of the tugz sources. Build:\n"
         "//   $ cc -O2 -nostartfiles -o unzip.exe unzip.c -lmemory\n"
+        "// For 32-bit (i686), add -Wl,--large-address-aware: 4 GB under WOW64.\n"
         "// A copy named zipinfo.exe lists archives as Info-ZIP's zipinfo.\n"
         "\n")
     string(CONCAT text ${text})
@@ -220,8 +223,7 @@ function(tugz_gui)
         "// tugz ${v}: a Windows GUI for zip archives, tugz.exe\n"
         "// Single-file amalgamation of the tugz sources. Build, with w64devkit:\n"
         "//   $ cc -O2 -fno-builtin -nostartfiles -mwindows -o tugz.exe tugz.c -lmemory -lcomctl32 -lole32\n"
-        "// For XP (i686), as there, and to address more memory, add:\n"
-        "//   -Wl,--large-address-aware\n"
+        "// For 32-bit (i686), add -Wl,--large-address-aware: 4 GB under WOW64.\n"
         "//\n")
     string(CONCAT text ${text})
     tugz_lines(lines "${entry}")

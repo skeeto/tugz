@@ -1,7 +1,6 @@
 // tugz: a Windows GUI for zip archives, through tugz's zip and unzip
 // $ cc -O2 -fno-builtin -nostartfiles -mwindows -o tugz.exe platform/gui_windows.c -lmemory -lcomctl32 -lole32
-// For XP (i686), as there, and to address more memory, add:
-//   -Wl,--large-address-aware
+// For 32-bit (i686), add -Wl,--large-address-aware: 4 GB under WOW64.
 // Run from the source's root, which the icon's .incbin names.
 //
 // A folder tree beside a list of an archive's entries, zipinfo's fields

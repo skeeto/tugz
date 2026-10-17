@@ -175,7 +175,11 @@ if(WIN32 AND (TUGZ_BUILD_GZIP OR TUGZ_BUILD_ZIP OR TUGZ_BUILD_UNZIP OR
     endif()
 endif()
 
-# CRT-free Windows linking, stripped unless NOSTRIP
+# CRT-free Windows linking, stripped unless NOSTRIP. 32-bit programs are
+# large-address-aware: they reserve their memory as large ranges (zip and
+# unzip up to 1 GiB, the GUI several), which the 2 GiB of address space,
+# fragmented by DLLs, often cannot hold, while WOW64 gives such a
+# program 4 GiB. Their code never treats addresses as signed.
 function(tugz_crtfree tgt)
     cmake_parse_arguments(PARSE_ARGV 1 arg NOSTRIP "" "")
     target_compile_options(${tgt} PRIVATE
@@ -190,6 +194,13 @@ function(tugz_crtfree tgt)
         target_link_options(${tgt} PRIVATE -nostartfiles -Wl,--gc-sections)
         if(NOT arg_NOSTRIP)
             target_link_options(${tgt} PRIVATE -s)
+        endif()
+    endif()
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        if(tugz_msvc_abi)
+            target_link_options(${tgt} PRIVATE LINKER:/LARGEADDRESSAWARE)
+        else()
+            target_link_options(${tgt} PRIVATE -Wl,--large-address-aware)
         endif()
     endif()
     if(tugz_libmemory)
@@ -245,9 +256,6 @@ if(TUGZ_BUILD_GUI)
                  OBJECT_DEPENDS ${PROJECT_SOURCE_DIR}/platform/tugz.ico)
     target_link_libraries(tugz_gui PRIVATE
         comctl32 ole32 comdlg32 gdi32 user32 advapi32)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
-        target_link_options(tugz_gui PRIVATE -Wl,--large-address-aware)
-    endif()
 endif()
 
 # ---- Single-file sources ---------------------------------------------
@@ -607,10 +615,6 @@ if(TUGZ_BUILD_TESTS)
         tugz_crtfree(tugz_gui_amalg)
         target_link_libraries(tugz_gui_amalg PRIVATE
             comctl32 ole32 comdlg32 gdi32 user32 advapi32)
-        if(CMAKE_SIZEOF_VOID_P EQUAL 4)
-            target_link_options(tugz_gui_amalg PRIVATE
-                                -Wl,--large-address-aware)
-        endif()
         add_test(NAME gui-amalgamation
             COMMAND ${CMAKE_COMMAND} -E compare_files
                     $<TARGET_FILE:tugz_gui> $<TARGET_FILE:tugz_gui_amalg>)
