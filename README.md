@@ -563,6 +563,8 @@ KiB, rather than in the whole file, and names shown as unzip shows them.
 
 ## GUI
 
+<p align="center"><img src="docs/gui-xp.png" width="940" alt="tugz.exe on Windows XP: the tugz 1.1.0 source archive, a folder tree beside a list of its entries with their sizes, ratios, methods, and times, under a toolbar of Open, Add, Extract, Move, Delete, Rename, Edit, and Test"></p>
+
 `tugz.exe` is an archive manager for Windows XP and later: a folder tree
 of the archive beside a list of its entries, with zipinfo's fields for
 columns (sizes, ratio, method, time, attributes, CRC-32, version and
