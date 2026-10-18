@@ -191,7 +191,10 @@ function(tugz_crtfree tgt)
         # lld-link or link.exe, which strip unless asked for /DEBUG
         target_link_options(${tgt} PRIVATE -nostartfiles LINKER:/OPT:REF)
     else()
-        target_link_options(${tgt} PRIVATE -nostartfiles -Wl,--gc-sections)
+        # A zero PE timestamp, as w64devkit's ld writes by default, rather
+        # than the link time, so the same sources link the same program
+        target_link_options(${tgt} PRIVATE -nostartfiles -Wl,--gc-sections
+                            -Wl,--no-insert-timestamp)
         if(NOT arg_NOSTRIP)
             target_link_options(${tgt} PRIVATE -s)
         endif()
