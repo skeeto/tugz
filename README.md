@@ -13,6 +13,9 @@ The core has no dependencies, no global state, no platform conditionals,
 and does no I/O. Each program is a unity build: a platform layer
 includes the core and supplies a handful of functions.
 
+In short, **tugz is a better Info-ZIP**, purpose built for [w64devkit][]:
+first-class Windows support, and safe to use on untrusted archives.
+
 ## Build
 
 POSIX (Linux, macOS, BSD):
@@ -697,3 +700,4 @@ says the host runs the target's programs itself (binfmt_misc, with
 [RFC 1950]: https://www.rfc-editor.org/rfc/rfc1950
 [RFC 1951]: https://www.rfc-editor.org/rfc/rfc1951
 [RFC 1952]: https://www.rfc-editor.org/rfc/rfc1952
+[w64devkit]: https://github.com/skeeto/w64devkit
