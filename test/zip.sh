@@ -321,6 +321,37 @@ zipinfo -T e3.zip | grep 'tree/one$' | grep -q 20000102.030406 ||
 zipinfo -T e3.zip | grep 'tree/a.txt$' | grep -q 20231114.221320 ||
     fail "newer time not clamped: $(zipinfo -T e3.zip)"
 expect_status 16 env SOURCE_DATE_EPOCH=soon "$ZIP" -q e4.zip tree/one
+expect_status 16 env SOURCE_DATE_EPOCH=- "$ZIP" -q e4.zip tree/one
+expect_status 16 env SOURCE_DATE_EPOCH=1- "$ZIP" -q e4.zip tree/one
+
+# Any integer is an epoch, negative too, beyond the DOS range clamping
+# to its ends, and beyond the UT field's, which is signed before 1970,
+# as its spec has it (UnZip reads it unsigned, so ignores such times),
+# and unsigned from 2038 (shown here as signed): epoch, DOS, UT times
+TZ=UTC0 touch -t 203001010000 ep.txt  # 1893456000
+for e in -86400:19800101.000000:-86400:-86400 \
+         -99999999999999999999:19800101.000000:-2147483648:-2147483648 \
+         4102444800:20300101.000000:1893456000:-192522496 \
+         99999999999999999999:20300101.000000:1893456000:-1; do
+    ep=${e%%:*}
+    dos=${e#*:}
+    ut=${dos#*:}
+    dos=${dos%%:*}
+    rm -f e6.zip e7.zip
+    SOURCE_DATE_EPOCH=$ep "$ZIP" -qX e6.zip ep.txt || fail "epoch $ep refused"
+    zipinfo -T e6.zip | grep -q "$dos ep.txt" ||
+        fail "epoch $ep: $(zipinfo -T e6.zip)"
+    if [ -n "$PY" ]; then
+        SOURCE_DATE_EPOCH=$ep "$ZIP" -q e7.zip ep.txt
+        $PY -c 'import struct, sys
+d = open(sys.argv[1], "rb").read()
+n, m = struct.unpack("<HH", d[26:30])
+x = d[30+n:30+n+m]
+assert x[:5] == b"UT\x09\x00\x03", x
+print(*struct.unpack("<ii", x[5:13]), sep=":")' e7.zip >out
+        [ "$(cat out)" = "$ut" ] || fail "epoch $ep UT: $(cat out)"
+    fi
+done
 
 # With an odd SOURCE_DATE_EPOCH, a clamped time rounds down rather than
 # past it, as do times equal to it; earlier odd seconds round up

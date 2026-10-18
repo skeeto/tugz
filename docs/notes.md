@@ -619,11 +619,14 @@ container.
   Info-ZIP's quirks kept: `../` stays in names, an emptied archive
   remains as a 22-byte file, odd seconds round up (but not past
   `SOURCE_DATE_EPOCH`). Times before the DOS range clamp to its start
-  (and after it, a departure, to its end). A name over 65,535 bytes
-  (possible in deep Windows paths) is skipped with a warning, exiting
-  18, as is, its entry kept, a file that an entry names by its name
-  decoded from the OEM code page (Windows), which UTF-8 can make that
-  long.
+  (and after it, a departure, to its end). `UT` times clamp to the range
+  UnZip reads with the DOS time, signed (1901-1970, where UnZip 6.0's
+  64-bit builds ignore them) or unsigned (to 2106), where Info-ZIP
+  truncates them to 32 bits, a departure only outside those ranges. A
+  name over 65,535 bytes (possible in deep Windows paths) is skipped
+  with a warning, exiting 18, as is, its entry kept, a file that an
+  entry names by its name decoded from the OEM code page (Windows),
+  which UTF-8 can make that long.
 - Options: Info-ZIP's grammar and names. Long names may be abbreviated
   to a prefix of exactly one of Info-ZIP's long names (supported or not,
   so `--rec` is ambiguous). Only `-X` is negatable; other negations and
@@ -1200,11 +1203,12 @@ race allows).
   text that it deflates, judged by the literals of its first deflate
   block, whose extent only a replay of its matcher reproduces.
   `SOURCE_DATE_EPOCH`, which Info-ZIP ignores, clamps times and makes
-  them UTC, and a `UT` field's access time is the epoch itself, since
-  reading a file may change its access time (on Linux, under
-  `relatime`): an earlier one, recorded as it was, would differ in a
-  second run. Names that are valid non-ASCII UTF-8 always get flag bit
-  11 (Info-ZIP's builds differ: Ubuntu's sets it, macOS's never). A
+  them UTC (any integer, negative too, its magnitude saturating far past
+  what entries hold), and a `UT` field's access time is the epoch
+  itself, since reading a file may change its access time (on Linux,
+  under `relatime`): an earlier one, recorded as it was, would differ
+  in a second run. Names that are valid non-ASCII UTF-8 always get flag
+  bit 11 (Info-ZIP's builds differ: Ubuntu's sets it, macOS's never). A
   directory reached again through links within it, a loop, is added but
   not entered, with a warning ("skipping directory loop"), where
   Info-ZIP follows the links until the system refuses the path

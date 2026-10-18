@@ -1644,10 +1644,14 @@ static b32 deflate_data(zip *z, zwork *k, zsrc *s, u32 *crc, i64 *usize)
     return *usize == first;
 }
 
-// Unix time as a 32-bit field, as Info-ZIP stores it.
+// Unix time as a 32-bit field, as Info-ZIP stores it, but clamped to
+// the range UnZip reads: signed when the DOS time is its minimum (1901
+// to 1970, read only where time_t is 32 bits), unsigned from 2038 (to
+// 2106), where Info-ZIP wraps.
 static u8 *put_time(u8 *p, zip *z, i64 t)
 {
     t = z->haveepoch ? MIN(t, z->epoch) : t;
+    t = MAX(MIN(t, (i64)0xffffffff), -(i64)0x80000000);
     return put32(p, (u32)t);
 }
 
@@ -2300,24 +2304,28 @@ static b32 has_extension(zip *z, s8 path)
     return 0;
 }
 
+// SOURCE_DATE_EPOCH: any decimal integer, negative too, for times
+// before 1970. Magnitudes saturate far beyond what entries can hold, as
+// times clamp to the DOS and UT ranges anyway.
 static i32 parse_epoch(zip *z, s8 s, arena scratch)
 {
     if (!s.s) {
         return 0;
     }
-    i64 v = 0;
-    for (iz i = 0; i < s.len; i++) {
-        if (s.s[i]<'0' || s.s[i]>'9' || v>(i64)1<<40) {
+    b32 neg = s.len && s.s[0]=='-';
+    i64 v   = 0;
+    for (iz i = neg; i < s.len; i++) {
+        if (s.s[i]<'0' || s.s[i]>'9') {
             return fail(z, ZE_PARMS, S("Invalid SOURCE_DATE_EPOCH"), s,
                         scratch);
         }
-        v = v*10 + (s.s[i] - '0');
+        v = MIN(v*10 + (s.s[i] - '0'), (i64)1<<40);
     }
-    if (!s.len) {
+    if (s.len == neg) {
         return fail(z, ZE_PARMS, S("Invalid SOURCE_DATE_EPOCH"), s, scratch);
     }
     z->haveepoch = 1;
-    z->epoch     = v;
+    z->epoch     = neg ? -v : v;
     return 0;
 }
 
