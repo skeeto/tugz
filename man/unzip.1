@@ -1,0 +1,286 @@
+.TH UNZIP 1 2026-10-19 tugz
+.SH NAME
+unzip, zipinfo \- list, test, and extract zip archives
+.SH SYNOPSIS
+.B unzip
+.RI [ \-options ]
+.IR file [ .zip ]
+.RI [ member .\|.\|.]
+.RB [ \-x
+.IR member .\|.\|.]
+.RB [ \-d
+.IR dir ]
+.br
+.B zipinfo
+.RB [ \-12smlvhtTzC ]
+.IR file [ .zip ]
+.RI [ member .\|.\|.]
+.RB [ \-x
+.IR member .\|.\|.]
+.br
+.B unzip \-Z
+.RB [ \-12smlvhtTzC ]
+.IR file [ .zip ]
+.RI [ member .\|.\|.]
+.RB [ \-x
+.IR member .\|.\|.]
+.SH DESCRIPTION
+.B unzip
+extracts the entries of
+.IR file ,
+or those matching the
+.IR member s,
+into the current directory.
+It is a subset of Info-ZIP UnZip 6.0, with the same options, messages,
+listings, and exit statuses, plus busybox unzip's features.
+Run as
+.BR zipinfo ,
+it lists archives instead (see
+.BR "ZIPINFO MODE" ).
+.PP
+The archive is tried as named, then with
+.B .zip
+and
+.B .ZIP
+appended.
+A name with wildcards processes each match.
+An archive of
+.B \-
+is read from standard input, and then no file is replaced without
+.BR \-o .
+Members are patterns:
+.B *
+matches any run of characters,
+.B /
+included,
+.B ?\&
+one,
+.B [.\|.\|.]
+a set, and
+.B \e
+escapes (on Windows it separates, as
+.B /
+does).
+.PP
+Before replacing a file,
+.B unzip
+asks:
+.BR y es,
+.BR n o,
+.BR A ll,
+.BR N one,
+or
+.BR r ename.
+.B A
+and
+.B N
+answer for the rest of the run; the end of input answers
+.BR N .
+.PP
+Extraction never writes outside the destination.
+Leading
+.B /
+and
+.B ..\&
+components are dropped from names, and nothing is written through a
+symbolic link, whether from the archive or already on disk.
+A file whose data is damaged is removed rather than kept.
+Entries may be stored, deflated, or Deflate64; encrypted entries, and
+other methods, are skipped.
+.SH OPTIONS
+Letters combine
+.RB ( \-qo ),
+and a
+.B \-
+before one negates it
+.RB ( \-\-q
+cancels a
+.B \-q
+from
+.BR UNZIP ).
+As in busybox, an argument after the archive made only of option letters
+is taken for options
+.RB ( "unzip a.zip \-o" ).
+.TP
+.B \-l
+List entries.
+.TP
+.B \-v
+List entries verbosely; alone, show the version.
+.TP
+.B \-t
+Test entries' data.
+.TP
+.B \-p
+Extract to standard output, with no messages.
+.TP
+.B \-c
+Extract to standard output, naming each entry.
+.TP
+.B \-z
+Show only the archive comment.
+.TP
+.BI \-d " dir"
+Extract into
+.IR dir ,
+which may come anywhere, or as
+.BI \-d dir\fR.
+.TP
+.BI \-x " member\fR .\|.\|."
+Exclude the members that follow.
+.TP
+.BR \-n ", " \-o
+Never, or always, replace existing files.
+.TP
+.B \-f
+Replace existing files with newer entries, creating none.
+.TP
+.B \-u
+Like
+.BR \-f ,
+and also create new files.
+.TP
+.B \-j
+Extract every entry into one directory, without its path.
+.TP
+.B \-C
+Match members ignoring case.
+.TP
+.BR \-D ", " \-DD
+Restore no directory times, or no times at all.
+.TP
+.B \-V
+Keep a
+.BI ; N
+version suffix.
+.TP
+.B \-K
+Keep set-ID and sticky bits (POSIX).
+.TP
+.B \-X
+Restore owners (POSIX).
+.TP
+.BR \-q ", " \-qq
+Quiet, quieter.
+.TP
+.BR \-h ", " \-hh
+Usage, more help.
+.TP
+.B \-Z
+ZipInfo mode; must come first.
+.PP
+Other UnZip options are refused (10) rather than ignored, among them
+text conversion, passwords, and
+.BR \-: .
+.SH ZIPINFO MODE
+Run by a name starting with
+.B zipinfo
+or
+.B ii
+(in any case), or with
+.B \-Z
+first,
+.B unzip
+lists entries as Info-ZIP's ZipInfo 3.00 does, in its formats.
+Options come before the archive, and a
+.B \-
+negates the letter after it, even in the next argument.
+The header and totals show by default, unless members are named.
+.TP
+.B \-1
+Names only, one per line, with no header, totals, or comment.
+.TP
+.B \-2
+Names, with the header, totals, or comment if asked for.
+.TP
+.BR \-s ", " \-m ", " \-l
+As
+.BR "ls \-l" :
+short (the default), with the compression, or with the compressed size.
+.TP
+.B \-v
+Every field of the end records and of each entry, extra fields decoded.
+.TP
+.BR \-h ", " \-t
+The header lines; the totals line.
+.TP
+.B \-z
+The archive comment.
+.TP
+.B \-T
+Times as
+.IR yyyymmdd.hhmmss .
+.TP
+.B \-C
+Match members ignoring case.
+.TP
+.BI \-x " member\fR .\|.\|."
+Exclude the members that follow, after the archive.
+.SH ENVIRONMENT
+.TP
+.BR UNZIP ", " UNZIPOPT
+Options applied first, from
+.BR UNZIP ,
+or if it has none
+.BR UNZIPOPT .
+.TP
+.BR ZIPINFO ", " ZIPINFOOPT
+Likewise, in ZipInfo mode, where
+.B UNZIP
+is not read.
+.SH EXIT STATUS
+.TP
+.B 0
+Success, in ZipInfo mode even with some members unmatched.
+.TP
+.B 1
+Warnings.
+.TP
+.B 2
+Errors in some entries.
+.TP
+.B 3
+A damaged archive.
+.TP
+.B 4
+Out of memory.
+.TP
+.B 9
+No archive found.
+.TP
+.B 10
+Bad or unsupported options.
+.TP
+.B 11
+No matching entries.
+.TP
+.B 12
+Overlapped entries (a zip bomb).
+.TP
+.B 50
+A write error.
+.TP
+.B 51
+An archive cut short.
+.TP
+.B 81
+Entries skipped (encrypted, or an unsupported method).
+.SH EXAMPLES
+.nf
+unzip \-q release\-1.2.3.zip \-d dist
+unzip \-p data.zip config.ini | grep port
+unzip a.zip \-x \(aq*.o\(aq
+zipinfo \-1 release\-1.2.3.zip
+.fi
+.SH NOTES
+On Windows, names are decoded from the OEM or ANSI code page when not
+UTF-8, characters Windows forbids become
+.BR _ ,
+and links are extracted as files holding their targets.
+.B \-K
+and
+.B \-X
+are refused there.
+.SH SEE ALSO
+.BR zip (1),
+.BR gzip (1)

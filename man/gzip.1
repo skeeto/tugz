@@ -1,0 +1,128 @@
+.TH GZIP 1 2026-10-19 tugz
+.SH NAME
+gzip, gunzip, zcat \- compress or expand files
+.SH SYNOPSIS
+.B gzip
+.RB [ \-cdfknqt ]
+.RB [ \-1 .\|.\|. \-9 ]
+.RI [ file .\|.\|.]
+.br
+.B gunzip
+.RB [ \-cfkqt ]
+.RI [ file .\|.\|.]
+.br
+.B zcat
+.RB [ \-f ]
+.RI [ file .\|.\|.]
+.SH DESCRIPTION
+.B gzip
+compresses each
+.I file
+in place, replacing it with
+.IB file .gz
+and keeping its mode, owner, and times.
+With no
+.IR file ,
+or with
+.BR \- ,
+it compresses standard input to standard output.
+Run as
+.BR gunzip ,
+it decompresses, and as
+.B zcat
+or
+.BR gzcat ,
+it decompresses to standard output.
+.PP
+Decompression recognizes the suffixes
+.BR .gz ,
+.BR .z ,
+.BR \-gz ,
+.BR \-z ,
+and
+.BR _z ,
+in any case, and
+.B .tgz
+and
+.B .taz
+for
+.BR .tar .
+Concatenated members decompress as one stream.
+Trailing garbage is a warning, but zero padding is not.
+.PP
+Headers record no file name or time, so equal input always gives equal
+output.
+An output is never left partial: on failure or interruption it is
+removed.
+In place,
+.B gzip
+skips symbolic links and sticky files unless
+.BR \-f ,
+and special and set-ID files always.
+.SH OPTIONS
+Long options may be abbreviated to any unambiguous prefix.
+.TP
+.BR \-1 " .\|.\|. " \-9 ", " \-\-fast ", " \-\-best
+Compression level, from fastest to best (default 6).
+.TP
+.BR \-c ", " \-\-stdout ", " \-\-to\-stdout
+Write to standard output and keep input files.
+.TP
+.BR \-d ", " \-\-decompress ", " \-\-uncompress
+Decompress.
+.TP
+.BR \-f ", " \-\-force
+Overwrite outputs, follow links, and allow a terminal as input or
+output.
+With
+.BR \-dc ,
+copy data that is not gzip through unchanged.
+.TP
+.BR \-k ", " \-\-keep
+Keep input files.
+.TP
+.BR \-n ", " \-\-no\-name
+Neither save nor restore the name and time, which is always the case.
+.TP
+.BR \-q ", " \-\-quiet ", " \-\-silent
+Suppress warnings.
+.TP
+.BR \-t ", " \-\-test
+Test the integrity of compressed files.
+.TP
+.B \-\-rsyncable
+Accepted, without effect.
+.TP
+.BR \-h ", " \-\-help
+Show help.
+.TP
+.BR \-V ", " \-\-version
+Show the version.
+.PP
+GNU gzip's
+.BR \-r ,
+.BR \-l ,
+.BR \-v ,
+.BR \-S ,
+.BR \-N ,
+.BR \-a ,
+.BR \-L ,
+and
+.B \-\-synchronous
+are refused, the
+.B GZIP
+environment variable is not read, and only gzip data is decompressed.
+.SH EXIT STATUS
+0 on success, 1 on error, 2 on a warning.
+.SH EXAMPLES
+.nf
+gzip \-9 access.log
+tar cf \- src | gzip >src.tar.gz
+zcat src.tar.gz | tar xf \-
+.fi
+.SH NOTES
+On Windows, arguments with wildcards are expanded, ignoring case and
+leaving out hidden and system files.
+.SH SEE ALSO
+.BR zip (1),
+.BR unzip (1)

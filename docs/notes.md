@@ -61,6 +61,7 @@ with unzip in `platform/zipfs_*.c`.
 | `platform/gui_windows.c` | the GUI, `tugz.exe`: both programs, as a host   |
 | `platform/tugz.ico`      | its icon, painted by its own painter            |
 | `platform/libtugz.c`     | library layer; `tugz.h` is its interface        |
+| `man/*.1`                | manual pages (man(7)), in step with the options |
 | `test/tests.c`           | test suite (in-memory file system)              |
 | `test/libtests.c`        | library interface tests                         |
 | `test/fuzz_*.c`          | libFuzzer harnesses: codec ones share           |

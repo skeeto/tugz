@@ -291,7 +291,9 @@ the sanitizers need the C runtime's startup code.
 
 A plain `cmake --install` installs whatever was built: the library, its
 header, and the package, and the programs as `gzip`, `zip`, and `unzip`
-in the prefix's `bin`, where they can serve as the system's own.
+in the prefix's `bin`, where they can serve as the system's own, with
+their manual pages, `man/gzip.1`, `zip.1`, and `unzip.1` (but on
+Windows), which cover `gunzip`, `zcat`, and `zipinfo` too.
 Configure with `-DTUGZ_BUILD_GZIP=OFF -DTUGZ_BUILD_ZIP=OFF
 -DTUGZ_BUILD_UNZIP=OFF` to install the library alone, or install with
 `--component programs` for the programs alone.

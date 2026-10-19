@@ -749,4 +749,13 @@ if(TUGZ_INSTALL)
                 COMPONENT programs)
         endif()
     endforeach()
+    # And their manual pages, but on Windows (gunzip's and zipinfo's are
+    # left to packagers, as are those programs' names)
+    foreach(page IN ITEMS gzip zip unzip)
+        if(TARGET tugz_${page} AND NOT WIN32)
+            install(FILES man/${page}.1
+                DESTINATION ${CMAKE_INSTALL_MANDIR}/man1
+                COMPONENT programs)
+        endif()
+    endforeach()
 endif()

@@ -1,0 +1,196 @@
+.TH ZIP 1 2026-10-19 tugz
+.SH NAME
+zip \- package files into a zip archive
+.SH SYNOPSIS
+.B zip
+.RI [ \-options ]
+.IR archive [ .zip ]
+.RI [ path .\|.\|.]
+.RB [ \-x
+.IR pattern .\|.\|.]
+.SH DESCRIPTION
+.B zip
+adds each
+.I path
+to
+.IR archive ,
+creating it if needed, with
+.B .zip
+appended when the name has no extension.
+It is a subset of Info-ZIP Zip 3.0, made for scripts that package
+releases, with the same options, messages, and exit statuses.
+.PP
+An existing archive is merged: matching entries are replaced, new ones
+appended, and the rest copied without recompression.
+The new archive is written to a temporary file beside the old one and
+renamed over it, so an interrupted run leaves the old archive intact.
+Zip64 is used as needed.
+Names that are UTF-8, and not ASCII, are marked as UTF-8.
+.PP
+Where entries select files, as under
+.B \-u
+or
+.B \-f
+without paths, or with a path not on disk that matches entries, they
+select only files within the current directory, never through links,
+so refreshing an untrusted archive cannot read other files.
+An archive whose entries overlap, as in a zip bomb, is refused.
+.SH OPTIONS
+Long options may be abbreviated.
+Options may be combined
+.RB ( \-qr9 ).
+.TP
+.BR \-0 " .\|.\|. " \-9
+Store only, or compress from fastest to best (default 6).
+Entries that do not shrink are stored.
+.TP
+.BR \-r ", " \-\-recurse\-paths
+Recurse into directories.
+.TP
+.BR \-q ", " \-\-quiet
+No messages or warnings.
+.TP
+.BR \-X ", " \-\-strip\-extra
+Store no extra attributes (Unix times, owners).
+.B \-X\-
+negates it.
+.TP
+.BR \-@ ", " \-\-names\-stdin
+Read paths from standard input, one per line.
+.TP
+.BR \-j ", " \-\-junk\-paths
+Store names without their directories.
+.TP
+.BR \-D ", " \-\-no\-dir\-entries
+Make no entries for directories.
+.TP
+.BR \-x ", " \-\-exclude " \fIpattern\fR .\|.\|."
+Leave out paths matching the patterns that follow.
+.TP
+.BR \-i ", " \-\-include " \fIpattern\fR .\|.\|."
+Add only paths matching the patterns that follow.
+.TP
+.BR \-y ", " \-\-symlinks
+Store symbolic links as links (POSIX).
+.TP
+.B \-S
+Include hidden and system files (Windows).
+.TP
+.BR \-u ", " \-\-update
+Replace entries whose files are newer, and add new files.
+.TP
+.BR \-f ", " \-\-freshen
+Replace entries whose files are newer, adding none.
+.B \-u
+and
+.B \-f
+without paths refresh every entry.
+.TP
+.BR \-FS ", " \-\-filesync
+Replace changed entries and delete those whose files are gone.
+.TP
+.BR \-d ", " \-\-delete
+Delete the entries that the paths match, as patterns.
+.TP
+.BR \-nw ", " \-\-no\-wild
+Treat
+.BR * ,
+.BR [ ,
+and
+.B ]
+literally in paths.
+.TP
+.BR \-v ", " \-\-version
+Alone, show the version.
+.TP
+.BR \-L ", " \-\-license
+Show the license.
+.TP
+.BR \-h ", " \-H ", " \-? ", " \-\-help
+Show help.
+.PP
+Other Info-ZIP options are refused (16) rather than ignored, among them
+encryption, comments, splits, self-extractor adjustment, line-ending
+conversion, streaming, and logging.
+.SH REPRODUCIBLE ARCHIVES
+Entries within each directory are sorted by name.
+With
+.BR \-X ,
+an archive depends only on the files' contents, names, attributes, and
+modification times.
+.PP
+When
+.B SOURCE_DATE_EPOCH
+is set, to seconds since 1970, times are clamped to it and stored in
+UTC, so the archive does not depend on the time zone either.
+Without
+.BR \-X ,
+access times are the epoch itself.
+Any integer is accepted, negative too, and times clamp to what entries
+can hold: DOS times span 1980 through 2107, and extended timestamps 1901
+through 2106.
+.BR \-u ,
+.BR \-f ,
+and
+.B \-FS
+still compare the files' real times.
+.SH ENVIRONMENT
+.TP
+.BR ZIPOPT ", " ZIP
+Options applied before the arguments, from
+.BR ZIPOPT ,
+else
+.BR ZIP .
+.TP
+.B SOURCE_DATE_EPOCH
+See
+.BR "REPRODUCIBLE ARCHIVES" .
+.SH EXIT STATUS
+.TP
+.B 0
+Success, even when
+.B \-u
+or
+.B \-f
+found nothing newer.
+.TP
+.B 2
+The archive ended unexpectedly.
+.TP
+.B 3
+The archive is damaged or unsupported.
+.TP
+.B 4
+Out of memory.
+.TP
+.B 10
+Temporary file failure.
+.TP
+.B 11
+The archive could not be read.
+.TP
+.B 12
+Nothing to do, as when
+.B \-i
+matches nothing.
+.TP
+.B 14
+Write error.
+.TP
+.B 15
+The archive could not be created or replaced.
+.TP
+.B 16
+Bad or unsupported options.
+.TP
+.B 18
+Some files could not be read, and were left out.
+.SH EXAMPLES
+.nf
+zip \-qX9r release\-1.2.3.zip build/
+SOURCE_DATE_EPOCH=$(git log \-1 \-\-format=%ct) zip \-qXr src.zip src
+zip \-d release.zip \(aq*.o\(aq
+.fi
+.SH SEE ALSO
+.BR unzip (1),
+.BR gzip (1)
