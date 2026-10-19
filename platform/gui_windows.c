@@ -134,7 +134,7 @@ __asm__(
     ".Lman: .ascii \"<?xml version='1.0' encoding='UTF-8' standalone='yes'?>\\n"
     "<assembly xmlns='urn:schemas-microsoft-com:asm.v1' "
     "manifestVersion='1.0'>\\n"
-    "<assemblyIdentity type='win32' name='tugz' version='1.2.0.0' "
+    "<assemblyIdentity type='win32' name='tugz' version='1.3.0.0' "
     "processorArchitecture='*'/>\\n"
     "<dependency><dependentAssembly><assemblyIdentity type='win32' "
     "name='Microsoft.Windows.Common-Controls' version='6.0.0.0' "
